@@ -50,15 +50,16 @@ THE SOFTWARE.
 #include "stp/Simplifier/DifficultyScore.h"
 #include "stp/cpp_interface.h"
 
-#include "Functionlist.h"
 #include "VariableAssignment.h"
 #include "misc.h"
 #include "rewrite_rule.h"
 #include "rewrite_system.h"
 
-#include "stp/ToSat/AIG/BBNodeManagerAIG.h"
-#include "stp/ToSat/AIG/ToCNFAIG.h"
-#include "stp/ToSat/AIG/ToSATAIG.h"
+#include "Functionlist.h"
+
+#include "stp/ToSat/BBNodeManagerAIG.h"
+#include "stp/ToSat/ToCNFAIG.h"
+#include "stp/ToSat/ToSATAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 
 #include <fstream>

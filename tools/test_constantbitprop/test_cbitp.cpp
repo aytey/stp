@@ -40,7 +40,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "stp/STPManager/STP.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Sat/MinisatCore.h"
-#include "stp/ToSat/AIG/ToSATAIG.h"
+#include "stp/ToSat/ToSATBase.h"
+#include "stp/ToSat/ToSATAIG.h"
 #include "stp/Util/BBAsProp.h"
 #include "stp/Util/Functions.h"
 #include "stp/Util/Relations.h"
@@ -687,8 +688,10 @@ void exhaustively_check(const int bitwidth, Kind k,
 
     BBAsProp BBP(k, mgr, bitwidth);
     BBP.fill_assumps_with(*children[0], *children[1], output);
-    bool bb_conflict = !BBP.unit_prop_with_assumps();
+    bool bb_conflict = !BBP.fixed_count_unit_prop_with_assumps();
+#if 0
     const int BBFixed = BBP.fixedCount();
+#endif
 
     bool transfer_conflict = (transfer(children, output) == CONFLICT);
     const int transferFixed = children[0]->countFixed() +
@@ -699,11 +702,13 @@ void exhaustively_check(const int bitwidth, Kind k,
     if (bb_conflict && !max_conflict)
       FatalError("~~");
 
+#if 0
     if (!max_conflict && !bb_conflict)
     {
       assert(maxFixed >= BBFixed);
       assert(initialFixed <= BBFixed);
     }
+#endif
 
     // cerr << "----";
     // cerr << *children[0] << *children[1] << output << endl;
@@ -726,8 +731,10 @@ void exhaustively_check(const int bitwidth, Kind k,
     }
     else if (transferFixed != maxFixed)
       transferBad++;
+#if 0
     else if (BBFixed != maxFixed)
       BBBad++;
+#endif
 
     if (!transfer_conflict && (k != stp::BVMULT) && (k != stp::BVDIV) &&
         (k != stp::BVMOD))
