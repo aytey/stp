@@ -1088,7 +1088,8 @@ lets: let lets
 | let
 {};
 
-let: LPAREN_TOK STRING_TOK an_formula RPAREN_TOK
+let:
+LPAREN_TOK STRING_TOK an_formula RPAREN_TOK
 {
   //populate the hashtable from LET-var -->
   //LET-exprs and then process them:
@@ -1116,6 +1117,62 @@ let: LPAREN_TOK STRING_TOK an_formula RPAREN_TOK
   delete $2;
   stp::GlobalParserInterface->deleteNode( $3);
 
+}
+| LPAREN_TOK TERMID_TOK an_formula RPAREN_TOK
+{
+  /* TODO: FIXME:
+   *
+   *    If we get here, then we've shadowed an existing symbol!
+   *
+   *    This is wrong!
+   */
+  std::cerr << "Error -- incorrectly parsed (an_formula) let ";
+  if ($2->GetKind() == SYMBOL)
+  {
+    /* this means we've shadowed a global (SMT-LIB) function */
+    std::cerr << "(symbol): ";
+    $2->nodeprint(std::cerr);
+  }
+  else
+  {
+    /* this means we've shadowed an existing let (I think) */
+    std::cerr << "(non-symbol): ";
+    $2->nodeprint(std::cerr);
+    std::cerr << " ... creating the let will now *really* fail";
+  }
+  std::cerr << std::endl;
+
+  stp::GlobalParserInterface->letMgr->LetExprMgr(*$2,*$3);
+  delete $2;
+  stp::GlobalParserInterface->deleteNode( $3);
+}
+| LPAREN_TOK TERMID_TOK an_term RPAREN_TOK
+{
+  /* TODO: FIXME:
+   *
+   *    If we get here, then we've shadowed an existing symbol!
+   *
+   *    This is wrong!
+   */
+  std::cerr << "Error -- incorrectly parsed (an_term) let ";
+  if ($2->GetKind() == SYMBOL)
+  {
+    /* this means we've shadowed a global (SMT-LIB) function */
+    std::cerr << "(symbol): ";
+    $2->nodeprint(std::cerr);
+  }
+  else
+  {
+    /* this means we've shadowed an existing let (I think) */
+    std::cerr << "(non-symbol): ";
+    $2->nodeprint(std::cerr);
+    std::cerr << " ... creating the let will now *really* fail";
+  }
+  std::cerr << std::endl;
+
+  stp::GlobalParserInterface->letMgr->LetExprMgr(*$2,*$3);
+  delete $2;
+  stp::GlobalParserInterface->deleteNode( $3);
 }
 ;
 
