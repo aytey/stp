@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
 
 #include "stp/Interface/fdstream.h"
 #include "stp/Parser/parser.h"
@@ -188,6 +189,16 @@ void vc_printExpr(VC vc, Expr e)
   stp::ASTNode q = (*(stp::ASTNode*)e);
   stp::STPMgr* b = stp_i->bm;
   q.PL_Print(cout, b);
+}
+
+char* vc_printExprInternal(VC /* vc */, Expr e)
+{
+  std::stringstream ss;
+  stp::ASTNode q((*(stp::ASTNode*)e));
+  ss << q;
+  std::string s(ss.str());
+  char* copy = strdup(s.c_str());
+  return copy;
 }
 
 char* vc_printSMTLIB(VC vc, Expr e)
