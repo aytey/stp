@@ -1225,6 +1225,9 @@ DLL_PUBLIC bool vc_useRiss(VC vc);
 //!
 DLL_PUBLIC bool vc_isUsingRiss(VC vc);
 
+//! \brief Prints STP's internal statistics ("runtimes") to stderr
+//!
+DLL_PUBLIC void vc_printRunTimes(VC vc);
 
 #ifdef __cplusplus
 }

@@ -2311,3 +2311,10 @@ vc
 #endif
 }
 
+void vc_printRunTimes(VC vc)
+{
+  stp::STP* stp_i = (stp::STP*)vc;
+  stp::STPMgr* bm = stp_i->bm;
+  bm->GetRunTimes()->print();
+}
+

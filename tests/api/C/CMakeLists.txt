@@ -65,3 +65,5 @@ AddSTPGTest(counter-example-reading.cpp)
 AddSTPGTest(failing_solvermap.cpp)
 AddSTPGTest(bit_string.cpp)
 AddSTPGTest(check_sizes.cpp)
+AddSTPGTest(sat_calls.cpp)
+
