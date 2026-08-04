@@ -50,11 +50,17 @@ namespace stp
 
 class STPMgr;
 class AbsRefine_CounterExample;
+class Simplifier;
 
 class IncrementalSolver
 {
 public:
-  IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce);
+  // `batchSimp` is the batch pipeline's Simplifier -- the one `ce` reads
+  // eliminated-variable definitions from when it builds a model. The driver
+  // seeds it with its own eliminations at model-construction time; the
+  // batch pipeline always clears it (resetSolver) before using it itself.
+  IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
+                    Simplifier* batchSimp);
   ~IncrementalSolver();
 
   IncrementalSolver(const IncrementalSolver&) = delete;

@@ -150,6 +150,7 @@ struct IncrementalSolver::Impl
 {
   STPMgr* bm;
   AbsRefine_CounterExample* ce;
+  Simplifier* batchSimp;
 
   std::unique_ptr<SATSolver> solver;
 
@@ -180,12 +181,41 @@ struct IncrementalSolver::Impl
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
 
+  // Substitutions harvested from base-level equations: x -> t for a
+  // base-level conjunct (= x t), plus TRUE/FALSE for unit boolean
+  // conjuncts. The base level only grows, so this map is monotone and
+  // needs no backtracking; and the defining equation is ALWAYS kept
+  // asserted, never eliminated, so using an entry to rewrite any conjunct
+  // -- at any level, popped and re-pushed or not -- is sound, and no model
+  // reconstruction is ever needed. (This is deliberately weaker than
+  // variable elimination: completeness is traded for having no leveled
+  // state at all. INCREMENTAL-DESIGN.md section 4.5.)
+  //
+  // SubstitutionMap::replace expands entries through each other as it runs
+  // ((x -> y) plus (y -> 5) becomes (x -> 5), mutating the map); every
+  // rewritten entry is still a permanent truth, so that canonicalisation
+  // is welcome. It is also why rewrite caches are per use, never shared
+  // across calls: a cache entry can predate an expansion.
+  ASTNodeMap sigma0;
+
+  // Defining equations that must reach the solver as real constraints.
+  // A variable whose bits were already encoded in an EARLIER check-sat is
+  // frozen (z3's rule: a symbol the backend has seen must not be
+  // eliminated): its defining equation would otherwise rewrite itself to
+  // TRUE under its own entry, and the existing SAT variables would lose
+  // the constraint -- sat where unsat lies that way. Such an equation is
+  // encoded un-rewritten; the sigma0 entry still simplifies everything
+  // encoded afterwards, which is sound exactly because the equation is
+  // asserted.
+  ASTNodeSet mustKeepRaw;
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
 
-  Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_)
-      : bm(bm_), ce(ce_), solver(makeBackend(bm_->UserFlags)),
-        substitutionMap(bm_), simp(bm_, &substitutionMap),
+  Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_)
+      : bm(bm_), ce(ce_), batchSimp(batchSimp_),
+        solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
+        simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), clausesAdded(0)
   {
@@ -303,6 +333,95 @@ struct IncrementalSolver::Impl
     }
   }
 
+  // Harvest a base-level substitution from a conjunct, if it defines one.
+  // The conjunct itself is still encoded and asserted regardless, which is
+  // what makes every use of the entry sound forever.
+  void harvestSigma0(const ASTNode& c)
+  {
+    ASTNode var, term;
+    if (c.GetKind() == SYMBOL)
+    {
+      var = c;
+      term = bm->ASTTrue;
+    }
+    else if (c.GetKind() == NOT && c[0].GetKind() == SYMBOL)
+    {
+      var = c[0];
+      term = bm->ASTFalse;
+    }
+    else if ((c.GetKind() == EQ || c.GetKind() == IFF) && c.Degree() == 2)
+    {
+      if (c[0].GetKind() == SYMBOL)
+      {
+        var = c[0];
+        term = c[1];
+      }
+      else if (c[1].GetKind() == SYMBOL)
+      {
+        var = c[1];
+        term = c[0];
+      }
+      else
+        return;
+    }
+    else
+      return;
+
+    if (var == term)
+      return;
+    if (sigma0.find(var) != sigma0.end())
+      return;
+    if (term.GetKind() != TRUE && term.GetKind() != FALSE &&
+        bm->VarSeenInTerm(var, term))
+      return;
+
+    // Frozen: the variable's bits already live in the solver, so this
+    // equation must constrain them for real (see mustKeepRaw).
+    if (bbMgr.symbolToBBNode.find(var) != bbMgr.symbolToBBNode.end())
+      mustKeepRaw.insert(c);
+
+    // Expand the replacement through what is already known, once. Chains
+    // that stay partially expanded are fine: every equation remains
+    // asserted, so partial rewriting is merely less simplification.
+    ASTNodeMap cache;
+    sigma0[var] = SubstitutionMap::replace(term, sigma0, cache,
+                                           bm->defaultNodeFactory);
+  }
+
+  // What actually gets encoded for a conjunct: the conjunct rewritten under
+  // the base-level substitutions and then simplified on its own
+  // (assertion-local, equivalence-preserving; a fresh Simplifier per call
+  // so no cross-assertion state exists to leak). Keyed by the ORIGINAL
+  // conjunct in rootLitOf, so reuse is untouched; encoding under an older,
+  // smaller sigma0 stays sound because sigma0 entries are permanent truths.
+  ASTNode prepareConjunct(const ASTNode& c)
+  {
+    if (!bm->UserFlags.optimize_flag)
+      return c;
+
+    ASTNode out = c;
+    if (!sigma0.empty() && mustKeepRaw.find(c) == mustKeepRaw.end())
+    {
+      // replace() rebuilds every touched node through the (simplifying)
+      // node factory, so the node-local rewrite rules already run over the
+      // substituted result as it is built.
+      ASTNodeMap cache;
+      out = SubstitutionMap::replace(out, sigma0, cache,
+                                     bm->defaultNodeFactory);
+    }
+
+    // Assertion-local, equivalence-preserving simplification, with a fresh
+    // Simplifier so no cross-assertion state can exist: its substitution
+    // map is empty, so everything it does to this one conjunct is a plain
+    // equivalence. Measurably worth it on multi-round workloads; sharing a
+    // Simplifier across conjuncts measured slower, so this stays per call.
+    SubstitutionMap localSm(bm);
+    Simplifier localSimp(bm, &localSm);
+    out = localSimp.SimplifyFormula_TopLevel(out, false);
+
+    return out;
+  }
+
   // Bit-blast a conjunct (once, memoised across the session by the
   // persistent BitBlaster) and encode its circuit; the returned literal
   // asserts it.
@@ -312,8 +431,10 @@ struct IncrementalSolver::Impl
     if (it != rootLitOf.end())
       return it->second;
 
+    const ASTNode toEncode = prepareConjunct(conjunct);
+
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
-    BBNodeAIG root = bb.BBForm(conjunct);
+    BBNodeAIG root = bb.BBForm(toEncode);
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
     bm->GetRunTimes()->start(RunTimes::CNFConversion);
@@ -368,8 +489,9 @@ struct IncrementalSolver::Impl
   }
 };
 
-IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce)
-    : impl(new Impl(bm, ce))
+IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
+                                     Simplifier* batchSimp)
+    : impl(new Impl(bm, ce, batchSimp))
 {
 }
 
@@ -401,10 +523,19 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
   // and possibly re-simplified -- on every call.
   ASTVec conjuncts;
   splitConjuncts(assertionsSMT2[0], bm->ASTTrue, conjuncts);
+
+  ASTVec newLevel0;
   for (const ASTNode& c : conjuncts)
   {
     if (!impl->level0Asserted.insert(c).second)
       continue;
+    newLevel0.push_back(c);
+    if (uf.optimize_flag)
+      impl->harvestSigma0(c);
+  }
+
+  for (const ASTNode& c : newLevel0)
+  {
     newConjuncts++;
     const int lit = impl->rootLit(c);
     SATSolver::vec_literals unit;
@@ -435,7 +566,9 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
               << " new conjuncts, added "
               << (impl->clausesAdded - clausesBefore) << " clauses, assumed "
               << assumptions.size() << " literals, solver has "
-              << impl->solver->nVars() << " variables" << std::endl;
+              << impl->solver->nVars() << " variables, "
+              << impl->sigma0.size() << " base-level substitutions"
+              << std::endl;
   }
 
   // The counterexample decision the batch pipeline makes per query
@@ -477,6 +610,20 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     bm->GetRunTimes()->start(RunTimes::CounterExampleGeneration);
     impl->ce->ClearCounterExampleMap();
     impl->ce->ClearComputeFormulaMap();
+
+    // A variable eliminated before it was ever encoded has no SAT bits;
+    // its value is its definition, evaluated recursively -- the same
+    // SolverMap channel the batch pipeline's eliminations use (and which
+    // the batch pipeline clears before every solve of its own). Only
+    // never-encoded variables are seeded: an encoded one gets its value
+    // from its bits.
+    for (ASTNodeMap::const_iterator it = impl->sigma0.begin();
+         it != impl->sigma0.end(); ++it)
+    {
+      if (impl->bbMgr.symbolToBBNode.find(it->first) ==
+          impl->bbMgr.symbolToBBNode.end())
+        impl->batchSimp->Return_SolverMap()->insert(*it);
+    }
 
     ToSATBase::ASTNodeToSATVar symbolMap;
     impl->buildSymbolMap(symbolMap);
