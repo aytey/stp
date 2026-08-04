@@ -41,10 +41,17 @@ assertion stack is left untouched. Per SMT-LIB, a model is invalidated by
 refuse (``unsupported``) rather than answer from a stack that no longer
 exists.
 
-The C API is unaffected: ``vc_push``/``vc_pop``/``vc_query`` keep their
-historical batch semantics, in which the counterexample belongs to the
-last ``vc_query`` and deliberately survives the idiomatic
-push/query/pop bracket (see the documentation at those declarations).
+The C API takes the same route: a session becomes incremental at its
+first ``vc_push`` (or from the first query with ``vc_setFlags(vc, 'i')``),
+and from the second solve on, ``vc_query`` runs on the persistent driver.
+``vc_query`` decides *asserts AND NOT query*, and the negated query is
+appended as one more retractable level -- an assumption for exactly that
+call, retracted by construction. The API's historical model contract is
+untouched: the counterexample belongs to the last ``vc_query`` and
+deliberately survives the idiomatic push/query/pop bracket (see the
+documentation at those declarations); the driver fills the same
+counterexample tables the batch path does. The Python bindings sit on the
+C API and inherit all of this.
 
 The whole input language is covered. Plain bit-vector assertions take the
 lean path described below; arrays, ``--ackermanize``, floating point and

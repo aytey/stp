@@ -30,6 +30,7 @@ THE SOFTWARE.
 #include <cstdlib>
 #include <cstring>
 
+#include "stp/Incremental/IncrementalSolver.h"
 #include "stp/Interface/fdstream.h"
 #include "stp/Parser/parser.h"
 #include "stp/Printer/printers.h"
@@ -779,11 +780,48 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
 
   stp_i->ClearAllTables();
 
+  stp_i->bm->UserFlags.timeout_max_conflicts = timeout_max_conflicts;
+  stp_i->bm->UserFlags.timeout_max_time = timeout_max_time;
+
+  // Incremental sessions (a vc_push happened, or vc_setFlags 'i'): solve
+  // through the persistent driver. vc_query decides asserts AND NOT query,
+  // and the negated query is appended as one more retractable level -- an
+  // assumption for exactly this call, which is also what sidesteps the
+  // un-stacked _current_query. The driver populates the same
+  // counterexample tables the batch path does, so the C API's model
+  // contract (the counterexample belongs to the last query and survives
+  // the push/query/pop bracket) is untouched. The driver engages from the
+  // second solve; the first, largest all-new formula keeps the batch
+  // pipeline's whole-formula simplification.
+  const bool use_incremental =
+      b->UserFlags.incremental_solving &&
+      (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 0);
+  stp_i->incrementalSolvesRun++;
+  if (use_incremental)
+  {
+    // The driver treats its base level as permanent -- base conjuncts
+    // become unit clauses for the rest of the session. The SMT-LIB2
+    // frontend guarantees such a level (it exists from startup and can
+    // never be popped); the C API guarantees no such thing: the stack
+    // starts empty, the first vc_push creates a level that vc_pop will
+    // remove again, and even pre-push assertions can be popped. So here
+    // NOTHING is permanent: the driver's base is a synthetic TRUE, every
+    // real level rides as retractable assumptions, and the negated query
+    // is one more retractable level of its own.
+    stp::ASTVec levels;
+    levels.push_back(b->ASTTrue);
+    const stp::ASTVec current = b->getVectorOfAsserts();
+    levels.insert(levels.end(), current.begin(), current.end());
+    levels.push_back(b->CreateNode(stp::NOT, *a));
+
+    stp::IncrementalSolver* inc = stp_i->getIncrementalSolver();
+    if (inc->canHandle(levels))
+      return inc->checkSat(levels);
+  }
+
   const stp::ASTVec v = b->GetAsserts();
   stp::ASTNode o;
   int output;
-  stp_i->bm->UserFlags.timeout_max_conflicts = timeout_max_conflicts;
-  stp_i->bm->UserFlags.timeout_max_time = timeout_max_time;
   if (!v.empty())
   {
     if (v.size() == 1)
@@ -832,6 +870,11 @@ void vc_push(VC vc)
 {
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
+
+  // The session is incremental from the first push on, exactly as the
+  // SMT-LIB2 frontend behaves; sessions that never push are untouched.
+  b->UserFlags.incremental_solving = true;
+
   stp_i->ClearAllTables();
   b->Push();
 }
@@ -3201,6 +3244,15 @@ void process_argument(const char ch, VC vc)
     case 'h':
       assert(0 && "This API is dumb, don't use it!");
       exit(-1);
+      break;
+    case 'i':
+      // Incremental solving from the first vc_query on (it switches itself
+      // on at the first vc_push even without this): one SAT solver and one
+      // encoding live across queries, with the negated query and the
+      // pushed levels' assertions assumed rather than re-encoded. See
+      // docs/incremental-solving.rst.
+      bm->UserFlags.incremental_solving = true;
+      ((stp::STP*)vc)->incrementalFromStart = true;
       break;
     case 'm':
       bm->UserFlags.smtlib1_parser_flag = true;

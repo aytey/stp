@@ -958,6 +958,17 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
       return impl->extCheckSat(assertionsSMT2);
   }
 
+  // No active equality this round, so no stale equality state may survive
+  // into it: the consistency checker keys off ext->active(), and a
+  // previous round's solve-local records would send this round's model to
+  // a checker expecting values for symbols it never encoded. The SMT-LIB2
+  // pop clears this itself, but the C API's vc_pop deliberately clears
+  // nothing (its model outlives the bracket), and check-sat-assuming's
+  // frame pop keeps the model too -- so the round boundary is here.
+  ExtensionalityContext* staleExt = bm->getExtensionalityIfAny();
+  if (staleExt != NULL && staleExt->active())
+    staleExt->beginSolve();
+
   const uint64_t clausesBefore = impl->clausesAdded;
   uint64_t newConjuncts = 0;
 

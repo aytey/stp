@@ -93,6 +93,14 @@ public:
   // session is active; the batch pipeline never touches it.
   IncrementalSolver* incrementalSolver = nullptr;
 
+  // The C API's engagement bookkeeping, mirroring the SMT-LIB2 frontend's:
+  // the driver engages from the second solve of a session (the first,
+  // largest all-new formula gets the batch pipeline's whole-formula
+  // simplification), unless vc_setFlags 'i' asked for it from the start.
+  // The SMT-LIB2 frontend keeps its own copies in Cpp_interface.
+  bool incrementalFromStart = false;
+  size_t incrementalSolvesRun = 0;
+
   DLL_PUBLIC IncrementalSolver* getIncrementalSolver();
   DLL_PUBLIC void resetIncrementalSolver();
   bool hasIncrementalSolver() const { return incrementalSolver != nullptr; }
