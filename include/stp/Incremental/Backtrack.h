@@ -31,12 +31,11 @@ THE SOFTWARE.
 #include <unordered_set>
 #include <vector>
 
-// Backtrackable containers for the incremental solver (INCREMENTAL-DESIGN.md
-// section 4.2): push is O(1) -- a saved watermark -- and pop erases exactly
-// what was added above the watermark, never rescanning lower levels. The
-// pattern follows Bitwuzla's src/backtrack/: a manager fans push/pop out to
-// every registered container, and each container keeps a control stack of
-// saved sizes.
+// Backtrackable containers for the incremental solver: push is O(1) -- a
+// saved watermark -- and pop erases exactly what was added above the
+// watermark, never rescanning lower levels. The pattern follows Bitwuzla's
+// src/backtrack/: a manager fans push/pop out to every registered
+// container, and each container keeps a control stack of saved sizes.
 //
 // The map and set are insert-only: a key, once inserted, may not be bound
 // again while it is live, so pop can undo insertions by erasure alone. That

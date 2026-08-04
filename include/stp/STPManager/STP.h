@@ -88,9 +88,9 @@ public:
   ArrayTransformer* arrayTransformer;
   SubstitutionMap* substitutionMap;
 
-  // The incremental driver (INCREMENTAL-DESIGN.md), created on first use and
-  // destroyed by reset/reset-assertions. NULL while no incremental session
-  // is active; the batch pipeline never touches it.
+  // The incremental driver (docs/incremental-solving.rst), created on first
+  // use and destroyed by reset/reset-assertions. NULL while no incremental
+  // session is active; the batch pipeline never touches it.
   IncrementalSolver* incrementalSolver = nullptr;
 
   DLL_PUBLIC IncrementalSolver* getIncrementalSolver();

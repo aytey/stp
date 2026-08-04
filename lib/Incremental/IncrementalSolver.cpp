@@ -243,7 +243,7 @@ struct IncrementalSolver::Impl
   // -- at any level, popped and re-pushed or not -- is sound, and no model
   // reconstruction is ever needed. (This is deliberately weaker than
   // variable elimination: completeness is traded for having no leveled
-  // state at all. INCREMENTAL-DESIGN.md section 4.5.)
+  // state at all.)
   //
   // SubstitutionMap::replace expands entries through each other as it runs
   // ((x -> y) plus (y -> 5) becomes (x -> 5), mutating the map); every

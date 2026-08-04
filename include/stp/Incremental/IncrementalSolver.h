@@ -29,7 +29,8 @@ THE SOFTWARE.
 #include "stp/Globals/Globals.h"
 #include <memory>
 
-// The incremental solving driver (INCREMENTAL-DESIGN.md sections 4.3-4.4).
+// The incremental solving driver; docs/incremental-solving.rst tells the
+// full story.
 //
 // One SAT solver, one AIG, and one CNF encoding live for the whole session.
 // Everything encoded is a conservative extension -- fresh Tseitin variables

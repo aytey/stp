@@ -3,7 +3,7 @@
 #
 # Time a solver over a corpus of SMT-LIB files and record the answers, so
 # that two builds can be compared for both performance and soundness. Built
-# for the incremental-solving work (INCREMENTAL-DESIGN.md, phase 0): the
+# for the incremental-solving work (docs/incremental-solving.rst): the
 # same tool times incremental corpora (many check-sats per file) and guards
 # the "batch performance must not regress" requirement on single-query files.
 #

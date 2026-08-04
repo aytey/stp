@@ -1,0 +1,201 @@
+Incremental solving
+===================
+
+STP solves incremental SMT-LIB2 sessions -- ``push``, ``pop``, repeated
+``(check-sat)``, ``(check-sat-assuming ...)`` -- by keeping one SAT solver
+and one bit-blasted encoding alive for the whole session, instead of
+re-solving the conjoined assertion stack from scratch at every check.
+Everything that is encoded is a conservative extension (fresh Tseitin
+variables and definitional clauses), so it is never retracted; what changes
+between checks is only which root literals are asserted. A base-level
+assertion becomes a permanent unit clause; an assertion at a pushed level
+has its root literal *assumed* per check-sat, so a pop retracts it by
+simply no longer assuming it. Learned clauses therefore survive both
+check-sats and pops by construction.
+
+Usage
+-----
+
+Nothing needs to be enabled. A session becomes incremental at its first
+``(push ...)``; sessions that never push are entirely untouched and take
+the classic single-shot pipeline. Two refinements to know about:
+
+- The incremental driver engages from the *second* real solve of a
+  session. The first solve carries the largest all-new formula -- for
+  single-check-sat files that happen to use ``push``, the only formula --
+  and the batch pipeline's whole-formula simplification earns its keep
+  there; encoding reuse can only pay off once a second solve exists.
+  ``--incremental`` on the command line engages the driver from the first
+  solve instead.
+- Independent of the driver, the frontend keeps a per-level verdict
+  cache with sound monotonicity shortcuts: pushing under a known-unsat
+  level inherits unsat, a sat answer marks the levels beneath it sat, and
+  a repeated check with an unchanged stack and no model demanded is not
+  re-solved at all.
+
+``(check-sat-assuming (l1 ... ln))`` is supported and implemented as an
+internal assertion level holding the assumptions; the model it produces
+remains readable by ``get-value``/``get-model`` afterwards, and the
+assertion stack is left untouched. Per SMT-LIB, a model is invalidated by
+``assert``, ``push``, ``pop`` and reset commands, and the model commands
+refuse (``unsupported``) rather than answer from a stack that no longer
+exists.
+
+The C API is unaffected: ``vc_push``/``vc_pop``/``vc_query`` keep their
+historical batch semantics, in which the counterexample belongs to the
+last ``vc_query`` and deliberately survives the idiomatic
+push/query/pop bracket (see the documentation at those declarations).
+
+The whole input language is covered. Plain bit-vector assertions take the
+lean path described below; arrays, ``--ackermanize``, floating point and
+``--array-equality`` each add machinery of their own, also described
+below.
+
+The driver, in one page
+-----------------------
+
+The driver (``lib/Incremental/IncrementalSolver.cpp``) holds **no
+per-level state**. Each check-sat receives the assertion stack as one
+conjunction per level; each level is split into its top-level conjuncts,
+and the assumption set is recomputed from scratch against permanent
+caches:
+
+- conjunct -> root literal (the encoding cache; a conjunct is bit-blasted
+  and Tseitin-encoded at most once per session),
+- the bit-blaster's term memo and one AIG manager,
+- AIG node -> CNF variable.
+
+Recomputing rather than tracking levels is what makes ``push``/``pop``
+need no hooks at all: the parser's assertion stack is the single source
+of truth, and a popped assertion vanishes by not being present the next
+time. It also sidesteps a subtle trap: the per-level conjunction nodes
+are re-collapsed and re-simplified by the node factory on every check, so
+any state keyed by *level* rather than by *formula* would chase a moving
+target.
+
+Word-level rewriting is kept sound under retraction by construction
+rather than by backtracking:
+
+- Node-construction rewrites (the simplifying node factory) and constant
+  evaluation are context-free and always on.
+- Each new conjunct is simplified *on its own* (a fresh Simplifier whose
+  substitution map is empty, so everything it does is a plain
+  equivalence) before encoding.
+- Substitutions are harvested from **base-level** equations only
+  (``x = t`` with an occurs-check, unit booleans as true/false). The base
+  level only grows -- reset destroys the driver -- so the store is
+  monotone and needs no backtracking. A defining equation may only be
+  simplified away under its own substitution if the variable has never
+  reached the SAT solver; a variable whose bits already live in the
+  solver keeps its equation as a real constraint (otherwise the existing
+  bits would silently lose it -- sat where unsat lies that way). A
+  variable eliminated before it was ever encoded gets its model value by
+  evaluating its definition.
+
+Arrays
+------
+
+Array reads are abstracted through the batch ``ArrayTransformer`` with
+its read registry seeded from a persistent copy, so every
+``(array, index)`` pair keeps one canonical abstraction variable for the
+session. That canonicity is what lets refinement work incrementally: the
+lazy CEGAR loop is the batch pipeline's own (driven through a small
+``ToSATBase`` adapter that re-solves under the check-sat's assumptions),
+and the congruence axioms it learns are added as *permanent* clauses --
+they are tautologies of the canonical abstraction, valid whichever levels
+are live. A popped read's registry entry stays behind as an unconstrained
+observation of the array, which restricts nothing: an array maps every
+index to some value.
+
+Under ``--ackermanize`` arrays are compiled away eagerly instead: each
+new read becomes a nested if-then-else over the reads already seen. That
+new-versus-existing shape is naturally monotone, so persisting the
+per-array read lists keeps pair coverage across check-sats, and there is
+nothing left to refine.
+
+Floating point
+--------------
+
+Floating-point conjuncts are totalised and lowered through one
+session-long encoding context, so symfpu circuits for terms the rounds
+share are built once. Per-conjunct preparation is sound because the
+totaliser re-collects every side condition -- rounding-mode pinning in
+particular -- from each call's own output and conjoins it onto that
+result: a conjunct's lowered form carries its own conditions and retracts
+with its level, while the persistent caches hold only term rewrites.
+
+Whole-array equality
+--------------------
+
+``--array-equality`` rounds run as one *extensionality block* per
+check-sat: the whole active stack is lowered, prepared and transformed on
+a fresh registry -- the extensionality procedure reasons about the
+complete array graph of a solve, and its records are solve-local by
+design -- then encoded and assumed as a single root literal on the
+persistent solver, with the consistency checker's lemmas encoded into the
+live solver mid-round.
+
+Even these per-round blocks cache: every variable a round generates
+(equality proxies, witness indices and values, scalar names, read
+abstractions) is named deterministically by *what it stands for* (its key
+nodes) rather than by a counter, so an identical re-pushed stack lowers
+to the identical node and reuses the previous round's encoding outright,
+while a changed stack still shares every unchanged subcircuit. One
+subtlety makes this work: STP garbage-collects unreferenced interior
+nodes and re-mints their numbers, and the deterministic names are keyed
+on node numbers -- so the driver pins each round's node spine, and in
+general any cache in STP that keys on nodes must *hold* them.
+
+SAT backends
+------------
+
+The one retraction mechanism is solving under assumptions, which every
+wrapped backend except the simplifying MiniSat supports natively; that
+one is substituted with plain MiniSat under incremental use, since its
+variable elimination cannot accept later clauses over eliminated
+variables (the same gate cvc5 applies to SatELite). CryptoMiniSat and
+CaDiCaL eliminate variables internally but restore them the moment a new
+clause mentions them, which is what makes adding refinement lemmas
+between solves safe. When CaDiCaL is compiled in it is the default
+backend.
+
+Resource budgets are per check-sat: a conflict or time budget is re-armed
+at each check, measured from the arming point, and the check's refinement
+iterations share it -- on a long-lived solver, budgets measured from the
+solver's birth would shrink to nothing, which is pinned by a regression
+test.
+
+Testing and measurement
+-----------------------
+
+``tests/query-files/incremental-tests/`` holds the behavioural tests:
+push/pop rounds, models under retraction, substitution soundness (the
+freeze rule has a dedicated test that fails as sat-on-unsat without it),
+arrays with refinement across rounds, eager Ackermannisation, floating
+point, the extensionality block and its cache, and the driver's own
+reuse counters (run with ``-s``, the driver reports how much each check
+encoded -- a repeat check must report zero).
+
+``scripts/incremental-bench.py`` times a solver over a corpus, records
+each file's answer sequence, and diffs a later run against a saved
+baseline -- so a change can be checked for performance and, more
+importantly, for answer agreement. The main soundness instrument during
+development was differential testing between the batch and incremental
+engines over SMT-LIB incremental benchmarks: the two must agree on every
+answer of every file.
+
+Limitations
+-----------
+
+- The persistent encoding, like the node tables, grows monotonically over
+  a session; nothing is re-encoded, but nothing is reclaimed either.
+  Long sessions with much popped, never-returning content pay for it in
+  memory. Periodic re-encoding from the live AIG would be the standard
+  relief valve.
+- Extensionality rounds rebuild the procedure's solve-local records each
+  check-sat; reuse for them is at the encoding level (cached blocks and
+  shared subcircuits), not at the record level.
+- Forcing the driver from the first solve (``--incremental``) on a large
+  all-new formula deliberately trades the batch pipeline's global
+  simplification for encoding reuse that cannot pay off yet; the default
+  engagement policy exists precisely because of this.
