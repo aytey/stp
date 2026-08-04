@@ -7,9 +7,15 @@ with the driver engaging from the second solve of a session; phase 2 the
 base-level substitutions (with the freeze rule and model seeding) and
 per-conjunct simplification; phase 3 arrays via the seeded persistent read
 registry and the batch CEGAR driven through a ToSATBase adapter; phase 4
-floating point over a session-long FpEncodingContext. Whole-array equality
-(extensionality) and --ackermanize remain batch fallbacks, per section 4.7.
-Phase 5 (fuzzing, differential campaigns, perf polish) is future work.*
+floating point over a session-long FpEncodingContext. Two follow-on phases
+closed the remaining fallbacks: --ackermanize runs in-driver (the eager
+per-array read lists persist; the new-versus-existing ITE shape is
+monotone), and whole-array equality runs as a per-round extensionality
+block on the persistent solver -- the whole active set lowered, prepared
+and assumed as one root, with checker lemmas encoded into the live solver;
+its registry and witnesses stay solve-local by design, so reuse for those
+rounds is at the shared-subcircuit level. Phase 5 (fuzzing, differential
+campaigns, perf polish) is future work.*
 
 *Prepared 2026-08-04 against STP master @ f9dea0cc. Comparative material from reading
 cvc5 (`/home/avj/clones/cvc5/main` @ e8c0387cae), Bitwuzla (`/home/avj/clones/bitwuzla/main`

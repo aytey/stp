@@ -26,6 +26,7 @@ THE SOFTWARE.
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Sat/MinisatCore.h"
@@ -106,16 +107,17 @@ typedef std::unordered_map<ASTNode, int, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
     NodeToLitMap;
 
-// What the driver knows about a conjunct's content: whether the fragment
-// covers it at all, whether it contains array operations (which decide the
-// refinement machinery and interact with --ackermanize), and whether it
+// What the driver knows about a conjunct's content: whether it contains
+// array operations (which decide the refinement machinery), whether it
 // touches the floating-point theory (which decides totalisation and
-// lowering). All node-local, permanent properties.
+// lowering), and whether it carries an opaque whole-array equality (which
+// routes the entire check-sat through the extensionality block). All
+// node-local, permanent properties.
 struct Fragment
 {
-  bool clean;
   bool arrays;
   bool fp;
+  bool arrayEq;
 };
 typedef std::unordered_map<ASTNode, Fragment, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
@@ -539,12 +541,14 @@ struct IncrementalSolver::Impl
     f.arrays = containsArrayOps(n, bm);
     f.fp =
         bm->has_floating_point_theory && containsFloatingPointTheory(n, bm);
-    f.clean = true;
-    if (bm->UserFlags.enable_array_equality)
-      f.clean = !containsArrayEquality(n);
+    f.arrayEq =
+        bm->UserFlags.enable_array_equality && containsArrayEquality(n);
 
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
   }
+
+  SOLVER_RETURN_TYPE extCheckSat(const ASTVec& assertionsSMT2);
+  ToSATBase* ensureAdapter();
 
   // The session-long floating-point encoding context. Its totalisation
   // re-conjoins every side condition (rounding-mode pinning in particular)
@@ -685,6 +689,184 @@ public:
   void ClearAllTables(void) override {}
 };
 
+ToSATBase* IncrementalSolver::Impl::ensureAdapter()
+{
+  if (!adapter)
+    adapter.reset(new IncrementalToSAT(bm, this));
+  return adapter.get();
+}
+
+// A check-sat whose active stack carries whole-array equality. The
+// extensionality procedure reasons about the COMPLETE array graph of the
+// solve -- every transformed read must be owned by it -- so the whole
+// active set is lowered, prepared and encoded as ONE per-round block,
+// assumed as a single root literal on the persistent solver, mirroring the
+// batch choreography (TopLevelSTP/TopLevelSTPAux) step for step. The
+// block's registry rows and witness symbols are solve-local by the
+// procedure's design (beginSolve wipes them), so nothing here touches the
+// driver's persistent lazy registry, and block roots are deliberately not
+// cached: a cached root would resurrect circuits over witnesses whose
+// records the next round regenerated. Reuse still happens one level down
+// -- the bit-blaster's memo shares every unchanged subcircuit, and learned
+// clauses over those survive.
+SOLVER_RETURN_TYPE
+IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
+{
+  UserDefinedFlags& uf = bm->UserFlags;
+
+  // Eager Ackermannization expands reads into if-then-else chains,
+  // destroying the array structure the lazy procedure works on -- the same
+  // per-solve override, warning included, the batch pipeline applies.
+  const bool savedAck = uf.ackermannisation;
+  if (uf.ackermannisation)
+  {
+    std::cerr << "Warning: --ackermanize is disabled for queries with "
+                 "array equality."
+              << std::endl;
+    uf.ackermannisation = false;
+  }
+
+  ASTNode activeConjunction;
+  if (assertionsSMT2.size() > 1)
+    activeConjunction = bm->CreateNode(AND, assertionsSMT2);
+  else
+    activeConjunction = assertionsSMT2[0];
+
+  bool activeHasFp = false;
+  for (const ASTNode& levelConjunction : assertionsSMT2)
+  {
+    if (fragment(levelConjunction).fp)
+    {
+      activeHasFp = true;
+      break;
+    }
+  }
+
+  ExtensionalityContext* ext = bm->getExtensionality();
+  ext->beginSolve();
+
+  ASTNodeMap arrayEqualityRewrites;
+  ASTNode prepared = activeConjunction;
+  if (activeHasFp)
+  {
+    prepared = fpContext()->prepare(prepared);
+    fpContext()->copyArrayEqualityRewrites(arrayEqualityRewrites);
+  }
+
+  ASTNode semantic = ext->lowerArrayEqualities(prepared, arrayEqualityRewrites);
+  ASTNode inputToSat = semantic;
+
+  const bool extActive = ext->active();
+  // Releases the record-table seal on every exit from this function.
+  ExtensionalityContext::SolveScope extScope(ext);
+
+  if (extActive)
+    inputToSat = ext->conjoinRecordConstraints(inputToSat);
+
+  if (activeHasFp)
+    inputToSat = fpContext()->lowerPrepared(inputToSat);
+
+  const bool extPrepared = extActive && !inputToSat.isConstant();
+  if (extPrepared)
+    inputToSat = ext->prepare(inputToSat);
+
+  if (uf.enable_array_equality && containsArrayEquality(inputToSat))
+    FatalError("IncrementalSolver: an opaque array equality reached the "
+               "final array transformation boundary",
+               inputToSat);
+
+  // A fresh per-round registry: the whole-graph transform must neither see
+  // the persistent lazy rows (it refuses reused legacy rows) nor leak its
+  // own solve-local rows into them. The rows are left in place afterwards
+  // -- model construction reads them -- until the next solve or pop clears
+  // the batch tables as usual.
+  batchAT->arrayToIndexToRead.clear();
+  batchAT->ack_pair.clear();
+
+  const bool arrayops = containsArrayOps(inputToSat, bm) || extActive;
+  if (arrayops)
+    inputToSat = batchAT->TransformFormula_TopLevel(inputToSat);
+  if (extPrepared)
+    ext->bindAfterTransform(batchAT);
+
+  // Encode the block; its root is assumed, never asserted -- the block
+  // spans every level, including the base.
+  bm->GetRunTimes()->start(RunTimes::BitBlasting);
+  BBNodeAIG root = bb.BBForm(inputToSat);
+  bm->GetRunTimes()->stop(RunTimes::BitBlasting);
+  bm->GetRunTimes()->start(RunTimes::CNFConversion);
+  Aig_Obj_t* regular = Aig_Regular(root.n);
+  ensureEncoded(regular);
+  const int blockLit =
+      2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
+  bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+
+  // Refinement lemmas are encoded over the abstraction/witness/scalar
+  // names; give every bit of every such symbol a variable before the
+  // first solve, fresh and unconstrained where the blasted block never
+  // needed it -- the meaning ToSATAIG's lemma-only path assigns.
+  if (extActive)
+  {
+    for (const ASTNode& s : ext->getFrozenSymbols())
+      totalizeSymbol(s);
+    for (const ASTNode& s : ext->getLemmaOnlySymbols())
+      totalizeSymbol(s);
+  }
+
+  if (uf.stats_flag)
+  {
+    std::cerr << "Incremental: array-equality round, block of "
+              << assertionsSMT2.size() << " levels re-encoded, solver has "
+              << solver->nVars() << " variables" << std::endl;
+  }
+
+  uf.construct_counterexample_flag = true;
+
+  if (fpCtx)
+    ce->setFpEncodingContext(fpCtx.get());
+
+  seedEliminatedIntoModelChannel();
+
+  if (uf.timeout_max_conflicts >= 0)
+    solver->setMaxConflicts(uf.timeout_max_conflicts);
+  if (uf.timeout_max_time >= 0)
+    solver->setMaxTime(uf.timeout_max_time);
+  bm->soft_timeout_expired = false;
+
+  SATSolver::vec_literals assumptions;
+  assumptions.push(SATSolver::mkLit(blockLit >> 1, blockLit & 1));
+
+  IncrementalToSAT* tosat = static_cast<IncrementalToSAT*>(ensureAdapter());
+  tosat->setAssumptions(&assumptions);
+
+  SOLVER_RETURN_TYPE res = ce->CallSAT_ResultCheck(
+      *solver, bm->ASTTrue, semantic, prepared, tosat, true);
+
+  // The refinement driver, as in TopLevelSTPAux: with an active equality
+  // the checker owns every read, so each undecided candidate must carry a
+  // pending theory lemma; without one, ordinary read refinement runs.
+  while (res == SOLVER_UNDECIDED)
+  {
+    if (extActive)
+    {
+      if (!ext->hasPendingLemma())
+        FatalError("IncrementalSolver: an active array-equality refinement "
+                   "round has neither a decision nor a pending lemma");
+      ext->encodePendingLemmas(*solver, tosat);
+      res = ce->CallSAT_ResultCheck(*solver, bm->ASTTrue, semantic, prepared,
+                                    tosat, true);
+    }
+    else
+    {
+      res = ce->SATBased_ArrayReadRefinement(*solver, semantic, tosat);
+    }
+  }
+
+  tosat->setAssumptions(NULL);
+  uf.ackermannisation = savedAck;
+  return res;
+}
+
 IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
                                      Simplifier* batchSimp,
                                      ArrayTransformer* batchAT)
@@ -703,11 +885,11 @@ IncrementalSolver::~IncrementalSolver()
 
 bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
 {
-  for (const ASTNode& levelConjunction : assertionsSMT2)
-  {
-    if (!impl->fragment(levelConjunction).clean)
-      return false;
-  }
+  // Every construct the SMT-LIB frontend can produce is covered: plain
+  // bit-vectors, arrays (lazy or --ackermanize), floating point, and
+  // whole-array equality. The method remains the seam for any future
+  // exclusion.
+  (void)assertionsSMT2;
   return true;
 }
 
@@ -717,6 +899,18 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
   UserDefinedFlags& uf = bm->UserFlags;
 
   assert(!assertionsSMT2.empty());
+
+  // Whole-array equality routes the entire check-sat through the
+  // extensionality block: the procedure owns the round's complete array
+  // graph, so no conjunct may be encoded separately this round. New
+  // base-level conjuncts stay out of level0Asserted and simply become
+  // permanent units in a later equality-free round; this round the block
+  // covers them.
+  for (const ASTNode& levelConjunction : assertionsSMT2)
+  {
+    if (impl->fragment(levelConjunction).arrayEq)
+      return impl->extCheckSat(assertionsSMT2);
+  }
 
   const uint64_t clausesBefore = impl->clausesAdded;
   uint64_t newConjuncts = 0;
@@ -819,10 +1013,8 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     // read abstraction) clauses, solve again. The adapter re-solves under
     // this check-sat's assumptions, and the batch-side tables the
     // machinery reads are seeded from the driver's persistent stores.
-    if (!impl->adapter)
-      impl->adapter.reset(new IncrementalToSAT(bm, impl.get()));
     IncrementalToSAT* adapter =
-        static_cast<IncrementalToSAT*>(impl->adapter.get());
+        static_cast<IncrementalToSAT*>(impl->ensureAdapter());
 
     impl->batchAT->arrayToIndexToRead = impl->myReads;
     impl->seedEliminatedIntoModelChannel();
