@@ -125,7 +125,8 @@ SOLVER_RETURN_TYPE STP::solve_by_sat_solver(SATSolver* newS,
 IncrementalSolver* STP::getIncrementalSolver()
 {
   if (incrementalSolver == nullptr)
-    incrementalSolver = new IncrementalSolver(bm, Ctr_Example, simp);
+    incrementalSolver =
+        new IncrementalSolver(bm, Ctr_Example, simp, arrayTransformer);
   return incrementalSolver;
 }
 

@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/Incremental/IncrementalSolver.h"
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
+#include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
@@ -103,9 +104,19 @@ SATSolver* makeBackend(UserDefinedFlags& uf)
 typedef std::unordered_map<ASTNode, int, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
     NodeToLitMap;
-typedef std::unordered_map<ASTNode, bool, ASTNode::ASTNodeHasher,
+
+// What the driver knows about a conjunct's content: whether the fragment
+// covers it at all, and whether it contains array operations (which decide
+// the refinement machinery and interact with --ackermanize). Both are
+// node-local, permanent properties.
+struct Fragment
+{
+  bool clean;
+  bool arrays;
+};
+typedef std::unordered_map<ASTNode, Fragment, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
-    NodeToBoolMap;
+    NodeToFragmentMap;
 
 // Split a level's conjunction into its top-level conjuncts. The level node
 // is rebuilt (and re-simplified) by the node factory on every check-sat, so
@@ -151,6 +162,7 @@ struct IncrementalSolver::Impl
   STPMgr* bm;
   AbsRefine_CounterExample* ce;
   Simplifier* batchSimp;
+  ArrayTransformer* batchAT;
 
   std::unique_ptr<SATSolver> solver;
 
@@ -174,9 +186,24 @@ struct IncrementalSolver::Impl
   // formula is a definition, valid in every context.
   NodeToLitMap rootLitOf;
 
-  // conjunct -> whether the driver's fragment covers it. Permanent: a
-  // node-local property.
-  NodeToBoolMap supportedCache;
+  // conjunct -> fragment facts. Permanent: node-local properties.
+  NodeToFragmentMap fragmentCache;
+
+  // The read registry, persistent across check-sats: array -> index ->
+  // ArrayRead, exactly the batch ArrayTransformer's table. The transformer
+  // consults it before minting an abstraction variable, so seeding it from
+  // here before every transform gives one canonical read symbol per
+  // (array, index) for the whole session -- which is what makes refinement
+  // axioms (congruence over those symbols) permanently valid clauses.
+  // Entries from popped scopes stay: their axioms are tautologies of the
+  // abstraction, merely dead weight while nothing constrains them.
+  ArrayTransformer::ArrType myReads;
+
+  // Storage handed out by the ToSATBase adapter (the refinement machinery
+  // asks for the symbol map by reference), and the adapter itself,
+  // constructed on first array use (its class is defined below Impl).
+  ToSATBase::ASTNodeToSATVar symbolMapStorage;
+  std::unique_ptr<ToSATBase> adapter;
 
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
@@ -212,13 +239,17 @@ struct IncrementalSolver::Impl
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
 
-  Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_)
-      : bm(bm_), ce(ce_), batchSimp(batchSimp_),
+  Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_,
+       ArrayTransformer* batchAT_)
+      : bm(bm_), ce(ce_), batchSimp(batchSimp_), batchAT(batchAT_),
         solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), clausesAdded(0)
   {
+    // Refinement adds clauses between solve calls; tell backends that need
+    // to know (CryptoMiniSat skips its startup simplification).
+    solver->enableRefinement(true);
   }
 
   int varOfAig(Aig_Obj_t* regular)
@@ -424,14 +455,25 @@ struct IncrementalSolver::Impl
 
   // Bit-blast a conjunct (once, memoised across the session by the
   // persistent BitBlaster) and encode its circuit; the returned literal
-  // asserts it.
+  // asserts it. Array reads are abstracted through the seeded registry
+  // first, so the encoded form is pure bit-vector and the abstraction
+  // variables are canonical for the session.
   int rootLit(const ASTNode& conjunct)
   {
     NodeToLitMap::const_iterator it = rootLitOf.find(conjunct);
     if (it != rootLitOf.end())
       return it->second;
 
-    const ASTNode toEncode = prepareConjunct(conjunct);
+    ASTNode toEncode = prepareConjunct(conjunct);
+
+    if (fragment(conjunct).arrays)
+    {
+      batchAT->arrayToIndexToRead = myReads;
+      toEncode = batchAT->TransformFormula_TopLevel(toEncode);
+      myReads = batchAT->arrayToIndexToRead;
+      assert(!containsArrayOps(toEncode, bm));
+      totalizeRegistrySymbols();
+    }
 
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
     BBNodeAIG root = bb.BBForm(toEncode);
@@ -448,20 +490,70 @@ struct IncrementalSolver::Impl
     return lit;
   }
 
-  bool supported(const ASTNode& n)
+  const Fragment& fragment(const ASTNode& n)
   {
-    NodeToBoolMap::const_iterator it = supportedCache.find(n);
-    if (it != supportedCache.end())
+    NodeToFragmentMap::const_iterator it = fragmentCache.find(n);
+    if (it != fragmentCache.end())
       return it->second;
 
-    bool ok = !containsArrayOps(n, bm);
-    if (ok && bm->has_floating_point_theory)
-      ok = !containsFloatingPointTheory(n, bm);
-    if (ok && bm->UserFlags.enable_array_equality)
-      ok = !containsArrayEquality(n);
+    Fragment f;
+    f.arrays = containsArrayOps(n, bm);
+    f.clean = true;
+    if (bm->has_floating_point_theory)
+      f.clean = !containsFloatingPointTheory(n, bm);
+    if (f.clean && bm->UserFlags.enable_array_equality)
+      f.clean = !containsArrayEquality(n);
 
-    supportedCache[n] = ok;
-    return ok;
+    return fragmentCache.insert(std::make_pair(n, f)).first->second;
+  }
+
+  // Give every bit of a symbol a CNF variable, allocating unconstrained
+  // ones where the encoded cones never needed the bit. The refinement
+  // machinery encodes congruence axioms straight over the bit variables of
+  // the registry's symbols (getEquals), with no notion of "this bit never
+  // reached the solver" -- and an unconstrained fresh variable is exactly
+  // the meaning the blasted formula gives an unused bit, the same argument
+  // ToSATAIG makes for lemma-only extensionality symbols.
+  void totalizeSymbol(const ASTNode& s)
+  {
+    if (s.GetKind() != SYMBOL)
+      return;
+    const unsigned width = std::max((unsigned)1, s.GetValueWidth());
+    for (unsigned i = 0; i < width; i++)
+    {
+      BBNodeAIG bit = bbMgr.CreateSymbol(s, i);
+      ensureEncoded(Aig_Regular(bit.n));
+    }
+  }
+
+  void totalizeRegistrySymbols()
+  {
+    for (ArrayTransformer::ArrType::const_iterator it = myReads.begin();
+         it != myReads.end(); ++it)
+    {
+      for (ArrayTransformer::arrTypeMap::const_iterator rit =
+               it->second.begin();
+           rit != it->second.end(); ++rit)
+      {
+        totalizeSymbol(rit->second.symbol);
+        totalizeSymbol(rit->second.index_symbol);
+      }
+    }
+  }
+
+  // A variable eliminated before it was ever encoded has no SAT bits; its
+  // value is its definition, evaluated recursively -- the same SolverMap
+  // channel the batch pipeline's eliminations use (and which the batch
+  // pipeline clears before every solve of its own). Only never-encoded
+  // variables are seeded: an encoded one gets its value from its bits.
+  void seedEliminatedIntoModelChannel()
+  {
+    for (ASTNodeMap::const_iterator it = sigma0.begin(); it != sigma0.end();
+         ++it)
+    {
+      if (bbMgr.symbolToBBNode.find(it->first) == bbMgr.symbolToBBNode.end())
+        batchSimp->Return_SolverMap()->insert(*it);
+    }
   }
 
   // Values for every symbol the persistent encoding knows about. Symbols
@@ -489,9 +581,56 @@ struct IncrementalSolver::Impl
   }
 };
 
+// The ToSATBase the refinement machinery drives. Everything is already
+// encoded and axioms arrive as direct clauses, so CallSAT only ever needs
+// to re-solve -- under the check-sat's captured assumptions, which is what
+// keeps refinement lemmas permanent while retractable assertions stay
+// retractable.
+class IncrementalToSAT : public ToSATBase
+{
+  IncrementalSolver::Impl* d;
+  const SATSolver::vec_literals* assumps;
+
+public:
+  IncrementalToSAT(STPMgr* bm, IncrementalSolver::Impl* d_)
+      : ToSATBase(bm), d(d_), assumps(NULL)
+  {
+  }
+
+  void setAssumptions(const SATSolver::vec_literals* a) { assumps = a; }
+
+  bool CallSAT(SATSolver& SatSolver, const ASTNode& input,
+               bool /*doesAbsRef*/) override
+  {
+    // The refinement protocol passes ASTTrue: "the clauses are already in
+    // the solver, search again".
+    assert(input == ASTTrue);
+    (void)input;
+
+    bm->GetRunTimes()->start(RunTimes::Solving);
+    bool sat;
+    if (assumps != NULL && assumps->size() > 0)
+      sat = SatSolver.solveWithAssumptions(*assumps, bm->soft_timeout_expired);
+    else
+      sat = SatSolver.solve(bm->soft_timeout_expired);
+    bm->GetRunTimes()->stop(RunTimes::Solving);
+    return sat;
+  }
+
+  ASTNodeToSATVar& SATVar_to_SymbolIndexMap() override
+  {
+    d->symbolMapStorage.clear();
+    d->buildSymbolMap(d->symbolMapStorage);
+    return d->symbolMapStorage;
+  }
+
+  void ClearAllTables(void) override {}
+};
+
 IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
-                                     Simplifier* batchSimp)
-    : impl(new Impl(bm, ce, batchSimp))
+                                     Simplifier* batchSimp,
+                                     ArrayTransformer* batchAT)
+    : impl(new Impl(bm, ce, batchSimp, batchAT))
 {
 }
 
@@ -501,7 +640,12 @@ bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
 {
   for (const ASTNode& levelConjunction : assertionsSMT2)
   {
-    if (!impl->supported(levelConjunction))
+    const Fragment& f = impl->fragment(levelConjunction);
+    if (!f.clean)
+      return false;
+    // Eager Ackermannisation is a batch-pipeline encoding choice; honour
+    // the flag by leaving array queries to the batch path when it is set.
+    if (f.arrays && impl->bm->UserFlags.ackermannisation)
       return false;
   }
   return true;
@@ -571,10 +715,21 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
               << std::endl;
   }
 
-  // The counterexample decision the batch pipeline makes per query
-  // (TopLevelSTPAux), minus the array cases this driver never sees.
-  bool construct =
-      uf.check_counterexample_flag || uf.print_counterexample_flag;
+  // Array refinement needs a candidate model to find violated axioms, so
+  // arrays force counterexample construction, exactly as in the batch
+  // pipeline (TopLevelSTPAux).
+  bool activeHasArrays = false;
+  for (const ASTNode& levelConjunction : assertionsSMT2)
+  {
+    if (impl->fragment(levelConjunction).arrays)
+    {
+      activeHasArrays = true;
+      break;
+    }
+  }
+
+  bool construct = uf.check_counterexample_flag ||
+                   uf.print_counterexample_flag || activeHasArrays;
 #ifndef NDEBUG
   construct = true;
 #endif
@@ -586,6 +741,46 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
   if (uf.timeout_max_time >= 0)
     impl->solver->setMaxTime(uf.timeout_max_time);
   bm->soft_timeout_expired = false;
+
+  if (activeHasArrays)
+  {
+    // The batch pipeline's own CEGAR: candidate model, violated congruence
+    // axioms as direct (permanent -- they are tautologies of the canonical
+    // read abstraction) clauses, solve again. The adapter re-solves under
+    // this check-sat's assumptions, and the batch-side tables the
+    // machinery reads are seeded from the driver's persistent stores.
+    if (!impl->adapter)
+      impl->adapter.reset(new IncrementalToSAT(bm, impl.get()));
+    IncrementalToSAT* adapter =
+        static_cast<IncrementalToSAT*>(impl->adapter.get());
+
+    impl->batchAT->arrayToIndexToRead = impl->myReads;
+    impl->seedEliminatedIntoModelChannel();
+
+    ASTNode activeConjunction;
+    if (assertionsSMT2.size() > 1)
+      activeConjunction = bm->CreateNode(AND, assertionsSMT2);
+    else
+      activeConjunction = assertionsSMT2[0];
+
+    adapter->setAssumptions(&assumptions);
+    SOLVER_RETURN_TYPE res = impl->ce->CallSAT_ResultCheck(
+        *impl->solver, bm->ASTTrue, activeConjunction, activeConjunction,
+        adapter, true);
+    while (res == SOLVER_UNDECIDED)
+    {
+      res = impl->ce->SATBased_ArrayReadRefinement(
+          *impl->solver, activeConjunction, adapter);
+    }
+    adapter->setAssumptions(NULL);
+
+    if (uf.stats_flag)
+      impl->solver->printStats();
+
+    // SOLVER_INVALID and SOLVER_SATISFIABLE (resp. VALID/UNSATISFIABLE)
+    // are the same enum values, so this is already in check-sat terms.
+    return res;
+  }
 
   bm->GetRunTimes()->start(RunTimes::Solving);
   bool sat;
@@ -611,19 +806,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     impl->ce->ClearCounterExampleMap();
     impl->ce->ClearComputeFormulaMap();
 
-    // A variable eliminated before it was ever encoded has no SAT bits;
-    // its value is its definition, evaluated recursively -- the same
-    // SolverMap channel the batch pipeline's eliminations use (and which
-    // the batch pipeline clears before every solve of its own). Only
-    // never-encoded variables are seeded: an encoded one gets its value
-    // from its bits.
-    for (ASTNodeMap::const_iterator it = impl->sigma0.begin();
-         it != impl->sigma0.end(); ++it)
-    {
-      if (impl->bbMgr.symbolToBBNode.find(it->first) ==
-          impl->bbMgr.symbolToBBNode.end())
-        impl->batchSimp->Return_SolverMap()->insert(*it);
-    }
+    impl->seedEliminatedIntoModelChannel();
 
     ToSATBase::ASTNodeToSATVar symbolMap;
     impl->buildSymbolMap(symbolMap);

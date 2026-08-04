@@ -1,6 +1,7 @@
-; Arrays are outside the incremental driver's fragment: those check-sats
-; fall back to the batch pipeline, and the driver resumes when the stack is
-; pure bit-vector again. Answers must be right throughout.
+; Mixed rounds: array levels appear mid-session (handled natively by the
+; incremental driver since phase 3; before that, via batch fallback) and
+; are popped away again. Answers must be right throughout, whichever
+; engine serves each round.
 ; RUN: %solver %s | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun x () (_ BitVec 8))

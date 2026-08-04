@@ -51,16 +51,20 @@ namespace stp
 class STPMgr;
 class AbsRefine_CounterExample;
 class Simplifier;
+class ArrayTransformer;
 
 class IncrementalSolver
 {
 public:
-  // `batchSimp` is the batch pipeline's Simplifier -- the one `ce` reads
-  // eliminated-variable definitions from when it builds a model. The driver
-  // seeds it with its own eliminations at model-construction time; the
-  // batch pipeline always clears it (resetSolver) before using it itself.
+  // `batchSimp` and `batchAT` are the batch pipeline's Simplifier and
+  // ArrayTransformer -- the objects `ce` reads eliminated-variable
+  // definitions and array read records from when it builds and checks
+  // models. The driver seeds them from its own persistent stores
+  // just-in-time (its substitutions at model construction, its read
+  // registry around array work); the batch pipeline always clears both
+  // (resetSolver) before using them itself.
   IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
-                    Simplifier* batchSimp);
+                    Simplifier* batchSimp, ArrayTransformer* batchAT);
   ~IncrementalSolver();
 
   IncrementalSolver(const IncrementalSolver&) = delete;
@@ -84,8 +88,11 @@ public:
   // destroyed only by reset/reset-assertions, which destroy this object.
   SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2);
 
-private:
+  // Public only so the ToSATBase adapter in the implementation file can
+  // name it; the definition never leaves IncrementalSolver.cpp.
   struct Impl;
+
+private:
   std::unique_ptr<Impl> impl;
 };
 
