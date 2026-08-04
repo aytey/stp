@@ -26,6 +26,7 @@ THE SOFTWARE.
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
@@ -106,13 +107,15 @@ typedef std::unordered_map<ASTNode, int, ASTNode::ASTNodeHasher,
     NodeToLitMap;
 
 // What the driver knows about a conjunct's content: whether the fragment
-// covers it at all, and whether it contains array operations (which decide
-// the refinement machinery and interact with --ackermanize). Both are
-// node-local, permanent properties.
+// covers it at all, whether it contains array operations (which decide the
+// refinement machinery and interact with --ackermanize), and whether it
+// touches the floating-point theory (which decides totalisation and
+// lowering). All node-local, permanent properties.
 struct Fragment
 {
   bool clean;
   bool arrays;
+  bool fp;
 };
 typedef std::unordered_map<ASTNode, Fragment, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
@@ -204,6 +207,9 @@ struct IncrementalSolver::Impl
   // constructed on first array use (its class is defined below Impl).
   ToSATBase::ASTNodeToSATVar symbolMapStorage;
   std::unique_ptr<ToSATBase> adapter;
+
+  // Created on first floating-point use; see fpContext().
+  std::unique_ptr<FpEncodingContext> fpCtx;
 
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
@@ -402,6 +408,14 @@ struct IncrementalSolver::Impl
       return;
     if (sigma0.find(var) != sigma0.end())
       return;
+    // Only plain bit-vector/boolean definitions. An array-typed symbol is
+    // not a substitutable value, and a floating-point-theory term must not
+    // be injected into conjuncts whose lowering decision (a raw-conjunct
+    // property) was already made without it.
+    if (var.GetIndexWidth() != 0)
+      return;
+    if (bm->has_floating_point_theory && containsFloatingPointTheory(term, bm))
+      return;
     if (term.GetKind() != TRUE && term.GetKind() != FALSE &&
         bm->VarSeenInTerm(var, term))
       return;
@@ -464,9 +478,23 @@ struct IncrementalSolver::Impl
     if (it != rootLitOf.end())
       return it->second;
 
-    ASTNode toEncode = prepareConjunct(conjunct);
+    const Fragment& frag = fragment(conjunct);
 
-    if (fragment(conjunct).arrays)
+    ASTNode toEncode = conjunct;
+
+    // Totalise partial floating-point operations and pin rounding modes
+    // before the formula is used for anything, as the batch pipeline does;
+    // the word-level rewriting runs on the totalised form, and lowering to
+    // the packed circuit comes after it.
+    if (frag.fp)
+      toEncode = fpContext()->prepare(toEncode);
+
+    toEncode = prepareConjunct(toEncode);
+
+    if (frag.fp)
+      toEncode = fpContext()->lowerPrepared(toEncode);
+
+    if (frag.arrays)
     {
       batchAT->arrayToIndexToRead = myReads;
       toEncode = batchAT->TransformFormula_TopLevel(toEncode);
@@ -498,13 +526,26 @@ struct IncrementalSolver::Impl
 
     Fragment f;
     f.arrays = containsArrayOps(n, bm);
+    f.fp =
+        bm->has_floating_point_theory && containsFloatingPointTheory(n, bm);
     f.clean = true;
-    if (bm->has_floating_point_theory)
-      f.clean = !containsFloatingPointTheory(n, bm);
-    if (f.clean && bm->UserFlags.enable_array_equality)
+    if (bm->UserFlags.enable_array_equality)
       f.clean = !containsArrayEquality(n);
 
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
+  }
+
+  // The session-long floating-point encoding context. Its totalisation
+  // re-conjoins every side condition (rounding-mode pinning in particular)
+  // onto each call's own result -- by design, precisely so the guarantee
+  // is independent of the assertion stack -- so per-conjunct preparation
+  // over one persistent context is self-contained: a conjunct's lowered
+  // form carries its own conditions and retracts with it.
+  FpEncodingContext* fpContext()
+  {
+    if (!fpCtx)
+      fpCtx.reset(new FpEncodingContext(bm));
+    return fpCtx.get();
   }
 
   // Give every bit of a symbol a CNF variable, allocating unconstrained
@@ -634,7 +675,14 @@ IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
 {
 }
 
-IncrementalSolver::~IncrementalSolver() {}
+IncrementalSolver::~IncrementalSolver()
+{
+  // The counterexample machinery may still point at our floating-point
+  // encoding context; whoever solves next installs their own before any
+  // model is read (and model_valid already refuses stale reads).
+  if (impl->fpCtx)
+    impl->ce->setFpEncodingContext(NULL);
+}
 
 bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
 {
@@ -734,6 +782,12 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
   construct = true;
 #endif
   uf.construct_counterexample_flag = construct;
+
+  // Model evaluation of floating-point terms needs the encoding context
+  // that lowered them. Batch fallback rounds install their own per solve;
+  // this keeps the driver's rounds coherent the same way.
+  if (impl->fpCtx)
+    impl->ce->setFpEncodingContext(impl->fpCtx.get());
 
   // Budgets are per check-sat, as solve_by_sat_solver arms them per query.
   if (uf.timeout_max_conflicts >= 0)

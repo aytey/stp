@@ -1,5 +1,16 @@
 # Incremental solving for STP — architecture review and plan
 
+*Status 2026-08-04: phases 0–4 are implemented on this branch
+(`incremental-solving`), one commit per phase. Phase 1 shipped the
+persistent SAT solver + persistent AIG/Tseitin encoding behind assumptions,
+with the driver engaging from the second solve of a session; phase 2 the
+base-level substitutions (with the freeze rule and model seeding) and
+per-conjunct simplification; phase 3 arrays via the seeded persistent read
+registry and the batch CEGAR driven through a ToSATBase adapter; phase 4
+floating point over a session-long FpEncodingContext. Whole-array equality
+(extensionality) and --ackermanize remain batch fallbacks, per section 4.7.
+Phase 5 (fuzzing, differential campaigns, perf polish) is future work.*
+
 *Prepared 2026-08-04 against STP master @ f9dea0cc. Comparative material from reading
 cvc5 (`/home/avj/clones/cvc5/main` @ e8c0387cae), Bitwuzla (`/home/avj/clones/bitwuzla/main`
 @ e92a4c51), and z3 (`/home/avj/clones/z3/master`). Background: stp/stp#483.
