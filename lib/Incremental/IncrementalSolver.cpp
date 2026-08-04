@@ -202,6 +202,15 @@ struct IncrementalSolver::Impl
   // abstraction, merely dead weight while nothing constrains them.
   ArrayTransformer::ArrType myReads;
 
+  // Under --ackermanize, the transformer's other table: the reads of each
+  // array in the order they were seen, from which each NEW read's nested
+  // if-then-else over the EXISTING reads is built. That new-versus-existing
+  // shape is exactly monotone, so persisting the list keeps pair coverage
+  // across check-sats: any two reads are related by whichever was encoded
+  // later. A popped read's entry stays as an unconstrained observation of
+  // the array -- sound, since an array maps every index to some value.
+  std::map<ASTNode, vector<std::pair<ASTNode, ASTNode>>> myAckPairs;
+
   // Storage handed out by the ToSATBase adapter (the refinement machinery
   // asks for the symbol map by reference), and the adapter itself,
   // constructed on first array use (its class is defined below Impl).
@@ -497,8 +506,10 @@ struct IncrementalSolver::Impl
     if (frag.arrays)
     {
       batchAT->arrayToIndexToRead = myReads;
+      batchAT->ack_pair = myAckPairs;
       toEncode = batchAT->TransformFormula_TopLevel(toEncode);
       myReads = batchAT->arrayToIndexToRead;
+      myAckPairs = batchAT->ack_pair;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
     }
@@ -557,7 +568,8 @@ struct IncrementalSolver::Impl
   // ToSATAIG makes for lemma-only extensionality symbols.
   void totalizeSymbol(const ASTNode& s)
   {
-    if (s.GetKind() != SYMBOL)
+    // Eager-Ackermann registry rows carry no index symbol at all.
+    if (s.IsNull() || s.GetKind() != SYMBOL)
       return;
     const unsigned width = std::max((unsigned)1, s.GetValueWidth());
     for (unsigned i = 0; i < width; i++)
@@ -569,6 +581,11 @@ struct IncrementalSolver::Impl
 
   void totalizeRegistrySymbols()
   {
+    // Only the refinement machinery encodes axioms over registry symbols,
+    // and --ackermanize never refines.
+    if (bm->UserFlags.ackermannisation)
+      return;
+
     for (ArrayTransformer::ArrType::const_iterator it = myReads.begin();
          it != myReads.end(); ++it)
     {
@@ -688,12 +705,7 @@ bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
 {
   for (const ASTNode& levelConjunction : assertionsSMT2)
   {
-    const Fragment& f = impl->fragment(levelConjunction);
-    if (!f.clean)
-      return false;
-    // Eager Ackermannisation is a batch-pipeline encoding choice; honour
-    // the flag by leaving array queries to the batch path when it is set.
-    if (f.arrays && impl->bm->UserFlags.ackermannisation)
+    if (!impl->fragment(levelConjunction).clean)
       return false;
   }
   return true;
@@ -765,7 +777,10 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
 
   // Array refinement needs a candidate model to find violated axioms, so
   // arrays force counterexample construction, exactly as in the batch
-  // pipeline (TopLevelSTPAux).
+  // pipeline (TopLevelSTPAux). Under --ackermanize the transform compiles
+  // arrays away eagerly -- each new read carries its if-then-else over the
+  // existing reads -- so there is nothing to refine and the lean path
+  // solves it like plain bit-vectors.
   bool activeHasArrays = false;
   for (const ASTNode& levelConjunction : assertionsSMT2)
   {
@@ -775,9 +790,10 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
       break;
     }
   }
+  const bool needRefinement = activeHasArrays && !uf.ackermannisation;
 
   bool construct = uf.check_counterexample_flag ||
-                   uf.print_counterexample_flag || activeHasArrays;
+                   uf.print_counterexample_flag || needRefinement;
 #ifndef NDEBUG
   construct = true;
 #endif
@@ -796,7 +812,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     impl->solver->setMaxTime(uf.timeout_max_time);
   bm->soft_timeout_expired = false;
 
-  if (activeHasArrays)
+  if (needRefinement)
   {
     // The batch pipeline's own CEGAR: candidate model, violated congruence
     // axioms as direct (permanent -- they are tautologies of the canonical

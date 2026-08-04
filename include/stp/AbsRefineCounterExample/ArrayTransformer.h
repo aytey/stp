@@ -67,9 +67,14 @@ public:
   typedef std::map<ASTNode, arrTypeMap> ArrType;
   ArrType arrayToIndexToRead;
 
-private:
+  // Under eager Ackermannisation: each array's reads in the order they
+  // were seen, from which a new read's nested if-then-else over the
+  // existing reads is built. Public alongside arrayToIndexToRead for the
+  // same reason: the incremental driver persists both across check-sats
+  // and seeds them back in before each transform.
   std::map<ASTNode, vector<std::pair<ASTNode, ASTNode>>> ack_pair;
 
+private:
   /****************************************************************
    * Private Typedefs and Data                                    *
    ****************************************************************/
