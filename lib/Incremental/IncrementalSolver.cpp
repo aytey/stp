@@ -548,11 +548,23 @@ struct IncrementalSolver::Impl
       return it->second;
 
     Fragment f;
-    f.arrays = containsArrayOps(n, bm);
     f.fp =
         bm->has_floating_point_theory && containsFloatingPointTheory(n, bm);
     f.arrayEq =
         bm->UserFlags.enable_array_equality && containsArrayEquality(n);
+
+    // Arrayness must be judged on the form that will be encoded: totalising
+    // a partial floating-point operation (fp.to_ubv of a NaN, say) can
+    // introduce reads of an unspecified-value array into a conjunct that
+    // had no arrays at all. Judged on the raw conjunct, the introduced READ
+    // reached the bit-blaster, and the refinement loop -- which is what
+    // enforces congruence between unspecified results at equal indices --
+    // was skipped. prepare() is memoised in the session-long context, so
+    // rootLit's later call is a cache hit, not repeated work.
+    ASTNode basis = n;
+    if (f.fp)
+      basis = fpContext()->prepare(n);
+    f.arrays = containsArrayOps(basis, bm);
 
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
   }
