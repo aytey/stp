@@ -592,6 +592,40 @@ public:
     return current;
   }
 
+  // Deterministic siblings of CreateFreshVariable: the name is a function
+  // of the node(s) the variable stands for, so re-deriving the same thing
+  // -- in a later solve, or a later incremental round -- yields the SAME
+  // variable instead of a fresh one. Get-or-create by construction, since
+  // symbols are hash-consed by (name, widths); node numbers are unique for
+  // the manager's lifetime, so distinct keys can never share a name. The
+  // "_k" spelling keeps this namespace disjoint from the counter-named
+  // variables, whose suffix is digits only.
+  ASTNode CreateDeterministicVariable(int indexWidth, int valueWidth,
+                                      const std::string& prefix,
+                                      const ASTNode& key)
+  {
+    char* d = (char*)alloca(sizeof(char) * (48 + prefix.length()));
+    sprintf(d, "@%s_k%lu", prefix.c_str(),
+            (unsigned long)key.GetNodeNum());
+    ASTNode current = CreateSymbol(d, indexWidth, valueWidth);
+    Introduced_SymbolsSet.insert(current);
+    return current;
+  }
+
+  ASTNode CreateDeterministicVariable(int indexWidth, int valueWidth,
+                                      const std::string& prefix,
+                                      const ASTNode& key,
+                                      const ASTNode& key2)
+  {
+    char* d = (char*)alloca(sizeof(char) * (64 + prefix.length()));
+    sprintf(d, "@%s_k%lu_k%lu", prefix.c_str(),
+            (unsigned long)key.GetNodeNum(),
+            (unsigned long)key2.GetNodeNum());
+    ASTNode current = CreateSymbol(d, indexWidth, valueWidth);
+    Introduced_SymbolsSet.insert(current);
+    return current;
+  }
+
   bool FoundIntroducedSymbolSet(const ASTNode& in)
   {
     if (Introduced_SymbolsSet.find(in) != Introduced_SymbolsSet.end())

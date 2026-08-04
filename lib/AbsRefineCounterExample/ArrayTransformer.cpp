@@ -116,8 +116,8 @@ ASTNode ArrayTransformer::TransformFormula_TopLevel(const ASTNode& form)
         }
         else
         {
-          ASTNode newV = bm->CreateFreshVariable(0, the_index.GetValueWidth(),
-                                                 "STP__IndexVariables");
+          ASTNode newV = bm->CreateDeterministicVariable(
+              0, the_index.GetValueWidth(), "STP__IndexVariables", the_index);
           equalsNodes.push_back(nf->CreateNode(EQ, the_index, newV));
           replaced.insert(make_pair(the_index, newV));
           it->second.index_symbol = newV;
@@ -485,8 +485,12 @@ ASTNode ArrayTransformer::TransformArrayRead(const ASTNode& term)
         }
       }
 
-      ASTNode CurrentSymbol = bm->CreateFreshVariable(
-          term.GetIndexWidth(), term.GetValueWidth(), "ext_read");
+      // Deterministic per (array, index): repeating a solve re-mints the
+      // same abstraction variable, so an incremental round's encoding and
+      // lemmas stay attached to the right SAT variables.
+      ASTNode CurrentSymbol = bm->CreateDeterministicVariable(
+          term.GetIndexWidth(), term.GetValueWidth(), "ext_read", arrName,
+          readIndex);
       result = CurrentSymbol;
       arrayToIndexToRead[arrName].insert(
           make_pair(readIndex, ArrayRead(result, CurrentSymbol)));
@@ -522,13 +526,13 @@ ASTNode ArrayTransformer::TransformArrayRead(const ASTNode& term)
         }
       }
 
-      // Make up a new abstract variable. Build symbolic name
-      // corresponding to array read. The symbolic name has 2
-      // components: stringname, and a count
+      // Make up a new abstract variable, named deterministically by the
+      // (array, index) pair it reads: re-deriving the same read -- in a
+      // later solve or an incremental round -- yields the same variable.
 
-      ASTNode CurrentSymbol =
-          bm->CreateFreshVariable(term.GetIndexWidth(), term.GetValueWidth(),
-                                  "array_" + std::string(arrName.GetName()));
+      ASTNode CurrentSymbol = bm->CreateDeterministicVariable(
+          term.GetIndexWidth(), term.GetValueWidth(),
+          "array_" + std::string(arrName.GetName()), readIndex);
 
       // Reading an array of floats yields a float. The read node derived its
       // format from the array, but this fresh variable stands in for the read

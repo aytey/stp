@@ -222,6 +222,16 @@ struct IncrementalSolver::Impl
   // Created on first floating-point use; see fpContext().
   std::unique_ptr<FpEncodingContext> fpCtx;
 
+  // Nodes the block cache's determinism depends on. STP garbage-collects
+  // unreferenced interior nodes and re-mints their numbers, and the
+  // deterministic generated names are keyed on node numbers -- so every
+  // stage of a round's spine (raw conjunction, prepared, lowered) is
+  // pinned here. Without this, an identical re-pushed stack rebuilds the
+  // freed spine under fresh numbers and the whole chain diverges.
+  // (The per-conjunct caches never had the problem: their keys hold their
+  // nodes by construction.)
+  ASTNodeSet extKeepAlive;
+
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
 
@@ -770,6 +780,11 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   if (extPrepared)
     inputToSat = ext->prepare(inputToSat);
 
+  extKeepAlive.insert(activeConjunction);
+  extKeepAlive.insert(prepared);
+  extKeepAlive.insert(semantic);
+  extKeepAlive.insert(inputToSat);
+
   if (uf.enable_array_equality && containsArrayEquality(inputToSat))
     FatalError("IncrementalSolver: an opaque array equality reached the "
                "final array transformation boundary",
@@ -790,16 +805,34 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
     ext->bindAfterTransform(batchAT);
 
   // Encode the block; its root is assumed, never asserted -- the block
-  // spans every level, including the base.
-  bm->GetRunTimes()->start(RunTimes::BitBlasting);
-  BBNodeAIG root = bb.BBForm(inputToSat);
-  bm->GetRunTimes()->stop(RunTimes::BitBlasting);
-  bm->GetRunTimes()->start(RunTimes::CNFConversion);
-  Aig_Obj_t* regular = Aig_Regular(root.n);
-  ensureEncoded(regular);
-  const int blockLit =
-      2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
-  bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+  // spans every level, including the base. Every generated symbol in the
+  // block (witnesses, scalar names, read abstractions) is named
+  // deterministically by what it stands for, so an identical stack lowers
+  // to the identical node and this cache hit makes the repeat round's
+  // encoding free -- and the recycled names keep previously encoded
+  // checker lemmas attached to the right SAT variables.
+  int blockLit;
+  bool blockReused = false;
+  {
+    NodeToLitMap::const_iterator hit = rootLitOf.find(inputToSat);
+    if (hit != rootLitOf.end())
+    {
+      blockLit = hit->second;
+      blockReused = true;
+    }
+    else
+    {
+      bm->GetRunTimes()->start(RunTimes::BitBlasting);
+      BBNodeAIG root = bb.BBForm(inputToSat);
+      bm->GetRunTimes()->stop(RunTimes::BitBlasting);
+      bm->GetRunTimes()->start(RunTimes::CNFConversion);
+      Aig_Obj_t* regular = Aig_Regular(root.n);
+      ensureEncoded(regular);
+      blockLit = 2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
+      bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+      rootLitOf[inputToSat] = blockLit;
+    }
+  }
 
   // Refinement lemmas are encoded over the abstraction/witness/scalar
   // names; give every bit of every such symbol a variable before the
@@ -816,7 +849,8 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   if (uf.stats_flag)
   {
     std::cerr << "Incremental: array-equality round, block of "
-              << assertionsSMT2.size() << " levels re-encoded, solver has "
+              << assertionsSMT2.size() << " levels "
+              << (blockReused ? "reused" : "encoded") << ", solver has "
               << solver->nVars() << " variables" << std::endl;
   }
 
