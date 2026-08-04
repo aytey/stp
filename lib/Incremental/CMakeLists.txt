@@ -21,3 +21,7 @@
 add_library(incremental OBJECT
     IncrementalSolver.cpp
 )
+
+# The AST headers this pulls in include the generated ASTKind.h; without the
+# explicit dependency a fresh build directory can race the generator.
+add_dependencies(incremental ASTKind_header)
