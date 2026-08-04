@@ -82,14 +82,19 @@ public:
 
   void solveAndDump();
 
+  bool supportsAssumptions() const override { return true; }
 
 protected:
   bool solveInternal(bool& timeout_expired) override;
+  bool solveWithAssumptionsInternal(const vec_literals& assumps,
+                                    bool& timeout_expired) override;
 
   // CryptoMiniSat polls its own wall-clock limit during search.
   bool canInterruptSearch() const override { return true; }
 
 private:
+  bool armBudgets(bool& timeout_expired);
+
   void* temp_cl;
   // Negative means no budget was configured. This cannot default to 0,
   // which is now a budget of zero rather than the absence of one.

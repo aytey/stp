@@ -22,6 +22,7 @@
 # -----------------------------------------------------------------------------
 # C API tests (these should be .cpp or .cxx files because GTest needs C++)
 # -----------------------------------------------------------------------------
+AddSTPGTest(Backtrack_Test.cpp)
 AddSTPGTest(PropagateEqualities_Test.cpp)
 AddSTPGTest(SimplifyingNodeFactory_Test.cpp)
 AddSTPGTest(FindPureLiterals_Test.cpp)

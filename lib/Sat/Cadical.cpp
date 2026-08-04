@@ -78,6 +78,22 @@ bool Cadical::solveInternal(bool& timeout_expired)
   return ret == 10;
 }
 
+bool Cadical::solveWithAssumptionsInternal(const vec_literals& assumps,
+                                           bool& timeout_expired)
+{
+  // Assumptions hold for the next solve() call only, which is exactly the
+  // semantics solveWithAssumptions promises. Literal conversion as in
+  // addClause.
+  for (int i = 0; i < assumps.size(); i++)
+  {
+    uint32_t var = assumps[i].x >> 1;
+    uint32_t polarity = assumps[i].x & 1;
+    s->assume(polarity ? -(int)var : (int)var);
+  }
+
+  return solveInternal(timeout_expired);
+}
+
 Cadical::Cadical() : time_limit(*this)
 {
   s = new CaDiCaL::Solver ();

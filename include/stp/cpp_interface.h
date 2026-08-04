@@ -175,6 +175,7 @@ class Cpp_interface
   void addFrame();
   void removeFrame();
   void assertRoundingModeValid(const ASTNode& s);
+  void resetIncrementalSolver();
 
   bool produce_models;
   bool changed_model_status;
@@ -185,6 +186,15 @@ class Cpp_interface
   // pop, reset, reset-assertions). get-value/get-model refuse when false
   // rather than print a model of an assertion set that no longer exists.
   bool model_valid;
+
+  // The incremental driver engages from the SECOND real solve of a session
+  // (unless --incremental asked for it from the start, captured here at
+  // startup). The first solve carries the largest all-new formula -- for
+  // single-check-sat files that use push, the only formula -- and the batch
+  // pipeline's whole-formula simplification earns its keep there; the
+  // driver's encoding reuse can only pay off once a second solve exists.
+  bool incremental_from_start;
+  size_t solves_run;
 
   // Remove the frame checkSatAssuming pushed, keeping the solver's derived
   // tables -- and with them the model just constructed -- readable. Every

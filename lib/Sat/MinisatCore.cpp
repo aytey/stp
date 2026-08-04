@@ -97,6 +97,23 @@ bool MinisatCore::solveInternal(bool& timeout_expired)
   return ret == (Minisat::lbool)Minisat::l_True;
 }
 
+bool MinisatCore::solveWithAssumptionsInternal(
+    const stp::SATSolver::vec_literals& assumps, bool& timeout_expired)
+{
+  // simplify() only removes clauses satisfied at level 0; the core solver
+  // never eliminates variables, so assumption literals are safe across it.
+  if (!s->simplify())
+    return false;
+
+  Minisat::lbool ret = s->solveLimited(assumps);
+  if (ret == (Minisat::lbool)Minisat::l_Undef)
+  {
+    timeout_expired = true;
+  }
+
+  return ret == (Minisat::lbool)Minisat::l_True;
+}
+
 uint8_t MinisatCore::modelValue(uint32_t x) const
 {
   return Minisat::toInt(s->modelValue(x));

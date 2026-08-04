@@ -385,6 +385,12 @@ void ExtraMain::create_options()
       ("parse-only", po::bool_switch(&(bm->UserFlags.parse_only)),
        "exit after parsing the input, without solving")
 
+      ("incremental", po::bool_switch(&(bm->UserFlags.incremental_solving)),
+       "solve incrementally from the start: keep the SAT solver and the "
+       "bit-blasted encoding across (check-sat) commands, asserting "
+       "retractable formulas as SAT assumptions. Switches itself on at the "
+       "first (push) even without this flag. SMT-LIB2 only.")
+
       ("interactive", po::value<bool>(),
        "read the input a character at a time, as needed when driving stp "
        "interactively over a pipe. Off reads in blocks, which is faster. "

@@ -83,8 +83,12 @@ public:
 
   //bool unitPropagate(const vec_literals& ps);
 
+  bool supportsAssumptions() const override { return true; }
+
 protected:
   bool solveInternal(bool& timeout_expired) override;
+  bool solveWithAssumptionsInternal(const vec_literals& assumps,
+                                    bool& timeout_expired) override;
 };
 }
 

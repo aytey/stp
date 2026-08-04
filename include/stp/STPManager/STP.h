@@ -42,6 +42,8 @@ THE SOFTWARE.
 
 namespace stp
 {
+class IncrementalSolver;
+
 // FIXME: This needs a better name
 class STP
 {
@@ -86,6 +88,15 @@ public:
   ArrayTransformer* arrayTransformer;
   SubstitutionMap* substitutionMap;
 
+  // The incremental driver (INCREMENTAL-DESIGN.md), created on first use and
+  // destroyed by reset/reset-assertions. NULL while no incremental session
+  // is active; the batch pipeline never touches it.
+  IncrementalSolver* incrementalSolver = nullptr;
+
+  DLL_PUBLIC IncrementalSolver* getIncrementalSolver();
+  DLL_PUBLIC void resetIncrementalSolver();
+  bool hasIncrementalSolver() const { return incrementalSolver != nullptr; }
+
 public:
   STP(STPMgr* b)
   {
@@ -109,6 +120,8 @@ public:
   // NB doesn't delete the STPMgr.
   void deleteObjects()
   {
+    resetIncrementalSolver();
+
     if (Ctr_Example != NULL)
       Ctr_Example->setFpEncodingContext(NULL);
     fpEncodingContext.reset();

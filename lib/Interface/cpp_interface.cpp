@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/Parser/LetMgr.h"
 #include "stp/Printer/printers.h"
 #include "stp/Util/GitSHA1.h"
+#include "stp/Incremental/IncrementalSolver.h"
 #include "stp/STPManager/STP.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/ToSat/ToSATAIG.h"
@@ -65,6 +66,8 @@ void Cpp_interface::init()
   produce_models = false;
   changed_model_status = false;
   model_valid = false;
+  incremental_from_start = bm.UserFlags.incremental_solving;
+  solves_run = 0;
 }
 
 void Cpp_interface::addFrame()
@@ -470,6 +473,16 @@ void Cpp_interface::resetSolver()
   GlobalSTP->ClearAllTables();
 }
 
+// The incremental driver's base-level units are permanent, so anything that
+// empties the base level must destroy the driver; a fresh one is created on
+// demand. resetSolver() deliberately does not do this -- it runs before
+// every solve, where the driver's persistence is the whole point.
+void Cpp_interface::resetIncrementalSolver()
+{
+  if (GlobalSTP != NULL)
+    GlobalSTP->resetIncrementalSolver();
+}
+
 // Public and define-fun handles retain opaque ARRAY_EQ nodes, never generated
 // proxies. Scope mutation can therefore discard the complete last-solve table
 // without inspecting which handles remain live; future assertions lower their
@@ -500,6 +513,7 @@ void Cpp_interface::reset()
   // removed.
   resetSolver();
   discardExtensionalitySolveState();
+  resetIncrementalSolver();
 
   cleanUp();
 
@@ -543,6 +557,7 @@ void Cpp_interface::resetAssertions()
   // These tables may retain the discarded assertions or declarations.
   resetSolver();
   discardExtensionalitySolveState();
+  resetIncrementalSolver();
 
   cache.push_back(Entry(SOLVER_UNDECIDED));
   addFrame();
@@ -577,6 +592,11 @@ void Cpp_interface::pop()
 
 void Cpp_interface::push()
 {
+  // The session is incremental from the first push on (the same trigger z3
+  // uses): later check-sats go through the incremental driver where they
+  // can. Sessions that never push are untouched by this.
+  bm.UserFlags.incremental_solving = true;
+
   // If the prior one is unsatisiable then the new one will be too.
   if (cache.size() > 1 && cache.back().result == SOLVER_UNSATISFIABLE)
     cache.push_back(Entry(SOLVER_UNSATISFIABLE));
@@ -664,16 +684,36 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2)
   {
     resetSolver();
 
-    ASTNode query;
+    // See incremental_from_start: the first solve of the session gets the
+    // batch pipeline's full simplification unless the user forced the
+    // driver on; every later solve goes incremental where it can.
+    const bool use_incremental =
+        bm.UserFlags.incremental_solving &&
+        (incremental_from_start || solves_run > 0) &&
+        GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
+    solves_run++;
 
-    if (assertionsSMT2.size() > 1)
-      query = nf->CreateNode(AND, assertionsSMT2);
-    else if (assertionsSMT2.size() == 1)
-      query = assertionsSMT2[0];
+    SOLVER_RETURN_TYPE last_result;
+    if (use_incremental)
+    {
+      // The incremental driver keeps its SAT solver and encoding across
+      // check-sats; resetSolver() above cleared only batch-pipeline tables.
+      last_result =
+          GlobalSTP->getIncrementalSolver()->checkSat(assertionsSMT2);
+    }
     else
-      query = bm.ASTTrue;
+    {
+      ASTNode query;
 
-    SOLVER_RETURN_TYPE last_result = GlobalSTP->TopLevelSTP(query, bm.ASTFalse);
+      if (assertionsSMT2.size() > 1)
+        query = nf->CreateNode(AND, assertionsSMT2);
+      else if (assertionsSMT2.size() == 1)
+        query = assertionsSMT2[0];
+      else
+        query = bm.ASTTrue;
+
+      last_result = GlobalSTP->TopLevelSTP(query, bm.ASTFalse);
+    }
 
     // Store away the answer. Might be timeout, or error though..
     last_run = Entry(last_result);

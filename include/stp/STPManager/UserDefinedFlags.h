@@ -82,6 +82,15 @@ public:
   // eagerly write through the array's function congruence axioms.
   bool ackermannisation = false;
 
+  // Incremental solving (INCREMENTAL-DESIGN.md): keep one SAT solver and one
+  // bit-blast/CNF encoding alive across (check-sat) calls, asserting
+  // retractable formulas as SAT assumptions instead of re-solving from
+  // scratch. Switched on by the first (push) in an SMT-LIB session, or from
+  // the start with --incremental. Queries the incremental driver cannot yet
+  // handle (arrays, floating point, array equality) fall back to the batch
+  // pipeline per check-sat; single-query solving is unaffected.
+  bool incremental_solving = false;
+
   // Decide whole-array equality/disequality (the extensional theory of
   // arrays) with the lemmas-on-demand procedure of Brummayer & Biere
   // (JSAT 2010). Runtime semantic option; it must be set before a

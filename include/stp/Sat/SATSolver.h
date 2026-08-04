@@ -78,6 +78,26 @@ public:
     return solveInternal(timeout_expired);
   }
 
+  // Search under assumption literals: each is treated as a unit clause for
+  // this call only, and leaves no trace afterwards. This is what makes the
+  // solver reusable across (check-sat) calls -- retractable assertions are
+  // assumed rather than added. Budget enforcement as in solve().
+  //
+  // Only meaningful when supportsAssumptions(); the incremental driver
+  // selects a backend on that basis.
+  bool solveWithAssumptions(const vec_literals& assumps, bool& timeout_expired)
+  {
+    if (timeLimitExpired())
+    {
+      timeout_expired = true;
+      return false;
+    }
+
+    return solveWithAssumptionsInternal(assumps, timeout_expired);
+  }
+
+  virtual bool supportsAssumptions() const { return false; }
+
   typedef uint8_t lbool;
 
   static inline Minisat::Lit mkLit(uint32_t var, bool sign)
@@ -197,6 +217,16 @@ protected:
   // Search without assumptions, having already been given a non-empty share
   // of whatever budget was configured. Implemented by each backend.
   virtual bool solveInternal(bool& timeout_expired) = 0;
+
+  // Search under assumptions. Backends that return true from
+  // supportsAssumptions() override this; the default must be unreachable.
+  virtual bool solveWithAssumptionsInternal(const vec_literals& /*assumps*/,
+                                            bool& /*timeout_expired*/)
+  {
+    std::cerr << "ERROR: this SAT backend does not support assumptions"
+              << std::endl;
+    exit(-1);
+  }
 
   // TRUE if the backend can abandon a search that is already running, either
   // through a callback or through a limit of its own. Backends that cannot

@@ -116,6 +116,27 @@ bool RissCore::solveInternal(bool& timeout_expired)
   return ret == (Riss::lbool)l_True;
 }
 
+bool RissCore::solveWithAssumptionsInternal(
+    const stp::SATSolver::vec_literals& assumps, bool& timeout_expired)
+{
+  if (!s->simplify())
+    return false;
+
+  // convert the vector, as in addClause
+  Riss::vec<Riss::Lit> riss_assumps;
+  riss_assumps.capacity(assumps.size());
+  for (int i = 0; i < assumps.size(); ++i)
+    riss_assumps.push_(Riss::toLit(Minisat::toInt(assumps[i])));
+
+  Riss::lbool ret = s->solveLimited(riss_assumps);
+  if (ret == (Riss::lbool)l_Undef)
+  {
+    timeout_expired = true;
+  }
+
+  return ret == (Riss::lbool)l_True;
+}
+
 uint8_t RissCore::modelValue(uint32_t x) const
 {
   return Riss::toInt(s->modelValue(x));

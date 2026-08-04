@@ -91,8 +91,13 @@ public:
   lbool false_literal() const override { return ((uint8_t)-1); }
   lbool undef_literal() const override { return ((uint8_t)2); }
 
+public:
+  bool supportsAssumptions() const override { return true; }
+
 protected:
   bool solveInternal(bool& timeout_expired) override;
+  bool solveWithAssumptionsInternal(const vec_literals& assumps,
+                                    bool& timeout_expired) override;
 
   // Cadical polls the Terminator we connect during search.
   bool canInterruptSearch() const override { return true; }
