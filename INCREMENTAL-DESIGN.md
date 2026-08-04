@@ -94,11 +94,15 @@ rebuilt per query:
 - Reuse is positively forbidden: `assert(satSolver.nVars() == 0)` at
   `ToSATAIG.cpp:60`.
 - `(check-sat-assuming …)` answers `unsupported` (`lib/Parser/smt2.y:1379,1388`).
-- The C API is asymmetric: `vc_query` clears tables (`lib/Interface/c_interface.cpp:780`)
-  and `vc_push` does too (`c_interface.cpp:835`), but **`vc_pop` does not**
-  (`c_interface.cpp:840-844`) — derived tables (SolverMap, `arrayToIndexToRead`,
-  `CounterExampleMap`) survive a `vc_pop` stale until the next query. A live bug
-  class independent of this plan.
+  *(Implemented in Phase 0.)*
+- The C API clears derived tables on `vc_query` (`lib/Interface/c_interface.cpp:780`)
+  and `vc_push` (`c_interface.cpp:835`) but not on `vc_pop`. *Phase 0 finding:
+  this asymmetry is the API's contract, not a bug* — the idiomatic usage
+  brackets each query in push/pop and reads the counterexample afterwards
+  (`tests/api/C/stp-counterex.cpp`, and the Python bindings solve the same
+  way), so the model must survive the pop; the next `vc_push`/`vc_query`
+  clears it before any cleared state could be reused for solving. Now
+  documented at the declarations in `include/stp/c_interface.h`.
 
 ### 1.3 The simplification pipeline is whole-formula and destructive
 
@@ -584,9 +588,12 @@ predicate, hard errors for explicitly-requested incompatible options.
 ## 6. Phased plan
 
 ### Phase 0 — Semantics, baseline, measurement (small)
-1. Fix the C-API asymmetry: `vc_pop` must clear derived tables like
-   `Cpp_interface::pop` does (`c_interface.cpp:840-844`) — a live staleness bug
-   today, and a prerequisite for defining C-API incremental semantics.
+1. Define and document the C-API pop/model contract. *(Done — turned out the
+   `vc_pop` asymmetry is the contract, not a bug: the counterexample belongs
+   to the last `vc_query` and must survive the push/query/pop bracket. It is
+   now documented in `c_interface.h` and pinned by
+   `tests/api/C/push-pop-model.cpp`; the SMT-LIB frontend, by contrast, gets
+   SMT-LIB model-invalidation semantics via `Cpp_interface::model_valid`.)*
 2. Implement `(check-sat-assuming …)` as sugar: internal push / assert / check-sat
    / deferred pop (cvc5's exact scheme, including the deferred pop so `get-value`
    works). Extends the testable surface for everything below.
@@ -692,9 +699,18 @@ P5 continuous from P1 on.
 
 ## 8. Risks and open questions
 
-1. **`is_simplified` node bit** — unresolved soundness question even for today's
-   code; must be settled in Phase 0 (likely resolution: epoch-stamp or restrict to
-   batch driver).
+1. **`is_simplified` node bit** — *audited in Phase 0, cleared for soundness.*
+   The bit is consulted only by the Simplifier's own memo short-circuit
+   (`CheckSimplifyMap`, `Simplifier.cpp:73`, plus `hasBeenSimplified` child
+   checks); the deep substitution application that equality-consumption
+   soundness rests on (`SubstitutionMap::replace`, applied under the
+   `hasUnappliedSubstitutions()` guard, `STP.cpp:743`) never reads it. The
+   bit asserts "this node simplifies to itself", which is
+   substitution-map-relative — carried across queries it can only cause the
+   Simplifier to return the node *unchanged* (trivially equivalent), i.e.
+   missed simplifications, never wrong ones. It remains a cross-query
+   completeness quirk worth an epoch stamp someday; the incremental driver
+   sidesteps it entirely by not using the batch Simplifier.
 2. **SimplifyingMinisat + assumptions** — variable elimination vs frozen
    assumption literals; may end up gated like cvc5's SatELite. Decide by
    experiment in Phase 1.

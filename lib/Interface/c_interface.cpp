@@ -837,6 +837,13 @@ void vc_push(VC vc)
 }
 
 //NB, doesn't remove symbols from decls, so they will be kept alive.
+//
+// Deliberately does NOT discard the counterexample tables, unlike vc_push
+// and vc_query: the C API's idiom brackets each query in push/pop and reads
+// the counterexample afterwards (see tests/api/C/stp-counterex.cpp). The
+// model belongs to the last vc_query, not to the assertion stack, and stays
+// readable until the next vc_push or vc_query clears it -- both of which
+// run before any state they clear could be reused for solving.
 void vc_pop(VC vc)
 {
   stp::STPMgr* b = mgr(vc);

@@ -64,6 +64,7 @@ void Cpp_interface::init()
   ignoreCheckSatRequest = false;
   produce_models = false;
   changed_model_status = false;
+  model_valid = false;
 }
 
 void Cpp_interface::addFrame()
@@ -149,6 +150,9 @@ UserDefinedFlags& Cpp_interface::getUserFlags()
 void Cpp_interface::AddAssert(const ASTNode& assert)
 {
   bm.AddAssert(assert);
+
+  // SMT-LIB: an assertion invalidates the most recent model.
+  model_valid = false;
 }
 
 void Cpp_interface::SetQuery(const ASTNode& q)
@@ -531,6 +535,7 @@ void Cpp_interface::resetAssertions()
   // The base is an assertion level too for declaration lifetime. Rebuild it
   // rather than merely replacing its assertions: destroying the frame drops
   // its symbols, functions, and sort aliases together.
+  model_valid = false;
   bm.Pop();
   removeFrame();
   cache.clear();
@@ -552,6 +557,8 @@ void Cpp_interface::pop()
     FatalError("Popping from an empty stack.");
   if (frames.size() == 1)
     FatalError("Can't pop away the default base element.");
+
+  model_valid = false;
 
   bm.Pop();
 
@@ -576,10 +583,44 @@ void Cpp_interface::push()
   else
     cache.push_back(Entry(SOLVER_UNDECIDED));
 
+  model_valid = false;
+
   bm.Push();
 
   addFrame();
   checkInvariant();
+}
+
+void Cpp_interface::popAssumptionFrame()
+{
+  // The assumption frame cannot contain declarations -- nothing runs
+  // between the internal push and this pop -- so unlike pop() there is no
+  // danger of derived tables referencing removed symbols, and the tables
+  // are kept so the model remains readable. The next real solve clears
+  // them first (checkSat calls resetSolver before solving).
+  bm.Pop();
+  cache.erase(cache.end() - 1);
+  removeFrame();
+  checkInvariant();
+}
+
+void Cpp_interface::checkSatAssuming(const ASTVec& assumptions)
+{
+  // An internal assertion level holding exactly the assumptions. push()
+  // inherits a known-UNSAT verdict from the level below, and a SAT answer
+  // propagates to the levels beneath, so the verdict cache keeps working
+  // across this the same way it does for user levels.
+  push();
+
+  for (const ASTNode& a : assumptions)
+    AddAssert(a);
+
+  checkSat(getAssertVector());
+
+  // checkSat set model_valid from this solve's outcome; the frame pop
+  // below deliberately leaves both it and the model alone, so get-value
+  // and get-model answer under the assumptions, per SMT-LIB.
+  popAssumptionFrame();
 }
 
 void Cpp_interface::ignoreCheckSat()
@@ -648,6 +689,12 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2)
       }
     }
   }
+
+  // A model exists exactly when this check concluded SAT and the solve
+  // constructed a counterexample. On the shortcut paths (verdict reused,
+  // no model wanted) nothing was constructed, so nothing may be read.
+  model_valid = (last_run.result == SOLVER_SATISFIABLE) &&
+                bm.UserFlags.construct_counterexample_flag;
 
   if (bm.UserFlags.quick_statistics_flag)
   {
@@ -820,7 +867,7 @@ void Cpp_interface::getAssertions()
 
 void Cpp_interface::getValue(const ASTVec& v)
 {
-  if (!bm.UserFlags.construct_counterexample_flag)
+  if (!bm.UserFlags.construct_counterexample_flag || !model_valid)
   {
     unsupported();
     return;
@@ -860,7 +907,8 @@ void Cpp_interface::getModel()
     return;
   }
 
-  if (cache.size() ==0 || (cache.back().result != SOLVER_SATISFIABLE))
+  if (cache.size() == 0 || (cache.back().result != SOLVER_SATISFIABLE) ||
+      !model_valid)
   {
     return;
   }
