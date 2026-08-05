@@ -80,6 +80,16 @@ are re-collapsed and re-simplified by the node factory on every check, so
 any state keyed by *level* rather than by *formula* would chase a moving
 target.
 
+Each check-sat runs on a worker thread with a large explicit stack.
+Several passes walk formulas by recursion -- the per-conjunct
+simplifier, substitution replace, the bit-blaster -- and parse-time
+inlining of chained ``define-fun``\ s builds nodes tens of thousands of
+levels deep out of flat input, deeper than a default-sized stack can
+walk. The worker inherits the process's thread-local solver state
+explicitly: it boots CONSTANTBV for itself and continues (then hands
+back) the node uid counter, which caches keyed on node numbers rely
+on.
+
 Word-level rewriting is kept sound under retraction by construction
 rather than by backtracking:
 

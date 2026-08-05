@@ -137,3 +137,32 @@ TEST(incremental_query, flag_i_without_push)
 
   vc_Destroy(vc);
 }
+
+// Parse-time inlining of chained define-funs builds formulas tens of
+// thousands of levels deep out of flat input (a 27k-define CPAchecker
+// benchmark reaches depth ~25k); this loop builds the same shape
+// directly. The driver's word-level passes walk such nodes by recursion,
+// so the check-sat must run on the large-stack worker -- on a default
+// stack this query dies of stack overflow before the solver ever sees a
+// clause. The kinds must alternate: a same-kind chain is flattened wide
+// at construction and never gets deep.
+TEST(incremental_query, deep_alternating_chain)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlags(vc, 'i');
+
+  Expr chain = vc_varExpr(vc, "x0", vc_boolType(vc));
+  for (int i = 1; i < 120000; i++)
+  {
+    char name[32];
+    snprintf(name, sizeof name, "x%d", i);
+    Expr v = vc_varExpr(vc, name, vc_boolType(vc));
+    chain = (i % 2) ? vc_orExpr(vc, v, chain) : vc_andExpr(vc, v, chain);
+  }
+  vc_assertFormula(vc, chain);
+
+  // Satisfiable -- every variable true -- so it does not entail false.
+  EXPECT_EQ(0, vc_query(vc, vc_falseExpr(vc)));
+
+  vc_Destroy(vc);
+}

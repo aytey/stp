@@ -47,10 +47,18 @@ THE SOFTWARE.
 #endif
 
 #include <algorithm>
+#include <exception>
+#include <functional>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 namespace stp
 {
@@ -1300,7 +1308,104 @@ bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
   return true;
 }
 
+namespace
+{
+
+// Several passes a check-sat runs -- the per-conjunct Simplifier,
+// substitution replace(), the bit-blaster -- walk formulas by recursion,
+// so their depth tolerance is the stack size. Parse-time inlining of
+// chained define-funs builds nodes tens of thousands deep from flat
+// input (27k chained defines reach depth ~25k, needing ~8.3MB right
+// where the common default stack ends), so the driver runs each
+// check-sat on a worker thread with an explicitly large stack instead
+// of inheriting whatever the process got. 256MB is reservation, not
+// commitment: pages are only touched as the recursion actually deepens.
+// The batch pipeline's smaller frames clear the same benchmarks within
+// a default stack, which is why this lives here and not process-wide.
+void* bigStackTrampoline(void* p)
+{
+  // CONSTANTBV keeps its working state -- word-size masks, the constants
+  // bits_() decodes every vector's header through -- in thread-local
+  // storage, initialised by BitVector_Boot. The frontend booted the main
+  // thread at startup; a worker that skips this reads every bit-vector
+  // constant through zeroed masks, which shows up as out-of-bounds reads
+  // and impossible widths far downstream.
+  CONSTANTBV::ErrCode c = CONSTANTBV::BitVector_Boot();
+  if (0 != c)
+    FatalError("IncrementalSolver: CONSTANTBV failed to boot on the "
+               "solve thread");
+  (*static_cast<std::function<void()>*>(p))();
+  return NULL;
+}
+
+void runOnBigStack(std::function<void()> fn)
+{
+  static const size_t stackBytes = 256 * 1024 * 1024;
+#if defined(_WIN32)
+  HANDLE t = CreateThread(NULL, stackBytes,
+                          (LPTHREAD_START_ROUTINE)bigStackTrampoline, &fn,
+                          STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+  if (t != NULL)
+  {
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    return;
+  }
+#else
+  pthread_attr_t attr;
+  if (pthread_attr_init(&attr) == 0)
+  {
+    pthread_t t;
+    const bool created = pthread_attr_setstacksize(&attr, stackBytes) == 0 &&
+                         pthread_create(&t, &attr, bigStackTrampoline, &fn) == 0;
+    pthread_attr_destroy(&attr);
+    if (created)
+    {
+      pthread_join(t, NULL);
+      return;
+    }
+  }
+#endif
+  // No thread to be had; the caller's stack is still a correct place to
+  // run, just without the extra headroom.
+  fn();
+}
+
+} // namespace
+
 SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
+{
+  SOLVER_RETURN_TYPE result = SOLVER_ERROR;
+  std::exception_ptr thrown;
+
+  // The node uid counter is thread-local: the worker continues this
+  // thread's numbering and this thread adopts the advanced value back,
+  // so a uid names one node across both threads and the caches keyed on
+  // node numbers stay sound.
+  const uint64_t uidBefore = ASTInternal::getUidCounter();
+  uint64_t uidAfter = uidBefore;
+
+  runOnBigStack([&]() {
+    ASTInternal::adoptUidCounter(uidBefore);
+    try
+    {
+      result = checkSatOnCurrentStack(assertionsSMT2);
+    }
+    catch (...)
+    {
+      thrown = std::current_exception();
+    }
+    uidAfter = ASTInternal::getUidCounter();
+  });
+
+  ASTInternal::adoptUidCounter(uidAfter);
+  if (thrown)
+    std::rethrow_exception(thrown);
+  return result;
+}
+
+SOLVER_RETURN_TYPE
+IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
 {
   STPMgr* bm = impl->bm;
   UserDefinedFlags& uf = bm->UserFlags;

@@ -102,6 +102,13 @@ public:
   struct Impl;
 
 private:
+  // The body of checkSat. The public method runs it on a worker thread
+  // with a large explicit stack: several passes walk formulas by
+  // recursion, and parse-time inlining of chained define-funs builds
+  // nodes deep enough (tens of thousands of levels from flat input) to
+  // exhaust a default-sized stack.
+  SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2);
+
   std::unique_ptr<Impl> impl;
 };
 
