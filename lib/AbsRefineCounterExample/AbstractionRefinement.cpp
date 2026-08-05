@@ -76,6 +76,19 @@ Minisat::Var getEquals(SATSolver& SatSolver, const ASTNode& a, const ASTNode& b,
   getSatVariables(a, v_a, SatSolver, satVar);
   getSatVariables(b, v_b, SatSolver, satVar);
 
+  // A symbol can be PARTIALLY encoded: present in the map, but with the
+  // missing-bit marker where the formula's cone never needed a bit. The
+  // caller must totalise such symbols before encoding axioms over them;
+  // a literal built from the marker corrupts the axiom silently on most
+  // backends and crashes CaDiCaL's factor translation. Fail loudly: this
+  // is a caller bug, never an input property.
+  for (size_t i = 0; i < v_a.size(); i++)
+    if (v_a[i] == 0xFFFFFFFFu)
+      FatalError("getEquals: congruence axiom over an unencoded bit of: ", a);
+  for (size_t i = 0; i < v_b.size(); i++)
+    if (v_b[i] == 0xFFFFFFFFu)
+      FatalError("getEquals: congruence axiom over an unencoded bit of: ", b);
+
   // The only time v_a or v_b will be empty is if "a" resp. "b" is a constant.
 
   if (v_a.size() == width && v_b.size() == width)

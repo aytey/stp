@@ -843,6 +843,29 @@ struct IncrementalSolver::Impl
     }
   }
 
+  // The same guarantee for the rows an extensionality round refines over.
+  // Those rows live in the batch transformer's per-round table, not in the
+  // persistent registry -- the round transforms on a fresh table by design
+  // -- so totalizeRegistrySymbols cannot cover them. Idempotent (the bit
+  // creation is memoised), so calling it before every refinement entry is
+  // cheap, and necessary: the checker's lemma encodings can add rows
+  // mid-round.
+  void totalizeBatchRegistrySymbols()
+  {
+    for (ArrayTransformer::ArrType::const_iterator it =
+             batchAT->arrayToIndexToRead.begin();
+         it != batchAT->arrayToIndexToRead.end(); ++it)
+    {
+      for (ArrayTransformer::arrTypeMap::const_iterator rit =
+               it->second.begin();
+           rit != it->second.end(); ++rit)
+      {
+        totalizeSymbol(rit->second.symbol);
+        totalizeSymbol(rit->second.index_symbol);
+      }
+    }
+  }
+
   // Rebuild the SAT side from nothing, keeping every semantic store. The
   // persistent encoding never reclaims anything, so a long session whose
   // popped content never returns pays for it in solver memory and dead
@@ -1204,6 +1227,15 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   IncrementalToSAT* tosat = static_cast<IncrementalToSAT*>(ensureAdapter());
   tosat->setAssumptions(&assumptions);
 
+  // Congruence axioms are encoded straight over the bit variables of the
+  // round registry's read symbols, and the block's cone may have needed
+  // only some of a symbol's bits (the frozen/lemma-only totalisation
+  // above covers the checker's symbols, not the registry rows). This
+  // matters most for the hybrid below: a round routed here for an array
+  // equality that simplified away runs ordinary read refinement with the
+  // checker inactive.
+  totalizeBatchRegistrySymbols();
+
   SOLVER_RETURN_TYPE res = ce->CallSAT_ResultCheck(
       *solver, bm->ASTTrue, semantic, prepared, tosat, true);
 
@@ -1212,6 +1244,10 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // pending theory lemma; without one, ordinary read refinement runs.
   while (res == SOLVER_UNDECIDED)
   {
+    // Re-totalize: the checker's lemma encodings can introduce new reads,
+    // whose rows joined the table after the pass above. Memoised, so a
+    // round that added nothing pays nothing.
+    totalizeBatchRegistrySymbols();
     if (extActive)
     {
       if (!ext->hasPendingLemma())
