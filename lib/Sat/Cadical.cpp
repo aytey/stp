@@ -222,6 +222,9 @@ bool Cadical::enableBVA()
 // many-small-queries workloads this targets.
 bool Cadical::enableTrailReuse()
 {
+  // Like factor, "ilb" may only be set while the solver is still in its
+  // configuration window; the driver's size gate therefore works by
+  // rebuilding onto a fresh solver rather than by toggling.
   return s->set("ilb", 1);
 }
 

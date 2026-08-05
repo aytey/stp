@@ -323,6 +323,19 @@ struct IncrementalSolver::Impl
   // A sat answer whose counterexample nobody has read yet; see
   // materializePendingModel. Cleared at the top of every solve.
   bool modelPending;
+
+  // Trail reuse is a size gamble: on sessions of many small queries the
+  // saved per-solve re-descent dominates (the issue #483 KLEE files, 36%
+  // and 19% faster at ~11k variables), while on large instances the kept
+  // trail suppresses the fresh restarts the search needs (the
+  // phase-sensitive QF_ABVFP families: up to 13x slower at ~185k
+  // variables, with identical refinement behaviour -- the search itself
+  // degrades). The backend accepts the option only in its configuration
+  // window, so crossing the boundary retires it for the session by
+  // starting the solver over without it; the boundary is measured, not
+  // principled.
+  bool trailReuseAllowed;
+  static const unsigned long trailReuseVarLimit = 100000;
   std::vector<int> lastFailedLits;
   size_t lastLevelCount;
 
@@ -355,8 +368,9 @@ struct IncrementalSolver::Impl
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
-        lastLevelIndividual(false), modelPending(false), lastLevelCount(0),
-        clausesAdded(0), encodesThisCall(0)
+        lastLevelIndividual(false), modelPending(false),
+        trailReuseAllowed(true), lastLevelCount(0), clausesAdded(0),
+        encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -366,8 +380,9 @@ struct IncrementalSolver::Impl
     // assumptions are emitted in assertion stack order, and push/pop only
     // ever change the suffix -- which is exactly what lets a backend keep
     // the shared trail between solves instead of re-descending from the
-    // root every call.
-    solver->enableTrailReuse();
+    // root every call. Size-gated: see trailReuseAllowed.
+    if (trailReuseAllowed)
+      solver->enableTrailReuse();
   }
 
   int varOfAig(Aig_Obj_t* regular)
@@ -986,7 +1001,8 @@ struct IncrementalSolver::Impl
   {
     solver.reset(makeBackend(bm->UserFlags));
     solver->enableRefinement(true);
-    solver->enableTrailReuse();
+    if (trailReuseAllowed)
+      solver->enableTrailReuse();
     bvaDecided = false;
 
     aigIdToVar.clear();
@@ -1638,6 +1654,30 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         std::cerr << "Incremental: re-encoded from scratch (solver had "
                   << impl->solver->nVars() << " variables for " << active
                   << " active conjuncts)" << std::endl;
+      impl->rebuildEncodings();
+    }
+  }
+
+  // Trail reuse pays on the many-small-queries sessions and hurts on the
+  // floating-point families, whose search is phase-sensitive and whose
+  // instances are large -- every measured loss had FP content, every win
+  // was FP-free. The option is configuration-window-only, so retirement
+  // means starting the solver over without it: free when FP is present
+  // from the first solve (nothing is encoded yet), and one bounded
+  // rebuild if FP arrives -- or the encoding outgrows the size belt --
+  // mid-session.
+  if (impl->trailReuseAllowed)
+  {
+    bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
+    for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
+      retire = impl->fragment(assertionsSMT2[i]).fp;
+    if (retire)
+    {
+      impl->trailReuseAllowed = false;
+      if (uf.stats_flag)
+        std::cerr << "Incremental: trail reuse retired ("
+                  << impl->solver->nVars()
+                  << " variables), solver restarted without it" << std::endl;
       impl->rebuildEncodings();
     }
   }
