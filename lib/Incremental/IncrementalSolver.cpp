@@ -295,6 +295,13 @@ struct IncrementalSolver::Impl
   // thing that makes reusing the implications sound.
   std::map<std::vector<int>, int> actLitOf;
 
+  // Whether the bounded-variable-addition decision has been taken for the
+  // current backend instance. rebuildEncodings resets it: the fresh solver
+  // reopens the configuration window. The warning latch is per session --
+  // a rebuild does not deserve a repeat of the warning.
+  bool bvaDecided;
+  bool bvaWarned;
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -305,7 +312,8 @@ struct IncrementalSolver::Impl
         solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
-        trueVar(-1), clausesAdded(0), encodesThisCall(0)
+        trueVar(-1), bvaDecided(false), bvaWarned(false), clausesAdded(0),
+        encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -820,12 +828,59 @@ struct IncrementalSolver::Impl
   {
     solver.reset(makeBackend(bm->UserFlags));
     solver->enableRefinement(true);
+    bvaDecided = false;
 
     aigIdToVar.clear();
     trueVar = -1;
     rootLitOf.clear();
     actLitOf.clear();
     level0Asserted.clear();
+  }
+
+  // The batch pipeline's bounded-variable-addition policy, applied to the
+  // persistent solver (see TopLevelSTPAux): an explicit ON always asks,
+  // AUTO asks only for array problems, and the answer must land inside the
+  // backend's configuration window, which closes at its first clause. Here
+  // that window is the start of the first engaged check-sat -- and it
+  // reopens when the relief valve rebuilds the solver, which is why
+  // rebuildEncodings resets the flag. AUTO judges the levels' prepared
+  // fragments, so arrays that only appear after floating-point
+  // totalisation count, as they do in batch, and whole-array equality
+  // counts through the fragment it lowers into reads; the persistent read
+  // registry keeps the answer stable across a rebuild whose live stack
+  // happens to be array-free at that moment. Under --ackermanize arrays
+  // never reach the solver as arrays, so AUTO stays off, as in batch.
+  void decideBVA(const ASTVec& assertionsSMT2)
+  {
+    if (bvaDecided)
+      return;
+    bvaDecided = true;
+
+    const UserDefinedFlags& uf = bm->UserFlags;
+    bool wants = uf.cadical_factor == UserDefinedFlags::BVAMode::ON;
+    if (uf.cadical_factor == UserDefinedFlags::BVAMode::AUTO &&
+        !uf.ackermannisation)
+    {
+      wants = !myReads.empty();
+      for (size_t i = 0; !wants && i < assertionsSMT2.size(); i++)
+      {
+        const Fragment& f = fragment(assertionsSMT2[i]);
+        wants = f.arrays || f.arrayEq;
+      }
+    }
+
+    if (!wants)
+      return;
+
+    if (!solver->enableBVA() &&
+        uf.cadical_factor == UserDefinedFlags::BVAMode::ON && !bvaWarned)
+    {
+      bvaWarned = true;
+      std::cerr << "Warning: --cadical-factor was requested but the SAT "
+                   "solver in use has no bounded variable addition to "
+                   "enable; using its own settings instead."
+                << std::endl;
+    }
   }
 
   // The literal to assume for one pushed level, given the level's root
@@ -1208,6 +1263,12 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
       impl->rebuildEncodings();
     }
   }
+
+  // The backend's configuration window closes at its first clause; take
+  // the bounded-variable-addition decision while it is still open. This
+  // must precede the extensionality routing below: an equality round
+  // encodes into the same persistent solver.
+  impl->decideBVA(assertionsSMT2);
 
   // Whole-array equality routes the entire check-sat through the
   // extensionality block: the procedure owns the round's complete array

@@ -182,6 +182,19 @@ clause mentions them, which is what makes adding refinement lemmas
 between solves safe. When CaDiCaL is compiled in it is the default
 backend.
 
+CaDiCaL's bounded variable addition (``--cadical-factor``) follows the
+batch pipeline's policy on the persistent solver too: an explicit ON
+always asks, AUTO asks for array sessions, and the decision has to land
+in the backend's configuration window, which closes at its first clause
+-- the start of the first engaged check-sat, and again right after a
+relief-valve rebuild, whose fresh solver reopens the window. With factor
+on, clause literals, *assumption literals* and model lookups all travel
+through the wrapper's declared-variable translation table; assumptions
+are how every retractable formula is asserted here, so a literal that
+skipped the translation would silently constrain nothing. The
+``query-files-cadical-factor`` suite sweep re-runs every behavioural
+test, the incremental ones included, with factor forced on.
+
 Resource budgets are per check-sat: a conflict or time budget is re-armed
 at each check, measured from the arming point, and the check's refinement
 iterations share it -- on a long-lived solver, budgets measured from the
