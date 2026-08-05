@@ -225,6 +225,20 @@ bool Cadical::enableTrailReuse()
   return s->set("ilb", 1);
 }
 
+void Cadical::suggestPhase(uint32_t var, bool value)
+{
+  // Literal conversion as everywhere: through the factor translation
+  // table, declared before first mention.
+  declareNewVariables();
+  if (factor_enabled)
+  {
+    if (var >= ext_of_stp.size())
+      return; // never declared: nothing to phase.
+    var = (uint32_t)ext_of_stp[var];
+  }
+  s->phase(value ? (int)var : -(int)var);
+}
+
 // With factor enabled, external variables must be declared before use, and
 // CaDiCaL chooses where each declared range lives so that it never overlaps
 // the extension variables factor invents. Declaration is batched here

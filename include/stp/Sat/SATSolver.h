@@ -133,6 +133,20 @@ public:
   // error.
   virtual bool enableTrailReuse() { return false; }
 
+  // Suggest the value the decision heuristic should try first for a
+  // variable. Pure search advice: it cannot change any verdict, only
+  // which model is found first. The incremental driver uses it to steer
+  // the search away from retracted content -- a popped level's
+  // activation variable is unconstrained, and a backend whose default
+  // phase is positive would otherwise keep dragging the dead level's
+  // cone into the search. Backends without a cheap phase interface
+  // ignore it.
+  virtual void suggestPhase(uint32_t var, bool value)
+  {
+    (void)var;
+    (void)value;
+  }
+
   // ---------------------------------------------------------------------
   // Resource budgets.
   //

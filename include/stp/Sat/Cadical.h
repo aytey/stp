@@ -97,6 +97,8 @@ public:
 
   bool enableTrailReuse() override;
 
+  void suggestPhase(uint32_t var, bool value) override;
+
   void setVerbosity(int v) override;
 
   unsigned long nVars() const override;

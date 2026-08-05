@@ -303,6 +303,12 @@ struct IncrementalSolver::Impl
   // thing that makes reusing the implications sound.
   std::map<std::vector<int>, int> actLitOf;
 
+  // Every literal that ever carried a level (or an extensionality block)
+  // as an assumption. The ones not assumed by the current call are
+  // retracted content, and hintRetractedLevels steers the decision
+  // heuristic away from them.
+  std::unordered_set<int> everAssumedLits;
+
   // Whether the bounded-variable-addition decision has been taken for the
   // current backend instance. rebuildEncodings resets it: the fresh solver
   // reopens the configuration window. The warning latch is per session --
@@ -892,6 +898,28 @@ struct IncrementalSolver::Impl
   // (The finer-grained alternative -- pinning popped variables away from
   // the decision heuristics, as cvc5's CaDiCaL propagator does -- needs
   // the propagator interface and is not portable across our backends.)
+  // Steer the decision heuristic away from retracted content: every
+  // literal that has ever carried a level or a block is hinted toward
+  // its falsifying value while it is not among this call's assumptions.
+  // A popped level's literal is unconstrained, and a backend whose
+  // default phase is positive would otherwise keep pulling the dead
+  // level's cone into the search until the heuristic learns better.
+  // Search advice only -- it cannot change a verdict, and assumed
+  // literals need no hint because assumptions are forced, not decided.
+  void hintRetractedLevels(const SATSolver::vec_literals& assumptions)
+  {
+    std::unordered_set<int> current;
+    for (int i = 0; i < assumptions.size(); i++)
+      current.insert(assumptions[i].x);
+
+    for (const int lit : everAssumedLits)
+    {
+      if (current.count(lit))
+        continue;
+      solver->suggestPhase(lit >> 1, (lit & 1) != 0);
+    }
+  }
+
   void rebuildEncodings()
   {
     solver.reset(makeBackend(bm->UserFlags));
@@ -903,6 +931,7 @@ struct IncrementalSolver::Impl
     trueVar = -1;
     rootLitOf.clear();
     actLitOf.clear();
+    everAssumedLits.clear();
     level0Asserted.clear();
   }
 
@@ -1238,7 +1267,9 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   bm->soft_timeout_expired = false;
 
   SATSolver::vec_literals assumptions;
+  everAssumedLits.insert(blockLit);
   assumptions.push(SATSolver::mkLit(blockLit >> 1, blockLit & 1));
+  hintRetractedLevels(assumptions);
 
   IncrementalToSAT* tosat = static_cast<IncrementalToSAT*>(ensureAdapter());
   tosat->setAssumptions(&assumptions);
@@ -1556,8 +1587,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
     }
 
     const int lit = impl->levelAssumption(levelRoots);
+    impl->everAssumedLits.insert(lit);
     assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
+
+  impl->hintRetractedLevels(assumptions);
 
   if (uf.stats_flag)
   {
