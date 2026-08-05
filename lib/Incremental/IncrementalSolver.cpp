@@ -46,6 +46,8 @@ THE SOFTWARE.
 #include "stp/Sat/Cadical.h"
 #endif
 
+#include <algorithm>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -282,6 +284,16 @@ struct IncrementalSolver::Impl
   // encoded afterwards, which is sound exactly because the equation is
   // asserted.
   ASTNodeSet mustKeepRaw;
+
+  // One activation literal per distinct set of root literals a pushed
+  // level has ever solved with. Assuming the activation literal asserts
+  // exactly those roots through persistent implications, shrinking the
+  // assumption set from one literal per conjunct to one per level. The
+  // key is the sorted root vector itself -- not the level's formula --
+  // because under pushed-level definitions the same formula can encode to
+  // different roots in different rounds; identical roots are the only
+  // thing that makes reusing the implications sound.
+  std::map<std::vector<int>, int> actLitOf;
 
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
@@ -793,6 +805,35 @@ struct IncrementalSolver::Impl
     }
   }
 
+  // The literal to assume for one pushed level, given the level's root
+  // literals: the root itself for a single conjunct, else the (possibly
+  // cached) activation literal that implies them all.
+  int levelAssumption(std::vector<int>& roots)
+  {
+    assert(!roots.empty());
+    if (roots.size() == 1)
+      return roots[0];
+
+    std::sort(roots.begin(), roots.end());
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+    if (roots.size() == 1)
+      return roots[0];
+
+    std::map<std::vector<int>, int>::const_iterator it = actLitOf.find(roots);
+    if (it != actLitOf.end())
+      return it->second;
+
+    // Stored and returned as a LITERAL (2*var), like everything else in
+    // this file -- a cache hit that handed back the bare variable was a
+    // garbage assumption that left the whole level unconstrained.
+    const int act = solver->newVar();
+    for (const int root : roots)
+      addBinary(2 * act + 1, root);
+    const int actLit = 2 * act;
+    actLitOf[roots] = actLit;
+    return actLit;
+  }
+
   // A variable eliminated before it was ever encoded has no SAT bits; its
   // value is its definition, evaluated recursively -- the same SolverMap
   // channel the batch pipeline's eliminations use (and which the batch
@@ -1199,28 +1240,37 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     }
   }
 
-  // Pushed levels: encode (against the permanent caches) and assume. The
-  // assumption set is recomputed from the current stack on every call, so
-  // popped levels vanish by simply no longer being here. Each conjunct's
-  // encoding key -- the conjunct itself, or the rewritten node the
-  // pushed-definitions path cached under -- is collected so refinement can
-  // seed its tables from what was actually assumed.
+  // Pushed levels: encode (against the permanent caches) and assume one
+  // literal per level -- the root itself for a single conjunct, else an
+  // activation literal implying the level's roots. The assumption set is
+  // recomputed from the current stack on every call, so popped levels
+  // vanish by simply no longer being here. Each conjunct's encoding key
+  // -- the conjunct itself, or the rewritten node the pushed-definitions
+  // path cached under -- is collected so refinement can seed its tables
+  // from what was actually assumed.
   SATSolver::vec_literals assumptions;
   std::vector<ASTNode> activeEncodedKeys;
+  std::vector<int> levelRoots;
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
     conjuncts.clear();
     splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
+    if (conjuncts.empty())
+      continue;
+
+    levelRoots.clear();
     for (const ASTNode& c : conjuncts)
     {
       ASTNode encodedAs = c;
-      const int lit =
+      levelRoots.push_back(
           havePushed
               ? impl->rootLitUnder(c, merged, pushedSources, encodedAs)
-              : impl->rootLit(c);
+              : impl->rootLit(c));
       activeEncodedKeys.push_back(encodedAs);
-      assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
     }
+
+    const int lit = impl->levelAssumption(levelRoots);
+    assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
 
   if (uf.stats_flag)
