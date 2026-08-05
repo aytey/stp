@@ -600,9 +600,15 @@ void Cpp_interface::push()
   // can. Sessions that never push are untouched by this.
   bm.UserFlags.incremental_solving = true;
 
-  // If the prior one is unsatisiable then the new one will be too.
+  // If the prior one is unsatisiable then the new one will be too. The
+  // core provenance rides along, so a shortcut taken above a core-recorded
+  // level still reports itself under --stats.
   if (cache.size() > 1 && cache.back().result == SOLVER_UNSATISFIABLE)
-    cache.push_back(Entry(SOLVER_UNSATISFIABLE));
+  {
+    Entry inherited(SOLVER_UNSATISFIABLE);
+    inherited.fromCore = cache.back().fromCore;
+    cache.push_back(inherited);
+  }
   else
     cache.push_back(Entry(SOLVER_UNDECIDED));
 
@@ -715,8 +721,28 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
     {
       // The incremental driver keeps its SAT solver and encoding across
       // check-sats; resetSolver() above cleared only batch-pipeline tables.
-      last_result = GlobalSTP->getIncrementalSolver()->checkSat(
-          assertionsSMT2, fromCheckSatAssuming);
+      IncrementalSolver* inc = GlobalSTP->getIncrementalSolver();
+      last_result = inc->checkSat(assertionsSMT2, fromCheckSatAssuming);
+
+      // Core-aware caching: when the refutation's failed assumptions all
+      // lie at or below some level D beneath the top, the stack truncated
+      // at D is already unsatisfiable -- the failed levels' formulas
+      // force their assumed literals (an activation variable occurs only
+      // in its implication clauses, so any model of the content extends
+      // to it), and the base only ever grows. Recording unsat on level
+      // D's entry lets every later check that pops back to (or re-pushes
+      // above) D answer from the cache without solving; a pop past D
+      // erases the entry, which is exactly its validity condition.
+      if (last_result == SOLVER_UNSATISFIABLE && inc->lastSolveWasUnsat())
+      {
+        const std::vector<size_t> core = inc->lastUnsatCoreLevels();
+        const size_t deepest = core.empty() ? 0 : core.back();
+        if (deepest + 1 < cache.size())
+        {
+          cache[deepest].result = SOLVER_UNSATISFIABLE;
+          cache[deepest].fromCore = true;
+        }
+      }
     }
     else
     {
@@ -745,6 +771,12 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
         cache[i].result = SOLVER_SATISFIABLE;
       }
     }
+  }
+  else if (bm.UserFlags.stats_flag &&
+           last_run.result == SOLVER_UNSATISFIABLE && last_run.fromCore)
+  {
+    std::cerr << "Incremental: unsat answered from a cached core, no solve"
+              << std::endl;
   }
 
   // A model exists exactly when this check concluded SAT and the solve

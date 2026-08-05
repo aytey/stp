@@ -118,6 +118,12 @@ class Cpp_interface
 
     SOLVER_RETURN_TYPE result;
     uint64_t node_number; // a weak pointer.
+
+    // The unsat verdict came from a deeper check whose failed assumptions
+    // all lay at or below this level -- recorded so a later check of this
+    // stack can answer without solving, and so the shortcut is observable
+    // under --stats.
+    bool fromCore = false;
   };
   vector<Entry> cache;
 
