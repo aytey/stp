@@ -805,6 +805,29 @@ struct IncrementalSolver::Impl
     }
   }
 
+  // Rebuild the SAT side from nothing, keeping every semantic store. The
+  // persistent encoding never reclaims anything, so a long session whose
+  // popped content never returns pays for it in solver memory and dead
+  // decision variables; once that dominates, starting the solver over and
+  // re-encoding just the live stack is the standard relief valve. The
+  // bit-blast memo and the AIG survive, so re-encoding active content is
+  // a walk over existing circuits; refinement axioms die with the solver
+  // and are re-derived lazily, which is sound -- they are accelerators.
+  // (The finer-grained alternative -- pinning popped variables away from
+  // the decision heuristics, as cvc5's CaDiCaL propagator does -- needs
+  // the propagator interface and is not portable across our backends.)
+  void rebuildEncodings()
+  {
+    solver.reset(makeBackend(bm->UserFlags));
+    solver->enableRefinement(true);
+
+    aigIdToVar.clear();
+    trueVar = -1;
+    rootLitOf.clear();
+    actLitOf.clear();
+    level0Asserted.clear();
+  }
+
   // The literal to assume for one pushed level, given the level's root
   // literals: the root itself for a single conjunct, else the (possibly
   // cached) activation literal that implies them all.
@@ -1163,6 +1186,29 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
 
   assert(!assertionsSMT2.empty());
 
+  // The relief valve: once the solver is past the configured size and most
+  // of its encodings belong to content no longer on the stack, start it
+  // over from the live stack. Checked before routing so extensionality
+  // rounds benefit too.
+  if (uf.incremental_reencode_limit > 0 &&
+      (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit)
+  {
+    size_t active = 0;
+    ASTVec probe;
+    for (const ASTNode& levelConjunction : assertionsSMT2)
+      splitConjuncts(levelConjunction, bm->ASTTrue, probe);
+    active = probe.size();
+
+    if (impl->rootLitOf.size() >= 4 * (active + 1))
+    {
+      if (uf.stats_flag)
+        std::cerr << "Incremental: re-encoded from scratch (solver had "
+                  << impl->solver->nVars() << " variables for " << active
+                  << " active conjuncts)" << std::endl;
+      impl->rebuildEncodings();
+    }
+  }
+
   // Whole-array equality routes the entire check-sat through the
   // extensionality block: the procedure owns the round's complete array
   // graph, so no conjunct may be encoded separately this round. New
@@ -1342,6 +1388,11 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
       impl->seedActiveReads(active);
     }
     impl->seedEliminatedIntoModelChannel();
+
+    // Idempotent when nothing changed; essential after a re-encode, when
+    // registry symbols from earlier sessions have no variables yet and the
+    // axiom encoder reads their bits unconditionally.
+    impl->totalizeRegistrySymbols();
 
     ASTNode activeConjunction;
     if (assertionsSMT2.size() > 1)

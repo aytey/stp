@@ -194,11 +194,16 @@ answer of every file.
 Limitations
 -----------
 
-- The persistent encoding, like the node tables, grows monotonically over
-  a session; nothing is re-encoded, but nothing is reclaimed either.
-  Long sessions with much popped, never-returning content pay for it in
-  memory. Periodic re-encoding from the live AIG would be the standard
-  relief valve.
+- The persistent encoding grows monotonically, and the relief valve is
+  coarse: once the solver's variable count passes
+  ``--incremental-reencode-limit`` (default one million; 0 disables) and
+  most encodings belong to popped, never-returning content, the solver is
+  rebuilt from the live stack -- semantic stores survive and active
+  content re-encodes through the bit-blast memo, but learned clauses and
+  refinement axioms start over. The finer-grained alternative (pinning
+  popped variables away from the decision heuristics, as cvc5's CaDiCaL
+  propagator integration does) requires the propagator interface and is
+  not portable across our backends.
 - Extensionality rounds rebuild the procedure's solve-local records each
   check-sat; reuse for them is at the encoding level (cached blocks and
   shared subcircuits), not at the record level.

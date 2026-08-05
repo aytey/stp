@@ -391,6 +391,12 @@ void ExtraMain::create_options()
        "retractable formulas as SAT assumptions. Switches itself on at the "
        "first (push) even without this flag. SMT-LIB2 only.")
 
+      ("incremental-reencode-limit",
+       INT64_ARG(bm->UserFlags.incremental_reencode_limit),
+       "rebuild the incremental solver from the live assertion stack once "
+       "its variable count passes this limit and most encodings belong to "
+       "popped content. 0 disables the rebuild.")
+
       ("interactive", po::value<bool>(),
        "read the input a character at a time, as needed when driving stp "
        "interactively over a pipe. Off reads in blocks, which is faster. "

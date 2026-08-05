@@ -89,6 +89,13 @@ public:
   // the start with --incremental; sessions that never push are untouched.
   bool incremental_solving = false;
 
+  // The persistent encoding grows monotonically; when the solver's variable
+  // count passes this limit AND most encodings belong to popped,
+  // never-returning content, the solver is rebuilt from the live stack
+  // (semantic stores survive; active content re-encodes through the
+  // bit-blast memo). 0 disables the relief valve.
+  int64_t incremental_reencode_limit = 1000000;
+
   // Decide whole-array equality/disequality (the extensional theory of
   // arrays) with the lemmas-on-demand procedure of Brummayer & Biere
   // (JSAT 2010). Runtime semantic option; it must be set before a
