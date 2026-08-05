@@ -166,3 +166,34 @@ TEST(incremental_query, deep_alternating_chain)
 
   vc_Destroy(vc);
 }
+
+// The 'c' flag alone -- construct counterexamples, no self-check -- must
+// keep its counterexamples through the driver. construct_counterexample
+// is a direct input here with no other trace of the request, and both the
+// batch pipeline's derivation and the driver's used to recompute and
+// clobber it, so a 'c'-only pure bit-vector session on a release build
+// read empty models (assertion builds masked it by forcing construction).
+TEST(incremental_query, c_flag_alone_keeps_counterexamples)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlags(vc, 'i');
+  vc_setFlags(vc, 'c');
+
+  Type bv8 = vc_bvType(vc, 8);
+  Expr x = vc_varExpr(vc, "x", bv8);
+  Expr five = vc_bvConstExprFromInt(vc, 8, 5);
+
+  vc_assertFormula(vc, vc_eqExpr(vc, x, five));
+
+  // Two driver rounds, each with a readable model.
+  EXPECT_EQ(0, vc_query(vc, vc_falseExpr(vc)));
+  EXPECT_EQ(5ULL, getBVUnsignedLongLong(vc_getCounterExample(vc, x)));
+
+  Expr y = vc_varExpr(vc, "y", bv8);
+  vc_assertFormula(vc, vc_eqExpr(vc, y, vc_bvConstExprFromInt(vc, 8, 9)));
+  EXPECT_EQ(0, vc_query(vc, vc_falseExpr(vc)));
+  EXPECT_EQ(9ULL, getBVUnsignedLongLong(vc_getCounterExample(vc, y)));
+  EXPECT_EQ(5ULL, getBVUnsignedLongLong(vc_getCounterExample(vc, x)));
+
+  vc_Destroy(vc);
+}

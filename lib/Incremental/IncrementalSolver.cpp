@@ -1809,9 +1809,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
   const bool needRefinement = activeHasArrays && !uf.ackermannisation;
 
+  // construct_counterexample_flag is both derived state and a direct
+  // input: the C API's 'c' flag sets it explicitly, with no other trace
+  // of the request. Folding it into the derivation keeps that request
+  // alive across the write-back below, which previously clobbered it --
+  // a 'c'-only session on a release build lost its counterexamples.
   bool construct = uf.check_counterexample_flag ||
                    uf.print_counterexample_flag || uf.produce_models ||
-                   needRefinement;
+                   uf.construct_counterexample_flag || needRefinement;
 #ifndef NDEBUG
   construct = true;
 #endif
