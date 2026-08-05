@@ -97,6 +97,17 @@ TEST(IncrementalActiveReads, popped_rows_leave_the_seeded_tables)
   ASSERT_EQ(SOLVER_SATISFIABLE, inc.checkSat(withPush));
   const ReadRows r4 = sorted(inc.seededReadsForTesting());
   EXPECT_EQ(r2, r4);
+
+  // Repeat the identical stack: the seeding may take its memoised path,
+  // and the rows must still be exactly the active cone's.
+  ASSERT_EQ(SOLVER_SATISFIABLE, inc.checkSat(withPush));
+  const ReadRows r5 = sorted(inc.seededReadsForTesting());
+  EXPECT_EQ(r2, r5);
+
+  // And the memo must not survive a stack change: back to base only.
+  ASSERT_EQ(SOLVER_SATISFIABLE, inc.checkSat(baseOnly));
+  const ReadRows r6 = sorted(inc.seededReadsForTesting());
+  EXPECT_EQ(r1, r6);
 }
 
 } // namespace

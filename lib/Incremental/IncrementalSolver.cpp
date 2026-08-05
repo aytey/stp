@@ -326,8 +326,8 @@ struct IncrementalSolver::Impl
         solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
-        trueVar(-1), bvaDecided(false), bvaWarned(false), clausesAdded(0),
-        encodesThisCall(0)
+        trueVar(-1), bvaDecided(false), bvaWarned(false),
+        batchTablesSeeded(false), clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -646,6 +646,7 @@ struct IncrementalSolver::Impl
       readsOfEncoded[key] = batchAT->touchedReads;
       myReads = batchAT->arrayToIndexToRead;
       myAckPairs = batchAT->ack_pair;
+      batchTablesSeeded = false;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
     }
@@ -807,12 +808,33 @@ struct IncrementalSolver::Impl
   // read table; kept for seededReadsForTesting().
   std::vector<std::pair<ASTNode, ASTNode>> lastSeededReads;
 
+  // Whether the batch-side tables still hold exactly what seedActiveReads
+  // last put there, and for which active keys (sorted by node number).
+  // Rebuilding the filtered tables costs a map lookup per registry row,
+  // every refinement-driven solve; sessions that check the same stack
+  // repeatedly -- the KLEE bracket pattern -- pay it for an identical
+  // result. Every write to the tables outside seedActiveReads clears the
+  // flag, and the key fingerprint catches stack changes; rows behind an
+  // unchanged key cannot change between rebuilds (they are recorded at
+  // encode time, and re-encoding only happens after a rebuild, which
+  // clears the flag too).
+  bool batchTablesSeeded;
+  std::vector<ASTNode> lastSeededKeys;
+
   // Seed the batch-side read table with only the reads of the given
   // (active) encodings, drawn from the persistent registry. The keys are
   // whatever this round's literals were cached under: base-level conjuncts
   // and, for the pushed levels, the nodes rootLitUnder reported.
   void seedActiveReads(const std::vector<ASTNode>& activeKeys)
   {
+    std::vector<ASTNode> sortedKeys(activeKeys);
+    std::sort(sortedKeys.begin(), sortedKeys.end(),
+              [](const ASTNode& a, const ASTNode& b) {
+                return a.GetNodeNum() < b.GetNodeNum();
+              });
+    if (batchTablesSeeded && sortedKeys == lastSeededKeys)
+      return;
+
     ArrayTransformer::ArrType filtered;
     for (const ASTNode& c : activeKeys)
     {
@@ -842,6 +864,8 @@ struct IncrementalSolver::Impl
         lastSeededReads.push_back(std::make_pair(ait->first, iit->first));
 
     batchAT->arrayToIndexToRead = filtered;
+    lastSeededKeys.swap(sortedKeys);
+    batchTablesSeeded = true;
   }
 
   void totalizeRegistrySymbols()
@@ -932,6 +956,8 @@ struct IncrementalSolver::Impl
     rootLitOf.clear();
     actLitOf.clear();
     everAssumedLits.clear();
+    batchTablesSeeded = false;
+    lastSeededKeys.clear();
     level0Asserted.clear();
   }
 
@@ -1196,6 +1222,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // the batch tables as usual.
   batchAT->arrayToIndexToRead.clear();
   batchAT->ack_pair.clear();
+  batchTablesSeeded = false;
 
   const bool arrayops = containsArrayOps(inputToSat, bm) || extActive;
   if (arrayops)
