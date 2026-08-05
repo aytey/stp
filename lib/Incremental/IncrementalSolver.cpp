@@ -201,8 +201,23 @@ struct IncrementalSolver::Impl
   // (array, index) for the whole session -- which is what makes refinement
   // axioms (congruence over those symbols) permanently valid clauses.
   // Entries from popped scopes stay: their axioms are tautologies of the
-  // abstraction, merely dead weight while nothing constrains them.
+  // abstraction, so clauses already learned over them remain valid. They
+  // are NOT harmless everywhere, though -- their defining equations were
+  // encoded under root literals that are no longer assumed, so their SAT
+  // variables float, and seedActiveReads below must keep them out of the
+  // per-solve batch tables.
   ArrayTransformer::ArrType myReads;
+
+  // The (array, index) reads each conjunct's encoded form contains, so
+  // per-solve batch tables can be restricted to the reads of the currently
+  // active conjuncts. Reads of popped conjuncts have unconstrained
+  // anchor/value SAT variables (their defining equations are guarded by
+  // root literals that are no longer assumed), and letting them into the
+  // counterexample tables poisons the model evaluation of active reads:
+  // a stale row whose raw index still evaluates shadows an active cell
+  // with a floating value, the checker then rejects every candidate, and
+  // refinement cannot converge.
+  std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>> readsOfConjunct;
 
   // Under --ackermanize, the transformer's other table: the reads of each
   // array in the order they were seen, from which each NEW read's nested
@@ -519,7 +534,11 @@ struct IncrementalSolver::Impl
     {
       batchAT->arrayToIndexToRead = myReads;
       batchAT->ack_pair = myAckPairs;
+      batchAT->recordTouchedReads = true;
+      batchAT->touchedReads.clear();
       toEncode = batchAT->TransformFormula_TopLevel(toEncode);
+      batchAT->recordTouchedReads = false;
+      readsOfConjunct[conjunct] = batchAT->touchedReads;
       myReads = batchAT->arrayToIndexToRead;
       myAckPairs = batchAT->ack_pair;
       assert(!containsArrayOps(toEncode, bm));
@@ -605,6 +624,45 @@ struct IncrementalSolver::Impl
     }
   }
 
+  // What the last refinement-driven check-sat seeded into the batch-side
+  // read table; kept for seededReadsForTesting().
+  std::vector<std::pair<ASTNode, ASTNode>> lastSeededReads;
+
+  // Seed the batch-side read table with only the reads of the given
+  // (active) conjuncts, drawn from the persistent registry.
+  void seedActiveReads(const std::vector<ASTNode>& activeConjuncts)
+  {
+    ArrayTransformer::ArrType filtered;
+    for (const ASTNode& c : activeConjuncts)
+    {
+      std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::
+          const_iterator rit = readsOfConjunct.find(c);
+      if (rit == readsOfConjunct.end())
+        continue;
+      for (const std::pair<ASTNode, ASTNode>& ai : rit->second)
+      {
+        ArrayTransformer::ArrType::const_iterator ait = myReads.find(ai.first);
+        if (ait == myReads.end())
+          continue;
+        ArrayTransformer::arrTypeMap::const_iterator iit =
+            ait->second.find(ai.second);
+        if (iit == ait->second.end())
+          continue;
+        filtered[ai.first].insert(*iit);
+      }
+    }
+
+    lastSeededReads.clear();
+    for (ArrayTransformer::ArrType::const_iterator ait = filtered.begin();
+         ait != filtered.end(); ++ait)
+      for (ArrayTransformer::arrTypeMap::const_iterator iit =
+               ait->second.begin();
+           iit != ait->second.end(); ++iit)
+        lastSeededReads.push_back(std::make_pair(ait->first, iit->first));
+
+    batchAT->arrayToIndexToRead = filtered;
+  }
+
   void totalizeRegistrySymbols()
   {
     // Only the refinement machinery encodes axioms over registry symbols,
@@ -642,8 +700,10 @@ struct IncrementalSolver::Impl
 
   // Values for every symbol the persistent encoding knows about. Symbols
   // from popped scopes are included -- their SAT variables are merely
-  // unconstrained -- and are harmless: the model printers iterate the
-  // currently declared symbols, not this map.
+  // unconstrained -- which the model printers tolerate (they iterate the
+  // currently declared symbols, not this map). The refinement tables do
+  // NOT tolerate them: seedActiveReads keeps popped rows away from model
+  // construction and the congruence check.
   void buildSymbolMap(ToSATBase::ASTNodeToSATVar& out)
   {
     for (BBNodeManagerAIG::SymbolToBBNode::const_iterator it =
@@ -920,6 +980,12 @@ IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
 {
 }
 
+std::vector<std::pair<ASTNode, ASTNode>>
+IncrementalSolver::seededReadsForTesting() const
+{
+  return impl->lastSeededReads;
+}
+
 IncrementalSolver::~IncrementalSolver()
 {
   // The counterexample machinery may still point at our floating-point
@@ -1073,7 +1139,20 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     IncrementalToSAT* adapter =
         static_cast<IncrementalToSAT*>(impl->ensureAdapter());
 
-    impl->batchAT->arrayToIndexToRead = impl->myReads;
+    // Restrict the batch tables to the active cone's reads; stale rows
+    // from popped scopes must not reach model construction or refinement.
+    {
+      std::vector<ASTNode> active(impl->level0Asserted.begin(),
+                                  impl->level0Asserted.end());
+      ASTVec cs;
+      for (size_t level = 1; level < assertionsSMT2.size(); level++)
+      {
+        cs.clear();
+        splitConjuncts(assertionsSMT2[level], bm->ASTTrue, cs);
+        active.insert(active.end(), cs.begin(), cs.end());
+      }
+      impl->seedActiveReads(active);
+    }
     impl->seedEliminatedIntoModelChannel();
 
     ASTNode activeConjunction;

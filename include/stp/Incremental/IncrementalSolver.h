@@ -89,6 +89,15 @@ public:
   // destroyed only by reset/reset-assertions, which destroy this object.
   SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2);
 
+  // Test-only inspection: the (array, index) rows the last refinement-driven
+  // check-sat seeded into the batch-side read table. The invariant under
+  // test is that rows introduced by popped conjuncts never appear, however
+  // many of them the persistent registry keeps: a popped row's defining
+  // equations are guarded by a root literal that is no longer assumed, so
+  // its SAT variables float, and one such row in the counterexample tables
+  // makes the model checker reject every candidate.
+  std::vector<std::pair<ASTNode, ASTNode>> seededReadsForTesting() const;
+
   // Public only so the ToSATBase adapter in the implementation file can
   // name it; the definition never leaves IncrementalSolver.cpp.
   struct Impl;

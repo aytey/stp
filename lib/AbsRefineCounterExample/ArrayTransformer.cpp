@@ -520,6 +520,8 @@ ASTNode ArrayTransformer::TransformArrayRead(const ASTNode& term)
           std::map<ASTNode, ArrayRead>::const_iterator it2;
           if ((it2 = it->second.find(readIndex)) != it->second.end())
           {
+            if (recordTouchedReads)
+              touchedReads.push_back(std::make_pair(arrName, readIndex));
             result = it2->second.ite;
             break;
           }
@@ -579,6 +581,8 @@ ASTNode ArrayTransformer::TransformArrayRead(const ASTNode& term)
       }
 
       assert(arrName.GetType() == ARRAY_TYPE);
+      if (recordTouchedReads)
+        touchedReads.push_back(std::make_pair(arrName, readIndex));
       arrayToIndexToRead[arrName].insert(
           make_pair(readIndex, ArrayRead(result, CurrentSymbol)));
       break;
