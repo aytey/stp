@@ -499,17 +499,31 @@ struct IncrementalSolver::Impl
     if (sigma0.find(var) != sigma0.end())
       return;
 
+    // Expand the replacement through what is already known, once. Chains
+    // that stay partially expanded are fine: every equation remains
+    // asserted, so partial rewriting is merely less simplification.
+    ASTNodeMap cache;
+    ASTNode expanded = SubstitutionMap::replace(term, sigma0, cache,
+                                                bm->defaultNodeFactory);
+
+    // recogniseDefinition occurs-checked the RAW replacement; expansion
+    // can smuggle the variable back in (m = a is innocent until a = f(m)
+    // is already known, when it expands to m = f(m)). A self-referential
+    // entry makes replace() recurse forever, so it is refused -- the
+    // equation is still asserted, so refusing only costs rewriting. With
+    // every stored entry expanded and occurs-free at insertion, an
+    // entry's replacement can only mention variables that were undefined
+    // when it was stored, so no chain of entries can loop.
+    if (expanded.GetKind() != TRUE && expanded.GetKind() != FALSE &&
+        bm->VarSeenInTerm(var, expanded))
+      return;
+
     // Frozen: the variable's bits already live in the solver, so this
     // equation must constrain them for real (see mustKeepRaw).
     if (bbMgr.symbolToBBNode.find(var) != bbMgr.symbolToBBNode.end())
       mustKeepRaw.insert(c);
 
-    // Expand the replacement through what is already known, once. Chains
-    // that stay partially expanded are fine: every equation remains
-    // asserted, so partial rewriting is merely less simplification.
-    ASTNodeMap cache;
-    sigma0[var] = SubstitutionMap::replace(term, sigma0, cache,
-                                           bm->defaultNodeFactory);
+    sigma0[var] = expanded;
   }
 
   // A definition found at a PUSHED level. It holds only while its level is
@@ -530,7 +544,23 @@ struct IncrementalSolver::Impl
     if (sigmaP.find(var) != sigmaP.end())
       return;
 
-    sigmaP[var] = term;
+    // Same discipline as harvestSigma0, against the map this entry will
+    // actually be used in: the caller replaces under sigma0 MERGED with
+    // sigmaP, so the replacement is expanded under both (sigma0 first --
+    // sigmaP replacements are already sigma0-expanded, so one pass each
+    // suffices) and refused if its own variable reappears. A pushed
+    // m = a against a base a = f(m) is exactly the moo.smt2 cycle split
+    // across levels.
+    ASTNodeMap cache0, cacheP;
+    ASTNode expanded = SubstitutionMap::replace(term, sigma0, cache0,
+                                                bm->defaultNodeFactory);
+    expanded = SubstitutionMap::replace(expanded, sigmaP, cacheP,
+                                        bm->defaultNodeFactory);
+    if (expanded.GetKind() != TRUE && expanded.GetKind() != FALSE &&
+        bm->VarSeenInTerm(var, expanded))
+      return;
+
+    sigmaP[var] = expanded;
     sources.insert(c);
   }
 
