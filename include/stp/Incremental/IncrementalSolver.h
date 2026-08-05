@@ -27,6 +27,7 @@ THE SOFTWARE.
 
 #include "stp/AST/AST.h"
 #include "stp/Globals/Globals.h"
+#include <functional>
 #include <memory>
 
 // The incremental solving driver; docs/incremental-solving.rst tells the
@@ -110,6 +111,15 @@ public:
   std::vector<ASTNode> lastUnsatAssumptionConjuncts() const;
   std::vector<size_t> lastUnsatCoreLevels() const;
 
+  // A sat answer defers counterexample construction unless something
+  // reads the model at solve time: the SAT model stays live until the
+  // next solve or clause addition, and the driver touches neither
+  // between user commands. The model readers (get-value, get-model, the
+  // C API's counterexample calls) call this first; answers nobody
+  // samples never pay for construction. Idempotent and cheap when
+  // nothing is pending.
+  void materializePendingModel();
+
   // Test-only inspection: the (array, index) rows the last refinement-driven
   // check-sat seeded into the batch-side read table. The invariant under
   // test is that rows introduced by popped conjuncts never appear, however
@@ -131,6 +141,13 @@ private:
   // exhaust a default-sized stack.
   SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                                             bool assumeLastLevelPerConjunct);
+
+  // Run `body` on the large-stack worker with the thread-local solver
+  // state carried across (CONSTANTBV boot, the node uid counter);
+  // checkSat and deferred model construction both go through this.
+  void runOnDriverStack(const std::function<void()>& body);
+
+  void materializeOnCurrentStack();
 
   std::unique_ptr<Impl> impl;
 };

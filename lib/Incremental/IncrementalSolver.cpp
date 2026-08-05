@@ -319,6 +319,10 @@ struct IncrementalSolver::Impl
   bool lastUnsat;
   bool lastUnsatCoarse;     // ext rounds: one block literal, no granularity
   bool lastLevelIndividual; // the per-conjunct mode actually ran
+
+  // A sat answer whose counterexample nobody has read yet; see
+  // materializePendingModel. Cleared at the top of every solve.
+  bool modelPending;
   std::vector<int> lastFailedLits;
   size_t lastLevelCount;
 
@@ -351,8 +355,8 @@ struct IncrementalSolver::Impl
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
-        lastLevelIndividual(false), lastLevelCount(0), clausesAdded(0),
-        encodesThisCall(0)
+        lastLevelIndividual(false), modelPending(false), lastLevelCount(0),
+        clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -1528,10 +1532,8 @@ void runOnBigStack(std::function<void()> fn)
 
 } // namespace
 
-SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
-                                               bool assumeLastLevelPerConjunct)
+void IncrementalSolver::runOnDriverStack(const std::function<void()>& body)
 {
-  SOLVER_RETURN_TYPE result = SOLVER_ERROR;
   std::exception_ptr thrown;
 
   // The node uid counter is thread-local: the worker continues this
@@ -1545,8 +1547,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
     ASTInternal::adoptUidCounter(uidBefore);
     try
     {
-      result =
-          checkSatOnCurrentStack(assertionsSMT2, assumeLastLevelPerConjunct);
+      body();
     }
     catch (...)
     {
@@ -1558,7 +1559,45 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
   ASTInternal::adoptUidCounter(uidAfter);
   if (thrown)
     std::rethrow_exception(thrown);
+}
+
+SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
+                                               bool assumeLastLevelPerConjunct)
+{
+  SOLVER_RETURN_TYPE result = SOLVER_ERROR;
+  runOnDriverStack([&]() {
+    result =
+        checkSatOnCurrentStack(assertionsSMT2, assumeLastLevelPerConjunct);
+  });
   return result;
+}
+
+void IncrementalSolver::materializePendingModel()
+{
+  if (!impl->modelPending)
+    return;
+  impl->modelPending = false;
+  // Construction evaluates terms over deep formulas by recursion, so it
+  // gets the same stack the solve itself had.
+  runOnDriverStack([&]() { materializeOnCurrentStack(); });
+}
+
+void IncrementalSolver::materializeOnCurrentStack()
+{
+  STPMgr* bm = impl->bm;
+  bm->GetRunTimes()->start(RunTimes::CounterExampleGeneration);
+  impl->ce->ClearCounterExampleMap();
+  impl->ce->ClearComputeFormulaMap();
+
+  impl->seedEliminatedIntoModelChannel();
+
+  ToSATBase::ASTNodeToSATVar symbolMap;
+  impl->buildSymbolMap(symbolMap);
+  impl->ce->ConstructCounterExample(*impl->solver, symbolMap);
+  bm->GetRunTimes()->stop(RunTimes::CounterExampleGeneration);
+
+  if (bm->UserFlags.stats_flag)
+    std::cerr << "Incremental: model materialized on demand" << std::endl;
 }
 
 SOLVER_RETURN_TYPE
@@ -1575,6 +1614,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   impl->lastUnsat = false;
   impl->lastUnsatCoarse = false;
   impl->lastLevelIndividual = false;
+  impl->modelPending = false;
   impl->assumedLitLevels.clear();
   impl->lastLevelLitConjuncts.clear();
   impl->lastFailedLits.clear();
@@ -1866,6 +1906,17 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   if (construct)
   {
+    // Unless the model is read at solve time -- the self-check below is
+    // such a reader -- construction is deferred to the first model query
+    // and never happens for answers nobody samples. The SAT model this
+    // materializes from stays live: the driver adds no clause and runs
+    // no solve between user commands.
+    if (!uf.check_counterexample_flag)
+    {
+      impl->modelPending = true;
+      return SOLVER_SATISFIABLE;
+    }
+
     bm->GetRunTimes()->start(RunTimes::CounterExampleGeneration);
     impl->ce->ClearCounterExampleMap();
     impl->ce->ClearComputeFormulaMap();

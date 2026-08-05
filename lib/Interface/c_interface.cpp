@@ -364,6 +364,17 @@ void vc_printExprFile(VC vc, Expr e, int fd)
   // os.flush();
 }
 
+// The incremental driver defers counterexample construction to the first
+// reader; every C-API entry that reads the counterexample tables calls
+// this first. Cheap and idempotent when nothing is pending.
+static void materializePendingModel(VC vc)
+{
+  stp::STP* stp_i = (stp::STP*)vc;
+  stp::IncrementalSolver* inc = stp_i->getIncrementalSolver();
+  if (inc != NULL)
+    inc->materializePendingModel();
+}
+
 static void vc_printVarDeclsToStream(VC vc, ostream& os)
 {
   stp::STPMgr* b = mgr(vc);
@@ -471,6 +482,7 @@ void vc_printQueryStateToBuffer(VC vc, Expr e, char** buf, unsigned long* len,
 
 void vc_printCounterExampleToBuffer(VC vc, char** buf, unsigned long* len)
 {
+  materializePendingModel(vc);
   assert(vc);
   assert(buf);
   assert(len);
@@ -895,6 +907,7 @@ void vc_pop(VC vc)
 
 void vc_printCounterExample(VC vc)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
   stp::AbsRefine_CounterExample* ce =
@@ -910,6 +923,7 @@ void vc_printCounterExample(VC vc)
 
 void vc_printCounterExampleSMTLIB2(VC vc)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
   stp::AbsRefine_CounterExample* ce =
@@ -931,6 +945,7 @@ void vc_printCounterExampleSMTLIB2(VC vc)
 
 Expr vc_getCounterExample(VC vc, Expr e)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::ASTNode* a = (stp::ASTNode*)e;
 
@@ -946,6 +961,7 @@ Expr vc_getCounterExample(VC vc, Expr e)
 void vc_getCounterExampleArray(VC vc, Expr e, Expr** indices, Expr** values,
                                int* size)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::ASTNode* a = (stp::ASTNode*)e;
   stp::AbsRefine_CounterExample* ce =
@@ -988,6 +1004,7 @@ void vc_deleteCounterExampleArray(Expr* indices, Expr* values, int size)
 
 int vc_counterexample_size(VC vc)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::AbsRefine_CounterExample* ce =
       (stp::AbsRefine_CounterExample*)(stp_i->Ctr_Example);
@@ -996,6 +1013,7 @@ int vc_counterexample_size(VC vc)
 
 WholeCounterExample vc_getWholeCounterExample(VC vc)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
   stp::AbsRefine_CounterExample* ce =

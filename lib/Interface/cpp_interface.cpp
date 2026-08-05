@@ -971,6 +971,10 @@ void Cpp_interface::getValue(const ASTVec& v)
     return;
   }
 
+  // The driver defers counterexample construction to the first reader.
+  if (GlobalSTP != NULL && GlobalSTP->getIncrementalSolver() != NULL)
+    GlobalSTP->getIncrementalSolver()->materializePendingModel();
+
   std::ostringstream os;
 
   os << "(" << std::endl;
@@ -1083,6 +1087,10 @@ void Cpp_interface::getModel()
   {
     return;
   }
+
+  // The driver defers counterexample construction to the first reader.
+  if (GlobalSTP != NULL && GlobalSTP->getIncrementalSolver() != NULL)
+    GlobalSTP->getIncrementalSolver()->materializePendingModel();
 
   cout << "(" << std::endl;
   std::ostringstream os;
