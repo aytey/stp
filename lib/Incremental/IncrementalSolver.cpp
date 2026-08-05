@@ -852,13 +852,22 @@ struct IncrementalSolver::Impl
   // and, for the pushed levels, the nodes rootLitUnder reported.
   void seedActiveReads(const std::vector<ASTNode>& activeKeys)
   {
-    std::vector<ASTNode> sortedKeys(activeKeys);
-    std::sort(sortedKeys.begin(), sortedKeys.end(),
-              [](const ASTNode& a, const ASTNode& b) {
-                return a.GetNodeNum() < b.GetNodeNum();
-              });
-    if (batchTablesSeeded && sortedKeys == lastSeededKeys)
-      return;
+    // The fingerprint is only worth computing when a hit is possible: the
+    // tables must be clean AND the key count unchanged. Sessions that add
+    // content every check fail the size test in O(1) -- copying and
+    // sorting an ever-growing key vector for a compare that cannot
+    // succeed was measured at a few percent of a whole KLEE-style run.
+    std::vector<ASTNode> sortedKeys;
+    if (batchTablesSeeded && activeKeys.size() == lastSeededKeys.size())
+    {
+      sortedKeys = activeKeys;
+      std::sort(sortedKeys.begin(), sortedKeys.end(),
+                [](const ASTNode& a, const ASTNode& b) {
+                  return a.GetNodeNum() < b.GetNodeNum();
+                });
+      if (sortedKeys == lastSeededKeys)
+        return;
+    }
 
     ArrayTransformer::ArrType filtered;
     for (const ASTNode& c : activeKeys)
