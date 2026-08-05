@@ -193,6 +193,24 @@ class BitBlaster
   // Return bit-blasted form for BVLE, BVGE, BVGT, SBLE, etc.
   BBNode BBcompare(const ASTNode& form, BBNodeSet& support);
 
+  // bit blast a floating-point ordering comparison (FP_GT, FP_LT, FP_GEQ,
+  // FP_LEQ) over packed operands
+  BBNode BBcompareFP(const ASTNode& form, BBNodeSet& support);
+
+  // bit blast a floating-point equality (FP_EQ, FP_SMT_EQ) over packed
+  // operands
+  BBNode BBeqFP(const ASTNode& form, BBNodeSet& support);
+
+  // bit blast a floating-point classification predicate (FP_ISNORMAL,
+  // FP_ISSUBNORMAL, FP_ISZERO, FP_ISINFINITE, FP_ISNAN, FP_ISNEGATIVE,
+  // FP_ISPOSITIVE) over a packed operand
+  BBNode BBclassifyFP(const ASTNode& form, BBNodeSet& support);
+
+  // Field tests on a packed IEEE-754 operand, shared by the comparison and
+  // equality encodings. `sb` is the significand width, `w` the total width.
+  BBNode BBfpIsNaN(const BBNodeVec& p, unsigned sb, unsigned w);
+  BBNode BBfpIsZero(const BBNodeVec& p, unsigned w);
+
   // Return bit-blasted form for the overflow predicates BVUADDO, BVSADDO,
   // BVUMULO, BVSMULO, BVUSUBO, BVSSUBO.
   BBNode BBOverflow(const ASTNode& form, BBNodeSet& support);

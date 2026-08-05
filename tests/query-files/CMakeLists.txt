@@ -18,17 +18,18 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-if (NOT ONLY_SIMPLE)
-    set(STP_EXECUTABLE_PATH "$<TARGET_FILE:stp-bin>")
-else()
-    set(STP_EXECUTABLE_PATH "$<TARGET_FILE:stp_simple-bin>")
-endif()
+set(STP_EXECUTABLE_PATH "$<TARGET_FILE:stp-bin>")
 
 # A Python literal for lit.site.cfg.in: CMake booleans render as ON/OFF.
 if (ENABLE_FLOATING_POINT)
     set(STP_FLOATING_POINT_PYBOOL "True")
 else()
     set(STP_FLOATING_POINT_PYBOOL "False")
+endif()
+if (USE_LIBBF)
+    set(STP_LIBBF_PYBOOL "True")
+else()
+    set(STP_LIBBF_PYBOOL "False")
 endif()
 
 # Create llvm-lit configuration file

@@ -140,6 +140,11 @@ public:
   bool bvplus_variant = true;
   bool conjoin_to_top = false;
 
+  // Bit-blast the floating-point predicates -- comparisons, equalities and
+  // classifications -- over already-packed operands natively (over the IEEE
+  // bits) instead of via the SymFPU unpacking circuits.
+  bool fp_native_cmp = true;
+
   int64_t multiplication_variant = 1;
 
   // If the bit-blaster discovers new constants, should the term simplifier be

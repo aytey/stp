@@ -137,7 +137,6 @@ endif()
 add_feature_info(Static STATICCOMPILE "Compiles static library and executable")
 
 if ((${CMAKE_SYSTEM_NAME} MATCHES "Windows") OR (NOT BUILD_SHARED_LIBS))
-    set(Boost_USE_STATIC_LIBS ON)
     set(Minisat_USE_STATIC_LIBS ON)
 endif()
 
@@ -566,17 +565,9 @@ add_definitions(-DSIZEOF_LONG=${SIZEOF_LONG})
 CHECK_TYPE_SIZE("int" SIZEOF_INT)
 add_definitions(-DSIZEOF_INT=${SIZEOF_INT})
 
-
-
-option(ONLY_SIMPLE "Only build very simplistic executable -- no Boost needed" OFF)
-if (NOT ONLY_SIMPLE)
-  find_package( Boost 1.46 COMPONENTS program_options)
-endif()
-
-if(NOT Boost_FOUND)
-    set(ONLY_SIMPLE ON)
-endif()
-add_feature_info(SimpleOptions ONLY_SIMPLE "Simplifies command-line interface, only a few command-line options will be available")
+# Declared here, well before its first use (the manpage rule); the subdirs it
+# gates are added at the bottom of this file.
+option(BUILD_EXECUTABLES "Build executables" ON)
 
 # -----------------------------------------------------------------------------
 # Find Riss
@@ -776,7 +767,7 @@ include_directories(${minisat_SOURCE_DIR})
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     find_program(HELP2MAN_FOUND help2man)
     if (HELP2MAN_FOUND)
-        if (NOT ONLY_SIMPLE)
+        if (BUILD_EXECUTABLES)
             ADD_CUSTOM_TARGET(man_stp
                 ALL
                 DEPENDS stp-bin
@@ -911,6 +902,35 @@ if (ENABLE_FLOATING_POINT)
     add_definitions(-DSTP_ENABLE_FLOATING_POINT)
 endif()
 
+option(USE_LIBBF "Use LibBF to fold real literals in floating-point input" OFF)
+add_feature_info(LibBF USE_LIBBF "Folds ((_ to_fp e s) rm 1.5) to its bits while parsing")
+
+if (USE_LIBBF)
+    # The one thing LibBF is for is converting real literals to float bits,
+    # which only exists in floating-point input.
+    if (NOT ENABLE_FLOATING_POINT)
+        message(FATAL_ERROR "USE_LIBBF folds floating-point real literals "
+                "and needs ENABLE_FLOATING_POINT")
+    endif()
+    set(LIBBF_DIR "" CACHE PATH "Path to a built LibBF (the directory containing libbf.h and libbf.a, as laid out by scripts/deps/setup-libbf.sh)")
+    find_path(LIBBF_INCLUDE_DIR NAMES libbf.h HINTS ${LIBBF_DIR})
+    find_library(LIBBF_LIBRARY NAMES bf HINTS ${LIBBF_DIR})
+    if (NOT LIBBF_INCLUDE_DIR OR NOT LIBBF_LIBRARY)
+        message(FATAL_ERROR "USE_LIBBF is set but LibBF was not found. Run "
+                "scripts/deps/setup-libbf.sh and point LIBBF_DIR at the "
+                "deps/libbf directory it creates")
+    endif()
+    message(STATUS "Found LibBF: ${LIBBF_LIBRARY}")
+    # DecimalLiteral.cpp keys on this to fold real literals instead of
+    # refusing them.
+    add_definitions(-DSTP_HAVE_LIBBF)
+    # SYSTEM, the way ABC and SymFPU are consumed: the header typedefs
+    # __int128 on 64-bit targets, which gcc's -pedantic rejects in the one
+    # C++ translation unit that includes it.
+    include_directories(SYSTEM ${LIBBF_INCLUDE_DIR})
+    link_libraries(${LIBBF_LIBRARY})
+endif()
+
 # -----------------------------------------------------------------------------
 # Query definitions
 # -----------------------------------------------------------------------------
@@ -1014,7 +1034,6 @@ add_feature_info(PythonInterface ENABLE_PYTHON_INTERFACE "Enables Python interfa
 
 message(STATUS "Final CXX flags ${CMAKE_CXX_FLAGS}")
 
-option(BUILD_EXECUTABLES "Build executables" ON)
 add_subdirectory(lib)
 add_subdirectory(tools)
 add_subdirectory(bindings)

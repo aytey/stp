@@ -107,6 +107,94 @@ private:
                  "source sorts");
   }
 
+  // A comparison operand that is (or resolves to) a leaf the lowering
+  // leaves untouched: a symbol or an interned constant. FP constant folding
+  // is deferred solver-wide, so a literal usually arrives as to_fp's
+  // three-child reinterpret form over constant bits; resolve it through the
+  // canonicalising funnel (CreateFPConst), the same lookthrough
+  // RemoveUnconstrained's comparison rule uses. Returns null for anything
+  // else -- in particular for FP operations, whose values are cached
+  // unpacked and belong on the SymFPU path.
+  ASTNode comparisonLeaf(const ASTNode& n) const
+  {
+    if (n.Degree() == 0)
+      return n;
+    if (n.GetKind() == FP_TOFP && n.Degree() == 3 &&
+        n[2].GetKind() == BVCONST)
+    {
+      const SourceSort sort = n.GetSourceSort();
+      return bm->CreateFPConst(n[2], sort.exponentWidth(),
+                               sort.significandWidth());
+    }
+    return ASTNode();
+  }
+
+  // The six binary comparison predicates over leaf operands skip SymFPU
+  // entirely: the source comparison survives to the bit-blaster, which
+  // compares the packed IEEE bits directly (BBcompareFP, BBeqFP). Returns
+  // the surviving node -- `n` itself, or the comparison rebuilt over
+  // resolved constant operands, both purely float-sorted so no FP node is
+  // ever built over packed carriers -- or null when the comparison has to
+  // take the SymFPU path. (nativeClassificationSurvivor is the unary
+  // sibling, for the classification predicates.)
+  //
+  // A comparison of two constants must not survive: constant folding and
+  // model evaluation lower the node over its constant children and rely on
+  // the result collapsing to TRUE/FALSE through the simplifying factory
+  // (ComputeFormulaUsingModel asserts lowering changed the node).
+  ASTNode nativeComparisonSurvivor(const ASTNode& n) const
+  {
+    if (!bm->UserFlags.fp_native_cmp)
+      return ASTNode();
+    const ASTNode left = comparisonLeaf(n[0]);
+    if (left.IsNull())
+      return ASTNode();
+    const ASTNode right = comparisonLeaf(n[1]);
+    if (right.IsNull())
+      return ASTNode();
+    if (left.isConstant() && right.isConstant())
+      return ASTNode();
+    if (left == n[0] && right == n[1])
+      return n;
+    // The rebuild goes through the simplifying factory, which may fold the
+    // comparison into something the bit-blaster has no native arm for (it
+    // already turns fp.geq(x,x) into not(fp.isNaN(x))). Anything but a
+    // natively blasted comparison goes back to SymFPU.
+    const ASTNode rebuilt = node_factory->CreateNode(n.GetKind(), left, right);
+    if (!isNativelyBlasted(rebuilt.GetKind()))
+      return ASTNode();
+    return rebuilt;
+  }
+
+  // Unary sibling of nativeComparisonSurvivor for the classification
+  // predicates, which the bit-blaster reads straight off the packed fields
+  // (BBclassifyFP). Same three conditions, with the constant rule tightened:
+  // for a unary predicate a constant operand means the whole node is
+  // constant, and an all-constant node has to lower so that constant
+  // folding and model evaluation see it collapse.
+  ASTNode nativeClassificationSurvivor(const ASTNode& n) const
+  {
+    if (!bm->UserFlags.fp_native_cmp)
+      return ASTNode();
+    const ASTNode leaf = comparisonLeaf(n[0]);
+    if (leaf.IsNull() || leaf.isConstant())
+      return ASTNode();
+    if (leaf == n[0])
+      return n;
+    const ASTNode rebuilt = node_factory->CreateNode(n.GetKind(), leaf);
+    if (!isNativelyBlasted(rebuilt.GetKind()))
+      return ASTNode();
+    return rebuilt;
+  }
+
+  static bool isNativelyBlasted(Kind k)
+  {
+    return k == FP_GT || k == FP_LT || k == FP_GEQ || k == FP_LEQ ||
+           k == FP_EQ || k == FP_SMT_EQ || k == FP_ISNORMAL ||
+           k == FP_ISSUBNORMAL || k == FP_ISZERO || k == FP_ISINFINITE ||
+           k == FP_ISNAN || k == FP_ISNEGATIVE || k == FP_ISPOSITIVE;
+  }
+
   ASTNode rebuild(const ASTNode& n, const ASTVec& children)
   {
     if (n.GetType() == BOOLEAN_TYPE)
@@ -483,52 +571,116 @@ private:
         return canonicalPacked(n[0]);
 
       case FP_SMT_EQ:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::smtEqual(
             formatOf(n[0]), asUnpacked(n[0]), asUnpacked(n[1]));
-
+      }
       case FP_EQ:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::ieeeEqual(
             formatOf(n[0]), asUnpacked(n[0]), asUnpacked(n[1]));
+      }
       case FP_LT:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::lessThan(
             formatOf(n[0]), asUnpacked(n[0]), asUnpacked(n[1]));
+      }
       case FP_LEQ:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::lessThanOrEqual(
             formatOf(n[0]), asUnpacked(n[0]), asUnpacked(n[1]));
+      }
       case FP_GT:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::lessThan(
             formatOf(n[0]), asUnpacked(n[1]), asUnpacked(n[0]));
+      }
       case FP_GEQ:
+      {
         requireSameFormat(n[0], n[1]);
+        const ASTNode survivor = nativeComparisonSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::lessThanOrEqual(
             formatOf(n[0]), asUnpacked(n[1]), asUnpacked(n[0]));
+      }
 
       case FP_ISNORMAL:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isNormal(formatOf(n[0]),
                                                asUnpacked(n[0]));
+      }
       case FP_ISSUBNORMAL:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isSubnormal(formatOf(n[0]),
                                                   asUnpacked(n[0]));
+      }
       case FP_ISZERO:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isZero(formatOf(n[0]),
                                              asUnpacked(n[0]));
+      }
       case FP_ISINFINITE:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isInfinite(formatOf(n[0]),
                                                  asUnpacked(n[0]));
+      }
       case FP_ISNAN:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isNaN(formatOf(n[0]),
                                             asUnpacked(n[0]));
+      }
       case FP_ISNEGATIVE:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isNegative(formatOf(n[0]),
                                                  asUnpacked(n[0]));
+      }
       case FP_ISPOSITIVE:
+      {
+        const ASTNode survivor = nativeClassificationSurvivor(n);
+        if (!survivor.IsNull())
+          return survivor;
         return symbolic_fp::unpacked::isPositive(formatOf(n[0]),
                                                  asUnpacked(n[0]));
+      }
 
       default:
         FatalError("FloatBlast: unhandled target-valued floating-point kind: ",
