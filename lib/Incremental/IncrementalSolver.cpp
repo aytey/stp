@@ -208,16 +208,21 @@ struct IncrementalSolver::Impl
   // per-solve batch tables.
   ArrayTransformer::ArrType myReads;
 
-  // The (array, index) reads each conjunct's encoded form contains, so
-  // per-solve batch tables can be restricted to the reads of the currently
-  // active conjuncts. Reads of popped conjuncts have unconstrained
-  // anchor/value SAT variables (their defining equations are guarded by
-  // root literals that are no longer assumed), and letting them into the
-  // counterexample tables poisons the model evaluation of active reads:
-  // a stale row whose raw index still evaluates shadows an active cell
-  // with a floating value, the checker then rejects every candidate, and
-  // refinement cannot converge.
-  std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>> readsOfConjunct;
+  // The (array, index) reads each ENCODING contains, keyed exactly as
+  // rootLitOf is -- the raw conjunct on the ordinary path, the rewritten
+  // node on the pushed-definitions path -- so per-solve batch tables can
+  // be restricted to the reads of the encodings actually assumed this
+  // round. (Keying by the raw conjunct would go quietly wrong under
+  // pushed definitions: different conjuncts, or one conjunct under
+  // different rounds' definitions, can share one rewritten-node entry
+  // whose encode never re-runs, and a rewrite that touches an index
+  // expression mints a different registry row for the same syntactic
+  // read.) Reads of popped encodings have unconstrained anchor/value SAT
+  // variables -- their defining equations are guarded by root literals no
+  // longer assumed -- and one such row in the counterexample tables
+  // shadows an active cell with a floating value, makes the checker
+  // reject every candidate, and refinement cannot converge.
+  std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>> readsOfEncoded;
 
   // Under --ackermanize, the transformer's other table: the reads of each
   // array in the order they were seen, from which each NEW read's nested
@@ -280,6 +285,7 @@ struct IncrementalSolver::Impl
 
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
+  uint64_t encodesThisCall;
 
   Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_,
        ArrayTransformer* batchAT_)
@@ -287,7 +293,7 @@ struct IncrementalSolver::Impl
         solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
-        trueVar(-1), clausesAdded(0)
+        trueVar(-1), clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -409,9 +415,11 @@ struct IncrementalSolver::Impl
   // Harvest a base-level substitution from a conjunct, if it defines one.
   // The conjunct itself is still encoded and asserted regardless, which is
   // what makes every use of the entry sound forever.
-  void harvestSigma0(const ASTNode& c)
+  // Recognise a defining conjunct: SYMBOL / (not SYMBOL) as a boolean unit,
+  // or an equation with a symbol on one side. FALSE when the conjunct
+  // defines nothing usable; the guards are shared by both harvests.
+  bool recogniseDefinition(const ASTNode& c, ASTNode& var, ASTNode& term)
   {
-    ASTNode var, term;
     if (c.GetKind() == SYMBOL)
     {
       var = c;
@@ -435,25 +443,40 @@ struct IncrementalSolver::Impl
         term = c[0];
       }
       else
-        return;
+        return false;
     }
     else
-      return;
+      return false;
 
     if (var == term)
-      return;
-    if (sigma0.find(var) != sigma0.end())
-      return;
+      return false;
+
     // Only plain bit-vector/boolean definitions. An array-typed symbol is
-    // not a substitutable value, and a floating-point-theory term must not
-    // be injected into conjuncts whose lowering decision (a raw-conjunct
-    // property) was already made without it.
+    // not a substitutable value; and the replacement must not smuggle
+    // theory content -- floating point, array reads, opaque equalities --
+    // into conjuncts whose lowering and transform decisions (raw-conjunct
+    // properties) were already made without it.
     if (var.GetIndexWidth() != 0)
-      return;
+      return false;
     if (bm->has_floating_point_theory && containsFloatingPointTheory(term, bm))
-      return;
+      return false;
+    if (containsArrayOps(term, bm))
+      return false;
+    if (bm->UserFlags.enable_array_equality && containsArrayEquality(term))
+      return false;
     if (term.GetKind() != TRUE && term.GetKind() != FALSE &&
         bm->VarSeenInTerm(var, term))
+      return false;
+
+    return true;
+  }
+
+  void harvestSigma0(const ASTNode& c)
+  {
+    ASTNode var, term;
+    if (!recogniseDefinition(c, var, term))
+      return;
+    if (sigma0.find(var) != sigma0.end())
       return;
 
     // Frozen: the variable's bits already live in the solver, so this
@@ -469,12 +492,45 @@ struct IncrementalSolver::Impl
                                            bm->defaultNodeFactory);
   }
 
+  // A definition found at a PUSHED level. It holds only while its level is
+  // live, so nothing about it may persist: entries go into a per-call map,
+  // the defining conjunct is remembered so it is never rewritten under its
+  // own entry (it stays assumed, which is what makes using the entry
+  // sound), and the rewritten conjuncts are cached by their REWRITTEN node
+  // -- a formula-level key, valid whenever the same rewrite recurs, and
+  // simply not reached in rounds where the definition is gone.
+  void harvestPushed(const ASTNode& c, ASTNodeMap& sigmaP,
+                     ASTNodeSet& sources)
+  {
+    ASTNode var, term;
+    if (!recogniseDefinition(c, var, term))
+      return;
+    if (sigma0.find(var) != sigma0.end())
+      return;
+    if (sigmaP.find(var) != sigmaP.end())
+      return;
+
+    sigmaP[var] = term;
+    sources.insert(c);
+  }
+
+  // Assertion-local, equivalence-preserving simplification, with a fresh
+  // Simplifier so no cross-assertion state can exist: its substitution
+  // map is empty, so everything it does to this one conjunct is a plain
+  // equivalence. Measurably worth it on multi-round workloads; sharing a
+  // Simplifier across conjuncts measured slower, so this stays per call.
+  ASTNode simplifyAlone(const ASTNode& n)
+  {
+    SubstitutionMap localSm(bm);
+    Simplifier localSimp(bm, &localSm);
+    return localSimp.SimplifyFormula_TopLevel(n, false);
+  }
+
   // What actually gets encoded for a conjunct: the conjunct rewritten under
-  // the base-level substitutions and then simplified on its own
-  // (assertion-local, equivalence-preserving; a fresh Simplifier per call
-  // so no cross-assertion state exists to leak). Keyed by the ORIGINAL
-  // conjunct in rootLitOf, so reuse is untouched; encoding under an older,
-  // smaller sigma0 stays sound because sigma0 entries are permanent truths.
+  // the base-level substitutions and then simplified on its own. Keyed by
+  // the ORIGINAL conjunct in rootLitOf, so reuse is untouched; encoding
+  // under an older, smaller sigma0 stays sound because sigma0 entries are
+  // permanent truths.
   ASTNode prepareConjunct(const ASTNode& c)
   {
     if (!bm->UserFlags.optimize_flag)
@@ -491,16 +547,51 @@ struct IncrementalSolver::Impl
                                      bm->defaultNodeFactory);
     }
 
-    // Assertion-local, equivalence-preserving simplification, with a fresh
-    // Simplifier so no cross-assertion state can exist: its substitution
-    // map is empty, so everything it does to this one conjunct is a plain
-    // equivalence. Measurably worth it on multi-round workloads; sharing a
-    // Simplifier across conjuncts measured slower, so this stays per call.
-    SubstitutionMap localSm(bm);
-    Simplifier localSimp(bm, &localSm);
-    out = localSimp.SimplifyFormula_TopLevel(out, false);
+    return simplifyAlone(out);
+  }
 
-    return out;
+  // Lower, transform and bit-blast a fully rewritten word-level formula
+  // into the persistent solver, returning its root literal. Everything
+  // emitted is a conservative extension; every actual encode is counted
+  // for the per-call statistics. `key` is the node this encoding is cached
+  // under in rootLitOf -- the raw conjunct on the ordinary path, the
+  // rewritten node on the pushed-definitions path -- and the registry rows
+  // the transform visits are recorded under the same key, so a later cache
+  // hit finds its rows by the node it hit with.
+  int encodePrepared(const ASTNode& key, ASTNode toEncode,
+                     const Fragment& frag)
+  {
+    if (frag.fp)
+      toEncode = fpContext()->lowerPrepared(toEncode);
+
+    if (frag.arrays)
+    {
+      batchAT->arrayToIndexToRead = myReads;
+      batchAT->ack_pair = myAckPairs;
+      batchAT->recordTouchedReads = true;
+      batchAT->touchedReads.clear();
+      toEncode = batchAT->TransformFormula_TopLevel(toEncode);
+      batchAT->recordTouchedReads = false;
+      readsOfEncoded[key] = batchAT->touchedReads;
+      myReads = batchAT->arrayToIndexToRead;
+      myAckPairs = batchAT->ack_pair;
+      assert(!containsArrayOps(toEncode, bm));
+      totalizeRegistrySymbols();
+    }
+
+    bm->GetRunTimes()->start(RunTimes::BitBlasting);
+    BBNodeAIG root = bb.BBForm(toEncode);
+    bm->GetRunTimes()->stop(RunTimes::BitBlasting);
+
+    bm->GetRunTimes()->start(RunTimes::CNFConversion);
+    Aig_Obj_t* regular = Aig_Regular(root.n);
+    ensureEncoded(regular);
+    const int lit =
+        2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
+    bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+
+    encodesThisCall++;
+    return lit;
   }
 
   // Bit-blast a conjunct (once, memoised across the session by the
@@ -527,36 +618,53 @@ struct IncrementalSolver::Impl
 
     toEncode = prepareConjunct(toEncode);
 
-    if (frag.fp)
-      toEncode = fpContext()->lowerPrepared(toEncode);
-
-    if (frag.arrays)
-    {
-      batchAT->arrayToIndexToRead = myReads;
-      batchAT->ack_pair = myAckPairs;
-      batchAT->recordTouchedReads = true;
-      batchAT->touchedReads.clear();
-      toEncode = batchAT->TransformFormula_TopLevel(toEncode);
-      batchAT->recordTouchedReads = false;
-      readsOfConjunct[conjunct] = batchAT->touchedReads;
-      myReads = batchAT->arrayToIndexToRead;
-      myAckPairs = batchAT->ack_pair;
-      assert(!containsArrayOps(toEncode, bm));
-      totalizeRegistrySymbols();
-    }
-
-    bm->GetRunTimes()->start(RunTimes::BitBlasting);
-    BBNodeAIG root = bb.BBForm(toEncode);
-    bm->GetRunTimes()->stop(RunTimes::BitBlasting);
-
-    bm->GetRunTimes()->start(RunTimes::CNFConversion);
-    Aig_Obj_t* regular = Aig_Regular(root.n);
-    ensureEncoded(regular);
-    const int lit =
-        2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
-    bm->GetRunTimes()->stop(RunTimes::CNFConversion);
-
+    const int lit = encodePrepared(conjunct, toEncode, frag);
     rootLitOf[conjunct] = lit;
+    return lit;
+  }
+
+  // As rootLit, but under this round's pushed-level definitions as well.
+  // The rewritten form is only equivalent to the conjunct together with
+  // the defining equations, which are live conjuncts assumed alongside it
+  // -- so the encoding is cached by the REWRITTEN node: a round where a
+  // definition is gone rewrites differently and simply never reaches the
+  // stale entry. Defining conjuncts themselves, and base definitions kept
+  // raw by the freeze rule, take the ordinary path; so does any conjunct
+  // the round's definitions do not touch, sharing its raw-keyed entry.
+  // `encodedAs` reports the node the returned literal is cached under --
+  // the conjunct itself or the rewritten node -- which is also the key the
+  // encoding's registry rows are recorded by, so the caller can seed the
+  // refinement tables for what was actually assumed.
+  int rootLitUnder(const ASTNode& conjunct, ASTNodeMap& merged,
+                   const ASTNodeSet& sources, ASTNode& encodedAs)
+  {
+    encodedAs = conjunct;
+    if (!bm->UserFlags.optimize_flag ||
+        sources.find(conjunct) != sources.end() ||
+        mustKeepRaw.find(conjunct) != mustKeepRaw.end())
+      return rootLit(conjunct);
+
+    const Fragment& frag = fragment(conjunct);
+
+    ASTNode pre = conjunct;
+    if (frag.fp)
+      pre = fpContext()->prepare(pre);
+
+    ASTNodeMap cache;
+    ASTNode rewritten =
+        SubstitutionMap::replace(pre, merged, cache, bm->defaultNodeFactory);
+    if (rewritten == pre)
+      return rootLit(conjunct);
+
+    ASTNode w = simplifyAlone(rewritten);
+    encodedAs = w;
+
+    NodeToLitMap::const_iterator it = rootLitOf.find(w);
+    if (it != rootLitOf.end())
+      return it->second;
+
+    const int lit = encodePrepared(w, w, frag);
+    rootLitOf[w] = lit;
     return lit;
   }
 
@@ -629,15 +737,17 @@ struct IncrementalSolver::Impl
   std::vector<std::pair<ASTNode, ASTNode>> lastSeededReads;
 
   // Seed the batch-side read table with only the reads of the given
-  // (active) conjuncts, drawn from the persistent registry.
-  void seedActiveReads(const std::vector<ASTNode>& activeConjuncts)
+  // (active) encodings, drawn from the persistent registry. The keys are
+  // whatever this round's literals were cached under: base-level conjuncts
+  // and, for the pushed levels, the nodes rootLitUnder reported.
+  void seedActiveReads(const std::vector<ASTNode>& activeKeys)
   {
     ArrayTransformer::ArrType filtered;
-    for (const ASTNode& c : activeConjuncts)
+    for (const ASTNode& c : activeKeys)
     {
       std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::
-          const_iterator rit = readsOfConjunct.find(c);
-      if (rit == readsOfConjunct.end())
+          const_iterator rit = readsOfEncoded.find(c);
+      if (rit == readsOfEncoded.end())
         continue;
       for (const std::pair<ASTNode, ASTNode>& ai : rit->second)
       {
@@ -1036,7 +1146,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     staleExt->beginSolve();
 
   const uint64_t clausesBefore = impl->clausesAdded;
-  uint64_t newConjuncts = 0;
+  impl->encodesThisCall = 0;
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
@@ -1057,39 +1167,72 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
 
   for (const ASTNode& c : newLevel0)
   {
-    newConjuncts++;
     const int lit = impl->rootLit(c);
     SATSolver::vec_literals unit;
     unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
     impl->addClause(unit);
   }
 
+  // Definitions found at the PUSHED levels hold only while their levels are
+  // live, so they are collected per call, applied to pushed conjuncts only
+  // -- a base-level unit is permanent and must never absorb a retractable
+  // truth -- and every defining equation stays assumed. Nothing about them
+  // persists between calls.
+  ASTNodeMap merged;
+  ASTNodeSet pushedSources;
+  bool havePushed = false;
+  if (uf.optimize_flag)
+  {
+    ASTNodeMap sigmaP;
+    for (size_t level = 1; level < assertionsSMT2.size(); level++)
+    {
+      conjuncts.clear();
+      splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
+      for (const ASTNode& c : conjuncts)
+        impl->harvestPushed(c, sigmaP, pushedSources);
+    }
+    if (!sigmaP.empty())
+    {
+      merged = impl->sigma0;
+      merged.insert(sigmaP.begin(), sigmaP.end());
+      havePushed = true;
+    }
+  }
+
   // Pushed levels: encode (against the permanent caches) and assume. The
   // assumption set is recomputed from the current stack on every call, so
-  // popped levels vanish by simply no longer being here.
+  // popped levels vanish by simply no longer being here. Each conjunct's
+  // encoding key -- the conjunct itself, or the rewritten node the
+  // pushed-definitions path cached under -- is collected so refinement can
+  // seed its tables from what was actually assumed.
   SATSolver::vec_literals assumptions;
+  std::vector<ASTNode> activeEncodedKeys;
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
     conjuncts.clear();
     splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
     for (const ASTNode& c : conjuncts)
     {
-      if (impl->rootLitOf.find(c) == impl->rootLitOf.end())
-        newConjuncts++;
-      const int lit = impl->rootLit(c);
+      ASTNode encodedAs = c;
+      const int lit =
+          havePushed
+              ? impl->rootLitUnder(c, merged, pushedSources, encodedAs)
+              : impl->rootLit(c);
+      activeEncodedKeys.push_back(encodedAs);
       assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
     }
   }
 
   if (uf.stats_flag)
   {
-    std::cerr << "Incremental: encoded " << newConjuncts
+    std::cerr << "Incremental: encoded " << impl->encodesThisCall
               << " new conjuncts, added "
               << (impl->clausesAdded - clausesBefore) << " clauses, assumed "
               << assumptions.size() << " literals, solver has "
               << impl->solver->nVars() << " variables, "
-              << impl->sigma0.size() << " base-level substitutions"
-              << std::endl;
+              << impl->sigma0.size() << " base-level and "
+              << (havePushed ? merged.size() - impl->sigma0.size() : 0)
+              << " pushed substitutions" << std::endl;
   }
 
   // Array refinement needs a candidate model to find violated axioms, so
@@ -1144,13 +1287,8 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     {
       std::vector<ASTNode> active(impl->level0Asserted.begin(),
                                   impl->level0Asserted.end());
-      ASTVec cs;
-      for (size_t level = 1; level < assertionsSMT2.size(); level++)
-      {
-        cs.clear();
-        splitConjuncts(assertionsSMT2[level], bm->ASTTrue, cs);
-        active.insert(active.end(), cs.begin(), cs.end());
-      }
+      active.insert(active.end(), activeEncodedKeys.begin(),
+                    activeEncodedKeys.end());
       impl->seedActiveReads(active);
     }
     impl->seedEliminatedIntoModelChannel();
