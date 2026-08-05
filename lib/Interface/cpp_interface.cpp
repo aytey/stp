@@ -64,7 +64,6 @@ void Cpp_interface::init()
   print_success = false;
   ignoreCheckSatRequest = false;
   produce_models = false;
-  changed_model_status = false;
   model_valid = false;
   incremental_from_start = bm.UserFlags.incremental_solving;
   solves_run = 0;
@@ -682,13 +681,6 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   checkInvariant();
   assert(assertionsSMT2.size() == cache.size());
 
-  // If there are no model commands in the STMLIB2 (say) file, then the command line
-  // argument might set that asks for the model to be checked.
-  if (changed_model_status)
-  {
-    bm.UserFlags.check_counterexample_flag = produce_models;
-  }
-
   Entry& last_run = cache.back();
   if ((last_run.node_number != assertionsSMT2.back().GetNodeNum()) &&
       (last_run.result == SOLVER_SATISFIABLE))
@@ -865,16 +857,20 @@ void Cpp_interface::setOption(std::string option, std::string value)
   }
   else if (option == "produce-models")
   {
-    changed_model_status = true;
-
+    // An input to the counterexample-construction derivations (batch and
+    // driver), NOT the self-check flag: asking for models is not asking
+    // for them to be verified, and the driver defers construction to the
+    // first read.
     if (value == "true")
     {
       produce_models = true;
+      bm.UserFlags.produce_models = true;
       success();
     }
     else if (value == "false")
     {
       produce_models = false;
+      bm.UserFlags.produce_models = false;
       success();
     }
     else

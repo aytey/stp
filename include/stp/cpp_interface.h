@@ -184,7 +184,6 @@ class Cpp_interface
   void resetIncrementalSolver();
 
   bool produce_models;
-  bool changed_model_status;
 
   // Whether the model held by the counterexample tables answers for the
   // current assertion stack. Set by checkSat from the solve's outcome;

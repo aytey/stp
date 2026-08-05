@@ -502,7 +502,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   }
 
   if (bm->UserFlags.check_counterexample_flag ||
-      bm->UserFlags.print_counterexample_flag || (arrayops && !removed))
+      bm->UserFlags.print_counterexample_flag ||
+      bm->UserFlags.produce_models || (arrayops && !removed))
     bm->UserFlags.construct_counterexample_flag = true;
   else
     bm->UserFlags.construct_counterexample_flag = false;

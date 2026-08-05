@@ -1810,7 +1810,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const bool needRefinement = activeHasArrays && !uf.ackermannisation;
 
   bool construct = uf.check_counterexample_flag ||
-                   uf.print_counterexample_flag || needRefinement;
+                   uf.print_counterexample_flag || uf.produce_models ||
+                   needRefinement;
 #ifndef NDEBUG
   construct = true;
 #endif
