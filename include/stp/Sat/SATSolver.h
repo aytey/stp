@@ -122,6 +122,17 @@ public:
   // enable -- a performance hint declined, not an error.
   virtual bool enableBVA() { return false; }
 
+  // Ask the backend to reuse the solver trail across incremental solve
+  // calls when consecutive assumption sequences share a prefix, instead of
+  // re-deciding and re-propagating from the root every call (CaDiCaL's
+  // incremental lazy backtracking). Only correct to rely on when the
+  // caller keeps its assumption order prefix-stable across calls, which
+  // the incremental driver does: assumptions are emitted in assertion
+  // stack order and push/pop only ever change the suffix. FALSE means the
+  // backend has no such mechanism -- a performance hint declined, not an
+  // error.
+  virtual bool enableTrailReuse() { return false; }
+
   // ---------------------------------------------------------------------
   // Resource budgets.
   //

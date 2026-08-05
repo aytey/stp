@@ -95,6 +95,8 @@ public:
 
   bool enableBVA() override;
 
+  bool enableTrailReuse() override;
+
   void setVerbosity(int v) override;
 
   unsigned long nVars() const override;

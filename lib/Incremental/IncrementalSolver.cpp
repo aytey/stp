@@ -326,6 +326,13 @@ struct IncrementalSolver::Impl
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
     solver->enableRefinement(true);
+
+    // The driver's assumption order is prefix-stable across calls --
+    // assumptions are emitted in assertion stack order, and push/pop only
+    // ever change the suffix -- which is exactly what lets a backend keep
+    // the shared trail between solves instead of re-descending from the
+    // root every call.
+    solver->enableTrailReuse();
   }
 
   int varOfAig(Aig_Obj_t* regular)
@@ -889,6 +896,7 @@ struct IncrementalSolver::Impl
   {
     solver.reset(makeBackend(bm->UserFlags));
     solver->enableRefinement(true);
+    solver->enableTrailReuse();
     bvaDecided = false;
 
     aigIdToVar.clear();

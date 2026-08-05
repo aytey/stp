@@ -25,6 +25,7 @@
 AddSTPGTest(Backtrack_Test.cpp)
 AddSTPGTest(IncrementalActiveReads_Test.cpp)
 AddSTPGTest(SatSolverBudget_Test.cpp)
+AddSTPGTest(TrailReuse_Test.cpp)
 AddSTPGTest(PropagateEqualities_Test.cpp)
 AddSTPGTest(SimplifyingNodeFactory_Test.cpp)
 AddSTPGTest(FindPureLiterals_Test.cpp)

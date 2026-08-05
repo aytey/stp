@@ -214,6 +214,17 @@ bool Cadical::enableBVA()
 #endif
 }
 
+// Incremental lazy backtracking: on a new solve whose assumptions extend a
+// prefix of the previous call's, CaDiCaL backtracks only to the first
+// difference and keeps the shared trail, instead of re-deciding and
+// re-propagating everything from the root. Mode 1 restricts the kept
+// trail to the assumption prefix; measured equal to mode 2 on the
+// many-small-queries workloads this targets.
+bool Cadical::enableTrailReuse()
+{
+  return s->set("ilb", 1);
+}
+
 // With factor enabled, external variables must be declared before use, and
 // CaDiCaL chooses where each declared range lives so that it never overlaps
 // the extension variables factor invents. Declaration is batched here
