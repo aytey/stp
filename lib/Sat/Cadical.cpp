@@ -85,11 +85,20 @@ bool Cadical::solveWithAssumptionsInternal(const vec_literals& assumps,
 {
   // Assumptions hold for the next solve() call only, which is exactly the
   // semantics solveWithAssumptions promises. Literal conversion as in
-  // addClause.
+  // addClause -- including the factor translation: an assumption placed
+  // under a raw STP index would bind a different CaDiCaL variable than the
+  // clauses use, silently constraining nothing. Declaration must also
+  // happen before the assumption names the variable, not first inside
+  // solveInternal: an assumed variable no clause has mentioned yet would
+  // otherwise be imported undeclared, and the range declared for it
+  // afterwards would map it elsewhere for the rest of the session.
+  declareNewVariables();
   for (int i = 0; i < assumps.size(); i++)
   {
     uint32_t var = assumps[i].x >> 1;
     uint32_t polarity = assumps[i].x & 1;
+    if (factor_enabled)
+      var = (uint32_t)ext_of_stp[var];
     s->assume(polarity ? -(int)var : (int)var);
   }
 
