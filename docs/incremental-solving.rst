@@ -88,16 +88,32 @@ rather than by backtracking:
 - Each new conjunct is simplified *on its own* (a fresh Simplifier whose
   substitution map is empty, so everything it does is a plain
   equivalence) before encoding.
-- Substitutions are harvested from **base-level** equations only
-  (``x = t`` with an occurs-check, unit booleans as true/false). The base
-  level only grows -- reset destroys the driver -- so the store is
-  monotone and needs no backtracking. A defining equation may only be
-  simplified away under its own substitution if the variable has never
-  reached the SAT solver; a variable whose bits already live in the
-  solver keeps its equation as a real constraint (otherwise the existing
-  bits would silently lose it -- sat where unsat lies that way). A
-  variable eliminated before it was ever encoded gets its model value by
-  evaluating its definition.
+- Substitutions are harvested from defining equations (``x = t`` with an
+  occurs-check, unit booleans as true/false) at every level, but stored
+  and applied differently by level. **Base-level** definitions go into a
+  persistent store: the base level only grows -- reset destroys the
+  driver -- so that store is monotone and needs no backtracking.
+  **Pushed-level** definitions are windowed per check-sat: each call
+  collects them from the levels live *that call* and rewrites deeper
+  conjuncts under them, caching the rewritten conjunct's encoding (keyed
+  by the rewritten node, so the same conjunct under different live
+  definitions encodes separately and a re-pushed stack hits its cache).
+  In both cases a defining equation may only be simplified away under its
+  own substitution if the variable has never reached the SAT solver; a
+  variable whose bits already live in the solver keeps its equation as a
+  real constraint (otherwise the existing bits would silently lose it --
+  sat where unsat lies that way). A variable eliminated before it was
+  ever encoded gets its model value by evaluating its definition.
+
+A pushed level holding many conjuncts is assumed through one *activation
+literal* -- a fresh variable implying each conjunct's root -- so a level
+costs one assumption however many assertions it carries, which keeps the
+per-check assumption set (and the backend's assumption-analysis work)
+proportional to the number of levels. The literal is cached on the
+level's sorted root-literal set, not its formula: pushed-level
+substitutions can make the same formula encode to different roots under
+different live definitions, and the roots are what the literal must
+imply.
 
 Arrays
 ------

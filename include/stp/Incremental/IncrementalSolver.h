@@ -41,10 +41,9 @@ THE SOFTWARE.
 // not assuming it any more. Learned clauses therefore survive both check-sats
 // and pops by construction.
 //
-// The driver refuses queries it cannot yet encode (arrays, floating point,
-// array equality); the caller then runs the ordinary batch pipeline for that
-// check-sat, and the driver resumes when the stack is back inside its
-// fragment.
+// The whole input language is covered -- plain bit-vectors, arrays (lazy
+// refinement or --ackermanize), floating point, and --array-equality --
+// canHandle() below is the seam should a future construct need excluding.
 
 namespace stp
 {
