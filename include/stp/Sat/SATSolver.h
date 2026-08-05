@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <vector>
 
 // Don't let the defines escape outside.
 
@@ -132,6 +133,21 @@ public:
   // backend has no such mechanism -- a performance hint declined, not an
   // error.
   virtual bool enableTrailReuse() { return false; }
+
+  // After solveWithAssumptions returned false: the subset of the assumed
+  // literals that the refutation actually used, in the same 2*var+sign
+  // encoding they were passed in. Any superset of a genuine core is a
+  // correct answer -- the full assumption set always is one, and that is
+  // the default for backends without the query. Only meaningful
+  // immediately after an unsatisfiable assumption solve, before anything
+  // else touches the solver.
+  virtual void unsatAssumptions(const vec_literals& assumps,
+                                std::vector<int>& out)
+  {
+    out.clear();
+    for (int i = 0; i < assumps.size(); i++)
+      out.push_back(assumps[i].x);
+  }
 
   // Suggest the value the decision heuristic should try first for a
   // variable. Pure search advice: it cannot change any verdict, only

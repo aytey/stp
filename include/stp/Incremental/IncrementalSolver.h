@@ -80,13 +80,35 @@ public:
   // and leave everything else in place for the next call. On sat, the
   // counterexample tables are populated exactly as the batch path would.
   //
+  // With `assumeLastLevelPerConjunct` the LAST level's conjuncts are
+  // assumed one root literal each instead of grouped under an activation
+  // literal -- check-sat-assuming passes its assumptions as that level and
+  // wants per-assumption failure granularity for get-unsat-assumptions.
+  //
   // The driver holds no per-level state: the assumption set is recomputed
   // from `assertionsSMT2` on every call (against permanent encoding caches),
   // so push and pop need no hooks here -- the parser's assertion stack is
   // the single source of truth. Base-level conjuncts become permanent unit
   // clauses, which is sound because the base level only ever grows; it is
   // destroyed only by reset/reset-assertions, which destroy this object.
-  SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2);
+  SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2,
+                              bool assumeLastLevelPerConjunct = false);
+
+  // The unsat story of the most recent checkSat, valid until the next one.
+  // hasAssumptionGranularity: the last level was assumed per conjunct and
+  // the backend reported which assumptions failed -- then
+  // lastUnsatAssumptionConjuncts() is the (possibly empty: the
+  // unsatisfiability may not need the assumptions at all) subset of that
+  // level's conjuncts in the core. Without granularity a caller must fall
+  // back to reporting every assumption, which is always a correct core.
+  // lastUnsatCoreLevels() is the set of pushed-level indices (into the
+  // checkSat argument vector) whose assumed literals the refutation used;
+  // an extensionality round is assumed as one block literal, so it
+  // reports every level.
+  bool lastSolveWasUnsat() const;
+  bool lastUnsatHasAssumptionGranularity() const;
+  std::vector<ASTNode> lastUnsatAssumptionConjuncts() const;
+  std::vector<size_t> lastUnsatCoreLevels() const;
 
   // Test-only inspection: the (array, index) rows the last refinement-driven
   // check-sat seeded into the batch-side read table. The invariant under
@@ -107,7 +129,8 @@ private:
   // recursion, and parse-time inlining of chained define-funs builds
   // nodes deep enough (tens of thousands of levels from flat input) to
   // exhaust a default-sized stack.
-  SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2);
+  SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
+                                            bool assumeLastLevelPerConjunct);
 
   std::unique_ptr<Impl> impl;
 };

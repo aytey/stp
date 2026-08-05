@@ -1502,7 +1502,7 @@ cmdi:
 |
      GET_UNSAT_ASSUMPTIONS_TOK
     {
-       stp::GlobalParserInterface->unsupported();
+       stp::GlobalParserInterface->getUnsatAssumptions();
     }
 |
      /* STP's sorts are fixed: bitvectors, booleans and arrays of them. */

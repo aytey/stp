@@ -99,6 +99,9 @@ public:
 
   void suggestPhase(uint32_t var, bool value) override;
 
+  void unsatAssumptions(const vec_literals& assumps,
+                        std::vector<int>& out) override;
+
   void setVerbosity(int v) override;
 
   unsigned long nVars() const override;

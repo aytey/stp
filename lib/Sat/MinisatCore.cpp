@@ -63,6 +63,20 @@ bool MinisatCore::addClause(
   return s->addClause(ps);
 }
 
+void MinisatCore::unsatAssumptions(const vec_literals& assumps,
+                                   std::vector<int>& out)
+{
+  // After an unsat assumption solve, MiniSat's `conflict` holds the final
+  // conflict clause expressed in the assumptions: the negations of the
+  // failed ones. An assumption is in the core iff its negation appears.
+  out.clear();
+  for (int i = 0; i < assumps.size(); i++)
+  {
+    if (s->conflict.has(~assumps[i]))
+      out.push_back(assumps[i].x);
+  }
+}
+
 bool MinisatCore::okay() const // FALSE means solver is in a conflicting state
 {
   return s->okay();

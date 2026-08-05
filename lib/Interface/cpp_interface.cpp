@@ -154,8 +154,10 @@ void Cpp_interface::AddAssert(const ASTNode& assert)
 {
   bm.AddAssert(assert);
 
-  // SMT-LIB: an assertion invalidates the most recent model.
+  // SMT-LIB: an assertion invalidates the most recent model, and the last
+  // check-sat-assuming round with it.
   model_valid = false;
+  lastCheckWasAssuming = false;
 }
 
 void Cpp_interface::SetQuery(const ASTNode& q)
@@ -574,6 +576,7 @@ void Cpp_interface::pop()
     FatalError("Can't pop away the default base element.");
 
   model_valid = false;
+  lastCheckWasAssuming = false;
 
   bm.Pop();
 
@@ -604,6 +607,7 @@ void Cpp_interface::push()
     cache.push_back(Entry(SOLVER_UNDECIDED));
 
   model_valid = false;
+  lastCheckWasAssuming = false;
 
   bm.Push();
 
@@ -635,7 +639,15 @@ void Cpp_interface::checkSatAssuming(const ASTVec& assumptions)
   for (const ASTNode& a : assumptions)
     AddAssert(a);
 
-  checkSat(getAssertVector());
+  // The assumptions ride as the last level, assumed one conjunct each so
+  // an unsat answer can name exactly the assumptions it used.
+  checkSat(getAssertVector(), true);
+
+  // Remember the round for get-unsat-assumptions; the verdict is read
+  // before the frame pop erases its cache entry.
+  lastAssumptionTerms = assumptions;
+  lastAssumingResult = cache.back().result;
+  lastCheckWasAssuming = true;
 
   // checkSat set model_valid from this solve's outcome; the frame pop
   // below deliberately leaves both it and the model alone, so get-value
@@ -649,10 +661,15 @@ void Cpp_interface::ignoreCheckSat()
 }
 
 // Does some simple caching of prior results.
-void Cpp_interface::checkSat(const ASTVec& assertionsSMT2)
+void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
+                             bool fromCheckSatAssuming)
 {
   if (ignoreCheckSatRequest)
     return;
+
+  // Any ordinary check supersedes the last check-sat-assuming round;
+  // checkSatAssuming re-records after this returns.
+  lastCheckWasAssuming = false;
 
   bm.GetRunTimes()->stop(RunTimes::Parsing);
 
@@ -698,8 +715,8 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2)
     {
       // The incremental driver keeps its SAT solver and encoding across
       // check-sats; resetSolver() above cleared only batch-pipeline tables.
-      last_result =
-          GlobalSTP->getIncrementalSolver()->checkSat(assertionsSMT2);
+      last_result = GlobalSTP->getIncrementalSolver()->checkSat(
+          assertionsSMT2, fromCheckSatAssuming);
     }
     else
     {
@@ -831,13 +848,22 @@ void Cpp_interface::setOption(std::string option, std::string value)
     else
       unsupported();
   }
+  else if (option == "produce-unsat-assumptions")
+  {
+    // get-unsat-assumptions is always answered; the option is accepted so
+    // conforming drivers can request it.
+    if (value == "true" || value == "false")
+      success();
+    else
+      unsupported();
+  }
   else if (option == "diagnostic-output-channel")
   {
     if (value == "stdout")
       success();
     else
       unsupported();
-  }	  
+  }
   else
     unsupported();
 }
@@ -935,6 +961,79 @@ void Cpp_interface::getValue(const ASTVec& v)
   os << ")";
 
   cout << os.str() << std::endl;
+}
+
+namespace
+{
+// Whether any top-level conjunct of `a` is in `failed`. The driver reports
+// failed conjuncts of the assumptions LEVEL, and an assumption that is
+// itself a conjunction was split before it was assumed, so membership is
+// judged against its flattened conjuncts.
+bool assumptionFailed(const ASTNode& a, const ASTNodeSet& failed,
+                      const ASTNode& trueNode)
+{
+  std::vector<ASTNode> pending(1, a);
+  while (!pending.empty())
+  {
+    const ASTNode n = pending.back();
+    pending.pop_back();
+    if (n == trueNode)
+      continue;
+    if (n.GetKind() == AND)
+    {
+      for (const ASTNode& c : n)
+        pending.push_back(c);
+      continue;
+    }
+    if (failed.count(n))
+      return true;
+  }
+  return false;
+}
+} // namespace
+
+void Cpp_interface::getUnsatAssumptions()
+{
+  // Meaningful right after a check-sat-assuming that answered unsat;
+  // anything else gets the empty list, which is the correct core whenever
+  // the command is legal at all.
+  if (!lastCheckWasAssuming || lastAssumingResult != SOLVER_UNSATISFIABLE)
+  {
+    cout << "()" << endl;
+    return;
+  }
+
+  // Per-assumption granularity from the driver when it ran the solve; the
+  // full assumption set is always a correct core, and covers the batch
+  // first solve and the extensionality rounds.
+  std::vector<ASTNode> failed;
+  bool granular = false;
+  if (GlobalSTP != NULL)
+  {
+    IncrementalSolver* inc = GlobalSTP->getIncrementalSolver();
+    if (inc != NULL && inc->lastSolveWasUnsat() &&
+        inc->lastUnsatHasAssumptionGranularity())
+    {
+      failed = inc->lastUnsatAssumptionConjuncts();
+      granular = true;
+    }
+  }
+  const ASTNodeSet failedSet(failed.begin(), failed.end());
+
+  std::ostringstream os;
+  os << "(";
+  bool first = true;
+  for (const ASTNode& a : lastAssumptionTerms)
+  {
+    if (granular && !assumptionFailed(a, failedSet, bm.ASTTrue))
+      continue;
+    if (!first)
+      os << " ";
+    first = false;
+    printer::SMTLIB2_Print1(os, a, 0, false);
+  }
+  os << ")";
+  cout << os.str() << endl;
 }
 
 // Note, doesn't consider that extra assertions might have been applied?

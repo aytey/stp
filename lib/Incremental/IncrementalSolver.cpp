@@ -309,6 +309,29 @@ struct IncrementalSolver::Impl
   // heuristic away from them.
   std::unordered_set<int> everAssumedLits;
 
+  // Per-call bookkeeping for unsat answers: which level each assumed
+  // literal carried, and -- when the caller asked for the last level to be
+  // assumed one conjunct at a time (check-sat-assuming wants per-assumption
+  // failure granularity) -- which conjunct each of its literals stands
+  // for. Consumed by the unsat-assumption accessors; rebuilt every call.
+  std::vector<std::pair<int, size_t>> assumedLitLevels;
+  std::vector<std::pair<int, ASTNode>> lastLevelLitConjuncts;
+  bool lastUnsat;
+  bool lastUnsatCoarse;     // ext rounds: one block literal, no granularity
+  bool lastLevelIndividual; // the per-conjunct mode actually ran
+  std::vector<int> lastFailedLits;
+  size_t lastLevelCount;
+
+  void recordUnsat(const SATSolver::vec_literals& assumptions,
+                   size_t levelCount, bool coarse)
+  {
+    lastUnsat = true;
+    lastUnsatCoarse = coarse;
+    lastLevelCount = levelCount;
+    if (!coarse)
+      solver->unsatAssumptions(assumptions, lastFailedLits);
+  }
+
   // Whether the bounded-variable-addition decision has been taken for the
   // current backend instance. rebuildEncodings resets it: the fresh solver
   // reopens the configuration window. The warning latch is per session --
@@ -327,7 +350,9 @@ struct IncrementalSolver::Impl
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), bvaDecided(false), bvaWarned(false),
-        batchTablesSeeded(false), clausesAdded(0), encodesThisCall(0)
+        batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
+        lastLevelIndividual(false), lastLevelCount(0), clausesAdded(0),
+        encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -1339,6 +1364,12 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
 
   tosat->setAssumptions(NULL);
   uf.ackermannisation = savedAck;
+
+  // The whole round rode one block literal, so an unsat answer has no
+  // per-level or per-assumption granularity: the core is everything.
+  if (res == SOLVER_UNSATISFIABLE)
+    recordUnsat(assumptions, assertionsSMT2.size(), true);
+
   return res;
 }
 
@@ -1353,6 +1384,55 @@ std::vector<std::pair<ASTNode, ASTNode>>
 IncrementalSolver::seededReadsForTesting() const
 {
   return impl->lastSeededReads;
+}
+
+bool IncrementalSolver::lastSolveWasUnsat() const
+{
+  return impl->lastUnsat;
+}
+
+bool IncrementalSolver::lastUnsatHasAssumptionGranularity() const
+{
+  return impl->lastUnsat && !impl->lastUnsatCoarse &&
+         impl->lastLevelIndividual;
+}
+
+std::vector<ASTNode> IncrementalSolver::lastUnsatAssumptionConjuncts() const
+{
+  std::vector<ASTNode> out;
+  if (!lastUnsatHasAssumptionGranularity())
+    return out;
+  const std::unordered_set<int> failed(impl->lastFailedLits.begin(),
+                                       impl->lastFailedLits.end());
+  for (const std::pair<int, ASTNode>& lc : impl->lastLevelLitConjuncts)
+  {
+    if (failed.count(lc.first))
+      out.push_back(lc.second);
+  }
+  return out;
+}
+
+std::vector<size_t> IncrementalSolver::lastUnsatCoreLevels() const
+{
+  std::vector<size_t> out;
+  if (!impl->lastUnsat)
+    return out;
+  if (impl->lastUnsatCoarse)
+  {
+    for (size_t i = 1; i < impl->lastLevelCount; i++)
+      out.push_back(i);
+    return out;
+  }
+  const std::unordered_set<int> failed(impl->lastFailedLits.begin(),
+                                       impl->lastFailedLits.end());
+  std::unordered_set<size_t> seen;
+  for (const std::pair<int, size_t>& ll : impl->assumedLitLevels)
+  {
+    if (failed.count(ll.first) && seen.insert(ll.second).second)
+      out.push_back(ll.second);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 IncrementalSolver::~IncrementalSolver()
@@ -1439,7 +1519,8 @@ void runOnBigStack(std::function<void()> fn)
 
 } // namespace
 
-SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
+SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
+                                               bool assumeLastLevelPerConjunct)
 {
   SOLVER_RETURN_TYPE result = SOLVER_ERROR;
   std::exception_ptr thrown;
@@ -1455,7 +1536,8 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
     ASTInternal::adoptUidCounter(uidBefore);
     try
     {
-      result = checkSatOnCurrentStack(assertionsSMT2);
+      result =
+          checkSatOnCurrentStack(assertionsSMT2, assumeLastLevelPerConjunct);
     }
     catch (...)
     {
@@ -1471,12 +1553,22 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2)
 }
 
 SOLVER_RETURN_TYPE
-IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
+IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
+                                          bool assumeLastLevelPerConjunct)
 {
   STPMgr* bm = impl->bm;
   UserDefinedFlags& uf = bm->UserFlags;
 
   assert(!assertionsSMT2.empty());
+
+  // The unsat story is per solve; a stale one must not answer for this
+  // call.
+  impl->lastUnsat = false;
+  impl->lastUnsatCoarse = false;
+  impl->lastLevelIndividual = false;
+  impl->assumedLitLevels.clear();
+  impl->lastLevelLitConjuncts.clear();
+  impl->lastFailedLits.clear();
 
   // The relief valve: once the solver is past the configured size and most
   // of its encodings belong to content no longer on the stack, start it
@@ -1613,8 +1705,27 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
       activeEncodedKeys.push_back(encodedAs);
     }
 
+    if (assumeLastLevelPerConjunct && level + 1 == assertionsSMT2.size())
+    {
+      // Per-assumption failure granularity: each conjunct's own root is
+      // assumed, and remembered against its conjunct, so an unsat answer
+      // can name exactly the assumptions the refutation used.
+      impl->lastLevelIndividual = true;
+      for (size_t k = 0; k < conjuncts.size(); k++)
+      {
+        const int r = levelRoots[k];
+        impl->everAssumedLits.insert(r);
+        impl->assumedLitLevels.push_back(std::make_pair(r, level));
+        impl->lastLevelLitConjuncts.push_back(
+            std::make_pair(r, conjuncts[k]));
+        assumptions.push(SATSolver::mkLit(r >> 1, r & 1));
+      }
+      continue;
+    }
+
     const int lit = impl->levelAssumption(levelRoots);
     impl->everAssumedLits.insert(lit);
+    impl->assumedLitLevels.push_back(std::make_pair(lit, level));
     assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
 
@@ -1715,6 +1826,9 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
     if (uf.stats_flag)
       impl->solver->printStats();
 
+    if (res == SOLVER_UNSATISFIABLE)
+      impl->recordUnsat(assumptions, assertionsSMT2.size(), false);
+
     // SOLVER_INVALID and SOLVER_SATISFIABLE (resp. VALID/UNSATISFIABLE)
     // are the same enum values, so this is already in check-sat terms.
     return res;
@@ -1736,7 +1850,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2)
     return SOLVER_TIMEOUT;
 
   if (!sat)
+  {
+    impl->recordUnsat(assumptions, assertionsSMT2.size(), false);
     return SOLVER_UNSATISFIABLE;
+  }
 
   if (construct)
   {

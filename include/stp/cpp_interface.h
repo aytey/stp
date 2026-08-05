@@ -196,6 +196,14 @@ class Cpp_interface
   bool incremental_from_start;
   size_t solves_run;
 
+  // The most recent check-sat-assuming: its assumption terms, its verdict,
+  // and whether it is still the last thing that happened to the assertion
+  // stack -- get-unsat-assumptions answers from these, and any stack
+  // change or ordinary check invalidates them, mirroring model_valid.
+  ASTVec lastAssumptionTerms;
+  SOLVER_RETURN_TYPE lastAssumingResult = SOLVER_UNDECIDED;
+  bool lastCheckWasAssuming = false;
+
   // Remove the frame checkSatAssuming pushed, keeping the solver's derived
   // tables -- and with them the model just constructed -- readable. Every
   // real solve begins by clearing those tables (checkSat calls resetSolver
@@ -361,7 +369,8 @@ public:
 
   // Useful when printing back, so that you can parse, but ignore the request.
   DLL_PUBLIC void ignoreCheckSat();
-  DLL_PUBLIC void checkSat(const ASTVec& assertionsSMT2);
+  DLL_PUBLIC void checkSat(const ASTVec& assertionsSMT2,
+                           bool fromCheckSatAssuming = false);
 
   // (check-sat-assuming (a1 ... an)): check-sat of the current stack
   // conjoined with the assumptions, which are discarded again afterwards.
@@ -369,6 +378,12 @@ public:
   // that retains the model, so get-value and get-model afterwards answer
   // under the assumptions, and the assertion stack is unchanged.
   DLL_PUBLIC void checkSatAssuming(const ASTVec& assumptions);
+
+  // After an unsat check-sat-assuming: the subset of its assumptions the
+  // refutation used, printed as an SMT-LIB list of terms. The driver
+  // supplies per-assumption granularity when it ran; otherwise the full
+  // assumption set is reported, which is always a correct core.
+  DLL_PUBLIC void getUnsatAssumptions();
 
   DLL_PUBLIC void cleanUp();
 

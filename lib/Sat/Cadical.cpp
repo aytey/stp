@@ -225,6 +225,24 @@ bool Cadical::enableTrailReuse()
   return s->set("ilb", 1);
 }
 
+void Cadical::unsatAssumptions(const vec_literals& assumps,
+                               std::vector<int>& out)
+{
+  // failed() answers per assumed literal, in CaDiCaL's external numbering
+  // -- so the query literal travels through the factor translation exactly
+  // as the assumption itself did.
+  out.clear();
+  for (int i = 0; i < assumps.size(); i++)
+  {
+    uint32_t var = assumps[i].x >> 1;
+    uint32_t polarity = assumps[i].x & 1;
+    if (factor_enabled)
+      var = (uint32_t)ext_of_stp[var];
+    if (s->failed(polarity ? -(int)var : (int)var))
+      out.push_back(assumps[i].x);
+  }
+}
+
 void Cadical::suggestPhase(uint32_t var, bool value)
 {
   // Literal conversion as everywhere: through the factor translation
