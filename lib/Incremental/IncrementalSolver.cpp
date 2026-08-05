@@ -366,11 +366,11 @@ struct IncrementalSolver::Impl
         solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
-        trueVar(-1), bvaDecided(false), bvaWarned(false),
-        batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
+        trueVar(-1), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), clausesAdded(0),
-        encodesThisCall(0)
+        trailReuseAllowed(true), lastLevelCount(0), bvaDecided(false),
+        bvaWarned(false), clausesAdded(0), encodesThisCall(0),
+        batchTablesSeeded(false)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
