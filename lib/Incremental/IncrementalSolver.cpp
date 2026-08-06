@@ -729,7 +729,28 @@ struct IncrementalSolver::Impl
                      const Fragment& frag)
   {
     if (frag.fp)
+    {
       toEncode = fpContext()->lowerPrepared(toEncode);
+
+      // Per-conjunct simplification on the FP-lowered form:
+      // cross-conjunct CBP (persistent) + local simplification.
+      if (bm->UserFlags.optimize_flag && bm->UserFlags.bitConstantProp_flag)
+      {
+        IncrementalCBP* cbp = ensureCBP();
+        cbp->addConstraints(toEncode);
+
+        ASTNodeMap fixed = cbp->getAllFixed();
+        if (!fixed.empty())
+        {
+          ASTNodeMap cache;
+          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
+                                              bm->defaultNodeFactory);
+          SubstitutionMap localSm(bm);
+          Simplifier localSimp(bm, &localSm);
+          toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
+        }
+      }
+    }
 
     if (frag.arrays)
     {
@@ -745,34 +766,6 @@ struct IncrementalSolver::Impl
       batchTablesSeeded = false;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
-    }
-
-    // Run the batch pipeline's simplification cascade on the lowered/
-    // transformed formula. This runs for ALL conjuncts (not just FP
-    // ones), matching what TopLevelSTPAux does:
-    //   1. Cross-conjunct CBP (incremental, persistent)
-    //   2. PropagateEqualities
-    //   3. RemoveUnconstrained
-    //   4. BVSolver
-    if (bm->UserFlags.optimize_flag)
-    {
-      if (bm->UserFlags.bitConstantProp_flag)
-      {
-        IncrementalCBP* cbp = ensureCBP();
-        cbp->addConstraints(toEncode);
-
-        ASTNodeMap fixed = cbp->getAllFixed();
-        if (!fixed.empty())
-        {
-          ASTNodeMap cache;
-          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
-                                              bm->defaultNodeFactory);
-        }
-      }
-
-      SubstitutionMap localSm(bm);
-      Simplifier localSimp(bm, &localSm);
-      toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
     }
 
     // Skip encoding if simplification resolved the conjunct.
