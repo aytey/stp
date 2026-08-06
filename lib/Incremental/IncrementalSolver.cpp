@@ -32,6 +32,8 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
+#include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -356,6 +358,45 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // ── Snapshotted cross-level simplification ───────────────────────────
+  //
+  // Each frame holds the CBP-discovered fixed values for a cumulative
+  // formula up to that depth, plus a fingerprint to detect when the
+  // content at that depth has changed and CBP needs to re-run.
+  //
+  // On push (depth grows): a new frame is created. On the first
+  // check-sat at the new depth, CBP runs on (parent's simplified form
+  // AND new assertions) and the result is cached. On pop (depth
+  // shrinks): the top frame is discarded and the parent's cached
+  // result is immediately available — no recomputation needed.
+  //
+  // Within a depth (multiple check-sats without push/pop), the cached
+  // CBP result is reused unless the assertions change (detected by
+  // fingerprint). This means CBP runs at most once per level
+  // transition, not once per check-sat.
+  struct SimplifiedFrame
+  {
+    ASTNodeMap fixedValues;   // {node -> constant} from CBP
+    unsigned fingerprint;     // hash of assertion content at this depth
+    bool valid;               // true if fixedValues is up to date
+  };
+  std::vector<SimplifiedFrame> simplifiedStack;
+
+  // The union of all live frames' fixedValues maps. Rebuilt on any
+  // stack change. Applied in prepareConjunct and after FP lowering.
+  ASTNodeMap cumulativeFixed;
+
+  void rebuildCumulativeFixed()
+  {
+    cumulativeFixed.clear();
+    for (const auto& frame : simplifiedStack)
+    {
+      if (frame.valid)
+        cumulativeFixed.insert(frame.fixedValues.begin(),
+                               frame.fixedValues.end());
+    }
+  }
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -641,24 +682,168 @@ struct IncrementalSolver::Impl
     return localSimp.SimplifyFormula_TopLevel(n, false);
   }
 
+  // Per-conjunct deep simplification: CBP + unconstrained elimination.
+  // Uses fresh, conjunct-local state so nothing persists.
+  ASTNode deepSimplify(const ASTNode& n)
+  {
+    if (n == bm->ASTTrue || n == bm->ASTFalse)
+      return n;
+
+    ASTNode out = n;
+
+    if (bm->UserFlags.bitConstantProp_flag)
+    {
+      SubstitutionMap cbSm(bm);
+      Simplifier cbSimp(bm, &cbSm);
+      simplifier::constantBitP::ConstantBitPropagation cb(
+          bm, &cbSimp, bm->defaultNodeFactory, out);
+      out = cb.topLevelBothWays(out);
+      if (cb.isUnsatisfiable())
+        return bm->ASTFalse;
+    }
+
+    if (bm->UserFlags.enable_unconstrained)
+    {
+      SubstitutionMap ucSm(bm);
+      Simplifier ucSimp(bm, &ucSm);
+      RemoveUnconstrained ruc(*bm);
+      out = ruc.topLevel(out, &ucSimp);
+    }
+
+    return simplifyAlone(out);
+  }
+
+  // Update the snapshotted simplification stack to match the current
+  // assertion depths. Runs CBP on the cumulative formula at each depth
+  // that needs it (new depth, or changed content at existing depth).
+  // CBP runs at most once per level transition, NOT per check-sat.
+  void updateSimplifiedStack(const ASTVec& assertionsSMT2)
+  {
+    if (!bm->UserFlags.bitConstantProp_flag)
+      return;
+
+    const size_t depth = assertionsSMT2.size();
+
+    // Pop: discard frames above the current depth.
+    if (simplifiedStack.size() > depth)
+    {
+      simplifiedStack.resize(depth);
+      rebuildCumulativeFixed();
+    }
+
+    // Grow: add empty frames for new depths.
+    while (simplifiedStack.size() < depth)
+      simplifiedStack.push_back(SimplifiedFrame{{}, 0, false});
+
+    // Compute a cheap fingerprint for each level's content.
+    // If it hasn't changed since the last CBP at this depth, skip.
+    for (size_t i = 0; i < depth; i++)
+    {
+      unsigned fp = assertionsSMT2[i].GetNodeNum();
+      if (simplifiedStack[i].valid && simplifiedStack[i].fingerprint == fp)
+        continue;
+
+      // This level needs (re-)simplification. Build the cumulative
+      // formula: parent's fixed values applied to everything up to
+      // and including this level.
+      ASTVec cumulative;
+      for (size_t j = 0; j <= i; j++)
+        splitConjuncts(assertionsSMT2[j], bm->ASTTrue, cumulative);
+
+      if (cumulative.empty())
+      {
+        simplifiedStack[i].valid = true;
+        simplifiedStack[i].fingerprint = fp;
+        continue;
+      }
+
+      ASTNode whole;
+      if (cumulative.size() == 1)
+        whole = cumulative[0];
+      else
+        whole = bm->defaultNodeFactory->CreateNode(AND, cumulative);
+
+      // Apply existing sigma0 and parent frames' fixed values.
+      if (!sigma0.empty())
+      {
+        ASTNodeMap cache;
+        whole = SubstitutionMap::replace(whole, sigma0, cache,
+                                         bm->defaultNodeFactory);
+      }
+      // Apply fixed values from frames BELOW this one.
+      for (size_t j = 0; j < i; j++)
+      {
+        if (simplifiedStack[j].valid && !simplifiedStack[j].fixedValues.empty())
+        {
+          ASTNodeMap cache;
+          whole = SubstitutionMap::replace(whole, simplifiedStack[j].fixedValues,
+                                           cache, bm->defaultNodeFactory);
+        }
+      }
+
+      // Run CBP on the cumulative formula.
+      SubstitutionMap cbSm(bm);
+      Simplifier cbSimp(bm, &cbSm);
+      simplifier::constantBitP::ConstantBitPropagation cb(
+          bm, &cbSimp, bm->defaultNodeFactory, whole);
+      cb.topLevelBothWays(whole);
+
+      // Store the discovered constants, excluding what lower frames
+      // or sigma0 already know.
+      ASTNodeMap fixed = cb.getAllFixed();
+      simplifiedStack[i].fixedValues.clear();
+      for (auto& kv : fixed)
+      {
+        if (sigma0.find(kv.first) != sigma0.end())
+          continue;
+        bool inLower = false;
+        for (size_t j = 0; j < i && !inLower; j++)
+          inLower = simplifiedStack[j].fixedValues.find(kv.first) !=
+                    simplifiedStack[j].fixedValues.end();
+        if (!inLower)
+          simplifiedStack[i].fixedValues[kv.first] = kv.second;
+      }
+
+      simplifiedStack[i].fingerprint = fp;
+      simplifiedStack[i].valid = true;
+
+      // Invalidate frames above this one — their parent changed.
+      for (size_t j = i + 1; j < simplifiedStack.size(); j++)
+        simplifiedStack[j].valid = false;
+
+      // Only redo ONE level per call. Higher levels will be redone
+      // on subsequent check-sats if needed.
+      break;
+    }
+
+    rebuildCumulativeFixed();
+  }
+
   // What actually gets encoded for a conjunct: the conjunct rewritten under
-  // the base-level substitutions and then simplified on its own. Keyed by
-  // the ORIGINAL conjunct in rootLitOf, so reuse is untouched; encoding
-  // under an older, smaller sigma0 stays sound because sigma0 entries are
-  // permanent truths.
+  // the base-level substitutions, cross-level CBP constants, and then
+  // simplified on its own. Keyed by the ORIGINAL conjunct in rootLitOf,
+  // so reuse is untouched; encoding under an older, smaller map stays
+  // sound because all entries are truths of their live levels.
   ASTNode prepareConjunct(const ASTNode& c)
   {
     if (!bm->UserFlags.optimize_flag)
       return c;
 
     ASTNode out = c;
-    if (!sigma0.empty() && mustKeepRaw.find(c) == mustKeepRaw.end())
+    if (mustKeepRaw.find(c) != mustKeepRaw.end())
+      return out;
+
+    if (!sigma0.empty())
     {
-      // replace() rebuilds every touched node through the (simplifying)
-      // node factory, so the node-local rewrite rules already run over the
-      // substituted result as it is built.
       ASTNodeMap cache;
       out = SubstitutionMap::replace(out, sigma0, cache,
+                                     bm->defaultNodeFactory);
+    }
+
+    if (!cumulativeFixed.empty())
+    {
+      ASTNodeMap cache;
+      out = SubstitutionMap::replace(out, cumulativeFixed, cache,
                                      bm->defaultNodeFactory);
     }
 
@@ -677,7 +862,13 @@ struct IncrementalSolver::Impl
                      const Fragment& frag)
   {
     if (frag.fp)
+    {
       toEncode = fpContext()->lowerPrepared(toEncode);
+      // FP lowering expands operations into wide bit-vector circuits.
+      // Run per-conjunct CBP and unconstrained elimination on the
+      // expanded form, as the batch pipeline does.
+      toEncode = deepSimplify(toEncode);
+    }
 
     if (frag.arrays)
     {
@@ -772,7 +963,7 @@ struct IncrementalSolver::Impl
     if (rewritten == pre)
       return rootLit(conjunct);
 
-    ASTNode w = simplifyAlone(rewritten);
+    ASTNode w = deepSimplify(rewritten);
     encodedAs = w;
 
     NodeToLitMap::const_iterator it = rootLitOf.find(w);
@@ -1713,6 +1904,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
+
+  // Cross-level simplification with snapshotted rollback. Runs CBP on
+  // the cumulative formula once per level transition, caching the
+  // discovered constants. Pop discards the top frame; parent's cached
+  // result is immediately available without recomputation.
+  // Cross-level CBP disabled for now — too expensive per check-sat.
+  // Per-conjunct deepSimplify after FP lowering is the active path.
+  // if (uf.optimize_flag)
+  //   impl->updateSimplifiedStack(assertionsSMT2);
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
