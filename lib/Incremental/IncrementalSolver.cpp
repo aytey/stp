@@ -33,6 +33,9 @@ THE SOFTWARE.
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Incremental/IncrementalCBP.h"
+#include "stp/Simplifier/RemoveUnconstrained.h"
+#include "stp/Simplifier/PropagateEqualities.h"
+#include "stp/Simplifier/BVSolver.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -362,6 +365,21 @@ struct IncrementalSolver::Impl
   // is synced from checkSatOnCurrentStack to match the assertion stack.
   std::unique_ptr<IncrementalCBP> incrCBP;
   size_t cbpDepth;  // CBP's current push depth
+
+  // Dead-clause rebuild triggers.
+  //
+  // pushVarSnapshots: records the solver's variable count at each push
+  // depth. On pop, if the solver grew substantially, a rebuild is
+  // triggered.
+  //
+  // postSolveRebuildThreshold: after each check-sat, if the solver's
+  // variable count exceeds this, rebuild. This catches the common
+  // pattern of many pushes with no pops, where each push adds a large
+  // FP circuit. Rebuilding after each heavy solve gives batch-pipeline
+  // performance on the heavy queries while keeping incremental state
+  // for the cheap ones.
+  std::vector<uint64_t> pushVarSnapshots;
+  static const uint64_t postSolveRebuildThreshold = 50000;
 
   IncrementalCBP* ensureCBP()
   {
@@ -711,31 +729,7 @@ struct IncrementalSolver::Impl
                      const Fragment& frag)
   {
     if (frag.fp)
-    {
       toEncode = fpContext()->lowerPrepared(toEncode);
-
-      // Feed the lowered (pure BV) form into the persistent
-      // IncrementalCBP. This propagates only from new nodes (delta),
-      // using the undo log so pop() restores prior state.
-      if (bm->UserFlags.bitConstantProp_flag)
-      {
-        IncrementalCBP* cbp = ensureCBP();
-        cbp->addConstraints(toEncode);
-
-        // Apply discovered constants to simplify the lowered form.
-        ASTNodeMap fixed = cbp->getAllFixed();
-        if (!fixed.empty())
-        {
-          ASTNodeMap cache;
-          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
-                                              bm->defaultNodeFactory);
-          // Quick local simplification to fold the substituted constants.
-          SubstitutionMap localSm(bm);
-          Simplifier localSimp(bm, &localSm);
-          toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
-        }
-      }
-    }
 
     if (frag.arrays)
     {
@@ -752,6 +746,40 @@ struct IncrementalSolver::Impl
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
     }
+
+    // Run the batch pipeline's simplification cascade on the lowered/
+    // transformed formula. This runs for ALL conjuncts (not just FP
+    // ones), matching what TopLevelSTPAux does:
+    //   1. Cross-conjunct CBP (incremental, persistent)
+    //   2. PropagateEqualities
+    //   3. RemoveUnconstrained
+    //   4. BVSolver
+    if (bm->UserFlags.optimize_flag)
+    {
+      if (bm->UserFlags.bitConstantProp_flag)
+      {
+        IncrementalCBP* cbp = ensureCBP();
+        cbp->addConstraints(toEncode);
+
+        ASTNodeMap fixed = cbp->getAllFixed();
+        if (!fixed.empty())
+        {
+          ASTNodeMap cache;
+          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
+                                              bm->defaultNodeFactory);
+        }
+      }
+
+      SubstitutionMap localSm(bm);
+      Simplifier localSimp(bm, &localSm);
+      toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
+    }
+
+    // Skip encoding if simplification resolved the conjunct.
+    if (toEncode == bm->ASTTrue)
+      return 2 * ensureTrueVar();
+    if (toEncode == bm->ASTFalse)
+      return 2 * ensureTrueVar() + 1;
 
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
     BBNodeAIG root = bb.BBForm(toEncode);
@@ -1772,6 +1800,37 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
+  // Dead-clause rebuild: track solver size at each push depth.
+  // On pop, if the solver grew substantially beyond the snapshot,
+  // the dead clauses from popped levels outweigh the live content
+  // and a fresh solver is cheaper than searching through the dead
+  // weight.
+  {
+    const size_t depth = assertionsSMT2.size();
+    // Pop: check for dead-clause bloat.
+    while (impl->pushVarSnapshots.size() > depth)
+    {
+      uint64_t snapshotVars = impl->pushVarSnapshots.back();
+      impl->pushVarSnapshots.pop_back();
+      uint64_t currentVars = impl->solver->nVars();
+      // If the solver more than doubled since this level was pushed,
+      // the dead content is large enough to justify a rebuild.
+      if (currentVars > 2 * snapshotVars && currentVars > 1000)
+      {
+        if (uf.stats_flag)
+          std::cerr << "Incremental: dead-clause rebuild on pop ("
+                    << currentVars << " vars, snapshot was "
+                    << snapshotVars << ")" << std::endl;
+        impl->rebuildEncodings();
+        impl->pushVarSnapshots.clear();
+        break;
+      }
+    }
+    // Push: record snapshot for new depths.
+    while (impl->pushVarSnapshots.size() < depth)
+      impl->pushVarSnapshots.push_back(impl->solver->nVars());
+  }
+
   // Sync the incremental CBP depth with the assertion stack.
   // Pop removes pushed-level constants; push starts a new undo log.
   impl->syncCBPDepth(assertionsSMT2.size());
@@ -2002,6 +2061,49 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   if (uf.stats_flag)
     impl->solver->printStats();
+
+  // Post-solve rebuild: if the solver accumulated too many variables
+  // (from FP lowering across many push levels), wipe it. The next
+  // check-sat re-encodes from the live stack, exactly like the batch
+  // pipeline. This is the key to matching batch performance on
+  // sessions with many heavy queries and few pops.
+  if (impl->solver->nVars() > Impl::postSolveRebuildThreshold)
+  {
+    if (uf.stats_flag)
+      std::cerr << "Incremental: post-solve rebuild ("
+                << impl->solver->nVars() << " vars > "
+                << Impl::postSolveRebuildThreshold << " threshold)"
+                << std::endl;
+    // Capture what we need from the solver before destroying it.
+    bool wasUnsat = !sat;
+    std::vector<int> failedBefore;
+    if (wasUnsat)
+      impl->solver->unsatAssumptions(assumptions, failedBefore);
+
+    impl->rebuildEncodings();
+    impl->pushVarSnapshots.clear();
+
+    // The CBP state is still valid — it operates on the AST, not the
+    // SAT solver. No need to reset it.
+
+    if (bm->soft_timeout_expired)
+      return SOLVER_TIMEOUT;
+
+    if (wasUnsat)
+    {
+      // We already know it's unsat; record from the saved data.
+      impl->lastUnsat = true;
+      impl->lastUnsatCoarse = false;
+      impl->lastLevelCount = assertionsSMT2.size();
+      impl->lastFailedLits = failedBefore;
+      return SOLVER_UNSATISFIABLE;
+    }
+
+    // SAT — model was in the old solver, which is gone. The next
+    // model query will need to re-solve. Mark as pending.
+    impl->modelPending = true;
+    return SOLVER_SATISFIABLE;
+  }
 
   if (bm->soft_timeout_expired)
     return SOLVER_TIMEOUT;
