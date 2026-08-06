@@ -377,6 +377,12 @@ struct IncrementalSolver::Impl
   // The measured corpora split cleanly: the hurt class has 1-2 solves,
   // the win class 20+.
   static const size_t inprobingRetireSolves = 8;
+  // ... and only when the encoding is big enough for inprobing to cost
+  // anything: retirement pays a rebuild, and on a small solver that is
+  // pure overhead (a ten-millisecond session measured 10x slower from a
+  // rebuild whose savings were nothing). The winning sessions retire
+  // with fifty thousand variables and up.
+  static const unsigned long inprobingRetireMinVars = 20000;
 
   // Definitions with replacements larger than this are never inlined:
   // they stay asserted equations, and their variable keeps the sharing.
@@ -2302,7 +2308,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
        (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
         !impl->trailReuseAllowed &&
-        impl->engagedSolves > Impl::inprobingRetireSolves)))
+        impl->engagedSolves > Impl::inprobingRetireSolves &&
+        impl->solver->nVars() >= Impl::inprobingRetireMinVars)))
   {
     impl->inprobingRetired = true;
     if (uf.stats_flag)
@@ -2332,6 +2339,23 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         std::cerr << "Incremental: trail reuse retired ("
                   << impl->solver->nVars()
                   << " variables), solver restarted without it" << std::endl;
+      // If the session already qualifies for inprobing retirement --
+      // whose AUTO gate waits for exactly this trail retirement -- take
+      // both in ONE rebuild. Left to its own block, the retirement
+      // would fire on the NEXT solve and rebuild a freshly re-encoded
+      // solver all over again; a session whose trail died at fifty
+      // thousand variables measured 2x slower from that double rebuild.
+      if (!impl->inprobingRetired &&
+          uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
+          impl->solver->supportsInprobingControl() &&
+          impl->engagedSolves > Impl::inprobingRetireSolves &&
+          impl->solver->nVars() >= Impl::inprobingRetireMinVars)
+      {
+        impl->inprobingRetired = true;
+        if (uf.stats_flag)
+          std::cerr << "Incremental: inprobing retired with it ("
+                    << impl->engagedSolves << " solves)" << std::endl;
+      }
       impl->rebuildEncodings(assertionsSMT2);
     }
   }
