@@ -685,13 +685,34 @@ struct IncrementalSolver::Impl
   // because under pushed-level definitions the same formula can encode to
   // different roots in different rounds; identical roots are the only
   // thing that makes reusing the implications sound.
-  std::map<std::vector<int>, int> actLitOf;
+  //
+  // Entries age: one not assumed for actLitRetireAge solves is retired --
+  // its literal is PINNED false by a permanent unit, which satisfies the
+  // implications outright (so the solver stops carrying them) and fixes
+  // the variable so it is never decided again. This is cvc5's popped-
+  // variable treatment, sound here for exactly one variable class: an
+  // activation variable's ONLY clauses are its implications, all
+  // satisfied by the pin, so the pin can transmit no semantics. (Pinning
+  // an ENCODING variable this way would violate its Tseitin definitional
+  // clauses, which no activation unit guards -- that is why eviction
+  // stops at activation literals.) A retired root set that recurs simply
+  // mints a fresh activation variable.
+  struct ActLitEntry
+  {
+    int lit = 0;
+    uint64_t lastUsed = 0;
+  };
+  std::map<std::vector<int>, ActLitEntry> actLitOf;
+  static const uint64_t actLitRetireAge = 16;
 
   // Every literal that ever carried a level (or an extensionality block)
-  // as an assumption. The ones not assumed by the current call are
-  // retracted content, and hintRetractedLevels steers the decision
-  // heuristic away from them.
-  std::unordered_set<int> everAssumedLits;
+  // as an assumption, with the solve that last assumed it. The ones not
+  // assumed by the current call are retracted content, and
+  // hintRetractedLevels steers the decision heuristic away from them;
+  // entries not assumed for actLitRetireAge solves fall off the list
+  // (hints are advice, so forgetting one is always sound), which keeps
+  // the per-solve hinting cost bounded on long sessions.
+  std::unordered_map<int, uint64_t> everAssumedLits;
 
   // Per-call bookkeeping for unsat answers: which level each assumed
   // literal carried, and -- when the caller asked for the last level to be
@@ -1354,12 +1375,55 @@ struct IncrementalSolver::Impl
     for (int i = 0; i < assumptions.size(); i++)
       current.insert(assumptions[i].x);
 
-    for (const int lit : everAssumedLits)
+    for (std::unordered_map<int, uint64_t>::const_iterator it =
+             everAssumedLits.begin();
+         it != everAssumedLits.end(); ++it)
     {
-      if (current.count(lit))
+      if (current.count(it->first))
         continue;
-      solver->suggestPhase(lit >> 1, (lit & 1) != 0);
+      solver->suggestPhase(it->first >> 1, (it->first & 1) != 0);
     }
+  }
+
+  // Retire stale retraction bookkeeping: pin activation literals whose
+  // root set has not been assumed for actLitRetireAge solves (see the
+  // declaration for why the pin is sound for this variable class and no
+  // other), and forget equally stale hint entries. Must run after the
+  // backend's configuration window is decided -- the pins are clauses.
+  void retireStaleActivation()
+  {
+    size_t pinned = 0;
+    for (std::map<std::vector<int>, ActLitEntry>::iterator it =
+             actLitOf.begin();
+         it != actLitOf.end();)
+    {
+      if (engagedSolves - it->second.lastUsed <= actLitRetireAge)
+      {
+        ++it;
+        continue;
+      }
+      const int lit = it->second.lit;
+      SATSolver::vec_literals unit;
+      unit.push(SATSolver::mkLit(lit >> 1, (lit & 1) == 0));
+      addClause(unit);
+      everAssumedLits.erase(lit);
+      it = actLitOf.erase(it);
+      pinned++;
+    }
+
+    for (std::unordered_map<int, uint64_t>::iterator it =
+             everAssumedLits.begin();
+         it != everAssumedLits.end();)
+    {
+      if (engagedSolves - it->second > actLitRetireAge)
+        it = everAssumedLits.erase(it);
+      else
+        ++it;
+    }
+
+    if (pinned > 0 && bm->UserFlags.stats_flag)
+      std::cerr << "Incremental: pinned " << pinned
+                << " retired activation literals" << std::endl;
   }
 
   void rebuildEncodings(const ASTVec& assertionsSMT2)
@@ -1580,9 +1644,13 @@ struct IncrementalSolver::Impl
     if (roots.size() == 1)
       return roots[0];
 
-    std::map<std::vector<int>, int>::const_iterator it = actLitOf.find(roots);
+    std::map<std::vector<int>, ActLitEntry>::iterator it =
+        actLitOf.find(roots);
     if (it != actLitOf.end())
-      return it->second;
+    {
+      it->second.lastUsed = engagedSolves;
+      return it->second.lit;
+    }
 
     // Stored and returned as a LITERAL (2*var), like everything else in
     // this file -- a cache hit that handed back the bare variable was a
@@ -1591,7 +1659,9 @@ struct IncrementalSolver::Impl
     for (const int root : roots)
       addBinary(2 * act + 1, root);
     const int actLit = 2 * act;
-    actLitOf[roots] = actLit;
+    ActLitEntry& entry = actLitOf[roots];
+    entry.lit = actLit;
+    entry.lastUsed = engagedSolves;
     return actLit;
   }
 
@@ -1899,7 +1969,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   bm->soft_timeout_expired = false;
 
   SATSolver::vec_literals assumptions;
-  everAssumedLits.insert(blockLit);
+  everAssumedLits[blockLit] = engagedSolves;
   assumptions.push(SATSolver::mkLit(blockLit >> 1, blockLit & 1));
   hintRetractedLevels(assumptions);
 
@@ -2319,6 +2389,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     impl->pendingRebuiltBase.clear();
   }
 
+  // The configuration window is decided by here, so stale retraction
+  // bookkeeping can be retired (the pins are clauses).
+  impl->retireStaleActivation();
+
   ASTVec conjuncts;
   splitConjuncts(assertionsSMT2[0], bm->ASTTrue, conjuncts);
 
@@ -2531,7 +2605,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       for (size_t k = 0; k < conjuncts.size(); k++)
       {
         const int r = levelRoots[k];
-        impl->everAssumedLits.insert(r);
+        impl->everAssumedLits[r] = impl->engagedSolves;
         impl->assumedLitLevels.push_back(std::make_pair(r, level));
         impl->lastLevelLitConjuncts.push_back(
             std::make_pair(r, conjuncts[k]));
@@ -2541,7 +2615,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     }
 
     const int lit = impl->levelAssumption(levelRoots);
-    impl->everAssumedLits.insert(lit);
+    impl->everAssumedLits[lit] = impl->engagedSolves;
     impl->assumedLitLevels.push_back(std::make_pair(lit, level));
     assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
