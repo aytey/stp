@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Incremental/IncrementalCBP.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -356,6 +357,39 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // Persistent incremental CBP operating on post-lowered (pure BV) forms.
+  // Created on first FP conjunct; survives across check-sats. Push/pop
+  // is synced from checkSatOnCurrentStack to match the assertion stack.
+  std::unique_ptr<IncrementalCBP> incrCBP;
+  size_t cbpDepth;  // CBP's current push depth
+
+  IncrementalCBP* ensureCBP()
+  {
+    if (!incrCBP)
+    {
+      incrCBP.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
+      cbpDepth = 0;
+    }
+    return incrCBP.get();
+  }
+
+  // Sync the IncrementalCBP push/pop depth with the assertion stack.
+  void syncCBPDepth(size_t targetDepth)
+  {
+    if (!incrCBP)
+      return;
+    while (cbpDepth > targetDepth)
+    {
+      incrCBP->pop();
+      cbpDepth--;
+    }
+    while (cbpDepth < targetDepth)
+    {
+      incrCBP->push();
+      cbpDepth++;
+    }
+  }
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -369,8 +403,8 @@ struct IncrementalSolver::Impl
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), clausesAdded(0),
-        encodesThisCall(0)
+        trailReuseAllowed(true), lastLevelCount(0), cbpDepth(0),
+        clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -677,7 +711,31 @@ struct IncrementalSolver::Impl
                      const Fragment& frag)
   {
     if (frag.fp)
+    {
       toEncode = fpContext()->lowerPrepared(toEncode);
+
+      // Feed the lowered (pure BV) form into the persistent
+      // IncrementalCBP. This propagates only from new nodes (delta),
+      // using the undo log so pop() restores prior state.
+      if (bm->UserFlags.bitConstantProp_flag)
+      {
+        IncrementalCBP* cbp = ensureCBP();
+        cbp->addConstraints(toEncode);
+
+        // Apply discovered constants to simplify the lowered form.
+        ASTNodeMap fixed = cbp->getAllFixed();
+        if (!fixed.empty())
+        {
+          ASTNodeMap cache;
+          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
+                                              bm->defaultNodeFactory);
+          // Quick local simplification to fold the substituted constants.
+          SubstitutionMap localSm(bm);
+          Simplifier localSimp(bm, &localSm);
+          toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
+        }
+      }
+    }
 
     if (frag.arrays)
     {
@@ -1713,6 +1771,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
+
+  // Sync the incremental CBP depth with the assertion stack.
+  // Pop removes pushed-level constants; push starts a new undo log.
+  impl->syncCBPDepth(assertionsSMT2.size());
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
