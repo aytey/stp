@@ -794,6 +794,13 @@ struct IncrementalSolver::Impl
     // root every call. Size-gated: see trailReuseAllowed.
     if (trailReuseAllowed)
       solver->enableTrailReuse();
+
+    // Lucky-phase probing re-tries trivial whole assignments over the
+    // entire clause database at every solve call. The driver's solver is
+    // many-solve by definition, so that is a recurring tax (measured a
+    // third of small variant-push sessions); the batch pipeline's
+    // single-solve instances keep it.
+    solver->disableLuckyPhases();
   }
 
   int varOfAig(Aig_Obj_t* regular)
@@ -1440,6 +1447,7 @@ struct IncrementalSolver::Impl
       solver->enableTrailReuse();
     if (inprobingRetired)
       solver->disableInprobing();
+    solver->disableLuckyPhases();
     bvaDecided = false;
 
     aigIdToVar.clear();

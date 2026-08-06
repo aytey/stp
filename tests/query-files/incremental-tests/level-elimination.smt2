@@ -21,7 +21,11 @@
 (push 1)
 (assert (= x (bvadd a #x01)))
 (assert (bvult x #x0a))
-; CHECK: 1 eliminated
+; pin a so the replayed value of x is deterministic whatever phases the
+; backend happens to try (the bound simplifies to a definition, so a is
+; eliminated alongside x)
+(assert (bvult a #x01))
+; CHECK: 2 eliminated
 ; CHECK: ^sat
 (check-sat)
 ; the eliminated variable answers through its definition: x = a + 1

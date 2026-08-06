@@ -145,6 +145,13 @@ public:
   virtual bool supportsInprobingControl() const { return false; }
   virtual bool disableInprobing() { return false; }
 
+  // Turn off the backend's lucky-phase probing, which re-tries trivial
+  // whole-assignment patterns over the entire clause database at every
+  // solve call. Worth its price once per formula; on a persistent
+  // many-solve solver it is a recurring tax. Configuration-window-only,
+  // like the rest; FALSE means nothing to turn off.
+  virtual bool disableLuckyPhases() { return false; }
+
   // After solveWithAssumptions returned false: the subset of the assumed
   // literals that the refutation actually used, in the same 2*var+sign
   // encoding they were passed in. Any superset of a genuine core is a

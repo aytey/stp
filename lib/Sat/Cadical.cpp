@@ -246,6 +246,11 @@ bool Cadical::disableInprobing()
   return s->set("inprobing", 0);
 }
 
+bool Cadical::disableLuckyPhases()
+{
+  return s->set("lucky", 0);
+}
+
 void Cadical::unsatAssumptions(const vec_literals& assumps,
                                std::vector<int>& out)
 {

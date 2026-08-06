@@ -101,6 +101,7 @@ public:
 
   bool supportsInprobingControl() const override;
   bool disableInprobing() override;
+  bool disableLuckyPhases() override;
 
   bool enableTrailReuse() override;
 
