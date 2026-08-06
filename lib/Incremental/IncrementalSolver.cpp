@@ -2063,8 +2063,35 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     if (res == SOLVER_UNSATISFIABLE)
       impl->recordUnsat(assumptions, assertionsSMT2.size(), false);
 
-    // SOLVER_INVALID and SOLVER_SATISFIABLE (resp. VALID/UNSATISFIABLE)
-    // are the same enum values, so this is already in check-sat terms.
+    // Speculative validation on the refinement path: if refinement
+    // converged to SAT and we used aggressive CBP, validate the model
+    // against the pre-simplified originals.
+    if (res == SOLVER_SATISFIABLE && impl->speculativeThisCall &&
+        !impl->speculativeOriginals.empty())
+    {
+      std::vector<ASTNode> violated;
+      if (!impl->validateModel(violated))
+      {
+        if (uf.stats_flag)
+          std::cerr << "Incremental: speculative SAT failed validation "
+                       "on refinement path ("
+                    << violated.size() << " conjuncts violated)"
+                    << std::endl;
+
+        impl->rebuildEncodings();
+        impl->callCBP.reset();
+        impl->speculativeOriginals.clear();
+        impl->speculativeThisCall = false;
+        impl->speculationDisabled = true;
+
+        SOLVER_RETURN_TYPE retry = checkSatOnCurrentStack(
+            assertionsSMT2, assumeLastLevelPerConjunct);
+
+        impl->speculationDisabled = false;
+        return retry;
+      }
+    }
+
     return res;
   }
 
