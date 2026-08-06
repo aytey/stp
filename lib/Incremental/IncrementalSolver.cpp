@@ -412,6 +412,56 @@ struct IncrementalSolver::Impl
     return visited.size();
   }
 
+  // Every floating-point OPERATION node of `n` (kind-categorised FP, so
+  // constants and plain carriers stay out), for the substitution gate
+  // below.
+  void collectFpOperations(const ASTNode& n, ASTNodeSet& out)
+  {
+    ASTNodeSet visited;
+    std::vector<ASTNode> pending(1, n);
+    while (!pending.empty())
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (!visited.insert(cur).second)
+        continue;
+      if (is_FP_kind(cur.GetKind()))
+        out.insert(cur);
+      for (unsigned i = 0; i < cur.Degree(); i++)
+        pending.push_back(cur[i]);
+    }
+  }
+
+  // Would adopting `substituted` in place of `original` hand the blaster a
+  // floating-point operation it has not seen in the original -- a NOVEL
+  // VARIANT of a circuit rather than a fold? Substituting into a
+  // floating-point operation's arguments rebuilds the whole symfpu
+  // circuit for the new argument syntax: thousands of clauses that
+  // duplicate an operation the raw-keyed encodings already carry, and
+  // the search must then re-derive their equivalence bit by bit through
+  // both copies (a family of generated variant-push queries measured
+  // 0.3s raw against a deterministic 45s-to-timeout with the variants).
+  // A substitution that FOLDS an operation away -- the floating-point-
+  // computed array index collapsing to a constant, which is what the
+  // floating-point harvest exists for -- removes FP nodes and introduces
+  // none, and passes this gate untouched.
+  bool introducesNovelFpOperations(const ASTNode& original,
+                                   const ASTNode& substituted)
+  {
+    if (substituted == original || !bm->has_floating_point_theory)
+      return false;
+    if (!containsFloatingPointTheory(substituted, bm))
+      return false;
+    ASTNodeSet originalOps;
+    collectFpOperations(original, originalOps);
+    ASTNodeSet substitutedOps;
+    collectFpOperations(substituted, substitutedOps);
+    for (const ASTNode& op : substitutedOps)
+      if (originalOps.find(op) == originalOps.end())
+        return true;
+    return false;
+  }
+
   const ASTNodeSet& symbolsOf(const ASTNode& n)
   {
     std::map<ASTNode, ASTNodeSet>::iterator hit = symbolsOfCache.find(n);
@@ -2619,8 +2669,18 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         if (!ctx.empty() && !isDefiner)
         {
           ASTNodeMap cache;
-          replaced = SubstitutionMap::replace(replaced, ctx, cache,
-                                              bm->defaultNodeFactory);
+          const ASTNode substituted = SubstitutionMap::replace(
+              replaced, ctx, cache, bm->defaultNodeFactory);
+          // Adopt the substituted form only if it builds no novel
+          // floating-point circuit (see introducesNovelFpOperations): a
+          // fold is the collapse this context exists for, a variant is a
+          // duplicate of a raw-keyed circuit and strictly harder to
+          // search than the raw conjunct it replaces. The refused
+          // conjunct encodes raw-keyed, sharing everything it always
+          // shared; its definers stay asserted, so nothing is lost but
+          // the rewrite.
+          if (!impl->introducesNovelFpOperations(replaced, substituted))
+            replaced = substituted;
         }
         // The whole-level piece contains its definers INSIDE the node
         // just substituted; restore them alongside the replaced form
