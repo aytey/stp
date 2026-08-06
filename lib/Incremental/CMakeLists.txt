@@ -20,6 +20,7 @@
 
 add_library(incremental OBJECT
     IncrementalSolver.cpp
+    IncrementalCBP.cpp
 )
 
 # The AST headers this pulls in include the generated ASTKind.h; without the

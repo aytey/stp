@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Incremental/IncrementalCBP.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -356,6 +357,60 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // Incremental constant-bit propagation with push/pop rollback.
+  // Created on first use; persists across check-sats. The assertion
+  // stack depth is synced on each call via syncCBP().
+  std::unique_ptr<IncrementalCBP> incrCBP;
+  ASTNodeMap cbpFixed;     // current {node -> constant} from CBP
+  size_t cbpSyncedDepth;   // depth at which CBP was last synced
+
+  void syncCBP(const ASTVec& assertionsSMT2)
+  {
+    if (!bm->UserFlags.bitConstantProp_flag)
+      return;
+
+    const size_t depth = assertionsSMT2.size();
+
+    if (!incrCBP)
+    {
+      incrCBP.reset(new IncrementalCBP(bm, batchSimp, bm->defaultNodeFactory));
+      cbpSyncedDepth = 0;
+    }
+
+    // Pop: unwind CBP to match.
+    while (incrCBP->depth() > depth)
+    {
+      incrCBP->pop();
+    }
+
+    // Push + add constraints for each new level.
+    // For levels already synced, we skip (the CBP state is already there).
+    for (size_t i = cbpSyncedDepth; i < depth; i++)
+    {
+      if (i > 0)  // level 0 is base, no push needed
+        incrCBP->push();
+
+      const ASTNode& levelConj = assertionsSMT2[i];
+      if (levelConj != bm->ASTTrue)
+      {
+        // Apply sigma0 before feeding to CBP, so it sees pre-simplified input.
+        ASTNode prepared = levelConj;
+        if (!sigma0.empty())
+        {
+          ASTNodeMap cache;
+          prepared = SubstitutionMap::replace(prepared, sigma0, cache,
+                                              bm->defaultNodeFactory);
+        }
+
+        incrCBP->addConstraints(prepared);
+        incrCBP->setTopTrue(prepared);
+      }
+    }
+
+    cbpSyncedDepth = depth;
+    cbpFixed = incrCBP->getAllFixed();
+  }
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -369,8 +424,8 @@ struct IncrementalSolver::Impl
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), clausesAdded(0),
-        encodesThisCall(0)
+        trailReuseAllowed(true), lastLevelCount(0), cbpSyncedDepth(0),
+        clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -652,13 +707,24 @@ struct IncrementalSolver::Impl
       return c;
 
     ASTNode out = c;
-    if (!sigma0.empty() && mustKeepRaw.find(c) == mustKeepRaw.end())
+    if (mustKeepRaw.find(c) != mustKeepRaw.end())
+      return out;
+
+    if (!sigma0.empty())
     {
       // replace() rebuilds every touched node through the (simplifying)
       // node factory, so the node-local rewrite rules already run over the
       // substituted result as it is built.
       ASTNodeMap cache;
       out = SubstitutionMap::replace(out, sigma0, cache,
+                                     bm->defaultNodeFactory);
+    }
+
+    // Apply cross-level CBP constants discovered by the incremental CBP.
+    if (!cbpFixed.empty())
+    {
+      ASTNodeMap cache;
+      out = SubstitutionMap::replace(out, cbpFixed, cache,
                                      bm->defaultNodeFactory);
     }
 
@@ -1713,6 +1779,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
+
+  // Incremental CBP: sync the persistent CBP state with the current
+  // assertion stack. Runs delta propagation only for new/changed levels.
+  if (uf.optimize_flag)
+    impl->syncCBP(assertionsSMT2);
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
