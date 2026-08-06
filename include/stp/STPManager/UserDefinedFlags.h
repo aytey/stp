@@ -241,6 +241,16 @@ public:
   };
   BVAMode cadical_factor = BVAMode::AUTO;
 
+  // Whether the incremental driver may retire CaDiCaL's probe-based
+  // inprocessing mid-session. Inprobing re-runs over the whole
+  // persistent encoding at every solve; on many-solve sessions that
+  // recurring cost dominates what it earns (measured 2x on generated
+  // variant-push corpora), while few-solve sessions genuinely profit
+  // from it. AUTO -- the default -- retires it once a session has shown
+  // enough solves, via one bounded solver rebuild; ON never retires;
+  // OFF retires from the first driver solve.
+  BVAMode incremental_inprobing = BVAMode::AUTO;
+
   bool get_print_output_at_all() const
   {
     return print_STPinput_back_flag || print_STPinput_back_SMTLIB2_flag ||

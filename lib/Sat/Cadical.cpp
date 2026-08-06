@@ -109,6 +109,11 @@ Cadical::Cadical() : time_limit(*this)
 {
   s = new CaDiCaL::Solver ();
   s->set("quiet",1);
+  // Probe for the "inprobing" option (CaDiCaL 3.x) while the
+  // configuration window is certainly open: setting it to its current
+  // value changes nothing but reports whether the option exists, which
+  // lets a caller decide about a LIVE solver without touching it.
+  inprobing_control = s->set("inprobing", s->get("inprobing"));
 }
 
 Cadical::~Cadical()
@@ -226,6 +231,19 @@ bool Cadical::enableTrailReuse()
   // configuration window; the driver's size gate therefore works by
   // rebuilding onto a fresh solver rather than by toggling.
   return s->set("ilb", 1);
+}
+
+bool Cadical::supportsInprobingControl() const
+{
+  return inprobing_control;
+}
+
+bool Cadical::disableInprobing()
+{
+  // Configuration-window-only, like factor and ilb: the incremental
+  // driver's retirement therefore rebuilds onto a fresh solver and
+  // applies this there.
+  return s->set("inprobing", 0);
 }
 
 void Cadical::unsatAssumptions(const vec_literals& assumps,

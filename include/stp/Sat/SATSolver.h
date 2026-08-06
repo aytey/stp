@@ -134,6 +134,17 @@ public:
   // error.
   virtual bool enableTrailReuse() { return false; }
 
+  // Whether this backend can turn probe-based inprocessing off, and the
+  // switch itself. disableInprobing() is only ever called before the
+  // first clause is added (backends may only accept configuration while
+  // empty); the capability query is free of that restriction, so a
+  // caller can decide about a LIVE solver and apply the choice to the
+  // fresh one a rebuild constructs. FALSE from the query means the
+  // backend has no such technique to control -- a performance hint
+  // declined, not an error.
+  virtual bool supportsInprobingControl() const { return false; }
+  virtual bool disableInprobing() { return false; }
+
   // After solveWithAssumptions returned false: the subset of the assumed
   // literals that the refutation actually used, in the same 2*var+sign
   // encoding they were passed in. Any superset of a genuine core is a

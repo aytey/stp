@@ -367,6 +367,17 @@ struct IncrementalSolver::Impl
   // roughly the working set, so the next fire needs 4x growth again.
   uint64_t maxLiveClauseMass = 0;
 
+  // Probe-based inprocessing retirement (see the trigger in
+  // checkSatOnCurrentStack): how many solves this driver has run, and
+  // whether the persistent solver now runs with inprobing off.
+  size_t engagedSolves = 0;
+  bool inprobingRetired = false;
+  // Few-solve sessions profit from inprobing (they are one big search);
+  // many-solve sessions pay its whole-encoding re-runs at every solve.
+  // The measured corpora split cleanly: the hurt class has 1-2 solves,
+  // the win class 20+.
+  static const size_t inprobingRetireSolves = 8;
+
   // Definitions with replacements larger than this are never inlined:
   // they stay asserted equations, and their variable keeps the sharing.
   static const size_t defInlineCap = 200;
@@ -1357,6 +1368,8 @@ struct IncrementalSolver::Impl
     solver->enableRefinement(true);
     if (trailReuseAllowed)
       solver->enableTrailReuse();
+    if (inprobingRetired)
+      solver->disableInprobing();
     bvaDecided = false;
 
     aigIdToVar.clear();
@@ -2194,6 +2207,38 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                 << impl->trackedClauseMass << " tracked clauses for a "
                 << impl->maxLiveClauseMass << " clause working set)"
                 << std::endl;
+    impl->rebuildEncodings(assertionsSMT2);
+  }
+
+  // Probe-based inprocessing is the opposite trade to the valve above:
+  // it re-runs over the WHOLE persistent encoding at every solve, so on
+  // many-solve sessions its recurring cost dominates what it earns
+  // (measured 2x of the total runtime on generated variant-push
+  // corpora), while a session that is one or two big searches genuinely
+  // profits from it. The option is configuration-window-only, so
+  // retirement -- once the session qualifies, or immediately under an
+  // explicit 'off' -- means one bounded rebuild onto a fresh solver
+  // configured without it. AUTO additionally requires trail reuse to
+  // have been retired already: a session still riding the trail is the
+  // many-small-queries shape whose accumulated search state a rebuild
+  // would throw away for a technique that measured neutral there, while
+  // the sessions inprobing hurts (the floating-point variant-push
+  // families) have always shed the trail first. The capability is
+  // probed without touching the live solver, and a backend that cannot
+  // control it simply never retires.
+  impl->engagedSolves++;
+  if (!impl->inprobingRetired &&
+      impl->solver->supportsInprobingControl() &&
+      (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
+       (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
+        !impl->trailReuseAllowed &&
+        impl->engagedSolves > Impl::inprobingRetireSolves)))
+  {
+    impl->inprobingRetired = true;
+    if (uf.stats_flag)
+      std::cerr << "Incremental: inprobing retired ("
+                << impl->engagedSolves
+                << " solves), solver restarted without it" << std::endl;
     impl->rebuildEncodings(assertionsSMT2);
   }
 

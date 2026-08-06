@@ -70,6 +70,10 @@ namespace stp
   // untranslated fast path bit-for-bit identical to pre-factor builds.
   std::vector<int> ext_of_stp;
   bool factor_enabled = false;
+
+  // Probed once at construction (inside the configuration window):
+  // whether this CaDiCaL build knows the "inprobing" option at all.
+  bool inprobing_control = false;
   void declareNewVariables();
 
 public:
@@ -94,6 +98,9 @@ public:
   bool setSearchBias(SearchBias bias) override;
 
   bool enableBVA() override;
+
+  bool supportsInprobingControl() const override;
+  bool disableInprobing() override;
 
   bool enableTrailReuse() override;
 

@@ -81,6 +81,12 @@ public:
   CLI::Option* cadical_factor_option = nullptr;
 #endif
 
+  // Likewise for UserFlags.incremental_inprobing.
+  std::string incremental_inprobing;
+#ifdef USE_CADICAL
+  CLI::Option* incremental_inprobing_option = nullptr;
+#endif
+
   // Likewise for UserFlags.cnf_effort; always mapped, so it carries the
   // default spelling.
   std::string cnf_effort = "medium";
@@ -220,6 +226,15 @@ void ExtraMain::create_options()
                      "or 'auto' (the default, on only for problems with array "
                      "operations). Needs a CaDiCaL 3.x build; otherwise the "
                      "request is declined with a warning")
+          ->group(solver_group);
+  incremental_inprobing_option =
+      app.add_option(
+             "--incremental-inprobing", incremental_inprobing,
+             "cadical's probe-based inprocessing on the incremental "
+             "driver's persistent solver: 'on' (always), 'off' (never), or "
+             "'auto' (the default: retired once a session shows many "
+             "solves, where re-probing the whole encoding every solve "
+             "costs more than it earns)")
           ->group(solver_group);
 #endif
 
@@ -573,6 +588,23 @@ int ExtraMain::parse_options(int argc, char** argv)
     else
     {
       cerr << "ERROR: --cadical-factor must be one of 'on', 'off' or 'auto'"
+           << endl;
+      std::exit(-1);
+    }
+  }
+
+  if (incremental_inprobing_option->count())
+  {
+    if (incremental_inprobing == "on")
+      bm->UserFlags.incremental_inprobing = UserDefinedFlags::BVAMode::ON;
+    else if (incremental_inprobing == "off")
+      bm->UserFlags.incremental_inprobing = UserDefinedFlags::BVAMode::OFF;
+    else if (incremental_inprobing == "auto")
+      bm->UserFlags.incremental_inprobing = UserDefinedFlags::BVAMode::AUTO;
+    else
+    {
+      cerr << "ERROR: --incremental-inprobing must be one of 'on', 'off' "
+              "or 'auto'"
            << endl;
       std::exit(-1);
     }

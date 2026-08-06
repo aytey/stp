@@ -242,6 +242,21 @@ skipped the translation would silently constrain nothing. The
 ``query-files-cadical-factor`` suite sweep re-runs every behavioural
 test, the incremental ones included, with factor forced on.
 
+CaDiCaL's probe-based inprocessing re-runs over the whole persistent
+encoding at every solve, so on many-solve sessions its recurring cost
+can dominate what it earns (measured at half the total runtime on
+generated variant-push floating-point corpora), while a session that is
+one or two big searches genuinely profits from it.
+``--incremental-inprobing`` controls the driver's policy: ``auto`` (the
+default) retires it once a session has both shed trail reuse -- the
+still-riding-the-trail shape is the many-small-queries workload whose
+accumulated search state a restart would waste on a technique that
+measures neutral there -- and run enough solves, via one bounded rebuild
+onto a fresh solver configured without it (the option, like factor and
+trail reuse, only takes inside the backend's configuration window);
+``off`` retires from the first driver solve; ``on`` never retires.
+Backends without the option simply never retire.
+
 Resource budgets are per check-sat: a conflict or time budget is re-armed
 at each check, measured from the arming point, and the check's refinement
 iterations share it -- on a long-lived solver, budgets measured from the
