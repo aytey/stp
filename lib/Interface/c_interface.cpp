@@ -803,11 +803,14 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
   // counterexample tables the batch path does, so the C API's model
   // contract (the counterexample belongs to the last query and survives
   // the push/query/pop bracket) is untouched. The driver engages from the
-  // second solve; the first, largest all-new formula keeps the batch
-  // pipeline's whole-formula simplification.
+  // THIRD solve, matching the SMT-LIB2 frontend: the first solves keep
+  // the batch pipeline's whole-formula simplification, and a two-query
+  // session -- whose final solve can never repay the driver's persistent
+  // encoding -- stays batch throughout. vc_setFlags 'i' still forces the
+  // driver from the first.
   const bool use_incremental =
       b->UserFlags.incremental_solving &&
-      (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 0);
+      (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 1);
   stp_i->incrementalSolvesRun++;
   if (use_incremental)
   {

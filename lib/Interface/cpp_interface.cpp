@@ -699,12 +699,19 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   {
     resetSolver();
 
-    // See incremental_from_start: the first solve of the session gets the
-    // batch pipeline's full simplification unless the user forced the
-    // driver on; every later solve goes incremental where it can.
+    // See incremental_from_start: the first TWO solves of the session get
+    // the batch pipeline's full simplification unless the user forced the
+    // driver on; from the third real solve on, everything goes incremental
+    // where it can. Two thresholds were measured: engaging at the second
+    // solve made two-check sessions the campaign's whole loss tail
+    // (newton_1_5 34x, sine_2 9.7x) -- the driver's persistent encoding is
+    // dearer than one batch solve, and a session's FINAL solve can never
+    // repay it. Engaging at the third makes two-check sessions batch
+    // parity by construction and costs longer sessions one more batch
+    // solve, which the measured multi-solve wins absorb without moving.
     const bool use_incremental =
         bm.UserFlags.incremental_solving &&
-        (incremental_from_start || solves_run > 0) &&
+        (incremental_from_start || solves_run > 1) &&
         GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
     solves_run++;
 

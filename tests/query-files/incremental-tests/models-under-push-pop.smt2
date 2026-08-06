@@ -1,6 +1,8 @@
 ; Models from the incremental driver: values pinned at pushed levels are
 ; reported, and a model after the pop no longer honours the popped pin.
-; RUN: %solver %s | %OutputCheck %s
+; RUN: %solver --incremental %s | %OutputCheck %s
+; (--incremental keeps this a DRIVER test: the session has two
+; check-sats, and auto-engagement starts at the third solve.)
 (set-option :produce-models true)
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
