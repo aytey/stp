@@ -2572,17 +2572,39 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // this is the only route by which a definition the raw harvest
         // refuses on content (a floating-point body, say) still reaches
         // its uses; without it those levels keep every symbolic read and
-        // the refinement loop pays for the aliases.
+        // the refinement loop pays for the aliases. Joining obeys the
+        // SAME discipline as harvestPushed: the body is expanded under
+        // the current context and refused if its own variable reappears
+        // or it grows past the inlining cap. A definer conjunct's piece
+        // sees RAW content (it is never rewritten under its own entry),
+        // so its propagator can harvest a definition in terms of a
+        // variable another context entry defines -- feeding that
+        // unexpanded made the map cyclic, and the next replacement
+        // recursed until the worker stack died. The elimination itself
+        // stays (it is sound for the piece and its replay); only the
+        // context entry is withheld.
         for (const std::pair<ASTNode, ASTNode>& d : pp.eliminatedDefs)
         {
           impl->activeEliminatedDefs.push_back(d);
-          if (ctx.find(d.first) == ctx.end())
+          if (ctx.find(d.first) != ctx.end())
+            continue;
+          ASTNode expanded = d.second;
+          if (!ctx.empty())
           {
-            ctx[d.first] = d.second;
-            if (!ctxHasFp && bm->has_floating_point_theory &&
-                containsFloatingPointTheory(d.second, bm))
-              ctxHasFp = true;
+            ASTNodeMap cache;
+            expanded = SubstitutionMap::replace(expanded, ctx, cache,
+                                                bm->defaultNodeFactory);
           }
+          if (expanded.GetKind() != TRUE && expanded.GetKind() != FALSE &&
+              bm->VarSeenInTerm(d.first, expanded))
+            continue;
+          if (impl->dagSizeUpTo(expanded, Impl::defInlineCap) >
+              Impl::defInlineCap)
+            continue;
+          ctx[d.first] = expanded;
+          if (!ctxHasFp && bm->has_floating_point_theory &&
+              containsFloatingPointTheory(expanded, bm))
+            ctxHasFp = true;
         }
       }
     }
