@@ -276,7 +276,18 @@ Limitations
   most encodings belong to popped, never-returning content, the solver is
   rebuilt from the live stack -- semantic stores survive and active
   content re-encodes through the bit-blast memo, but learned clauses and
-  refinement axioms start over. The finer-grained alternative (pinning
+  refinement axioms start over. The rebuild boundary is also the one
+  place a GLOBAL simplification pass over the base is both sound and
+  free -- everything re-encodes anyway, and the base never retracts --
+  so the driver runs the batch equality-propagation, simplification and
+  unconstrained-variable passes over the whole base conjunction there
+  (symbols of live pushed levels held untouchable, arrays excluded).
+  Definitions it eliminates are permanent, replay into models by
+  evaluation, and are restored as permanent units the moment later
+  content mentions their variable: an implied equation returns as
+  itself, while a variable dropped as unconstrained gets its ORIGINAL
+  conjuncts back -- its recorded definition is only a witness the model
+  replay uses, and asserting it would wrongly pin the variable. The finer-grained alternative (pinning
   popped variables away from the decision heuristics, as cvc5's CaDiCaL
   propagator integration does) requires the propagator interface and is
   not portable across our backends.

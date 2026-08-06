@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/Simplifier/PropagateEqualities.h"
+#include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/STPManager/STPManager.h"
@@ -323,6 +324,32 @@ struct IncrementalSolver::Impl
   // (the model-evaluation channel), so the next solve can withdraw them.
   ASTNodeSet seededModelKeys;
 
+  // Base-level definitions eliminated by the rebuild-boundary global
+  // pass. The base is permanent, so these are permanent too: seeded into
+  // the model channel every solve, and restored the moment any later
+  // content mentions their variable (see screenNewContent). What
+  // restoration means depends on provenance. An equation the propagator
+  // harvested is IMPLIED by the base, so the equation itself returns. A
+  // definition the unconstrained-variable pass recorded is only a
+  // WITNESS -- a value chosen to satisfy the dropped constraint, in no
+  // way implied -- so asserting it would wrongly pin the variable
+  // against whatever the new content wants; the original raw conjuncts
+  // that mentioned the variable return instead (complete, because a
+  // variable eliminated as unconstrained occurred in exactly one).
+  struct BaseElimination
+  {
+    ASTNode def;
+    bool witness = false;
+    ASTVec originals;
+  };
+  std::map<ASTNode, BaseElimination> baseEliminatedDefs;
+
+  // The re-simplified base conjuncts a rebuild produced, awaiting
+  // encoding: the rebuild itself must not add clauses, because the fresh
+  // backend's configuration window (bounded variable addition) has to be
+  // decided first.
+  ASTVec pendingRebuiltBase;
+
   // Definitions with replacements larger than this are never inlined:
   // they stay asserted equations, and their variable keeps the sharing.
   static const size_t defInlineCap = 200;
@@ -379,17 +406,47 @@ struct IncrementalSolver::Impl
   {
     if (!screenedContent.insert(raw).second)
       return;
-    if (eliminationUsers.empty())
+    if (eliminationUsers.empty() && baseEliminatedDefs.empty())
       return;
     for (const ASTNode& s : symbolsOf(raw))
     {
       std::map<ASTNode, std::vector<ASTNode>>::iterator it =
           eliminationUsers.find(s);
-      if (it == eliminationUsers.end())
-        continue;
-      const std::vector<ASTNode> keys = it->second;
-      for (const ASTNode& key : keys)
-        dropPreparedLevel(key);
+      if (it != eliminationUsers.end())
+      {
+        const std::vector<ASTNode> keys = it->second;
+        for (const ASTNode& key : keys)
+          dropPreparedLevel(key);
+      }
+      // A permanently eliminated base variable that new content mentions
+      // gets its constraint back as permanent units -- the base only
+      // grows, so re-conjoining later is sound -- and leaves the replay
+      // set, so its value comes from its bits again. An implied equation
+      // returns as itself; a witness definition must NOT be asserted
+      // (it would pin the variable to one chosen value), so the original
+      // conjuncts that mentioned the variable return instead. The
+      // restored content is screened first: it may mention OTHER
+      // eliminated variables, whose constraints must return with it or
+      // the restoration would be weaker than the original.
+      std::map<ASTNode, BaseElimination>::iterator bit =
+          baseEliminatedDefs.find(s);
+      if (bit != baseEliminatedDefs.end())
+      {
+        ASTVec restore;
+        if (bit->second.witness)
+          restore = bit->second.originals;
+        else
+          restore.push_back(definitionEquation(bit->first, bit->second.def));
+        baseEliminatedDefs.erase(bit);
+        for (const ASTNode& r : restore)
+        {
+          screenNewContent(r);
+          const int lit = rootLit(r);
+          SATSolver::vec_literals unit;
+          unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
+          addClause(unit);
+        }
+      }
     }
   }
 
@@ -506,6 +563,14 @@ struct IncrementalSolver::Impl
         trialOut = out;
       else
         trialOut = trial.SimplifyFormula_TopLevel(trialOut, false);
+      // Unconstrained-variable elimination is deliberately NOT run on
+      // pieces: a piece's untouchable set would have to protect every
+      // symbol visible outside it, and with cross-level cascades off
+      // limits the pass measured as pure graph-build overhead with no
+      // collapse anywhere in the slowdown corpus (the collapses PE can
+      // see, it already gets). The base conjunction at a rebuild
+      // boundary is the one place a global pass is sound and free of
+      // the reuse penalty; see rebuildEncodings.
       if (dagSizeUpTo(trialOut, budget) <= budget)
       {
         out = trialOut;
@@ -1260,7 +1325,7 @@ struct IncrementalSolver::Impl
     }
   }
 
-  void rebuildEncodings()
+  void rebuildEncodings(const ASTVec& assertionsSMT2)
   {
     solver.reset(makeBackend(bm->UserFlags));
     solver->enableRefinement(true);
@@ -1275,7 +1340,141 @@ struct IncrementalSolver::Impl
     everAssumedLits.clear();
     batchTablesSeeded = false;
     lastSeededKeys.clear();
-    level0Asserted.clear();
+    // Content screened before this rebuild must be screened again: the
+    // base pass below may eliminate a variable that only popped levels
+    // mention, and a re-push of such a level after the rebuild has to
+    // re-assert the equation -- the memo would skip it.
+    screenedContent.clear();
+
+    resimplifyBaseAtRebuild(assertionsSMT2);
+  }
+
+  // The rebuild boundary is the one place a GLOBAL pass over the base is
+  // both sound and free: everything re-encodes from scratch anyway, so
+  // novel rewritten forms forfeit no bit-blast sharing, and the base
+  // never retracts, so cross-conjunct rewriting inside it carries no
+  // retraction hazard -- this is the whole-formula constant propagation
+  // and unconstrained-variable elimination the driver otherwise forgoes
+  // per query. Pushed levels stay out of it: their symbols form the
+  // untouchable set, and their content is prepared per level as always.
+  // level0Asserted deliberately keeps its RAW keys, so the per-solve
+  // base loop keeps skipping conjuncts the pass already covers; the
+  // simplified replacements wait in pendingRebuiltBase for the encoding
+  // point after the backend's configuration window is decided.
+  void resimplifyBaseAtRebuild(const ASTVec& assertionsSMT2)
+  {
+    pendingRebuiltBase.clear();
+    if (level0Asserted.empty())
+      return;
+
+    // Raw base conjuncts, in deterministic order.
+    ASTVec base(level0Asserted.begin(), level0Asserted.end());
+    std::sort(base.begin(), base.end());
+    for (const ASTNode& c : base)
+      pendingRebuiltBase.push_back(c);
+
+    if (!bm->UserFlags.optimize_flag)
+      return;
+    // Arrays keep the historical per-conjunct path: eliminating within
+    // an array-carrying base would put reads into the replay channel the
+    // refinement loop evaluates. An active extensionality session
+    // likewise keeps its own choreography.
+    ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+    if (ext != NULL)
+      return;
+    for (const ASTNode& c : base)
+    {
+      const Fragment& f = fragment(c);
+      if (f.arrays || f.arrayEq)
+        return;
+    }
+
+    ASTNode conj = base.size() == 1
+                       ? base[0]
+                       : bm->defaultNodeFactory->CreateNode(AND, base);
+    if (fragment(conj).fp)
+      conj = fpContext()->prepare(conj);
+
+    // Symbols any live pushed level mentions are constrained outside the
+    // base; the pass must treat them as opaque.
+    std::set<ASTNode> untouch;
+    for (size_t level = 1; level < assertionsSMT2.size(); level++)
+    {
+      const ASTNodeSet& syms = symbolsOf(assertionsSMT2[level]);
+      untouch.insert(syms.begin(), syms.end());
+    }
+
+    SubstitutionMap passSm(bm);
+    Simplifier pass(bm, &passSm);
+    ASTNode out = conj;
+    if (bm->UserFlags.propagate_equalities)
+    {
+      PropagateEqualities pe(&pass, bm->defaultNodeFactory, bm);
+      out = pe.topLevel(out);
+    }
+    if (pass.hasUnappliedSubstitutions())
+      out = pass.applySubstitutionMap(out);
+    out = pass.SimplifyFormula_TopLevel(out, false);
+    // Definitions recorded up to here are implied equations; whatever
+    // the unconstrained-variable pass adds after this point is a witness
+    // choice (see BaseElimination).
+    ASTNodeSet impliedKeys;
+    for (DenseNodeMap::const_iterator it = pass.Return_SolverMap()->begin();
+         it != pass.Return_SolverMap()->end(); ++it)
+      impliedKeys.insert(it->first);
+    if (bm->UserFlags.enable_unconstrained)
+    {
+      RemoveUnconstrained ru(*bm);
+      out = ru.topLevel(out, &pass, &untouch);
+    }
+
+    // Split the harvested definitions exactly as piece preparation does:
+    // a variable a live pushed level mentions keeps its equation
+    // asserted; everything else is a PERMANENT elimination with model
+    // replay, restored by screening if future content mentions it.
+    ASTVec keep;
+    DenseNodeMap* defs = pass.Return_SolverMap();
+    size_t eliminated = 0;
+    for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
+         ++it)
+    {
+      const ASTNode& var = it->first;
+      const ASTNode& def = it->second;
+      if (var.GetKind() != SYMBOL || var.GetIndexWidth() != 0 ||
+          untouch.find(var) != untouch.end())
+      {
+        keep.push_back(definitionEquation(var, def));
+        continue;
+      }
+      BaseElimination& be = baseEliminatedDefs[var];
+      be.def = def;
+      be.witness = impliedKeys.find(var) == impliedKeys.end();
+      eliminated++;
+    }
+    // Witness eliminations restore their original conjuncts on mention.
+    for (const ASTNode& rc : base)
+    {
+      for (const ASTNode& s : symbolsOf(rc))
+      {
+        std::map<ASTNode, BaseElimination>::iterator eit =
+            baseEliminatedDefs.find(s);
+        if (eit != baseEliminatedDefs.end() && eit->second.witness)
+          eit->second.originals.push_back(rc);
+      }
+    }
+    if (!keep.empty())
+    {
+      keep.push_back(out);
+      out = bm->defaultNodeFactory->CreateNode(AND, keep);
+    }
+
+    pendingRebuiltBase.clear();
+    splitConjuncts(out, bm->ASTTrue, pendingRebuiltBase);
+
+    if (bm->UserFlags.stats_flag)
+      std::cerr << "Incremental: base re-simplified at rebuild, "
+                << base.size() << " conjuncts -> " << pendingRebuiltBase.size()
+                << ", " << eliminated << " eliminated" << std::endl;
   }
 
   // The batch pipeline's bounded-variable-addition policy, applied to the
@@ -1392,6 +1591,19 @@ struct IncrementalSolver::Impl
         (*channel)[d.first] = d.second;
         seededModelKeys.insert(d.first);
       }
+    }
+    // Base variables the rebuild-boundary pass eliminated: seeded
+    // unconditionally -- their pre-rebuild bits survive in the blast
+    // memo but are no longer encoded in the fresh solver, so the
+    // symbolToBBNode test above would wrongly trust them. When a symbol
+    // is re-encoded for real, its SAT bits overwrite the copied entry
+    // during model construction, so an over-seed is harmless.
+    for (std::map<ASTNode, BaseElimination>::const_iterator it =
+             baseEliminatedDefs.begin();
+         it != baseEliminatedDefs.end(); ++it)
+    {
+      (*channel)[it->first] = it->second.def;
+      seededModelKeys.insert(it->first);
     }
   }
 
@@ -1950,7 +2162,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         std::cerr << "Incremental: re-encoded from scratch (solver had "
                   << impl->solver->nVars() << " variables for " << active
                   << " active conjuncts)" << std::endl;
-      impl->rebuildEncodings();
+      impl->rebuildEncodings(assertionsSMT2);
     }
   }
 
@@ -1974,7 +2186,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         std::cerr << "Incremental: trail reuse retired ("
                   << impl->solver->nVars()
                   << " variables), solver restarted without it" << std::endl;
-      impl->rebuildEncodings();
+      impl->rebuildEncodings(assertionsSMT2);
     }
   }
 
@@ -2014,6 +2226,22 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // base level only grows (reset destroys this object), so this is monotone
   // and sound even though the level's conjunction node is re-collapsed --
   // and possibly re-simplified -- on every call.
+  // A rebuild left the re-simplified base waiting for this point: the
+  // backend's configuration window is decided and equality-free rounds
+  // reach here, so the replacements encode as this round's units.
+  // (level0Asserted kept the RAW keys, so the loop below skips them.)
+  if (!impl->pendingRebuiltBase.empty())
+  {
+    for (const ASTNode& c : impl->pendingRebuiltBase)
+    {
+      const int lit = impl->rootLit(c);
+      SATSolver::vec_literals unit;
+      unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
+      impl->addClause(unit);
+    }
+    impl->pendingRebuiltBase.clear();
+  }
+
   ASTVec conjuncts;
   splitConjuncts(assertionsSMT2[0], bm->ASTTrue, conjuncts);
 
