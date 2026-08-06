@@ -107,15 +107,22 @@ private:
                  "source sorts");
   }
 
-  // A comparison operand that is (or resolves to) a leaf the lowering
-  // leaves untouched: a symbol or an interned constant. FP constant folding
-  // is deferred solver-wide, so a literal usually arrives as to_fp's
-  // three-child reinterpret form over constant bits; resolve it through the
-  // canonicalising funnel (CreateFPConst), the same lookthrough
-  // RemoveUnconstrained's comparison rule uses. Returns null for anything
-  // else -- in particular for FP operations, whose values are cached
-  // unpacked and belong on the SymFPU path.
-  ASTNode comparisonLeaf(const ASTNode& n) const
+  // A predicate operand that is (or resolves to) a packed view the lowering
+  // leaves in the formula: a symbol or an interned constant, and structural
+  // nodes built out of those. FP constant folding is deferred solver-wide,
+  // so a literal usually arrives as to_fp's three-child reinterpret form
+  // over constant bits; resolve it through the canonicalising funnel
+  // (CreateFPConst), the same lookthrough RemoveUnconstrained's comparison
+  // rule uses. Returns null for anything else -- in particular for FP
+  // operations, whose values are cached unpacked and belong on the SymFPU
+  // path.
+  //
+  // Everything returned here ends up as a child of a surviving predicate,
+  // so it must be what lowering would have left in the formula anyway: each
+  // case returns the node unchanged, or a node of the same kind whose
+  // children are themselves resolved this way (or lowered, for the parts
+  // that are not float-sorted).
+  ASTNode comparisonLeaf(const ASTNode& n)
   {
     if (n.Degree() == 0)
       return n;
@@ -126,23 +133,144 @@ private:
       return bm->CreateFPConst(n[2], sort.exponentWidth(),
                                sort.significandWidth());
     }
+    // fp.neg and fp.abs are sign-bit edits on the packed encoding (IEEE-754
+    // 5.5.1 quiet operations: no rounding, NaN payload untouched), so either
+    // wrapped around a packed view is still a packed view: resolve the
+    // operand and keep the wrapper for the bit-blaster, whose FP_NEG/FP_ABS
+    // arms negate or clear the top bit of the operand's bits. Rebuilding
+    // through the factory matters when the operand resolved to something
+    // new: a constant folds (foldFPSign), so the survivor functions'
+    // constant rules see the folded form, and a collapsed mux re-enters the
+    // involution rules (neg(neg x) = x).
+    if (n.GetKind() == FP_NEG || n.GetKind() == FP_ABS)
+    {
+      const ASTNode inner = comparisonLeaf(n[0]);
+      if (inner.IsNull())
+        return ASTNode();
+      if (inner == n[0])
+        return n;
+      return node_factory->CreateTerm(n.GetKind(), n.GetValueWidth(), inner);
+    }
+    // fp.mul and fp.add under --bb.fp-native-arith: the bit-blaster's
+    // hand-written packed circuits (BBfpMul, BBfpAdd) take over from
+    // SymFPU when both float operands resolve to packed views and the
+    // rounding mode is immediate (a constant, or a declared symbol --
+    // whose one-hot validity is asserted at declaration). The rebuild
+    // goes through the factory, so constant operands fold (a fully
+    // constant operation never survives, keeping the lowering-must-change
+    // invariant of constant folding and model evaluation) and the
+    // identity rules still fire. fp.sub needs no arm: the factory already
+    // lowers it to fp.add of the negation.
+    if ((n.GetKind() == FP_MUL || n.GetKind() == FP_ADD) &&
+        bm->UserFlags.fp_native_arith && n.Degree() == 3 &&
+        (n[0].GetKind() == SYMBOL || n[0].GetKind() == BVCONST))
+    {
+      const ASTNode left = comparisonLeaf(n[1]);
+      if (left.IsNull())
+        return ASTNode();
+      const ASTNode right = comparisonLeaf(n[2]);
+      if (right.IsNull())
+        return ASTNode();
+      if (left == n[1] && right == n[2])
+        return n;
+      return node_factory->CreateTerm(n.GetKind(), n.GetValueWidth(), n[0],
+                                      left, right);
+    }
+    // The float-to-float form of to_fp (four children: the two format
+    // constants, the rounding mode, the float operand), under the same
+    // flag: the bit-blaster re-rounds the packed source directly
+    // (BBfpToFp). Unlike the arithmetic arms there is no factory fold for
+    // a constant conversion, so a constant operand under a constant mode
+    // must NOT survive -- constant folding and model evaluation rely on
+    // the SymFPU lowering collapsing exactly that case.
+    //
+    // Targets with a 2-bit exponent stay on the SymFPU path: SymFPU's
+    // convertFloatToFloat mis-rounds into such formats (e.g. converting
+    // the (3, 4) value 3/32 to (2, 5) under RNE gives the odd neighbour
+    // where IEEE ties-to-even picks 4/32; its own (2, 5) ADDITION is
+    // clean, so this is specific to the conversion). The native circuit
+    // rounds correctly there, but a circuit that disagrees with the
+    // constant evaluator makes model validation reject its own models.
+    // Until the evaluator side is fixed, the gate keeps the two aligned.
+    if (n.GetKind() == FP_TOFP && bm->UserFlags.fp_native_arith &&
+        n.Degree() == 4 &&
+        (n[2].GetKind() == SYMBOL || n[2].GetKind() == BVCONST) &&
+        n[0].GetUnsignedConst() >= 3)
+    {
+      const ASTNode operand = comparisonLeaf(n[3]);
+      if (operand.IsNull())
+        return ASTNode();
+      if (operand.isConstant() && n[2].GetKind() == BVCONST)
+        return ASTNode();
+      if (operand == n[3])
+        return n;
+      ASTVec children;
+      children.push_back(n[0]);
+      children.push_back(n[1]);
+      children.push_back(n[2]);
+      children.push_back(operand);
+      return node_factory->CreateTerm(FP_TOFP, n.GetValueWidth(), children);
+    }
+    // A select from a float-element array already IS the packed element
+    // bits: asPacked's READ arm only rebuilds the array and index if they
+    // contain FP work, so it never builds a circuit for the element itself
+    // and the predicate can consume those bits directly. The element format
+    // lives on the array node and the read derives it (deriveFPFormat), so
+    // it survives the array transform's rewriting of this operand -- every
+    // stand-in it mints for a read carries the format (ArrayTransformer),
+    // which is what the bit-blaster reads back here.
+    if (n.GetKind() == READ)
+    {
+      const ASTNode packed = asPacked(n);
+      assert(packed.GetKind() == READ);
+      assert(packed.GetSourceSort().kind() == SourceSort::Kind::FloatingPoint);
+      return packed;
+    }
+    // A float-sorted ITE is a mux over packed bits once its branches are
+    // packed views, and the bit-blaster muxes them for free (BBITE) -- while
+    // SymFPU's ITE arm unpacks BOTH branches and muxes the unpacked records.
+    // The branches recurse through here rather than through asPacked,
+    // because asPacked would happily build an encode() circuit for an
+    // FP-operation branch, which is exactly the case that belongs on the
+    // SymFPU path.
+    if (n.GetKind() == ITE && n.Degree() == 3)
+    {
+      const ASTNode thenLeaf = comparisonLeaf(n[1]);
+      if (thenLeaf.IsNull())
+        return ASTNode();
+      const ASTNode elseLeaf = comparisonLeaf(n[2]);
+      if (elseLeaf.IsNull())
+        return ASTNode();
+      // The condition is Boolean, so lower() is the right treatment: any FP
+      // work inside it is lowered (possibly into further surviving native
+      // predicates) exactly as it would be anywhere else.
+      const ASTNode cond = lower(n[0]);
+      if (cond == n[0] && thenLeaf == n[1] && elseLeaf == n[2])
+        return n;
+      // Through the factory, so a folded condition collapses the mux to one
+      // branch here rather than leaving a dead one under the predicate. The
+      // constant rules in the two survivor functions run after this and
+      // still see the collapsed operand.
+      return node_factory->CreateTerm(ITE, n.GetValueWidth(), cond, thenLeaf,
+                                      elseLeaf);
+    }
     return ASTNode();
   }
 
-  // The six binary comparison predicates over leaf operands skip SymFPU
-  // entirely: the source comparison survives to the bit-blaster, which
-  // compares the packed IEEE bits directly (BBcompareFP, BBeqFP). Returns
-  // the surviving node -- `n` itself, or the comparison rebuilt over
-  // resolved constant operands, both purely float-sorted so no FP node is
-  // ever built over packed carriers -- or null when the comparison has to
-  // take the SymFPU path. (nativeClassificationSurvivor is the unary
+  // The six binary comparison predicates over packed-view operands skip
+  // SymFPU entirely: the source comparison survives to the bit-blaster,
+  // which compares the packed IEEE bits directly (BBcompareFP, BBeqFP).
+  // Returns the surviving node -- `n` itself, or the comparison rebuilt
+  // over resolved operands, both purely float-sorted so no FP node is ever
+  // built over packed carriers -- or null when the comparison has to take
+  // the SymFPU path. (nativeClassificationSurvivor is the unary
   // sibling, for the classification predicates.)
   //
   // A comparison of two constants must not survive: constant folding and
   // model evaluation lower the node over its constant children and rely on
   // the result collapsing to TRUE/FALSE through the simplifying factory
   // (ComputeFormulaUsingModel asserts lowering changed the node).
-  ASTNode nativeComparisonSurvivor(const ASTNode& n) const
+  ASTNode nativeComparisonSurvivor(const ASTNode& n)
   {
     if (!bm->UserFlags.fp_native_cmp)
       return ASTNode();
@@ -172,7 +300,7 @@ private:
   // for a unary predicate a constant operand means the whole node is
   // constant, and an all-constant node has to lower so that constant
   // folding and model evaluation see it collapse.
-  ASTNode nativeClassificationSurvivor(const ASTNode& n) const
+  ASTNode nativeClassificationSurvivor(const ASTNode& n)
   {
     if (!bm->UserFlags.fp_native_cmp)
       return ASTNode();
