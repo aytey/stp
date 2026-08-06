@@ -350,6 +350,23 @@ struct IncrementalSolver::Impl
   // decided first.
   ASTVec pendingRebuiltBase;
 
+  // Clause mass per encoding key, and the relief valve's deadness
+  // accounting built from it. Conjunct COUNTS were the original proxy
+  // for "mostly dead" and failed on variant-push sessions: a few dozen
+  // distinct conjuncts, each a huge floating-point circuit, grew the
+  // solver to a million variables of ~95% popped content without ever
+  // tripping a count ratio. Mass is what the solver actually carries.
+  std::map<ASTNode, uint64_t> clauseMassOf;
+  uint64_t trackedClauseMass = 0;
+  // Permanent (base) part of the live mass, maintained incrementally.
+  uint64_t baseLiveMass = 0;
+  // The largest live mass any solve has used since the last rebuild:
+  // the valve's denominator. Comparing against the PEAK working set --
+  // not the last solve's, which may be momentarily tiny -- gives the
+  // trigger hysteresis: after a rebuild the tracked mass starts at
+  // roughly the working set, so the next fire needs 4x growth again.
+  uint64_t maxLiveClauseMass = 0;
+
   // Definitions with replacements larger than this are never inlined:
   // they stay asserted equations, and their variable keeps the sharing.
   static const size_t defInlineCap = 200;
@@ -445,6 +462,7 @@ struct IncrementalSolver::Impl
           SATSolver::vec_literals unit;
           unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
           addClause(unit);
+          baseLiveMass += clauseMassOf[r];
         }
       }
     }
@@ -1068,6 +1086,7 @@ struct IncrementalSolver::Impl
       totalizeRegistrySymbols();
     }
 
+    const uint64_t clausesPre = clausesAdded;
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
     BBNodeAIG root = bb.BBForm(toEncode);
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
@@ -1078,6 +1097,13 @@ struct IncrementalSolver::Impl
     const int lit =
         2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
     bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+
+    // Clause mass per encoding key feeds the relief valve's deadness
+    // measure: the valve compares the mass of everything encoded against
+    // the mass the live stack actually uses.
+    const uint64_t delta = clausesAdded - clausesPre;
+    clauseMassOf[key] = delta;
+    trackedClauseMass += delta;
 
     encodesThisCall++;
     return lit;
@@ -1340,6 +1366,10 @@ struct IncrementalSolver::Impl
     everAssumedLits.clear();
     batchTablesSeeded = false;
     lastSeededKeys.clear();
+    clauseMassOf.clear();
+    trackedClauseMass = 0;
+    baseLiveMass = 0;
+    maxLiveClauseMass = 0;
     // Content screened before this rebuild must be screened again: the
     // base pass below may eliminate a variable that only popped levels
     // mention, and a re-push of such a level after the rebuild has to
@@ -2146,24 +2176,25 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // The relief valve: once the solver is past the configured size and most
   // of its encodings belong to content no longer on the stack, start it
   // over from the live stack. Checked before routing so extensionality
-  // rounds benefit too.
+  // rounds benefit too. Deadness is measured by CLAUSE MASS against the
+  // peak live mass any solve has used since the last rebuild -- conjunct
+  // counts, the original proxy, missed variant-push sessions whose few
+  // dozen distinct conjuncts each carry a huge circuit (a million
+  // variables of ~95% popped content never tripped the count ratio) --
+  // and comparing with the PEAK is the hysteresis: after a rebuild the
+  // tracked mass restarts at the working set, so firing again takes
+  // another fourfold growth.
   if (uf.incremental_reencode_limit > 0 &&
-      (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit)
+      (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit &&
+      impl->trackedClauseMass >= 4 * (impl->maxLiveClauseMass + 1))
   {
-    size_t active = 0;
-    ASTVec probe;
-    for (const ASTNode& levelConjunction : assertionsSMT2)
-      splitConjuncts(levelConjunction, bm->ASTTrue, probe);
-    active = probe.size();
-
-    if (impl->rootLitOf.size() >= 4 * (active + 1))
-    {
-      if (uf.stats_flag)
-        std::cerr << "Incremental: re-encoded from scratch (solver had "
-                  << impl->solver->nVars() << " variables for " << active
-                  << " active conjuncts)" << std::endl;
-      impl->rebuildEncodings(assertionsSMT2);
-    }
+    if (uf.stats_flag)
+      std::cerr << "Incremental: re-encoded from scratch (solver had "
+                << impl->solver->nVars() << " variables, "
+                << impl->trackedClauseMass << " tracked clauses for a "
+                << impl->maxLiveClauseMass << " clause working set)"
+                << std::endl;
+    impl->rebuildEncodings(assertionsSMT2);
   }
 
   // Trail reuse pays on the many-small-queries sessions and hurts on the
@@ -2238,6 +2269,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       SATSolver::vec_literals unit;
       unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
       impl->addClause(unit);
+      impl->baseLiveMass += impl->clauseMassOf[c];
     }
     impl->pendingRebuiltBase.clear();
   }
@@ -2267,6 +2299,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     SATSolver::vec_literals unit;
     unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
     impl->addClause(unit);
+    impl->baseLiveMass += impl->clauseMassOf[c];
   }
 
   // Screening must see the WHOLE stack's new raw content before any level
@@ -2469,6 +2502,22 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
 
   impl->hintRetractedLevels(assumptions);
+
+  // This solve's live clause mass -- what the assumed stack actually
+  // uses -- feeds the relief valve's deadness measure on LATER solves.
+  // The peak since the last rebuild is the valve's denominator.
+  {
+    uint64_t liveMass = impl->baseLiveMass;
+    for (const ASTNode& k : activeEncodedKeys)
+    {
+      std::map<ASTNode, uint64_t>::const_iterator mit =
+          impl->clauseMassOf.find(k);
+      if (mit != impl->clauseMassOf.end())
+        liveMass += mit->second;
+    }
+    if (liveMass > impl->maxLiveClauseMass)
+      impl->maxLiveClauseMass = liveMass;
+  }
 
   if (uf.stats_flag)
   {

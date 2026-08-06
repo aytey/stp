@@ -22,6 +22,12 @@
 (declare-fun b2 () (_ BitVec 8))
 (declare-fun c2 () (_ BitVec 8))
 (declare-fun y () (_ BitVec 8))
+(declare-fun y1 () (_ BitVec 8))
+(declare-fun y2 () (_ BitVec 8))
+(declare-fun y3 () (_ BitVec 8))
+(declare-fun y4 () (_ BitVec 8))
+(declare-fun y5 () (_ BitVec 8))
+(declare-fun y6 () (_ BitVec 8))
 ; a definitional chain the rebuild pass collapses; a is pinned to zero
 ; so the replayed values are deterministic. c2 is dropped as
 ; unconstrained under a bound that allows two values.
@@ -29,36 +35,44 @@
 (assert (= b2 (bvadd b1 #x01)))
 (assert (bvult a #x01))
 (assert (bvult c2 #x02))
-; a fat throwaway level inflates the encoding so the valve's
-; dead-to-live ratio trips on the next solve
+; heavy throwaway rounds accumulate dead clause mass -- each a distinct
+; multiplier circuit -- until the valve's mass ratio trips
 (push 1)
-(assert (distinct y #x10))
-(assert (distinct y #x11))
-(assert (distinct y #x12))
-(assert (distinct y #x13))
-(assert (distinct y #x14))
-(assert (distinct y #x15))
-(assert (distinct y #x16))
-(assert (distinct y #x17))
-(assert (distinct y #x18))
-(assert (distinct y #x19))
-(assert (distinct y #x1a))
-(assert (distinct y #x1b))
-(assert (distinct y #x1c))
-(assert (distinct y #x1d))
-(assert (distinct y #x1e))
-(assert (distinct y #x1f))
-(assert (distinct y #x20))
-(assert (distinct y #x21))
-(assert (distinct y #x22))
-(assert (distinct y #x23))
+(assert (bvugt (bvmul y1 y1) #x03))
+; CHECK: ^sat
+(check-sat)
+(pop 1)
+(push 1)
+(assert (bvugt (bvmul y2 y2) #x03))
+; CHECK: ^sat
+(check-sat)
+(pop 1)
+(push 1)
+(assert (bvugt (bvmul y3 y3) #x03))
+; CHECK: ^sat
+(check-sat)
+(pop 1)
+(push 1)
+(assert (bvugt (bvmul y4 y4) #x03))
+; CHECK: ^sat
+(check-sat)
+(pop 1)
+(push 1)
+(assert (bvugt (bvmul y5 y5) #x03))
+; CHECK: ^sat
+(check-sat)
+(pop 1)
+(push 1)
+(assert (bvugt (bvmul y6 y6) #x03))
+; five dead rounds exceed four times the peak working set: the valve
+; fires at this solve and the rebuild runs the global base pass
+; CHECK: base re-simplified at rebuild
 ; CHECK: ^sat
 (check-sat)
 (pop 1)
 ; a fresh base conjunct invalidates the verdict cache so the next check
-; really solves (and the valve can fire)
+; really solves against the rebuilt encoding
 (assert (bvule y #xff))
-; CHECK: base re-simplified at rebuild
 ; CHECK: ^sat
 (check-sat)
 ; the eliminated chain replays through its definitions: b2 = a + 2 = 2

@@ -52,6 +52,9 @@
 (pop 1)
 (push 1)
 (assert (bvugt (bvmul d d) #x27))
+; by here seven dead rounds have accumulated four times the peak
+; working set's clause mass: the solver restarts
+; CHECK: re-encoded from scratch
 ; CHECK: ^sat
 (check-sat)
 (pop 1)
@@ -72,8 +75,6 @@
 (pop 1)
 (push 1)
 (assert (bvugt (bvmul f f) #x27))
-; the twelfth dead encoding crosses the ratio: the solver restarts here
-; CHECK: re-encoded from scratch
 ; CHECK: ^sat
 (check-sat)
 (pop 1)
