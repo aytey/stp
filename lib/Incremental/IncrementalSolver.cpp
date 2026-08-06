@@ -377,23 +377,24 @@ struct IncrementalSolver::Impl
   bool speculativeThisCall;
   bool speculationDisabled;  // set after validation failure to prevent retry
 
-  // Validate a SAT model against the pre-simplified originals.
-  // Returns true if the model satisfies all originals; false if any
-  // are violated (and populates `violated` with the failed keys).
-  bool validateModel(std::vector<ASTNode>& violated)
+  // Validate a SAT model against the full assertion stack.
+  // Returns true if the model satisfies all assertions; false if any
+  // are violated.
+  bool validateModel(const ASTVec& assertionsSMT2)
   {
-    if (speculativeOriginals.empty())
+    if (!speculativeThisCall)
       return true;
 
-    for (const auto& kv : speculativeOriginals)
+    // Check every level's assertions against the model.
+    for (const ASTNode& levelConj : assertionsSMT2)
     {
-      const ASTNode& original = kv.second;
-      // Evaluate the original lowered form under the current model.
-      ASTNode val = ce->ComputeFormulaUsingModel(original);
+      if (levelConj == bm->ASTTrue)
+        continue;
+      ASTNode val = ce->ComputeFormulaUsingModel(levelConj);
       if (val != bm->ASTTrue)
-        violated.push_back(kv.first);
+        return false;
     }
-    return violated.empty();
+    return true;
   }
 
   // Per-call statistics, printed under --stats.
@@ -788,10 +789,13 @@ struct IncrementalSolver::Impl
           toEncode = localSimp.applySubstitutionMapAtTopLevel(toEncode);
         }
 
-        // If the formula changed, record the original for validation.
+        // Record the RAW conjunct (pre-lowered, pre-prepared) for
+        // validation. Validating against the lowered form misses bugs
+        // in the lowering step itself; the raw conjunct is the source
+        // of truth.
         if (!(toEncode == preLowered))
         {
-          speculativeOriginals[key] = preLowered;
+          speculativeOriginals[key] = key;  // validate against original
           speculativeThisCall = true;
         }
       }
@@ -2066,16 +2070,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // Speculative validation on the refinement path: if refinement
     // converged to SAT and we used aggressive CBP, validate the model
     // against the pre-simplified originals.
-    if (res == SOLVER_SATISFIABLE && impl->speculativeThisCall &&
-        !impl->speculativeOriginals.empty())
+    if (res == SOLVER_SATISFIABLE && impl->speculativeThisCall)
     {
-      std::vector<ASTNode> violated;
-      if (!impl->validateModel(violated))
+      if (!impl->validateModel(assertionsSMT2))
       {
         if (uf.stats_flag)
           std::cerr << "Incremental: speculative SAT failed validation "
-                       "on refinement path ("
-                    << violated.size() << " conjuncts violated)"
+                       "on refinement path"
                     << std::endl;
 
         impl->rebuildEncodings();
@@ -2124,7 +2125,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // against the pre-simplified conjuncts. If any are violated, the
   // aggressive simplification dropped a constraint that matters —
   // re-encode those conjuncts conservatively and re-solve.
-  if (impl->speculativeThisCall && !impl->speculativeOriginals.empty())
+  if (impl->speculativeThisCall)
   {
     // We need a model to validate against.
     impl->ce->ClearCounterExampleMap();
@@ -2134,26 +2135,12 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     impl->buildSymbolMap(symbolMap);
     impl->ce->ConstructCounterExample(*impl->solver, symbolMap);
 
-    std::vector<ASTNode> violated;
-    if (!impl->validateModel(violated))
+    if (!impl->validateModel(assertionsSMT2))
     {
       if (uf.stats_flag)
-        std::cerr << "Incremental: speculative SAT failed validation ("
-                  << violated.size() << " conjuncts violated), re-encoding"
-                  << std::endl;
+        std::cerr << "Incremental: speculative SAT failed validation, "
+                     "re-encoding" << std::endl;
 
-      // Re-encode violated conjuncts without speculation: evict them
-      // from the rootLitOf cache so they get re-encoded on the next
-      // solve. The next iteration of the refinement loop (or a fresh
-      // solve) will pick them up.
-      for (const ASTNode& key : violated)
-      {
-        impl->rootLitOf.erase(key);
-        impl->speculativeOriginals.erase(key);
-      }
-
-      // Wipe ALL encoding state: the aggressive CBP's constants may
-      // have tainted shared sub-expressions across multiple conjuncts.
       impl->rebuildEncodings();
       impl->callCBP.reset();
       impl->speculativeOriginals.clear();
