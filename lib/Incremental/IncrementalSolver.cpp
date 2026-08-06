@@ -2032,11 +2032,20 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     SOLVER_RETURN_TYPE res = impl->ce->CallSAT_ResultCheck(
         *impl->solver, bm->ASTTrue, activeConjunction, activeConjunction,
         adapter, true);
+    int refinement_rounds = 0;
     while (res == SOLVER_UNDECIDED)
     {
+      refinement_rounds++;
+      if (uf.stats_flag || refinement_rounds % 10 == 0)
+        std::cerr << "Incremental: refinement round " << refinement_rounds
+                  << ", solver has " << impl->solver->nVars() << " vars"
+                  << std::endl;
       res = impl->ce->SATBased_ArrayReadRefinement(
           *impl->solver, activeConjunction, adapter);
     }
+    if (refinement_rounds > 0 && uf.stats_flag)
+      std::cerr << "Incremental: refinement converged after "
+                << refinement_rounds << " rounds" << std::endl;
     adapter->setAssumptions(NULL);
 
     if (uf.stats_flag)
