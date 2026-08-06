@@ -360,53 +360,11 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
-  // Persistent incremental CBP operating on post-lowered (pure BV) forms.
-  // Created on first FP conjunct; survives across check-sats. Push/pop
-  // is synced from checkSatOnCurrentStack to match the assertion stack.
-  std::unique_ptr<IncrementalCBP> incrCBP;
-  size_t cbpDepth;  // CBP's current push depth
-
-  // Dead-clause rebuild triggers.
-  //
-  // pushVarSnapshots: records the solver's variable count at each push
-  // depth. On pop, if the solver grew substantially, a rebuild is
-  // triggered.
-  //
-  // postSolveRebuildThreshold: after each check-sat, if the solver's
-  // variable count exceeds this, rebuild. This catches the common
-  // pattern of many pushes with no pops, where each push adds a large
-  // FP circuit. Rebuilding after each heavy solve gives batch-pipeline
-  // performance on the heavy queries while keeping incremental state
-  // for the cheap ones.
-  std::vector<uint64_t> pushVarSnapshots;
-  static const uint64_t postSolveRebuildThreshold = 50000;
-
-  IncrementalCBP* ensureCBP()
-  {
-    if (!incrCBP)
-    {
-      incrCBP.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
-      cbpDepth = 0;
-    }
-    return incrCBP.get();
-  }
-
-  // Sync the IncrementalCBP push/pop depth with the assertion stack.
-  void syncCBPDepth(size_t targetDepth)
-  {
-    if (!incrCBP)
-      return;
-    while (cbpDepth > targetDepth)
-    {
-      incrCBP->pop();
-      cbpDepth--;
-    }
-    while (cbpDepth < targetDepth)
-    {
-      incrCBP->push();
-      cbpDepth++;
-    }
-  }
+  // Per-call cross-conjunct CBP on post-FP-lowered forms. Created
+  // fresh at the start of each check-sat and discarded afterward,
+  // so no state leaks across push/pop boundaries. Accumulates
+  // constants across conjuncts WITHIN a single check-sat.
+  std::unique_ptr<IncrementalCBP> callCBP;
 
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
@@ -421,7 +379,7 @@ struct IncrementalSolver::Impl
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), cbpDepth(0),
+        trailReuseAllowed(true), lastLevelCount(0),
         clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
@@ -736,10 +694,11 @@ struct IncrementalSolver::Impl
       // cross-conjunct CBP (persistent) + local simplification.
       if (bm->UserFlags.optimize_flag && bm->UserFlags.bitConstantProp_flag)
       {
-        IncrementalCBP* cbp = ensureCBP();
-        cbp->addConstraints(toEncode);
+        if (!callCBP)
+          callCBP.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
+        callCBP->addConstraints(toEncode);
 
-        ASTNodeMap fixed = cbp->getAllFixed();
+        ASTNodeMap fixed = callCBP->getAllFixed();
         if (!fixed.empty())
         {
           ASTNodeMap cache;
@@ -1793,40 +1752,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
-  // Dead-clause rebuild: track solver size at each push depth.
-  // On pop, if the solver grew substantially beyond the snapshot,
-  // the dead clauses from popped levels outweigh the live content
-  // and a fresh solver is cheaper than searching through the dead
-  // weight.
-  {
-    const size_t depth = assertionsSMT2.size();
-    // Pop: check for dead-clause bloat.
-    while (impl->pushVarSnapshots.size() > depth)
-    {
-      uint64_t snapshotVars = impl->pushVarSnapshots.back();
-      impl->pushVarSnapshots.pop_back();
-      uint64_t currentVars = impl->solver->nVars();
-      // If the solver more than doubled since this level was pushed,
-      // the dead content is large enough to justify a rebuild.
-      if (currentVars > 2 * snapshotVars && currentVars > 1000)
-      {
-        if (uf.stats_flag)
-          std::cerr << "Incremental: dead-clause rebuild on pop ("
-                    << currentVars << " vars, snapshot was "
-                    << snapshotVars << ")" << std::endl;
-        impl->rebuildEncodings();
-        impl->pushVarSnapshots.clear();
-        break;
-      }
-    }
-    // Push: record snapshot for new depths.
-    while (impl->pushVarSnapshots.size() < depth)
-      impl->pushVarSnapshots.push_back(impl->solver->nVars());
-  }
-
-  // Sync the incremental CBP depth with the assertion stack.
-  // Pop removes pushed-level constants; push starts a new undo log.
-  impl->syncCBPDepth(assertionsSMT2.size());
+  // Fresh per-call CBP: no state leaks across push/pop boundaries.
+  impl->callCBP.reset();
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
@@ -2063,49 +1990,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   if (uf.stats_flag)
     impl->solver->printStats();
-
-  // Post-solve rebuild: if the solver accumulated too many variables
-  // (from FP lowering across many push levels), wipe it. The next
-  // check-sat re-encodes from the live stack, exactly like the batch
-  // pipeline. This is the key to matching batch performance on
-  // sessions with many heavy queries and few pops.
-  if (impl->solver->nVars() > Impl::postSolveRebuildThreshold)
-  {
-    if (uf.stats_flag)
-      std::cerr << "Incremental: post-solve rebuild ("
-                << impl->solver->nVars() << " vars > "
-                << Impl::postSolveRebuildThreshold << " threshold)"
-                << std::endl;
-    // Capture what we need from the solver before destroying it.
-    bool wasUnsat = !sat;
-    std::vector<int> failedBefore;
-    if (wasUnsat)
-      impl->solver->unsatAssumptions(assumptions, failedBefore);
-
-    impl->rebuildEncodings();
-    impl->pushVarSnapshots.clear();
-
-    // The CBP state is still valid — it operates on the AST, not the
-    // SAT solver. No need to reset it.
-
-    if (bm->soft_timeout_expired)
-      return SOLVER_TIMEOUT;
-
-    if (wasUnsat)
-    {
-      // We already know it's unsat; record from the saved data.
-      impl->lastUnsat = true;
-      impl->lastUnsatCoarse = false;
-      impl->lastLevelCount = assertionsSMT2.size();
-      impl->lastFailedLits = failedBefore;
-      return SOLVER_UNSATISFIABLE;
-    }
-
-    // SAT — model was in the old solver, which is gone. The next
-    // model query will need to re-solve. Mark as pending.
-    impl->modelPending = true;
-    return SOLVER_SATISFIABLE;
-  }
 
   if (bm->soft_timeout_expired)
     return SOLVER_TIMEOUT;

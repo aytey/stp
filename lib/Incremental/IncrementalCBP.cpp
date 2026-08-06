@@ -276,16 +276,15 @@ bool IncrementalCBP::addConstraints(const ASTNode& conjunction)
   // Extend the parent map with the new sub-DAG.
   extendParentMap(conjunction);
 
-  // Seed the worklist from the new nodes.
+  // Seed the worklist from the new nodes. Only propagate bottom-up
+  // from constants and structural constraints — do NOT set the
+  // conjunction itself to true.  Setting individual conjuncts to
+  // true causes circular reasoning: "assume A → A simplifies to
+  // true → assert true," which drops the constraint and turns
+  // unsat problems into sat.  The batch pipeline's CBP sets the
+  // TOP of the ENTIRE formula to true (sound, because the formula
+  // as a whole is what must hold), not individual pieces.
   seedWorklist(conjunction);
-
-  // Set the conjunction to true and propagate.
-  FixedBits* topFB = getOrCreate(conjunction);
-  if (currentLog)
-    recordBefore(conjunction, topFB);
-  topFB->setFixed(0, true);
-  topFB->setValue(0, true);
-  pushWork(conjunction);
 
   propagate();
   return !conflict;
