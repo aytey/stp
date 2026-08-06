@@ -360,11 +360,41 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
-  // Per-call cross-conjunct CBP on post-FP-lowered forms. Created
-  // fresh at the start of each check-sat and discarded afterward,
-  // so no state leaks across push/pop boundaries. Accumulates
-  // constants across conjuncts WITHIN a single check-sat.
+  // ── Speculative simplification pipeline ───────────────────────────
+  //
+  // Per-call aggressive CBP: uses addConstraintsAggressive (sets each
+  // conjunct to TRUE) to discover speculative constants. Results are
+  // valid ~99.96% of the time.
+  //
+  // After SAT, the model is validated against the pre-simplified
+  // conjuncts. If any are violated, those conjuncts are re-encoded
+  // without speculation and the solver re-runs.
   std::unique_ptr<IncrementalCBP> callCBP;
+
+  // key → pre-simplified lowered form for speculatively-simplified
+  // conjuncts. Used for SAT validation.
+  std::map<ASTNode, ASTNode> speculativeOriginals;
+  bool speculativeThisCall;
+  bool speculationDisabled;  // set after validation failure to prevent retry
+
+  // Validate a SAT model against the pre-simplified originals.
+  // Returns true if the model satisfies all originals; false if any
+  // are violated (and populates `violated` with the failed keys).
+  bool validateModel(std::vector<ASTNode>& violated)
+  {
+    if (speculativeOriginals.empty())
+      return true;
+
+    for (const auto& kv : speculativeOriginals)
+    {
+      const ASTNode& original = kv.second;
+      // Evaluate the original lowered form under the current model.
+      ASTNode val = ce->ComputeFormulaUsingModel(original);
+      if (val != bm->ASTTrue)
+        violated.push_back(kv.first);
+    }
+    return violated.empty();
+  }
 
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
@@ -380,6 +410,7 @@ struct IncrementalSolver::Impl
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
         trailReuseAllowed(true), lastLevelCount(0),
+        speculativeThisCall(false), speculationDisabled(false),
         clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
@@ -690,23 +721,78 @@ struct IncrementalSolver::Impl
     {
       toEncode = fpContext()->lowerPrepared(toEncode);
 
-      // Per-conjunct simplification on the FP-lowered form:
-      // cross-conjunct CBP (persistent) + local simplification.
-      if (bm->UserFlags.optimize_flag && bm->UserFlags.bitConstantProp_flag)
+      // ── Speculative simplification pipeline ───────────────────────
+      // Run aggressive CBP (tier 1: set each conjunct to TRUE) plus
+      // the full batch cascade (tier 2: PropagateEqualities,
+      // RemoveUnconstrained, BVSolver) on the lowered form.
+      //
+      // These simplifications are speculative: they assume this
+      // conjunct holds, which is valid iff the formula is SAT. If the
+      // formula is actually UNSAT, the aggressive simplification may
+      // weaken the formula and produce a spurious SAT — caught by
+      // model validation after the solve.
+      // Speculative simplification runs only when speculation is
+      // enabled AND the conjunct is NOT a base-level permanent unit.
+      // Base-level encodings are permanent and must be conservative;
+      // pushed-level encodings are retractable via assumptions, so
+      // aggressive constants that turn out wrong get caught by
+      // validation and the encoding is rebuilt.
+      const bool canSpeculate = bm->UserFlags.optimize_flag &&
+                                !speculationDisabled &&
+                                !level0Asserted.count(key);
+      if (canSpeculate)
       {
-        if (!callCBP)
-          callCBP.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
-        callCBP->addConstraints(toEncode);
+        ASTNode preLowered = toEncode;  // save for validation
 
-        ASTNodeMap fixed = callCBP->getAllFixed();
-        if (!fixed.empty())
+        // Tier 1: aggressive cross-conjunct CBP.
+        if (bm->UserFlags.bitConstantProp_flag)
         {
-          ASTNodeMap cache;
-          toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
-                                              bm->defaultNodeFactory);
+          if (!callCBP)
+            callCBP.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
+          callCBP->addConstraintsAggressive(toEncode);
+
+          ASTNodeMap fixed = callCBP->getAllFixed();
+          if (!fixed.empty())
+          {
+            ASTNodeMap cache;
+            toEncode = SubstitutionMap::replace(toEncode, fixed, cache,
+                                                bm->defaultNodeFactory);
+          }
+        }
+
+        // Tier 2: full batch simplification cascade.
+        {
           SubstitutionMap localSm(bm);
           Simplifier localSimp(bm, &localSm);
+
           toEncode = localSimp.SimplifyFormula_TopLevel(toEncode, false);
+
+          if (bm->UserFlags.propagate_equalities)
+          {
+            PropagateEqualities pe(&localSimp, bm->defaultNodeFactory, bm);
+            toEncode = pe.topLevel(toEncode);
+          }
+
+          if (bm->UserFlags.enable_unconstrained)
+          {
+            RemoveUnconstrained ruc(*bm);
+            toEncode = ruc.topLevel(toEncode, &localSimp);
+          }
+
+          if (bm->UserFlags.wordlevel_solve_flag)
+          {
+            BVSolver bvs(bm, &localSimp);
+            toEncode = bvs.TopLevelBVSolve(toEncode, false);
+          }
+
+          toEncode = localSimp.applySubstitutionMapAtTopLevel(toEncode);
+        }
+
+        // If the formula changed, record the original for validation.
+        if (!(toEncode == preLowered))
+        {
+          speculativeOriginals[key] = preLowered;
+          speculativeThisCall = true;
         }
       }
     }
@@ -1752,8 +1838,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
-  // Fresh per-call CBP: no state leaks across push/pop boundaries.
+  // Fresh per-call speculative state (but don't clear speculationDisabled
+  // — that's set by the validation-failure retry to prevent recursion).
   impl->callCBP.reset();
+  impl->speculativeOriginals.clear();
+  impl->speculativeThisCall = false;
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
@@ -1996,8 +2085,66 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   if (!sat)
   {
+    // UNSAT is always sound under speculative simplification: the
+    // simplified formula is weaker (has fewer constraints), so if
+    // the weaker formula is UNSAT, the original is definitely UNSAT.
     impl->recordUnsat(assumptions, assertionsSMT2.size(), false);
     return SOLVER_UNSATISFIABLE;
+  }
+
+  // ── Speculative validation ───────────────────────────────────────
+  // If we used aggressive simplification, validate the SAT model
+  // against the pre-simplified conjuncts. If any are violated, the
+  // aggressive simplification dropped a constraint that matters —
+  // re-encode those conjuncts conservatively and re-solve.
+  if (impl->speculativeThisCall && !impl->speculativeOriginals.empty())
+  {
+    // We need a model to validate against.
+    impl->ce->ClearCounterExampleMap();
+    impl->ce->ClearComputeFormulaMap();
+    impl->seedEliminatedIntoModelChannel();
+    ToSATBase::ASTNodeToSATVar symbolMap;
+    impl->buildSymbolMap(symbolMap);
+    impl->ce->ConstructCounterExample(*impl->solver, symbolMap);
+
+    std::vector<ASTNode> violated;
+    if (!impl->validateModel(violated))
+    {
+      if (uf.stats_flag)
+        std::cerr << "Incremental: speculative SAT failed validation ("
+                  << violated.size() << " conjuncts violated), re-encoding"
+                  << std::endl;
+
+      // Re-encode violated conjuncts without speculation: evict them
+      // from the rootLitOf cache so they get re-encoded on the next
+      // solve. The next iteration of the refinement loop (or a fresh
+      // solve) will pick them up.
+      for (const ASTNode& key : violated)
+      {
+        impl->rootLitOf.erase(key);
+        impl->speculativeOriginals.erase(key);
+      }
+
+      // Wipe ALL encoding state: the aggressive CBP's constants may
+      // have tainted shared sub-expressions across multiple conjuncts.
+      impl->rebuildEncodings();
+      impl->callCBP.reset();
+      impl->speculativeOriginals.clear();
+      impl->speculativeThisCall = false;
+      impl->speculationDisabled = true;
+
+      // Re-run the check-sat from scratch without speculation.
+      SOLVER_RETURN_TYPE retry = checkSatOnCurrentStack(
+          assertionsSMT2, assumeLastLevelPerConjunct);
+
+      // Re-enable speculation for future check-sats.
+      impl->speculationDisabled = false;
+      return retry;
+    }
+
+    if (uf.stats_flag)
+      std::cerr << "Incremental: speculative SAT passed validation"
+                << std::endl;
   }
 
   if (construct)

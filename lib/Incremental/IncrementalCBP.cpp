@@ -278,13 +278,33 @@ bool IncrementalCBP::addConstraints(const ASTNode& conjunction)
 
   // Seed the worklist from the new nodes. Only propagate bottom-up
   // from constants and structural constraints — do NOT set the
-  // conjunction itself to true.  Setting individual conjuncts to
-  // true causes circular reasoning: "assume A → A simplifies to
-  // true → assert true," which drops the constraint and turns
-  // unsat problems into sat.  The batch pipeline's CBP sets the
-  // TOP of the ENTIRE formula to true (sound, because the formula
-  // as a whole is what must hold), not individual pieces.
+  // conjunction itself to true (see addConstraintsAggressive for
+  // the speculative variant that does).
   seedWorklist(conjunction);
+
+  propagate();
+  return !conflict;
+}
+
+bool IncrementalCBP::addConstraintsAggressive(const ASTNode& conjunction)
+{
+  if (conflict)
+    return false;
+
+  extendParentMap(conjunction);
+  seedWorklist(conjunction);
+
+  // AGGRESSIVE: set the conjunction to true and propagate.
+  // This discovers more constants than bottom-up propagation alone,
+  // but the results are only valid IF this conjunction actually holds.
+  // The caller must validate the SAT result against the original
+  // formula to ensure soundness.
+  FixedBits* topFB = getOrCreate(conjunction);
+  if (currentLog)
+    recordBefore(conjunction, topFB);
+  topFB->setFixed(0, true);
+  topFB->setValue(0, true);
+  pushWork(conjunction);
 
   propagate();
   return !conflict;

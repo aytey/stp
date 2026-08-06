@@ -39,9 +39,14 @@ public:
   IncrementalCBP(const IncrementalCBP&) = delete;
   IncrementalCBP& operator=(const IncrementalCBP&) = delete;
 
-  /// Extend the DAG with a new conjunction and propagate.
+  /// Extend the DAG with a new conjunction and propagate (conservative).
   /// Returns false on conflict (UNSAT detected).
   bool addConstraints(const ASTNode& conjunction);
+
+  /// Aggressive: sets the conjunction to TRUE and propagates top-down.
+  /// Discovers more constants but results are speculative — caller
+  /// MUST validate SAT results against the original formula.
+  bool addConstraintsAggressive(const ASTNode& conjunction);
 
   /// Push: start recording an undo log for rollback.
   void push();
