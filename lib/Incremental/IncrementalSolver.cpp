@@ -2103,8 +2103,10 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // The refinement driver, as in TopLevelSTPAux: with an active equality
   // the checker owns every read, so each undecided candidate must carry a
   // pending theory lemma; without one, ordinary read refinement runs.
+  size_t refinementRounds = 0;
   while (res == SOLVER_UNDECIDED)
   {
+    refinementRounds++;
     // Re-totalize: the checker's lemma encodings can introduce new reads,
     // whose rows joined the table after the pass above. Memoised, so a
     // round that added nothing pays nothing.
@@ -2126,6 +2128,10 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
 
   tosat->setAssumptions(NULL);
   uf.ackermannisation = savedAck;
+
+  if (uf.stats_flag && refinementRounds > 0)
+    std::cerr << "Incremental: array-equality refinement converged after "
+              << refinementRounds << " rounds" << std::endl;
 
   // The whole round rode one block literal, so an unsat answer has no
   // per-level or per-assumption granularity: the core is everything.
@@ -2905,11 +2911,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       activeConjunction = assertionsSMT2[0];
 
     adapter->setAssumptions(&assumptions);
+    size_t refinementRounds = 0;
     SOLVER_RETURN_TYPE res = impl->ce->CallSAT_ResultCheck(
         *impl->solver, bm->ASTTrue, activeConjunction, activeConjunction,
         adapter, true);
     while (res == SOLVER_UNDECIDED)
     {
+      refinementRounds++;
       // A candidate the model check rejects while every congruence axiom
       // is satisfied cannot be repaired by this loop: the round adds no
       // clause and never re-solves, the next round sees the same model,
@@ -2927,6 +2935,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                    "the encoding and model evaluation disagree");
     }
     adapter->setAssumptions(NULL);
+
+    if (uf.stats_flag && refinementRounds > 0)
+      std::cerr << "Incremental: array refinement converged after "
+                << refinementRounds << " rounds" << std::endl;
 
     if (uf.stats_flag)
       impl->solver->printStats();
