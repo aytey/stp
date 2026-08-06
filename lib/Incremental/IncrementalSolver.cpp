@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -356,6 +357,75 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // Per-call CBP constants discovered on the post-lowered form.
+  // Populated by prepassCBP before the encoding loops, consumed by
+  // encodePrepared after FP lowering / array transform.
+  ASTNodeMap postLowerCBPFixed;
+
+  // Pre-pass: lower all NEW conjuncts (ones not in rootLitOf) across
+  // all levels, combine their lowered forms, run CBP on the batch, and
+  // store the results in postLowerCBPFixed for encodePrepared to apply.
+  void prepassCBP(const ASTVec& assertionsSMT2, const ASTVec& newLevel0)
+  {
+    postLowerCBPFixed.clear();
+
+    // Collect all new conjuncts (not yet cached) across all levels.
+    ASTVec allNew;
+    for (const ASTNode& c : newLevel0)
+    {
+      if (rootLitOf.find(c) == rootLitOf.end())
+        allNew.push_back(c);
+    }
+    ASTVec conjuncts;
+    for (size_t level = 1; level < assertionsSMT2.size(); level++)
+    {
+      conjuncts.clear();
+      splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
+      for (const ASTNode& c : conjuncts)
+      {
+        if (rootLitOf.find(c) == rootLitOf.end())
+          allNew.push_back(c);
+      }
+    }
+
+    if (allNew.empty())
+      return;
+
+    // Lower each new conjunct (FP lowering + array transform).
+    ASTVec loweredForms;
+    for (const ASTNode& c : allNew)
+    {
+      const Fragment& frag = fragment(c);
+      ASTNode toEncode = c;
+
+      if (frag.fp)
+        toEncode = fpContext()->prepare(toEncode);
+      toEncode = prepareConjunct(toEncode);
+      toEncode = lowerConjunct(c, toEncode, frag);
+
+      loweredForms.push_back(toEncode);
+    }
+
+    // Combine all lowered forms into one conjunction.
+    ASTNode whole;
+    if (loweredForms.size() == 1)
+      whole = loweredForms[0];
+    else
+      whole = bm->defaultNodeFactory->CreateNode(AND, loweredForms);
+
+    // Run CBP on the combined lowered form.
+    SubstitutionMap cbSm(bm);
+    Simplifier cbSimp(bm, &cbSm);
+    simplifier::constantBitP::ConstantBitPropagation cb(
+        bm, &cbSimp, bm->defaultNodeFactory, whole);
+    cb.topLevelBothWays(whole);
+
+    if (cb.isUnsatisfiable())
+      return;
+
+    postLowerCBPFixed = cb.getAllFixed();
+  }
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -673,8 +743,11 @@ struct IncrementalSolver::Impl
   // rewritten node on the pushed-definitions path -- and the registry rows
   // the transform visits are recorded under the same key, so a later cache
   // hit finds its rows by the node it hit with.
-  int encodePrepared(const ASTNode& key, ASTNode toEncode,
-                     const Fragment& frag)
+  // Phase 1: lower FP and transform arrays, producing a pure BV formula.
+  // Does NOT bit-blast or encode.  The `key` argument records which
+  // registry rows were touched, exactly as encodePrepared did.
+  ASTNode lowerConjunct(const ASTNode& key, ASTNode toEncode,
+                        const Fragment& frag)
   {
     if (frag.fp)
       toEncode = fpContext()->lowerPrepared(toEncode);
@@ -695,6 +768,12 @@ struct IncrementalSolver::Impl
       totalizeRegistrySymbols();
     }
 
+    return toEncode;
+  }
+
+  // Phase 2: bit-blast and encode an already-lowered formula.
+  int encodeReady(ASTNode toEncode)
+  {
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
     BBNodeAIG root = bb.BBForm(toEncode);
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
@@ -708,6 +787,25 @@ struct IncrementalSolver::Impl
 
     encodesThisCall++;
     return lit;
+  }
+
+  // Combined lower+encode. After lowering, applies any CBP constants
+  // discovered by the pre-pass on the combined lowered form.
+  int encodePrepared(const ASTNode& key, ASTNode toEncode,
+                     const Fragment& frag)
+  {
+    toEncode = lowerConjunct(key, toEncode, frag);
+
+    // Apply post-lower CBP constants discovered by prepassCBP.
+    if (!postLowerCBPFixed.empty())
+    {
+      ASTNodeMap cache;
+      toEncode = SubstitutionMap::replace(toEncode, postLowerCBPFixed,
+                                          cache, bm->defaultNodeFactory);
+      toEncode = simplifyAlone(toEncode);
+    }
+
+    return encodeReady(toEncode);
   }
 
   // Bit-blast a conjunct (once, memoised across the session by the
@@ -1729,6 +1827,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     newLevel0.push_back(c);
     if (uf.optimize_flag)
       impl->harvestSigma0(c);
+  }
+
+  // Pre-pass: lower all new conjuncts across all levels, run CBP on
+  // the combined lowered form, and store the results for encodePrepared
+  // to apply after its own lowering step.
+  if (uf.optimize_flag && uf.bitConstantProp_flag)
+  {
+    impl->prepassCBP(assertionsSMT2, newLevel0);
   }
 
   for (const ASTNode& c : newLevel0)
