@@ -34,6 +34,7 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -1633,6 +1634,24 @@ struct IncrementalSolver::Impl
     }
     if (pass.hasUnappliedSubstitutions())
       out = pass.applySubstitutionMap(out);
+    // Whole-conjunction constant-bit propagation, exactly as the batch
+    // pipeline runs it. The rebuild boundary is the one place its
+    // assume-the-top-is-true discipline is free of retraction hazards:
+    // the base is permanent, so every derived constant is a permanent
+    // truth, and everything re-encodes from scratch anyway so the novel
+    // rewritten forms forfeit no bit-blast sharing. Symbol fixings land
+    // in the pass's substitution map, where the implied/witness split
+    // below records them for the model exactly like the equality
+    // harvest's; interior fixings ride the returned formula with their
+    // pinning facts conjoined.
+    if (bm->UserFlags.bitConstantProp_flag)
+    {
+      simplifier::constantBitP::ConstantBitPropagation cbp(
+          bm, &pass, bm->defaultNodeFactory, out);
+      out = cbp.topLevelBothWays(out, true, true);
+      if (cbp.isUnsatisfiable())
+        out = bm->ASTFalse;
+    }
     out = pass.SimplifyFormula_TopLevel(out, false);
     // Definitions recorded up to here are implied equations; whatever
     // the unconstrained-variable pass adds after this point is a witness
@@ -1846,14 +1865,29 @@ struct IncrementalSolver::Impl
     {
       const vector<BBNodeAIG>& bits = it->second;
       vector<unsigned> vars(bits.size(), ~((unsigned)0));
+      bool anyLive = false;
       for (size_t i = 0; i < bits.size(); i++)
       {
         if (bits[i].IsNull())
           continue;
         const int v = varOfAig(Aig_Regular(bits[i].n));
         if (v != -1)
+        {
           vars[i] = (unsigned)v;
+          anyLive = true;
+        }
       }
+      // A symbol whose every bit is unencoded in the CURRENT solver is
+      // indistinguishable from one never blasted at all -- its memo
+      // entry is a leftover from before a rebuild -- and reporting it
+      // with all-missing bits would have counterexample construction
+      // default it to zero, SHADOWING the model-channel seed of a
+      // definition the rebuild pass eliminated. (Reachable since the
+      // rebuild pass gained constant-bit propagation: that is the first
+      // harvest that can eliminate a symbol AFTER it has been blasted;
+      // the equality harvests always caught theirs before any encode.)
+      if (!anyLive)
+        continue;
       out.insert(std::make_pair(it->first, vars));
     }
   }
