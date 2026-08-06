@@ -99,21 +99,53 @@ rather than by backtracking:
   substitution map is empty, so everything it does is a plain
   equivalence) before encoding.
 - Substitutions are harvested from defining equations (``x = t`` with an
-  occurs-check, unit booleans as true/false) at every level, but stored
-  and applied differently by level. **Base-level** definitions go into a
-  persistent store: the base level only grows -- reset destroys the
-  driver -- so that store is monotone and needs no backtracking.
-  **Pushed-level** definitions are windowed per check-sat: each call
-  collects them from the levels live *that call* and rewrites deeper
-  conjuncts under them, caching the rewritten conjunct's encoding (keyed
-  by the rewritten node, so the same conjunct under different live
-  definitions encodes separately and a re-pushed stack hits its cache).
-  In both cases a defining equation may only be simplified away under its
-  own substitution if the variable has never reached the SAT solver; a
-  variable whose bits already live in the solver keeps its equation as a
-  real constraint (otherwise the existing bits would silently lose it --
-  sat where unsat lies that way). A variable eliminated before it was
-  ever encoded gets its model value by evaluating its definition.
+  occurs-check, unit booleans as true/false). **Base-level** definitions
+  go into a persistent store: the base level only grows -- reset
+  destroys the driver -- so that store is monotone and needs no
+  backtracking; the defining equation itself stays asserted.
+- **Pushed** definitions accumulate into a per-solve context BY LEVEL
+  PREFIX: before a level is prepared, its own raw definitions join the
+  map, so level L is substituted uniformly under the definitions of
+  levels 1..L -- shared subterms keep rewriting identically, and a
+  definition reaches its same-level uses -- but never under deeper
+  levels' definitions. That last part keeps a conjunct's substituted
+  form STABLE as the stack grows underneath it; a whole-stack map
+  changed shallow conjuncts on every deepening, so one semantic array
+  read took a fresh syntactic index per query and the refinement loop
+  drowned in aliased read pairs. Floating-point definition bodies are
+  allowed in (they are how FP-computed array indices ever fold), array
+  content is refused, and a conjunct that DEFINES an entry is never
+  rewritten under it: substituting ``x -> t`` into ``(= x t)`` yields
+  TRUE and the constraint would silently vanish.
+- Each substituted piece -- a moderate level as one formula, a huge
+  level (the deep define-fun families) per conjunct, so pushed variants
+  reuse every already-prepared sibling -- is totalised if it touches
+  floating point and run through the batch equality-propagation and
+  simplification passes as a TRIAL: the combination can explode the
+  shared DAG on deep-chain families, so the result only replaces the
+  piece if it stays within a size budget, and definitions too big to
+  inline are never chained (the equation stays asserted and keeps its
+  sharing). A level retracts atomically, so cross-conjunct rewriting
+  inside it carries no retraction hazard. The preparation is cached
+  keyed by the substituted piece; the base store is applied INSIDE the
+  cache, where its permanence makes an older entry sound forever.
+- Definitions the preparation harvests split two ways. A variable
+  PRIVATE to its piece -- mentioned by no base conjunct, no other live
+  level, at most one conjunct of its own level, and never bit-blasted --
+  is genuinely **eliminated**: its equation leaves the formula, and its
+  model value is produced by evaluating the recorded definition whenever
+  a model is built while the level is live (the definitions are seeded
+  into the model channel per solve, withdrawing the previous solve's
+  seeds -- a stale seeding from a popped branch would shadow the live
+  one and make every refinement candidate look bogus). Every other
+  definition is re-conjoined and stays a real constraint: a variable
+  whose bits already live in the solver keeps its equation (otherwise
+  the existing bits would silently lose it -- sat where unsat lies that
+  way), and so does anything shared between levels. The elimination is
+  guarded against the future by screening: before anything is prepared
+  or encoded, never-seen content has its symbols checked against the
+  live eliminations, and a mention invalidates the cached preparation --
+  it re-prepares with the variable now shared and the equation kept.
 
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
@@ -136,7 +168,12 @@ lazy CEGAR loop is the batch pipeline's own (driven through a small
 ``ToSATBase`` adapter that re-solves under the check-sat's assumptions),
 and the congruence axioms it learns are added as *permanent* clauses --
 they are tautologies of the canonical abstraction, valid whichever levels
-are live. A popped read's registry entry stays behind as an unconstrained
+are live. The driver's loop also carries a guard the batch pipeline never
+needed: a round that rejects the candidate model while finding no
+congruence axiom to add cannot be repaired by refinement -- it means the
+encoding and the word-level evaluation disagree somewhere -- and dies as
+a ``FatalError`` naming that, where a silent loop would spin at full
+speed forever. A popped read's registry entry stays behind as an unconstrained
 observation of the array, which restricts nothing: an array maps every
 index to some value.
 

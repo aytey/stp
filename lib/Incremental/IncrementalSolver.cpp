@@ -26,6 +26,7 @@ THE SOFTWARE.
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/Simplifier/PropagateEqualities.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/STPManager/STPManager.h"
@@ -265,6 +266,295 @@ struct IncrementalSolver::Impl
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
 
+  // ---- Per-conjunct preparation with guarded elimination ----
+  //
+  // Each pushed conjunct is prepared -- substituted under the context of
+  // the base store and the definitions below and before it, then run
+  // through the batch equality-propagation and simplification passes --
+  // and definitions the propagator harvests fall into two classes. A
+  // variable PRIVATE to the conjunct's level -- mentioned by no base
+  // conjunct, no other live level, no already-prepared conjunct of its
+  // own level, and never bit-blasted -- is genuinely eliminated: its
+  // definition leaves the formula, is recorded here, and is replayed
+  // into the model channel whenever a model is built while the level is
+  // live. Later conjuncts of the same level are safe by construction:
+  // the definition joins the context, so their uses are substituted
+  // away. Everything else keeps the old semantics: the definition is
+  // re-conjoined, so a shared or already-encoded variable's equation is
+  // never lost (the freeze rule).
+  //
+  // The elimination is guarded against the future by screening: before
+  // anything is prepared or encoded, every piece of never-seen raw
+  // content has its symbols checked against the variables that live
+  // cache entries eliminated, and a mention invalidates those entries --
+  // they re-prepare with the variable now shared, re-conjoining its
+  // definition. Stale encodings of a dropped entry's conjuncts stay in
+  // rootLitOf, which is sound: an encoding is a definition of its
+  // formula, valid forever; only the conjunct-to-formula mapping
+  // changes.
+  struct PreparedPiece
+  {
+    std::vector<ASTNode> conjuncts;
+    std::vector<std::pair<ASTNode, ASTNode>> eliminatedDefs;
+    ASTNodeSet eliminatedVars;
+  };
+  // Keyed by the context-substituted conjunct (the T1 discipline: the
+  // key is the rewritten node, so the same conjunct under different live
+  // definitions prepares separately and a re-pushed stack hits).
+  std::map<ASTNode, PreparedPiece> preparedPieceOf;
+
+  // var -> cache keys of entries that eliminated it, for screening.
+  std::map<ASTNode, std::vector<ASTNode>> eliminationUsers;
+
+  // Raw content whose symbols have already been screened.
+  ASTNodeSet screenedContent;
+
+  // Symbols of every base-level conjunct ever asserted; grown as the
+  // base grows, consulted by the privacy check.
+  ASTNodeSet baseSymbols;
+
+  // Per-node symbol sets, memoised; the keys hold their nodes.
+  std::map<ASTNode, ASTNodeSet> symbolsOfCache;
+
+  // The eliminated definitions of the levels the CURRENT solve used,
+  // seeded into the model channel alongside sigma0's.
+  std::vector<std::pair<ASTNode, ASTNode>> activeEliminatedDefs;
+  // Keys this driver has seeded into the batch Simplifier's SolverMap
+  // (the model-evaluation channel), so the next solve can withdraw them.
+  ASTNodeSet seededModelKeys;
+
+  // Definitions with replacements larger than this are never inlined:
+  // they stay asserted equations, and their variable keeps the sharing.
+  static const size_t defInlineCap = 200;
+
+  // Formulas over this size skip the whole-level grouping AND the
+  // equality-propagation pass: on the deep define-fun chains PE's
+  // rewriting explodes the shared DAG (measured ten million clauses out
+  // of seven conjuncts), while the plain simplifier has always handled
+  // them.
+  static const size_t bigFormulaCap = 20000;
+
+  // DAG node count up to `cap`; used to pick the preparation granularity.
+  size_t dagSizeUpTo(const ASTNode& n, size_t cap)
+  {
+    ASTNodeSet visited;
+    std::vector<ASTNode> pending(1, n);
+    while (!pending.empty() && visited.size() <= cap)
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (!visited.insert(cur).second)
+        continue;
+      for (unsigned i = 0; i < cur.Degree(); i++)
+        pending.push_back(cur[i]);
+    }
+    return visited.size();
+  }
+
+  const ASTNodeSet& symbolsOf(const ASTNode& n)
+  {
+    std::map<ASTNode, ASTNodeSet>::iterator hit = symbolsOfCache.find(n);
+    if (hit != symbolsOfCache.end())
+      return hit->second;
+    ASTNodeSet& out = symbolsOfCache[n];
+    ASTNodeSet visited;
+    std::vector<ASTNode> pending(1, n);
+    while (!pending.empty())
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (!visited.insert(cur).second)
+        continue;
+      if (cur.GetKind() == SYMBOL)
+        out.insert(cur);
+      for (unsigned i = 0; i < cur.Degree(); i++)
+        pending.push_back(cur[i]);
+    }
+    return out;
+  }
+
+  // Screen a piece of raw content that has never been seen: any symbol it
+  // mentions that some cached entry eliminated invalidates that entry.
+  void screenNewContent(const ASTNode& raw)
+  {
+    if (!screenedContent.insert(raw).second)
+      return;
+    if (eliminationUsers.empty())
+      return;
+    for (const ASTNode& s : symbolsOf(raw))
+    {
+      std::map<ASTNode, std::vector<ASTNode>>::iterator it =
+          eliminationUsers.find(s);
+      if (it == eliminationUsers.end())
+        continue;
+      const std::vector<ASTNode> keys = it->second;
+      for (const ASTNode& key : keys)
+        dropPreparedLevel(key);
+    }
+  }
+
+  void dropPreparedLevel(const ASTNode& key)
+  {
+    std::map<ASTNode, PreparedPiece>::iterator it = preparedPieceOf.find(key);
+    if (it == preparedPieceOf.end())
+      return;
+    for (const ASTNode& v : it->second.eliminatedVars)
+    {
+      std::map<ASTNode, std::vector<ASTNode>>::iterator ui =
+          eliminationUsers.find(v);
+      if (ui == eliminationUsers.end())
+        continue;
+      std::vector<ASTNode>& keys = ui->second;
+      keys.erase(std::remove(keys.begin(), keys.end(), key), keys.end());
+      if (keys.empty())
+        eliminationUsers.erase(ui);
+    }
+    preparedPieceOf.erase(it);
+  }
+
+  // Whether `v` belongs to one conjunct of level `levelIdx` alone:
+  // mentioned by no base conjunct, no other live level's raw content, at
+  // most ONE raw conjunct of its own level (its defining one -- the
+  // context is level-uniform, so a same-level use elsewhere would keep a
+  // reference to the variable), and never bit-blasted.
+  bool levelPrivate(const ASTNode& v, size_t levelIdx, const ASTVec& stack,
+                    const std::map<ASTNode, size_t>& conjunctCountOf)
+  {
+    if (bbMgr.symbolToBBNode.find(v) != bbMgr.symbolToBBNode.end())
+      return false;
+    if (baseSymbols.find(v) != baseSymbols.end())
+      return false;
+    std::map<ASTNode, size_t>::const_iterator cnt = conjunctCountOf.find(v);
+    if (cnt != conjunctCountOf.end() && cnt->second > 1)
+      return false;
+    for (size_t j = 1; j < stack.size(); j++)
+    {
+      if (j == levelIdx)
+        continue;
+      if (symbolsOf(stack[j]).find(v) != symbolsOf(stack[j]).end())
+        return false;
+    }
+    return true;
+  }
+
+  // The re-conjoined form of a definition the privacy check refused.
+  ASTNode definitionEquation(const ASTNode& var, const ASTNode& def)
+  {
+    if (def == bm->ASTTrue)
+      return var;
+    if (def == bm->ASTFalse)
+      return bm->defaultNodeFactory->CreateNode(NOT, var);
+    if (var.GetType() == BOOLEAN_TYPE)
+      return bm->defaultNodeFactory->CreateNode(IFF, var, def);
+    return bm->defaultNodeFactory->CreateNode(EQ, var, def);
+  }
+
+  const PreparedPiece& preparePiece(
+      const ASTNode& replaced, size_t levelIdx, const ASTVec& stack,
+      const std::map<ASTNode, size_t>& conjunctCountOf)
+  {
+    std::map<ASTNode, PreparedPiece>::iterator hit =
+        preparedPieceOf.find(replaced);
+    if (hit != preparedPieceOf.end())
+      return hit->second;
+
+    // The batch front pipeline, on the conjunct alone: harvest defining
+    // equations (PropagateEqualities fills the scratch SolverMap and
+    // removes them from the formula), substitute them through, simplify.
+    // sigma0 is applied HERE, inside the cache: its entries are permanent
+    // truths, so a preparation made under an older, smaller sigma0 stays
+    // sound forever -- which is exactly what lets the cache key ignore it
+    // and survive base growth (the retractable pushed definitions, whose
+    // staleness would NOT be sound, are in the key).
+    SubstitutionMap scratchSm(bm);
+    Simplifier scratch(bm, &scratchSm);
+    ASTNode out = replaced;
+    if (!sigma0.empty())
+    {
+      ASTNodeMap cache;
+      out = SubstitutionMap::replace(out, sigma0, cache,
+                                     bm->defaultNodeFactory);
+    }
+    // The equality-propagation-and-simplify pipeline is a TRIAL, run on
+    // its own scratch state. Its result is NOVEL nodes: adopting it
+    // forfeits every bit-blast-memo hit the raw form's subterms would
+    // have had, across this solve's siblings and every later one. Only
+    // meaningful COLLAPSE pays for that -- the families this exists for
+    // shrink by orders of magnitude -- so a result that explodes or
+    // merely shuffles (same-size rewrites measured 25x the clauses
+    // purely through lost sharing) is discarded wholesale, formula and
+    // harvested definitions together, and the piece passes through
+    // untouched: rootLit's raw-keyed preparation, which has always
+    // handled those, does the rest.
+    const size_t before = dagSizeUpTo(out, bigFormulaCap);
+    const size_t budget = std::max(before / 2, static_cast<size_t>(200));
+    {
+      SubstitutionMap trialSm(bm);
+      Simplifier trial(bm, &trialSm);
+      ASTNode trialOut = out;
+      if (bm->UserFlags.propagate_equalities)
+      {
+        PropagateEqualities pe(&trial, bm->defaultNodeFactory, bm);
+        trialOut = pe.topLevel(trialOut);
+      }
+      if (trial.hasUnappliedSubstitutions())
+        trialOut = trial.applySubstitutionMap(trialOut);
+      // The gate must also bound the TRIAL's own cost: simplifying a
+      // propagation-exploded intermediate can take minutes before any
+      // post-hoc check would see it.
+      if (dagSizeUpTo(trialOut, budget) > budget)
+        trialOut = out;
+      else
+        trialOut = trial.SimplifyFormula_TopLevel(trialOut, false);
+      if (dagSizeUpTo(trialOut, budget) <= budget)
+      {
+        out = trialOut;
+        DenseNodeMap* harvested = trial.Return_SolverMap();
+        for (DenseNodeMap::const_iterator it = harvested->begin();
+             it != harvested->end(); ++it)
+          scratchSm.Return_SolverMap()->insert(*it);
+      }
+    }
+
+    PreparedPiece pl;
+    ASTVec keep;
+    DenseNodeMap* defs = scratch.Return_SolverMap();
+    for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
+         ++it)
+    {
+      const ASTNode& var = it->first;
+      const ASTNode& def = it->second;
+      // Non-symbol entries (a read the map resolved, say) and every
+      // non-private variable keep today's semantics: the definition is
+      // asserted, never lost. So does a definition too big to inline:
+      // elimination is only sound if later uses are substituted away,
+      // and substituting a big replacement destroys the sharing its
+      // variable provides.
+      if (var.GetKind() != SYMBOL || var.GetIndexWidth() != 0 ||
+          !levelPrivate(var, levelIdx, stack, conjunctCountOf) ||
+          dagSizeUpTo(def, defInlineCap) > defInlineCap)
+      {
+        keep.push_back(definitionEquation(var, def));
+        continue;
+      }
+      pl.eliminatedDefs.push_back(std::make_pair(var, def));
+      pl.eliminatedVars.insert(var);
+    }
+
+    if (!keep.empty())
+    {
+      keep.push_back(out);
+      out = bm->defaultNodeFactory->CreateNode(AND, keep);
+    }
+    splitConjuncts(out, bm->ASTTrue, pl.conjuncts);
+
+    for (const ASTNode& v : pl.eliminatedVars)
+      eliminationUsers[v].push_back(replaced);
+
+    return preparedPieceOf.insert(std::make_pair(replaced, pl))
+        .first->second;
+  }
+
   // Substitutions harvested from base-level equations: x -> t for a
   // base-level conjunct (= x t), plus TRUE/FALSE for unit boolean
   // conjuncts. The base level only grows, so this map is monotone and
@@ -503,7 +793,8 @@ struct IncrementalSolver::Impl
   // Recognise a defining conjunct: SYMBOL / (not SYMBOL) as a boolean unit,
   // or an equation with a symbol on one side. FALSE when the conjunct
   // defines nothing usable; the guards are shared by both harvests.
-  bool recogniseDefinition(const ASTNode& c, ASTNode& var, ASTNode& term)
+  bool recogniseDefinition(const ASTNode& c, ASTNode& var, ASTNode& term,
+                           bool allowFp = false)
   {
     if (c.GetKind() == SYMBOL)
     {
@@ -538,12 +829,17 @@ struct IncrementalSolver::Impl
 
     // Only plain bit-vector/boolean definitions. An array-typed symbol is
     // not a substitutable value; and the replacement must not smuggle
-    // theory content -- floating point, array reads, opaque equalities --
-    // into conjuncts whose lowering and transform decisions (raw-conjunct
-    // properties) were already made without it.
+    // theory content -- array reads, opaque equalities -- into conjuncts
+    // whose transform decisions (raw-conjunct properties) were already
+    // made without it. A floating-point body is allowed where the caller
+    // re-checks the substituted conjunct for totalisation (the pushed
+    // harvest): these definitions are how a query's FP-computed array
+    // indices ever fold to constants, and refusing them leaves every
+    // read symbolic for the refinement loop to disentangle.
     if (var.GetIndexWidth() != 0)
       return false;
-    if (bm->has_floating_point_theory && containsFloatingPointTheory(term, bm))
+    if (!allowFp && bm->has_floating_point_theory &&
+        containsFloatingPointTheory(term, bm))
       return false;
     if (containsArrayOps(term, bm))
       return false;
@@ -599,10 +895,10 @@ struct IncrementalSolver::Impl
   // -- a formula-level key, valid whenever the same rewrite recurs, and
   // simply not reached in rounds where the definition is gone.
   void harvestPushed(const ASTNode& c, ASTNodeMap& sigmaP,
-                     ASTNodeSet& sources)
+                     ASTNodeSet& sources, bool& fpLatch)
   {
     ASTNode var, term;
-    if (!recogniseDefinition(c, var, term))
+    if (!recogniseDefinition(c, var, term, /*allowFp=*/true))
       return;
     if (sigma0.find(var) != sigma0.end())
       return;
@@ -625,8 +921,20 @@ struct IncrementalSolver::Impl
         bm->VarSeenInTerm(var, expanded))
       return;
 
+    // Inlining economics: substituting a definition duplicates its
+    // replacement at every use, and each copy re-blasts a cone the
+    // variable used to share through one encoding. A big replacement is
+    // therefore never chained -- the equation stays asserted and the
+    // variable keeps the sharing (a deep-chain definition inlined into a
+    // deep-chain user measured ten MILLION clauses for seven conjuncts).
+    if (dagSizeUpTo(expanded, defInlineCap) > defInlineCap)
+      return;
+
     sigmaP[var] = expanded;
     sources.insert(c);
+    if (!fpLatch && bm->has_floating_point_theory &&
+        containsFloatingPointTheory(expanded, bm))
+      fpLatch = true;
   }
 
   // Assertion-local, equivalence-preserving simplification, with a fresh
@@ -739,51 +1047,6 @@ struct IncrementalSolver::Impl
     return lit;
   }
 
-  // As rootLit, but under this round's pushed-level definitions as well.
-  // The rewritten form is only equivalent to the conjunct together with
-  // the defining equations, which are live conjuncts assumed alongside it
-  // -- so the encoding is cached by the REWRITTEN node: a round where a
-  // definition is gone rewrites differently and simply never reaches the
-  // stale entry. Defining conjuncts themselves, and base definitions kept
-  // raw by the freeze rule, take the ordinary path; so does any conjunct
-  // the round's definitions do not touch, sharing its raw-keyed entry.
-  // `encodedAs` reports the node the returned literal is cached under --
-  // the conjunct itself or the rewritten node -- which is also the key the
-  // encoding's registry rows are recorded by, so the caller can seed the
-  // refinement tables for what was actually assumed.
-  int rootLitUnder(const ASTNode& conjunct, ASTNodeMap& merged,
-                   const ASTNodeSet& sources, ASTNode& encodedAs)
-  {
-    encodedAs = conjunct;
-    if (!bm->UserFlags.optimize_flag ||
-        sources.find(conjunct) != sources.end() ||
-        mustKeepRaw.find(conjunct) != mustKeepRaw.end())
-      return rootLit(conjunct);
-
-    const Fragment& frag = fragment(conjunct);
-
-    ASTNode pre = conjunct;
-    if (frag.fp)
-      pre = fpContext()->prepare(pre);
-
-    ASTNodeMap cache;
-    ASTNode rewritten =
-        SubstitutionMap::replace(pre, merged, cache, bm->defaultNodeFactory);
-    if (rewritten == pre)
-      return rootLit(conjunct);
-
-    ASTNode w = simplifyAlone(rewritten);
-    encodedAs = w;
-
-    NodeToLitMap::const_iterator it = rootLitOf.find(w);
-    if (it != rootLitOf.end())
-      return it->second;
-
-    const int lit = encodePrepared(w, w, frag);
-    rootLitOf[w] = lit;
-    return lit;
-  }
-
   const Fragment& fragment(const ASTNode& n)
   {
     NodeToFragmentMap::const_iterator it = fragmentCache.find(n);
@@ -868,7 +1131,7 @@ struct IncrementalSolver::Impl
   // Seed the batch-side read table with only the reads of the given
   // (active) encodings, drawn from the persistent registry. The keys are
   // whatever this round's literals were cached under: base-level conjuncts
-  // and, for the pushed levels, the nodes rootLitUnder reported.
+  // and, for the pushed levels, the prepared conjuncts that were assumed.
   void seedActiveReads(const std::vector<ASTNode>& activeKeys)
   {
     // The fingerprint is only worth computing when a hit is possible: the
@@ -1097,11 +1360,38 @@ struct IncrementalSolver::Impl
   // variables are seeded: an encoded one gets its value from its bits.
   void seedEliminatedIntoModelChannel()
   {
+    DenseNodeMap* channel = batchSimp->Return_SolverMap();
+    // Everything this driver ever seeded is withdrawn first: the channel
+    // is never cleared between solves (the batch pipeline owns entries of
+    // its own in it), and a definition eliminated under a POPPED branch
+    // is not merely dead weight -- insert() does not overwrite, so a
+    // stale x -> FALSE from a retracted level would shadow this solve's
+    // x -> TRUE, the model check would read the popped value, declare
+    // every candidate bogus, and the refinement loop would spin forever
+    // finding no violated axiom to add.
+    for (const ASTNode& k : seededModelKeys)
+      channel->erase(k);
+    seededModelKeys.clear();
+
     for (ASTNodeMap::const_iterator it = sigma0.begin(); it != sigma0.end();
          ++it)
     {
       if (bbMgr.symbolToBBNode.find(it->first) == bbMgr.symbolToBBNode.end())
-        batchSimp->Return_SolverMap()->insert(*it);
+      {
+        (*channel)[it->first] = it->second;
+        seededModelKeys.insert(it->first);
+      }
+    }
+    // The elimination replay: definitions the current solve's prepared
+    // levels eliminated get their model values by evaluation, exactly as
+    // sigma0-eliminated variables always have.
+    for (const std::pair<ASTNode, ASTNode>& d : activeEliminatedDefs)
+    {
+      if (bbMgr.symbolToBBNode.find(d.first) == bbMgr.symbolToBBNode.end())
+      {
+        (*channel)[d.first] = d.second;
+        seededModelKeys.insert(d.first);
+      }
     }
   }
 
@@ -1150,6 +1440,11 @@ public:
 
   void setAssumptions(const SATSolver::vec_literals* a) { assumps = a; }
 
+  // How many solves this adapter has run; the refinement driver reads it
+  // to tell a productive round (axioms added, solver re-run) from a stuck
+  // one (candidate rejected, nothing to add, no re-solve).
+  size_t solveCount = 0;
+
   bool CallSAT(SATSolver& SatSolver, const ASTNode& input,
                bool /*doesAbsRef*/) override
   {
@@ -1158,6 +1453,7 @@ public:
     assert(input == ASTTrue);
     (void)input;
 
+    solveCount++;
     bm->GetRunTimes()->start(RunTimes::Solving);
     bool sat;
     if (assumps != NULL && assumps->size() > 0)
@@ -1727,6 +2023,12 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     if (!impl->level0Asserted.insert(c).second)
       continue;
     newLevel0.push_back(c);
+    // New content first invalidates any cached level whose elimination it
+    // contradicts, and joins the base symbol set the privacy check
+    // consults -- both before anything is harvested or encoded.
+    impl->screenNewContent(c);
+    const ASTNodeSet& syms = impl->symbolsOf(c);
+    impl->baseSymbols.insert(syms.begin(), syms.end());
     if (uf.optimize_flag)
       impl->harvestSigma0(c);
   }
@@ -1739,62 +2041,182 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     impl->addClause(unit);
   }
 
-  // Definitions found at the PUSHED levels hold only while their levels are
-  // live, so they are collected per call, applied to pushed conjuncts only
-  // -- a base-level unit is permanent and must never absorb a retractable
-  // truth -- and every defining equation stays assumed. Nothing about them
-  // persists between calls.
-  ASTNodeMap merged;
-  ASTNodeSet pushedSources;
-  bool havePushed = false;
-  if (uf.optimize_flag)
+  // Screening must see the WHOLE stack's new raw content before any level
+  // is prepared or encoded: a later level's mention of a variable an
+  // earlier level's cached preparation eliminated invalidates that cache
+  // entry now, not after the stale entry was already used.
+  for (size_t level = 1; level < assertionsSMT2.size(); level++)
+    impl->screenNewContent(assertionsSMT2[level]);
+
+  // Pushed levels: each is prepared in pieces -- substituted under the
+  // context, run through the batch equality-propagation and
+  // simplification passes, private definitions eliminated and everything
+  // else re-conjoined (see PreparedPiece) -- then encoded against the
+  // permanent caches and assumed through one literal per level. The
+  // assumption set is recomputed from the current stack on every call,
+  // so popped levels vanish by simply no longer being here.
+  SATSolver::vec_literals assumptions;
+  std::vector<ASTNode> activeEncodedKeys;
+  std::vector<int> levelRoots;
+  // The context carries only RETRACTABLE definitions -- harvested from
+  // the live pushed levels this call, plus this call's eliminations --
+  // and is part of every piece's cache key. sigma0 is deliberately NOT
+  // here: it is applied inside the (cached) preparation, where its
+  // permanence makes staleness sound, so base growth never churns the
+  // piece cache.
+  // The pushed-definition context accumulates BY LEVEL PREFIX: before a
+  // level is prepared, its own raw definitions join the map, so level L
+  // is substituted under the definitions of levels 1..L -- uniformly
+  // with every level below it (shared subterms keep rewriting
+  // identically, and a definition reaches its same-level uses), but
+  // NEVER under deeper levels' definitions. That last part is what keeps
+  // a conjunct's substituted form STABLE as the stack grows underneath
+  // it: a whole-stack map changed shallow conjuncts on every deepening,
+  // so one semantic array read took a fresh syntactic index per query
+  // and the refinement loop drowned in aliased read pairs (measured as
+  // entire check-sats spent inside SATBased_ArrayReadRefinement).
+  ASTNodeMap ctx;
+  ASTNodeSet ctxSources;
+  bool ctxHasFp = false;
+  impl->activeEliminatedDefs.clear();
+  for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
-    ASTNodeMap sigmaP;
-    for (size_t level = 1; level < assertionsSMT2.size(); level++)
+    const bool individually =
+        assumeLastLevelPerConjunct && level + 1 == assertionsSMT2.size();
+
+    ASTVec levelDefiningConjuncts;
+    if (uf.optimize_flag)
     {
       conjuncts.clear();
       splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
       for (const ASTNode& c : conjuncts)
-        impl->harvestPushed(c, sigmaP, pushedSources);
+        impl->harvestPushed(c, ctx, ctxSources, ctxHasFp);
+      // A defining conjunct must never be rewritten under its own entry:
+      // substituting x -> t into (= x t) yields TRUE and the constraint
+      // silently vanishes -- with no replay record, so the model channel
+      // answers a default, the raw-stack model check calls every
+      // candidate bogus, and array refinement spins forever with no
+      // violated axiom to add. The definers are re-presented to the
+      // preparation unreplaced; its own harvest then either eliminates
+      // them WITH bookkeeping (privacy rules, model replay) or keeps the
+      // equation asserted.
+      for (const ASTNode& c : conjuncts)
+        if (ctxSources.find(c) != ctxSources.end())
+          levelDefiningConjuncts.push_back(c);
     }
-    if (!sigmaP.empty())
-    {
-      merged = impl->sigma0;
-      merged.insert(sigmaP.begin(), sigmaP.end());
-      havePushed = true;
-    }
-  }
-
-  // Pushed levels: encode (against the permanent caches) and assume one
-  // literal per level -- the root itself for a single conjunct, else an
-  // activation literal implying the level's roots. The assumption set is
-  // recomputed from the current stack on every call, so popped levels
-  // vanish by simply no longer being here. Each conjunct's encoding key
-  // -- the conjunct itself, or the rewritten node the pushed-definitions
-  // path cached under -- is collected so refinement can seed its tables
-  // from what was actually assumed.
-  SATSolver::vec_literals assumptions;
-  std::vector<ASTNode> activeEncodedKeys;
-  std::vector<int> levelRoots;
-  for (size_t level = 1; level < assertionsSMT2.size(); level++)
-  {
     conjuncts.clear();
-    splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
+    if (!uf.optimize_flag || individually)
+    {
+      // check-sat-assuming wants per-assumption granularity: merging the
+      // assumptions through a level-wide preparation would destroy the
+      // conjunct-to-assumption mapping, so that level encodes raw.
+      splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
+    }
+    else
+    {
+      const bool levelHasFp = impl->fragment(assertionsSMT2[level]).fp;
+
+      // Preparation granularity is a size call. A level of moderate size
+      // is prepared as ONE formula -- full cross-conjunct simplification,
+      // which is what collapses generated queries whose conjuncts only
+      // shrink together. A huge level (the deep define-fun families)
+      // prepares per conjunct instead: the whole-level pass would rerun
+      // over the entire level for every pushed variant, while per-conjunct
+      // preparation reuses every already-prepared piece and loses only
+      // cross-conjunct effects beyond definition chaining.
+      ASTVec rawConjuncts;
+      if (impl->dagSizeUpTo(assertionsSMT2[level], Impl::bigFormulaCap) <=
+          Impl::bigFormulaCap)
+        rawConjuncts.push_back(assertionsSMT2[level]);
+      else
+        splitConjuncts(assertionsSMT2[level], bm->ASTTrue, rawConjuncts);
+
+      // How many of this level's raw conjuncts mention each symbol; a
+      // definition is only eliminable if its variable stays inside one.
+      std::map<ASTNode, size_t> conjunctCountOf;
+      for (const ASTNode& rc : rawConjuncts)
+        for (const ASTNode& s : impl->symbolsOf(rc))
+          conjunctCountOf[s]++;
+
+      for (const ASTNode& rc : rawConjuncts)
+      {
+        ASTNode replaced = rc;
+        const bool isDefiner =
+            ctxSources.find(rc) != ctxSources.end();
+        if (!ctx.empty() && !isDefiner)
+        {
+          ASTNodeMap cache;
+          replaced = SubstitutionMap::replace(replaced, ctx, cache,
+                                              bm->defaultNodeFactory);
+        }
+        // The whole-level piece contains its definers INSIDE the node
+        // just substituted; restore them alongside the replaced form.
+        if (rc == assertionsSMT2[level] && !levelDefiningConjuncts.empty())
+        {
+          ASTVec parts(levelDefiningConjuncts);
+          parts.push_back(replaced);
+          replaced = bm->defaultNodeFactory->CreateNode(AND, parts);
+        }
+
+        // An oversize conjunct (the deep define-fun chains) skips the
+        // TRIAL passes -- their novel rewritten forms forfeit the
+        // bit-blast memo's sharing wholesale -- but keeps the context
+        // substitution: these conjuncts collapse under their levels'
+        // definitions, and encoding one unsubstituted measured ten
+        // million clauses against the substituted form's thousands.
+        // rootLit's raw-keyed preparation (sigma0 and the plain
+        // simplifier inside the cache) does the rest, as it always has.
+        if (impl->dagSizeUpTo(replaced, Impl::bigFormulaCap) >
+            Impl::bigFormulaCap)
+        {
+          conjuncts.push_back(replaced);
+          continue;
+        }
+
+        // Totalise before any word-level rewriting, exactly as rootLit
+        // does: the preparation passes can fold new partial
+        // floating-point operations into existence, and lowering only
+        // accepts the totalised forms. A level with no floating point of
+        // its own can still acquire some through the context (an
+        // eliminated definition's body), so that case is checked on the
+        // substituted conjunct itself.
+        if (levelHasFp ||
+            (ctxHasFp && containsFloatingPointTheory(replaced, bm)))
+          replaced = impl->fpContext()->prepare(replaced);
+        const auto& pp = impl->preparePiece(replaced, level, assertionsSMT2,
+                                            conjunctCountOf);
+        for (const ASTNode& pc : pp.conjuncts)
+          conjuncts.push_back(pc);
+        // Eliminated definitions are recorded for the model, and joined
+        // onto the context so DEEPER levels' uses collapse under them --
+        // this is the only route by which a definition the raw harvest
+        // refuses on content (a floating-point body, say) still reaches
+        // its uses; without it those levels keep every symbolic read and
+        // the refinement loop pays for the aliases.
+        for (const std::pair<ASTNode, ASTNode>& d : pp.eliminatedDefs)
+        {
+          impl->activeEliminatedDefs.push_back(d);
+          if (ctx.find(d.first) == ctx.end())
+          {
+            ctx[d.first] = d.second;
+            if (!ctxHasFp && bm->has_floating_point_theory &&
+                containsFloatingPointTheory(d.second, bm))
+              ctxHasFp = true;
+          }
+        }
+      }
+    }
     if (conjuncts.empty())
       continue;
 
     levelRoots.clear();
     for (const ASTNode& c : conjuncts)
     {
-      ASTNode encodedAs = c;
-      levelRoots.push_back(
-          havePushed
-              ? impl->rootLitUnder(c, merged, pushedSources, encodedAs)
-              : impl->rootLit(c));
-      activeEncodedKeys.push_back(encodedAs);
+      levelRoots.push_back(impl->rootLit(c));
+      activeEncodedKeys.push_back(c);
     }
 
-    if (assumeLastLevelPerConjunct && level + 1 == assertionsSMT2.size())
+    if (individually)
     {
       // Per-assumption failure granularity: each conjunct's own root is
       // assumed, and remembered against its conjunct, so an unsat answer
@@ -1828,8 +2250,9 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               << assumptions.size() << " literals, solver has "
               << impl->solver->nVars() << " variables, "
               << impl->sigma0.size() << " base-level and "
-              << (havePushed ? merged.size() - impl->sigma0.size() : 0)
-              << " pushed substitutions" << std::endl;
+              << ctx.size() << " pushed substitutions, "
+              << impl->activeEliminatedDefs.size() << " eliminated"
+              << std::endl;
   }
 
   // Array refinement needs a candidate model to find violated axioms, so
@@ -1913,8 +2336,21 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         adapter, true);
     while (res == SOLVER_UNDECIDED)
     {
+      // A candidate the model check rejects while every congruence axiom
+      // is satisfied cannot be repaired by this loop: the round adds no
+      // clause and never re-solves, the next round sees the same model,
+      // and the session would spin forever at full speed. That
+      // combination means the encoding and the word-level evaluation
+      // disagree somewhere -- a bug, and a FatalError names it where a
+      // livelock would just hang (the ext refinement driver has the same
+      // guard for its lemma channel).
+      const size_t solvesBefore = adapter->solveCount;
       res = impl->ce->SATBased_ArrayReadRefinement(
           *impl->solver, activeConjunction, adapter);
+      if (res == SOLVER_UNDECIDED && adapter->solveCount == solvesBefore)
+        FatalError("IncrementalSolver: an array refinement round rejected "
+                   "the candidate but found no congruence axiom to add -- "
+                   "the encoding and model evaluation disagree");
     }
     adapter->setAssumptions(NULL);
 

@@ -9,6 +9,10 @@
 (declare-fun y () (_ BitVec 8))
 (declare-fun p () Bool)
 (assert (bvult x #xf0))
+; keep y base-shared: this file pins the REWRITE-and-reuse story, so y
+; must stay a real variable rather than be eliminated as level-private
+; (level-elimination.smt2 pins that behaviour)
+(assert (bvule y #xff))
 ; a definitional chain at a pushed level collapses by rewriting
 (push 1)
 (assert (= y #x05))
