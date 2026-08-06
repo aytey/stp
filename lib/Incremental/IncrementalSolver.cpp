@@ -578,8 +578,17 @@ struct IncrementalSolver::Impl
     // harvested definitions together, and the piece passes through
     // untouched: rootLit's raw-keyed preparation, which has always
     // handled those, does the rest.
+    // Only meaningful COLLAPSE pays for novelty, and that is the whole
+    // criterion: the result must halve, or be the identical node (a
+    // no-op trial costs nothing to "adopt"). There used to be a flat
+    // 200-node floor here so small pieces could adopt freely -- and on
+    // small dense floating-point conjuncts it admitted same-size
+    // SHUFFLES (108 nodes to 105), whose novel forms both forfeit the
+    // bit-blast memo's sharing and can be strictly harder to search: a
+    // family the batch pipeline solves in a second ran to timeout,
+    // deterministically, on shuffled forms of near-identical size.
     const size_t before = dagSizeUpTo(out, bigFormulaCap);
-    const size_t budget = std::max(before / 2, static_cast<size_t>(200));
+    const size_t budget = before / 2;
     {
       SubstitutionMap trialSm(bm);
       Simplifier trial(bm, &trialSm);
@@ -606,7 +615,7 @@ struct IncrementalSolver::Impl
       // see, it already gets). The base conjunction at a rebuild
       // boundary is the one place a global pass is sound and free of
       // the reuse penalty; see rebuildEncodings.
-      if (dagSizeUpTo(trialOut, budget) <= budget)
+      if (trialOut == out || dagSizeUpTo(trialOut, budget) <= budget)
       {
         out = trialOut;
         DenseNodeMap* harvested = trial.Return_SolverMap();
@@ -1129,6 +1138,45 @@ struct IncrementalSolver::Impl
       batchTablesSeeded = false;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
+
+      // The transformer conjoins a read's index-binding equation
+      // (index-expression = index-symbol) only when it CREATES the
+      // registry row. Under the persistent registry that first creation
+      // may live in another conjunct entirely -- another level's, even a
+      // popped one -- and a conjunct encoded against a hit row would use
+      // an anchor nothing in the current solve binds: the index floats,
+      // the abstraction over-approximates wildly, and refinement crawls
+      // through the garbage (a family the batch pipeline solves in a
+      // second ran to timeout exactly this way once piece preparation
+      // separated bindings from their users). Every conjunct therefore
+      // re-conjoins the bindings of every row it touches; for rows whose
+      // binding is already inside, the AND simply deduplicates.
+      if (!bm->UserFlags.ackermannisation &&
+          !readsOfEncoded[key].empty())
+      {
+        ASTVec binds;
+        for (const std::pair<ASTNode, ASTNode>& ai : readsOfEncoded[key])
+        {
+          ArrayTransformer::ArrType::const_iterator ait =
+              myReads.find(ai.first);
+          if (ait == myReads.end())
+            continue;
+          ArrayTransformer::arrTypeMap::const_iterator rit =
+              ait->second.find(ai.second);
+          if (rit == ait->second.end())
+            continue;
+          const ASTNode& indexSym = rit->second.index_symbol;
+          if (ai.second == indexSym || indexSym.IsNull())
+            continue;
+          binds.push_back(bm->defaultNodeFactory->CreateNode(
+              EQ, ai.second, indexSym));
+        }
+        if (!binds.empty())
+        {
+          binds.push_back(toEncode);
+          toEncode = bm->defaultNodeFactory->CreateNode(AND, binds);
+        }
+      }
     }
 
     const uint64_t clausesPre = clausesAdded;
@@ -2550,9 +2598,22 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         for (const ASTNode& s : impl->symbolsOf(rc))
           conjunctCountOf[s]++;
 
+      // Totalisation order matters more than it looks. Totalising the
+      // RAW conjunct and substituting after keeps the symfpu circuits
+      // raw-keyed and shared across the session's variants; totalising
+      // the substituted form builds novel circuits per variant, and a
+      // family the batch pipeline solves in a second ran to timeout on
+      // their shapes. The late order exists for exactly one reason --
+      // a context entry with a floating-point BODY can splice partial
+      // operations into the conjunct, which only the totaliser may
+      // lower -- so it is used only when the context actually carries
+      // floating point.
+      const bool totaliseEarly = levelHasFp && !ctxHasFp;
       for (const ASTNode& rc : rawConjuncts)
       {
         ASTNode replaced = rc;
+        if (totaliseEarly)
+          replaced = impl->fpContext()->prepare(replaced);
         const bool isDefiner =
             ctxSources.find(rc) != ctxSources.end();
         if (!ctx.empty() && !isDefiner)
@@ -2562,10 +2623,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                                               bm->defaultNodeFactory);
         }
         // The whole-level piece contains its definers INSIDE the node
-        // just substituted; restore them alongside the replaced form.
+        // just substituted; restore them alongside the replaced form
+        // (totalised the same way the piece was).
         if (rc == assertionsSMT2[level] && !levelDefiningConjuncts.empty())
         {
-          ASTVec parts(levelDefiningConjuncts);
+          ASTVec parts;
+          for (const ASTNode& d : levelDefiningConjuncts)
+            parts.push_back(totaliseEarly ? impl->fpContext()->prepare(d)
+                                          : d);
           parts.push_back(replaced);
           replaced = bm->defaultNodeFactory->CreateNode(AND, parts);
         }
@@ -2585,15 +2650,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           continue;
         }
 
-        // Totalise before any word-level rewriting, exactly as rootLit
-        // does: the preparation passes can fold new partial
-        // floating-point operations into existence, and lowering only
-        // accepts the totalised forms. A level with no floating point of
-        // its own can still acquire some through the context (an
-        // eliminated definition's body), so that case is checked on the
-        // substituted conjunct itself.
-        if (levelHasFp ||
-            (ctxHasFp && containsFloatingPointTheory(replaced, bm)))
+        // The late totalisation, for the context-carries-floating-point
+        // case only (see totaliseEarly above): the substitution may have
+        // spliced partial operations in, and lowering only accepts
+        // totalised forms. A level with no floating point of its own can
+        // acquire some the same way.
+        if (!totaliseEarly &&
+            (levelHasFp ||
+             (ctxHasFp && containsFloatingPointTheory(replaced, bm))))
           replaced = impl->fpContext()->prepare(replaced);
         const auto& pp = impl->preparePiece(replaced, level, assertionsSMT2,
                                             conjunctCountOf);
