@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 #include "stp/Incremental/IncrementalSolver.h"
 
+#include "stp/Incremental/IncrementalCBP.h"
+
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -52,6 +54,7 @@ THE SOFTWARE.
 #include <algorithm>
 #include <exception>
 #include <functional>
+#include <memory>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
@@ -395,6 +398,230 @@ struct IncrementalSolver::Impl
   // of seven conjuncts), while the plain simplifier has always handled
   // them.
   static const size_t bigFormulaCap = 20000;
+
+  // ── Per-call constant-bit propagation over the live stack ─────────
+  //
+  // One IncrementalCBP per check-sat, fed each live level's LOWERED
+  // conjuncts in stack order, each level's conjunction assumed true (it
+  // is asserted for this whole call). Facts discovered while feeding
+  // level L depend only on levels <= L -- the pushed-definition
+  // context's prefix discipline, for the same reason: rewritten forms
+  // stay stable as the stack grows underneath, and a fact attaches at
+  // the level whose feed discovered it, so stack discipline retracts it
+  // before any level it was drawn from. Every adopted rewrite is
+  // content-keyed in rootLitOf, so a different stack state derives a
+  // different form and can never reach a stale strengthened encoding --
+  // the hole the pulled experiment branches' validation net papered
+  // over is closed by construction here.
+  std::unique_ptr<IncrementalCBP> callCbp;
+  // node -> constant, accumulated across this call's feeds. EXTRACT and
+  // CONCAT never enter it: their total fixing can rest on a PARTIALLY
+  // fixed operand, so no total pinning fact exists to justify replacing
+  // them (the batch pass has the whole formula in hand and can afford
+  // the same exclusion only for its conjoined facts; a per-conjunct
+  // adoption needs the justification to be assertable).
+  ASTNodeMap callCbpSubst;
+  // Which substitution-domain nodes' pinning facts are already asserted
+  // this call, and which nodes are themselves fed conjuncts (their
+  // levels assert them; no fact needed).
+  ASTNodeSet callCbpFactEmitted;
+  ASTNodeSet callCbpFedConjuncts;
+  size_t callCbpFed = 0;
+  size_t callCbpAdopted = 0;
+  bool callCbpOff = false;
+  // A session that ever overflows the feed cap stops paying for the
+  // prepass at all: its stacks only grow, and re-feeding up to the cap
+  // every call measured as a steady tax on the deep hundred-solve
+  // sessions with nothing adopted to show for it.
+  bool cbpSessionRetired = false;
+  // Lowered-form memo: what encodePrepared will lower a prepared
+  // conjunct to, keyed by the conjunct. Entries survive the session --
+  // staleness against a GROWN sigma0 is sound for the same reason the
+  // piece cache's is (sigma0 entries are permanent truths), and the
+  // floating-point lowering underneath is itself memoised.
+  std::map<ASTNode, ASTNode> loweredFormOf;
+  // The whole call's CBP feed is bounded: past this many DAG nodes the
+  // engine stops feeding (the propagation is worklist-linear, but the
+  // deep 100-solve sessions would still pay it per call -- the class
+  // the prepass experiments measured at 30 seconds per solve).
+  static const size_t cbpFeedCap = 100000;
+
+  // Feed one live level's final conjuncts to the per-call engine and
+  // rewrite them under the constants accumulated from levels <= this
+  // one. `conjuncts` is mutated in place: an adopted rewrite replaces
+  // its conjunct (the encoding then keys on the rewritten form), and
+  // the pinning facts justifying its replaced nodes are appended as
+  // extra conjuncts of THIS level -- implied by the prefix, retracted
+  // with it. Adoption follows the trial policy: only a rewrite that
+  // meaningfully collapses is worth novel circuitry; anything else
+  // keeps its raw-keyed form and all the sharing that comes with it.
+  void cbpFeedLevel(ASTVec& conjuncts)
+  {
+    if (callCbpOff || cbpSessionRetired || conjuncts.empty())
+      return;
+    if (!callCbp)
+      callCbp.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
+
+    // The forms the encoder will blast, computed exactly as rootLit
+    // does and memoised per conjunct across the session.
+    ASTVec lowered;
+    lowered.reserve(conjuncts.size());
+    for (const ASTNode& c : conjuncts)
+    {
+      std::map<ASTNode, ASTNode>::const_iterator hit = loweredFormOf.find(c);
+      if (hit != loweredFormOf.end())
+      {
+        lowered.push_back(hit->second);
+        continue;
+      }
+      const Fragment& frag = fragment(c);
+      ASTNode t = c;
+      if (frag.fp)
+        t = fpContext()->prepare(t);
+      t = prepareConjunct(t);
+      if (frag.fp)
+        t = fpContext()->lowerPrepared(t);
+      loweredFormOf[c] = t;
+      lowered.push_back(t);
+    }
+
+    for (const ASTNode& low : lowered)
+    {
+      callCbpFed += dagSizeUpTo(low, cbpFeedCap);
+      if (callCbpFed > cbpFeedCap)
+      {
+        callCbpOff = true;
+        cbpSessionRetired = true;
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "Incremental: cbp retired for the session (stack "
+                       "over the feed cap)" << std::endl;
+        return;
+      }
+    }
+
+    for (const ASTNode& low : lowered)
+      callCbpFedConjuncts.insert(low);
+
+    ASTNode levelLow =
+        lowered.size() == 1
+            ? lowered[0]
+            : bm->defaultNodeFactory->CreateNode(AND, lowered);
+    if (!callCbp->feedLevel(levelLow))
+    {
+      // The live prefix is contradictory by bit-level reasoning alone.
+      conjuncts.push_back(bm->ASTFalse);
+      callCbpOff = true;
+      return;
+    }
+
+    for (const ASTNode& n : callCbp->takeNewlyFixed())
+    {
+      if (n.GetKind() == BVEXTRACT || n.GetKind() == BVCONCAT)
+        continue;
+      // Anything carrying an array operation belongs to the read
+      // registry and the refinement loop: substituting a fixed READ
+      // away leaves its rows and its raw-stack model obligations
+      // behind with no encoded anchor, and the refinement loop then
+      // re-adds the same congruence axiom forever (measured as a
+      // livelock on the Automotive variant-push family the moment
+      // this filter was omitted).
+      if (containsArrayOps(n, bm))
+        continue;
+      const ASTNode k = callCbp->constantOf(n);
+      if (k.IsNull())
+        continue;
+      callCbpSubst[n] = k;
+    }
+    if (callCbpSubst.empty())
+      return;
+
+    // Adoption pass, with on-demand fact emission.
+    ASTVec facts;
+    for (size_t i = 0; i < conjuncts.size(); i++)
+    {
+      if (i >= lowered.size())
+        break;
+      const ASTNode& low = lowered[i];
+      // A conjunct carrying array operations never adopts: rewriting
+      // can fold an index expression, and the registry rows then key on
+      // the folded form while the raw-stack model check looks its reads
+      // up under the original one -- missing cells, rejected
+      // candidates, and the refinement loop re-adds the same axiom
+      // forever (measured on the Automotive variant-push family). The
+      // symfpu circuits this pass exists for are array-free after
+      // lowering and keep adopting.
+      if (fragment(low).arrays)
+        continue;
+      // A conjunct is never rewritten under its OWN fixing: its truth
+      // is the assumption, and consuming it in its own slot is the
+      // constraint-dropping circularity the experiment branches hit
+      // (the batch pass's `node != top` guard, applied per conjunct).
+      // Occurrences of this conjunct INSIDE other conjuncts still fold
+      // -- a shallower level's assertion makes those folds sound.
+      ASTNodeMap::iterator selfEntry = callCbpSubst.find(low);
+      ASTNode selfConstant;
+      if (selfEntry != callCbpSubst.end())
+      {
+        selfConstant = selfEntry->second;
+        callCbpSubst.erase(selfEntry);
+      }
+      ASTNodeMap cache;
+      const ASTNode adopted = SubstitutionMap::replace(
+          low, callCbpSubst, cache, bm->defaultNodeFactory);
+      if (!selfConstant.IsNull())
+        callCbpSubst[low] = selfConstant;
+      if (adopted == low)
+        continue;
+      // Constant folds only ever shrink -- the substitution replaces a
+      // subterm by a leaf -- so unlike the trial passes' structural
+      // rewrites (where only a halving collapse pays for the lost
+      // bit-blast sharing) any strict shrink is admitted. A same-size
+      // or grown result means the factory rewrote the spine into a
+      // novel shape on the way, exactly the shuffle class the trial
+      // gate exists to refuse, and it keeps its raw-keyed form.
+      const size_t before = dagSizeUpTo(low, bigFormulaCap);
+      if (dagSizeUpTo(adopted, before) >= before)
+        continue;
+
+      // Every node the rewrite replaced needs its constraint asserted:
+      // the pinning fact, unless the node is itself a fed conjunct
+      // (its own level asserts it for as long as this level can live).
+      ASTNodeSet visited;
+      std::vector<ASTNode> pending(1, low);
+      while (!pending.empty())
+      {
+        const ASTNode cur = pending.back();
+        pending.pop_back();
+        if (!visited.insert(cur).second)
+          continue;
+        // Fed conjuncts need no pinning fact: their own (shallower or
+        // equal) level asserts them for as long as this level lives.
+        // With the slot protection above they can never erase
+        // themselves, so the exception cannot drop a constraint.
+        ASTNodeMap::const_iterator sit = callCbpSubst.find(cur);
+        if (sit != callCbpSubst.end() &&
+            callCbpFedConjuncts.find(cur) == callCbpFedConjuncts.end() &&
+            callCbpFactEmitted.insert(cur).second)
+        {
+          if (cur.GetType() == BOOLEAN_TYPE)
+            facts.push_back(sit->second == bm->ASTTrue
+                                ? cur
+                                : bm->defaultNodeFactory->CreateNode(NOT,
+                                                                     cur));
+          else
+            facts.push_back(bm->defaultNodeFactory->CreateNode(
+                EQ, cur, sit->second));
+        }
+        for (unsigned j = 0; j < cur.Degree(); j++)
+          pending.push_back(cur[j]);
+      }
+
+      conjuncts[i] = adopted;
+      callCbpAdopted++;
+    }
+    for (const ASTNode& f : facts)
+      conjuncts.push_back(f);
+  }
 
   // DAG node count up to `cap`; used to pick the preparation granularity.
   size_t dagSizeUpTo(const ASTNode& n, size_t cap)
@@ -2538,6 +2765,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
+  // Fresh per-call constant-bit propagation state (see cbpFeedLevel).
+  impl->callCbp.reset();
+  impl->callCbpSubst.clear();
+  impl->callCbpFactEmitted.clear();
+  impl->callCbpFedConjuncts.clear();
+  impl->callCbpFed = 0;
+  impl->callCbpAdopted = 0;
+  impl->callCbpOff = false;
+
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
   // and sound even though the level's conjunction node is re-collapsed --
@@ -2807,6 +3043,18 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     if (conjuncts.empty())
       continue;
 
+    // Per-call constant-bit propagation over the live prefix: feed this
+    // level's final conjuncts, rewrite them under the accumulated
+    // constants where the rewrite genuinely collapses, and conjoin the
+    // pinning facts that justify it (see cbpFeedLevel). Floating-point
+    // sessions only -- that is where the lowered circuits carry the
+    // constants word-level preparation cannot see -- and never on the
+    // per-assumption path, whose conjunct-to-assumption mapping a
+    // cross-conjunct fact would blur.
+    if (uf.optimize_flag && !individually && uf.bitConstantProp_flag &&
+        bm->has_floating_point_theory)
+      impl->cbpFeedLevel(conjuncts);
+
     levelRoots.clear();
     for (const ASTNode& c : conjuncts)
     {
@@ -2867,6 +3115,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               << ctx.size() << " pushed substitutions, "
               << impl->activeEliminatedDefs.size() << " eliminated"
               << std::endl;
+    if (impl->callCbpAdopted > 0)
+      std::cerr << "Incremental: cbp adopted " << impl->callCbpAdopted
+                << " rewrites from " << impl->callCbpSubst.size()
+                << " fixed nodes" << std::endl;
   }
 
   // Array refinement needs a candidate model to find violated axioms, so

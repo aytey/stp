@@ -19,6 +19,7 @@
 # THE SOFTWARE.
 
 add_library(incremental OBJECT
+    IncrementalCBP.cpp
     IncrementalSolver.cpp
 )
 
