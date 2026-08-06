@@ -32,6 +32,8 @@ THE SOFTWARE.
 #include "stp/Sat/MinisatCore.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
+#include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -356,6 +358,13 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // Layered constant-bit-propagation substitutions. Each entry in the
+  // vector holds the substitutions discovered at that assertion depth.
+  // The merged map is the union of all layers. On pop (depth decreases),
+  // entries from removed layers are erased from the merged map.
+  std::vector<ASTNodeMap> cbpDeltas;
+  ASTNodeMap mergedCbp;
+
   // Per-call statistics, printed under --stats.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
@@ -369,8 +378,8 @@ struct IncrementalSolver::Impl
         trueVar(-1), bvaDecided(false), bvaWarned(false),
         batchTablesSeeded(false), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), clausesAdded(0),
-        encodesThisCall(0)
+        trailReuseAllowed(true), lastLevelCount(0),
+        clausesAdded(0), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -641,24 +650,140 @@ struct IncrementalSolver::Impl
     return localSimp.SimplifyFormula_TopLevel(n, false);
   }
 
+  // Run the batch pipeline's key simplification passes on a single node.
+  // Each pass uses fresh, node-local state so there is nothing to undo.
+  ASTNode deepSimplify(const ASTNode& n)
+  {
+    if (n == bm->ASTTrue || n == bm->ASTFalse)
+      return n;
+
+    ASTNode out = n;
+
+    if (bm->UserFlags.bitConstantProp_flag)
+    {
+      SubstitutionMap cbSm(bm);
+      Simplifier cbSimp(bm, &cbSm);
+      simplifier::constantBitP::ConstantBitPropagation cb(
+          bm, &cbSimp, bm->defaultNodeFactory, out);
+      out = cb.topLevelBothWays(out);
+      if (cb.isUnsatisfiable())
+        return bm->ASTFalse;
+    }
+
+    if (bm->UserFlags.enable_unconstrained)
+    {
+      SubstitutionMap ucSm(bm);
+      Simplifier ucSimp(bm, &ucSm);
+      RemoveUnconstrained ruc(*bm);
+      out = ruc.topLevel(out, &ucSimp);
+    }
+
+    return simplifyAlone(out);
+  }
+
+  // Cross-level constant-bit propagation with layered rollback.
+  // Builds the full conjunction of all live levels, runs CBP, and stores
+  // newly discovered {node -> constant} entries in the current depth's
+  // layer. On pop (depth shrinks), entries from removed layers are
+  // erased from the merged map.
+  void runCrossLevelCBP(const ASTVec& assertionsSMT2)
+  {
+    if (!bm->UserFlags.bitConstantProp_flag)
+      return;
+
+    const size_t depth = assertionsSMT2.size();
+
+    // Pop: remove layers above the current depth.
+    while (cbpDeltas.size() > depth)
+    {
+      for (auto& kv : cbpDeltas.back())
+        mergedCbp.erase(kv.first);
+      cbpDeltas.pop_back();
+    }
+
+    // Grow: add empty layers for new depths.
+    while (cbpDeltas.size() < depth)
+      cbpDeltas.push_back(ASTNodeMap());
+
+    // Build the full conjunction of all live levels.
+    ASTVec allConjuncts;
+    for (const ASTNode& levelConj : assertionsSMT2)
+      splitConjuncts(levelConj, bm->ASTTrue, allConjuncts);
+
+    if (allConjuncts.empty())
+      return;
+
+    ASTNode whole;
+    if (allConjuncts.size() == 1)
+      whole = allConjuncts[0];
+    else
+      whole = bm->defaultNodeFactory->CreateNode(AND, allConjuncts);
+
+    // Apply existing substitutions so CBP sees a pre-simplified formula
+    // and can propagate deeper.
+    if (!sigma0.empty())
+    {
+      ASTNodeMap cache;
+      whole = SubstitutionMap::replace(whole, sigma0, cache,
+                                       bm->defaultNodeFactory);
+    }
+    if (!mergedCbp.empty())
+    {
+      ASTNodeMap cache;
+      whole = SubstitutionMap::replace(whole, mergedCbp, cache,
+                                       bm->defaultNodeFactory);
+    }
+
+    // Run CBP on the full conjunction.
+    SubstitutionMap cbSm(bm);
+    Simplifier cbSimp(bm, &cbSm);
+    simplifier::constantBitP::ConstantBitPropagation cb(
+        bm, &cbSimp, bm->defaultNodeFactory, whole);
+    cb.topLevelBothWays(whole);
+
+    if (cb.isUnsatisfiable())
+      return;
+
+    // getAllFixed() returns {node -> constant} for every node CBP fully
+    // determined. Store NEW entries in the current depth's layer.
+    ASTNodeMap fixed = cb.getAllFixed();
+    ASTNodeMap& currentDelta = cbpDeltas[depth - 1];
+    for (auto& kv : fixed)
+    {
+      if (mergedCbp.find(kv.first) == mergedCbp.end() &&
+          sigma0.find(kv.first) == sigma0.end())
+      {
+        currentDelta[kv.first] = kv.second;
+        mergedCbp[kv.first] = kv.second;
+      }
+    }
+  }
+
   // What actually gets encoded for a conjunct: the conjunct rewritten under
-  // the base-level substitutions and then simplified on its own. Keyed by
-  // the ORIGINAL conjunct in rootLitOf, so reuse is untouched; encoding
-  // under an older, smaller sigma0 stays sound because sigma0 entries are
-  // permanent truths.
+  // the base-level substitutions, cross-level CBP constants, and then
+  // simplified on its own. Keyed by the ORIGINAL conjunct in rootLitOf,
+  // so reuse is untouched; encoding under an older, smaller map stays
+  // sound because all substitution entries are truths of their live levels.
   ASTNode prepareConjunct(const ASTNode& c)
   {
     if (!bm->UserFlags.optimize_flag)
       return c;
 
     ASTNode out = c;
-    if (!sigma0.empty() && mustKeepRaw.find(c) == mustKeepRaw.end())
+    if (mustKeepRaw.find(c) != mustKeepRaw.end())
+      return out;
+
+    if (!sigma0.empty())
     {
-      // replace() rebuilds every touched node through the (simplifying)
-      // node factory, so the node-local rewrite rules already run over the
-      // substituted result as it is built.
       ASTNodeMap cache;
       out = SubstitutionMap::replace(out, sigma0, cache,
+                                     bm->defaultNodeFactory);
+    }
+
+    if (!mergedCbp.empty())
+    {
+      ASTNodeMap cache;
+      out = SubstitutionMap::replace(out, mergedCbp, cache,
                                      bm->defaultNodeFactory);
     }
 
@@ -677,7 +802,14 @@ struct IncrementalSolver::Impl
                      const Fragment& frag)
   {
     if (frag.fp)
+    {
       toEncode = fpContext()->lowerPrepared(toEncode);
+      // FP lowering expands operations into wide bit-vector circuits.
+      // Run CBP and unconstrained elimination on the expanded form,
+      // as the batch pipeline does; this is the single biggest win
+      // for FP-heavy conjuncts.
+      toEncode = deepSimplify(toEncode);
+    }
 
     if (frag.arrays)
     {
@@ -772,7 +904,7 @@ struct IncrementalSolver::Impl
     if (rewritten == pre)
       return rootLit(conjunct);
 
-    ASTNode w = simplifyAlone(rewritten);
+    ASTNode w = deepSimplify(rewritten);
     encodedAs = w;
 
     NodeToLitMap::const_iterator it = rootLitOf.find(w);
