@@ -449,6 +449,29 @@ development remains answer-sequence differential testing between the batch
 and incremental engines: they must agree on every answer they both produce,
 and only complete identical streams count as a full success.
 
+``scripts/incremental-bench-report.py`` validates and combines the resulting
+shards. For example::
+
+  scripts/incremental-bench-report.py \
+    --main '/results/final/main-shard-*.csv' \
+    --revalidation '/results/final/revalidation-shard-*.csv' \
+    --expected-manifest /results/corpus.manifest --expected-runs 3 \
+    --expected-answers 1865826 \
+    --output-prefix /results/final/report --require-full-ok
+
+The reporter checks the schema, sidecar manifests, solver identities, and
+unique ``(file, run)`` keys. A revalidation manifest replaces every main row
+for each selected file, so an interrupted revalidation is reported as missing
+rather than falling back to a shorter run. Any disagreement ever observed is
+kept as a sticky failure and retained with its complete answer streams in the
+``.disagreements.csv`` evidence file. The other outputs contain the effective
+combined rows, per-file median timing classifications, correctness and process
+status counts, answer totals, and logic/family breakdowns.
+
+``--expected-answers`` requires an exact total for each arm, making answer
+prefixes lost to common timeouts or crashes visible even when both processes
+stopped at the same point.
+
 Limitations
 -----------
 
