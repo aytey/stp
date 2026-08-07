@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 #include "stp/Incremental/IncrementalSolver.h"
 
+#include "stp/Incremental/IncrementalCBP.h"
+
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -53,6 +55,7 @@ THE SOFTWARE.
 #include <exception>
 #include <functional>
 #include <map>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -411,6 +414,409 @@ struct IncrementalSolver::Impl
         pending.push_back(cur[i]);
     }
     return visited.size();
+  }
+
+  // The two fixed-cap measurements recur for the same nodes on every
+  // call of a deep session (every level's granularity is re-judged
+  // per check-sat, and a reset re-walks the whole stack's feeds);
+  // nodes are immutable, so the clipped count is a permanent fact.
+  typedef std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
+                             ASTNode::ASTNodeEqual>
+      NodeSizeMemo;
+  NodeSizeMemo dagSizeBigMemo;
+  NodeSizeMemo dagSizeFeedMemo;
+
+  size_t dagSizeUpToMemo(const ASTNode& n, size_t cap, NodeSizeMemo& memo)
+  {
+    NodeSizeMemo::const_iterator it = memo.find(n);
+    if (it != memo.end())
+      return it->second;
+    const size_t s = dagSizeUpTo(n, cap);
+    memo[n] = s;
+    return s;
+  }
+
+  // ── Per-call constant-bit propagation over the live prefix ────────
+  //
+  // One IncrementalCBP per check-sat, fed each live level's RAW
+  // word-level conjunction in stack order, each level's conjunction
+  // assumed true (it is asserted for this whole call). Facts
+  // discovered while feeding level L depend only on levels <= L --
+  // the pushed-definition context's prefix discipline, for the same
+  // reason: rewritten forms stay stable as the stack grows
+  // underneath, and a fact can never outlive a level it was drawn
+  // from. Adoption happens BEFORE piece preparation, keying and the
+  // array transform: the adopted form flows into the piece machinery
+  // content-keyed like any other conjunct (a different stack derives
+  // a different form, so a stale strengthened encoding is unreachable
+  // by construction), and the transformer and read registry see
+  // folded indices exactly the way pushed-definition folds have
+  // always reached them. This is what per-level preparation is
+  // structurally blind to: a read whose write-chain indices are fixed
+  // by ANOTHER level's content only collapses when the fixings cross
+  // the levels (the Industrial_Control_C family: ite(flag,c1,c2)
+  // write indices whose flags other levels pin, chaseRead stopping at
+  // every maybe-equal index, and the transformer expanding the
+  // surviving chains quadratically).
+  std::unique_ptr<IncrementalCBP> callCbp;
+  // node -> constant, accumulated across the fed levels. EXTRACT
+  // and CONCAT never enter it: their total fixing can rest on a
+  // PARTIALLY fixed operand, so no total pinning fact exists to
+  // justify replacing them. Nothing carrying an array operation
+  // enters either: reads and writes belong to the read registry, and
+  // a substituted-away read leaves its rows behind with no encoded
+  // anchor (the target family's indices are ite(flag,const,const) --
+  // array-free -- so the exclusion costs it nothing).
+  ASTNodeMap callCbpSubst;
+  // Fixings of THIS level's own fed conjuncts, parked while the level
+  // rewrites (level-granularity slot protection, see cbpFeedLevel)
+  // and restored for deeper levels by cbpFinishLevel.
+  std::vector<std::pair<ASTNode, ASTNode>> callCbpDeferred;
+  // Which substitution-domain nodes' pinning facts are already
+  // appended this call, and which nodes are fed conjuncts (their own
+  // levels assert them; no fact needed).
+  ASTNodeSet callCbpFactEmitted;
+  ASTNodeSet callCbpFedConjuncts;
+  size_t callCbpFed = 0;
+  size_t callCbpAdopted = 0;
+  size_t callCbpReplayed = 0;
+  size_t cbpEpochAdopted = 0;
+  size_t cbpBarrenResets = 0;
+  bool cbpEverFixed = false;
+  bool cbpFedArrays = false;
+  bool callCbpOff = false;
+  bool callCbpConflict = false;
+  // A session that ever overflows the feed cap stops paying for the
+  // prepass at all: its stacks only grow, and re-feeding up to the
+  // cap every call is a steady tax on the deep hundred-solve
+  // sessions with nothing adopted to show for it. The same retirement
+  // fires on evidence of futility: a session whose stack keeps
+  // DIVERGING (every divergence is a full engine re-feed) with no
+  // adoption to show for it is the KLEE-class pop-per-query shape,
+  // where the prefix never stabilises and the fixings never come.
+  // The evidence is per-tier, because adoption timing says little on
+  // its own (measured: the Industrial specimen's first adoption is
+  // near solve 115, after ~20 divergences, and those four late folds
+  // are the entire 40x -- while the KLEE-class b64 diverges 997
+  // times with the fixing map EMPTY at every single one). A session
+  // whose engine has NEVER derived one fixing retires after a short
+  // barren run; a session with fixings but no adoption yet gets a
+  // leash long enough that a pop-bounded session cannot exhaust it.
+  bool cbpSessionRetired = false;
+  static const size_t cbpRetireBarrenNeverFixed = 8;
+  static const size_t cbpRetireBarrenFixed = 64;
+  // The substitution stays small: it exists for the cross-level few
+  // (the target family's whole map is 48 entries), and a giant
+  // constant-rich feed can legitimately fix a hundred thousand nodes
+  // whose folding the pieces' own passes already perform. Harvesting
+  // stops at the cap; what is left unharvested costs folds, never
+  // soundness.
+  static const size_t cbpHarvestCap = 4096;
+  // The engine's fed content is bounded; raw word-level stacks are
+  // parse-folded and small (the target family's whole stack is under
+  // five thousand nodes), so a stack past this size is the deep
+  // KLEE-class session the cap exists to protect.
+  static const size_t cbpFeedCap = 200000;
+
+  // ── Cross-call reuse ──────────────────────────────────────────────
+  //
+  // The engine state after feeding levels 0..L is a pure function of
+  // those levels' conjunctions, so while the live stack only EXTENDS
+  // the fed prefix, this call's state is last call's state -- kept,
+  // not recomputed. Any divergence (a pop, a changed level, base
+  // growth) resets the engine and re-feeds the live stack level by
+  // level; there is no undo log, reset IS the undo. The rewrites are
+  // memoised per level the same way, with one stronger property: a
+  // memo entry records its outputs as derived at BUILD time, when the
+  // accumulated substitution held exactly the entry's own prefix --
+  // so replaying it under a deeper live stack cannot leak a deeper
+  // level's fact into a shallower conjunct, and the memo stays valid
+  // across pops of everything below it (it is trimmed only when its
+  // own prefix changes).
+  struct CbpLevelMemo
+  {
+    // The raw level conjunction this entry was built from.
+    ASTNode conjunction;
+    // Raw conjunct -> its final rewritten form (context substitution,
+    // definers restored, constant fixings adopted), in processing
+    // order.
+    std::vector<std::pair<ASTNode, ASTNode>> rewrites;
+    // The pinning facts this level's adoptions appended.
+    ASTVec facts;
+  };
+  // Fed level conjunctions in feed order (index == stack level; the
+  // engine's validity domain), and the per-level memo (its own,
+  // prefix-trimmed validity domain). Equal lengths at call
+  // boundaries; the memo outlives an engine reset.
+  std::vector<ASTNode> cbpFedLevels;
+  std::vector<CbpLevelMemo> cbpMemo;
+  // Levels below this replay their memo this call (set at call
+  // start): their prefix is unchanged, so their recorded outputs are
+  // exactly what recomputation would derive.
+  size_t cbpMemoStable = 0;
+
+  void cbpReset()
+  {
+    callCbp.reset();
+    callCbpSubst.clear();
+    callCbpDeferred.clear();
+    callCbpFactEmitted.clear();
+    callCbpFedConjuncts.clear();
+    cbpFedLevels.clear();
+    callCbpFed = 0;
+    cbpFedArrays = false;
+  }
+
+  // Early-exit containment: does `n` reach any of `syms`? The
+  // harvest's per-delta-node filters must stay walk-bounded with no
+  // per-node set materialisation -- a large formula's fixpoint delta
+  // is tens of thousands of nodes, and building symbol sets for each
+  // measured minutes on a single feed. A walk that exhausts its
+  // budget answers "reaches": the caller then defers the fixing,
+  // which only forgoes an intra-level fold.
+  bool reachesAnyOf(const ASTNode& n, const ASTNodeSet& syms)
+  {
+    static const size_t walkBudget = 2000;
+    ASTNodeSet visited;
+    std::vector<ASTNode> pending(1, n);
+    while (!pending.empty())
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (cur.isConstant())
+        continue;
+      if (!visited.insert(cur).second)
+        continue;
+      if (visited.size() > walkBudget)
+        return true;
+      if (syms.find(cur) != syms.end())
+        return true;
+      for (unsigned i = 0; i < cur.Degree(); i++)
+        pending.push_back(cur[i]);
+    }
+    return false;
+  }
+
+  // Feed one live level's raw conjunction to the engine and collect
+  // the newly fixed nodes into the substitution. An already-fed level
+  // (the stable prefix of a persisting session) is a no-op: its
+  // fixings are in the map and its rewrites replay from the memo. The
+  // level's own fed conjuncts' fixings are DEFERRED until
+  // cbpFinishLevel: a conjunct must never rewrite under its own
+  // assumption-of-truth (substituting a fed conjunct's TRUE into its
+  // own slot erases the constraint -- the circularity measured as a
+  // refinement livelock the moment it was admitted), and parking the
+  // whole level's entries keeps every sibling rewrite safe too.
+  // Occurrences inside DEEPER levels' conjuncts still fold, justified
+  // without a pinning fact by the fed conjunct's own asserted slot.
+  void cbpFeedLevel(size_t level, const ASTNode& levelConjunction)
+  {
+    if (callCbpOff || cbpSessionRetired)
+      return;
+    // Levels feed in stack order exactly once; anything else is a
+    // prefix this session already carries.
+    if (level != cbpFedLevels.size())
+      return;
+    if (!callCbp)
+      callCbp.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
+
+    callCbpFed += dagSizeUpToMemo(levelConjunction, cbpFeedCap,
+                                  dagSizeFeedMemo);
+    if (callCbpFed > cbpFeedCap)
+    {
+      callCbpOff = true;
+      cbpSessionRetired = true;
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "Incremental: cbp retired for the session (stack "
+                     "over the feed cap)"
+                  << std::endl;
+      return;
+    }
+
+    ASTVec fed;
+    splitConjuncts(levelConjunction, bm->ASTTrue, fed);
+    fed.push_back(levelConjunction);
+    for (const ASTNode& c : fed)
+      callCbpFedConjuncts.insert(c);
+
+    if (!callCbp->feedLevel(levelConjunction))
+    {
+      // The live prefix is contradictory by bit-level reasoning
+      // alone; the caller asserts FALSE at this level. The feed
+      // still consumed the level -- the engine's map and its latched
+      // conflict carry this level's assumed truth -- so it MUST be
+      // recorded: an unrecorded feed survives the level's pop (the
+      // divergence check never sees it) and refutes whatever level
+      // is pushed in its place. The refutation is the level's
+      // memoised output, so an identical re-push replays FALSE
+      // instead of re-running the feed.
+      callCbpConflict = true;
+      callCbpOff = true;
+      cbpFedLevels.push_back(levelConjunction);
+      if (cbpMemo.size() == level)
+      {
+        cbpMemo.push_back(CbpLevelMemo());
+        cbpMemo.back().conjunction = levelConjunction;
+        cbpMemo.back().facts.push_back(bm->ASTFalse);
+      }
+      return;
+    }
+
+    // A fixing this level's own feed derived joins the substitution
+    // only for DEEPER levels (via cbpFinishLevel) when it pins a
+    // SYMBOL -- or an interior node over one: folding either into its
+    // own level would usurp the definition harvest, whose machinery
+    // (the pushed-definition context, the pieces' private-variable
+    // elimination) owns intra-level substitution with model-replay
+    // bookkeeping this pass does not carry -- and an interior fold's
+    // pinning fact would drag the symbol into the encoding, spoiling
+    // its eliminability for the rest of the session. Cross-level
+    // visibility is this pass's whole charter; a node fixed here
+    // through EARLIER levels' knowledge (the target family's
+    // ite-indexed writes, whose flags other levels pin) carries no
+    // symbol from THIS feed and still folds in place.
+    // One walk per fed level decides whether the per-delta-node array
+    // exclusion below has anything to exclude: an array-free fed
+    // prefix cannot put an array-carrying node in the delta, and the
+    // per-node walks were the dominant cost of feeding a large
+    // array-free formula.
+    if (!cbpFedArrays && containsArrayOps(levelConjunction, bm))
+      cbpFedArrays = true;
+
+    const std::vector<ASTNode>& feedDelta = callCbp->takeNewlyFixed();
+    ASTNodeSet feedSymbols;
+    for (const ASTNode& n : feedDelta)
+    {
+      if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
+        break;
+      if (n.GetKind() != SYMBOL)
+        continue;
+      const ASTNode k = callCbp->constantOf(n);
+      if (k.IsNull())
+        continue;
+      callCbpDeferred.push_back(std::make_pair(n, k));
+      feedSymbols.insert(n);
+      cbpEverFixed = true;
+    }
+    for (const ASTNode& n : feedDelta)
+    {
+      if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
+        break;
+      if (n.GetKind() == SYMBOL || n.GetKind() == BVEXTRACT ||
+          n.GetKind() == BVCONCAT)
+        continue;
+      const ASTNode k = callCbp->constantOf(n);
+      if (k.IsNull())
+        continue;
+      if (cbpFedArrays && containsArrayOps(n, bm))
+        continue;
+      if (!feedSymbols.empty() && reachesAnyOf(n, feedSymbols))
+        callCbpDeferred.push_back(std::make_pair(n, k));
+      else
+        callCbpSubst[n] = k;
+      cbpEverFixed = true;
+    }
+
+    for (const ASTNode& c : fed)
+    {
+      ASTNodeMap::iterator it = callCbpSubst.find(c);
+      if (it != callCbpSubst.end())
+      {
+        callCbpDeferred.push_back(*it);
+        callCbpSubst.erase(it);
+      }
+    }
+
+    cbpFedLevels.push_back(levelConjunction);
+    // The memo entry parallels the feed; if this level was already
+    // memoised under the same conjunction (an engine reset re-feeding
+    // the stable prefix), the existing entry keeps replaying.
+    if (cbpMemo.size() == level)
+    {
+      cbpMemo.push_back(CbpLevelMemo());
+      cbpMemo.back().conjunction = levelConjunction;
+    }
+  }
+
+  // Restore the fed-conjunct fixings cbpFeedLevel parked, once the
+  // level's own conjuncts are past rewriting.
+  void cbpFinishLevel()
+  {
+    for (const std::pair<ASTNode, ASTNode>& e : callCbpDeferred)
+      callCbpSubst[e.first] = e.second;
+    callCbpDeferred.clear();
+  }
+
+  // Rewrite one conjunct under the constants accumulated from levels
+  // <= its own. Adoption follows the trial policy's spirit: constant
+  // folds only ever shrink (the substitution replaces a subterm by a
+  // leaf), so any strict shrink is admitted; a same-size or grown
+  // result means the factory rewrote the spine into a novel shape on
+  // the way -- the shuffle class the trial gates exist to refuse --
+  // and the conjunct keeps its raw-keyed form and all the sharing
+  // that comes with it. Every replaced node's pinning fact (node ==
+  // constant; the node itself or its negation for Booleans) is
+  // collected into factsOut and asserted alongside this level's
+  // conjuncts, so the substitution loses nothing and the models the
+  // refinement loop validates stay models of the raw stack. Fed
+  // conjuncts are exempt: their own levels assert them for at least
+  // as long as any adopter lives.
+  ASTNode cbpAdopt(const ASTNode& conjunct, ASTVec& factsOut)
+  {
+    if (callCbpOff || callCbpSubst.empty())
+      return conjunct;
+
+    // The conjunct's own entry (a ctx-substituted form can be fixed
+    // as an interior node without being a fed conjunct) never rewrites
+    // its own slot.
+    ASTNodeMap::iterator selfEntry = callCbpSubst.find(conjunct);
+    ASTNode selfConstant;
+    if (selfEntry != callCbpSubst.end())
+    {
+      selfConstant = selfEntry->second;
+      callCbpSubst.erase(selfEntry);
+    }
+    ASTNodeMap cache;
+    const ASTNode adopted = SubstitutionMap::replace(
+        conjunct, callCbpSubst, cache, bm->defaultNodeFactory);
+    if (!selfConstant.IsNull())
+      callCbpSubst[conjunct] = selfConstant;
+    if (adopted == conjunct)
+      return conjunct;
+
+    const size_t before = dagSizeUpTo(conjunct, bigFormulaCap);
+    if (dagSizeUpTo(adopted, before) >= before)
+      return conjunct;
+
+    ASTNodeSet visited;
+    std::vector<ASTNode> pending(1, conjunct);
+    while (!pending.empty())
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (!visited.insert(cur).second)
+        continue;
+      ASTNodeMap::const_iterator sit = callCbpSubst.find(cur);
+      if (sit != callCbpSubst.end() &&
+          callCbpFedConjuncts.find(cur) == callCbpFedConjuncts.end() &&
+          callCbpFactEmitted.insert(cur).second)
+      {
+        if (cur.GetType() == BOOLEAN_TYPE)
+          factsOut.push_back(
+              sit->second == bm->ASTTrue
+                  ? cur
+                  : bm->defaultNodeFactory->CreateNode(NOT, cur));
+        else
+          factsOut.push_back(
+              bm->defaultNodeFactory->CreateNode(EQ, cur, sit->second));
+      }
+      for (unsigned j = 0; j < cur.Degree(); j++)
+        pending.push_back(cur[j]);
+    }
+
+    callCbpAdopted++;
+    cbpEpochAdopted++;
+    return adopted;
   }
 
   // Every floating-point OPERATION node of `n` (kind-categorised FP, so
@@ -2709,6 +3115,71 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
+  // Constant-bit propagation state persists while the live stack only
+  // extends what the engine has fed; a pop, a changed level or base
+  // growth resets the engine (reset is the undo -- the live stack
+  // re-feeds below) and trims the memo to the prefix that still
+  // matches (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
+  {
+    size_t lcp = 0;
+    while (lcp < impl->cbpFedLevels.size() && lcp < assertionsSMT2.size() &&
+           impl->cbpFedLevels[lcp] == assertionsSMT2[lcp])
+      lcp++;
+    const bool didReset = lcp < impl->cbpFedLevels.size();
+    if (didReset)
+    {
+      // Futility accounting: an epoch (the span since the last
+      // divergence) that adopted nothing lengthens the barren run;
+      // one fresh adoption clears it.
+      if (impl->cbpEpochAdopted == 0)
+      {
+        impl->cbpBarrenResets++;
+        const size_t leash = impl->cbpEverFixed
+                                 ? Impl::cbpRetireBarrenFixed
+                                 : Impl::cbpRetireBarrenNeverFixed;
+        if (!impl->cbpSessionRetired && impl->cbpBarrenResets >= leash)
+        {
+          impl->cbpSessionRetired = true;
+          if (uf.stats_flag)
+            std::cerr << "Incremental: cbp retired for the session ("
+                      << impl->cbpBarrenResets
+                      << " adoption-free stack divergences)" << std::endl;
+        }
+      }
+      else
+      {
+        impl->cbpBarrenResets = 0;
+      }
+      impl->cbpEpochAdopted = 0;
+      impl->cbpReset();
+    }
+
+    size_t memoLcp = 0;
+    while (memoLcp < impl->cbpMemo.size() &&
+           memoLcp < assertionsSMT2.size() &&
+           impl->cbpMemo[memoLcp].conjunction == assertionsSMT2[memoLcp])
+      memoLcp++;
+    impl->cbpMemo.resize(memoLcp);
+    impl->cbpMemoStable = memoLcp;
+
+    // The reset cleared the emitted-fact record but the surviving
+    // memo levels keep replaying their facts; re-seed the record from
+    // them so this call's rebuilt levels do not emit duplicates.
+    if (didReset)
+      for (const Impl::CbpLevelMemo& m : impl->cbpMemo)
+        for (const ASTNode& f : m.facts)
+        {
+          const ASTNode n =
+              (f.GetKind() == EQ || f.GetKind() == NOT) ? f[0] : f;
+          impl->callCbpFactEmitted.insert(n);
+        }
+
+  }
+  impl->callCbpAdopted = 0;
+  impl->callCbpReplayed = 0;
+  impl->callCbpOff = impl->cbpSessionRetired;
+  impl->callCbpConflict = false;
+
   // Base level: every conjunct becomes a permanent unit clause, once. The
   // base level only grows (reset destroys this object), so this is monotone
   // and sound even though the level's conjunction node is re-collapsed --
@@ -2770,6 +3241,21 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
     impl->screenNewContent(assertionsSMT2[level]);
 
+  // The base level seeds the constant-bit engine: its conjuncts are
+  // permanent units, so their truth is sound for every fact any
+  // deeper level draws from them. The base itself never adopts (it is
+  // already encoded), so its parked fixings flush straight back --
+  // and with no pushed level in the stack there is no adopter at all,
+  // so a session that never pushes never pays for the feed (a huge
+  // single-check formula measured two minutes of fixpoint and harvest
+  // with nothing downstream to spend it on).
+  if (uf.optimize_flag && uf.bitConstantProp_flag &&
+      assertionsSMT2.size() > 1)
+  {
+    impl->cbpFeedLevel(0, assertionsSMT2[0]);
+    impl->cbpFinishLevel();
+  }
+
   // Pushed levels: each is prepared in pieces -- substituted under the
   // context, run through the batch equality-propagation and
   // simplification passes, private definitions eliminated and everything
@@ -2826,6 +3312,17 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         if (ctxSources.find(c) != ctxSources.end())
           levelDefiningConjuncts.push_back(c);
     }
+
+    // Constant-bit propagation over the live prefix: feed this
+    // level's raw conjunction (a no-op for the persisting session's
+    // stable prefix), then rewrite its conjuncts below under the
+    // constants accumulated from levels up to and including this one
+    // (see cbpFeedLevel/cbpAdopt). Never on the per-assumption path,
+    // whose conjunct-to-assumption mapping a cross-conjunct fact
+    // would blur.
+    if (uf.optimize_flag && !individually && uf.bitConstantProp_flag)
+      impl->cbpFeedLevel(level, assertionsSMT2[level]);
+
     conjuncts.clear();
     if (!uf.optimize_flag || individually)
     {
@@ -2847,7 +3344,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // preparation reuses every already-prepared piece and loses only
       // cross-conjunct effects beyond definition chaining.
       ASTVec rawConjuncts;
-      if (impl->dagSizeUpTo(assertionsSMT2[level], Impl::bigFormulaCap) <=
+      if (impl->dagSizeUpToMemo(assertionsSMT2[level], Impl::bigFormulaCap,
+                                impl->dagSizeBigMemo) <=
           Impl::bigFormulaCap)
         rawConjuncts.push_back(assertionsSMT2[level]);
       else
@@ -2871,40 +3369,84 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // lower -- so it is used only when the context actually carries
       // floating point.
       const bool totaliseEarly = levelHasFp && !ctxHasFp;
+      // A level inside the memo's stable prefix REPLAYS its recorded
+      // rewrites -- outputs frozen at build time, when the
+      // accumulated substitution held exactly this level's prefix --
+      // and a level being fed this call records its own. A level that
+      // is neither (a retired session's new levels, a lookup miss)
+      // takes the plain path with no constant-fixing adoption: the
+      // live map may hold deeper levels' fixings by now, and prefix
+      // discipline forbids folding those into a shallower conjunct.
+      const bool cbpHit = level < impl->cbpMemoStable;
+      const bool cbpBuild = !cbpHit &&
+                            impl->cbpMemo.size() == level + 1 &&
+                            impl->cbpMemo[level].conjunction ==
+                                assertionsSMT2[level];
+      size_t cbpMemoIdx = 0;
+      ASTVec cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
       {
         ASTNode replaced = rc;
-        if (totaliseEarly)
-          replaced = impl->fpContext()->prepare(replaced);
-        const bool isDefiner =
-            ctxSources.find(rc) != ctxSources.end();
-        if (!ctx.empty() && !isDefiner)
+        bool replayed = false;
+        if (cbpHit)
         {
-          ASTNodeMap cache;
-          const ASTNode substituted = SubstitutionMap::replace(
-              replaced, ctx, cache, bm->defaultNodeFactory);
-          // Adopt the substituted form only if it builds no novel
-          // floating-point circuit (see introducesNovelFpOperations): a
-          // fold is the collapse this context exists for, a variant is a
-          // duplicate of a raw-keyed circuit and strictly harder to
-          // search than the raw conjunct it replaces. The refused
-          // conjunct encodes raw-keyed, sharing everything it always
-          // shared; its definers stay asserted, so nothing is lost but
-          // the rewrite.
-          if (!impl->introducesNovelFpOperations(replaced, substituted))
-            replaced = substituted;
+          const std::vector<std::pair<ASTNode, ASTNode>>& rw =
+              impl->cbpMemo[level].rewrites;
+          if (cbpMemoIdx < rw.size() && rw[cbpMemoIdx].first == rc)
+          {
+            replaced = rw[cbpMemoIdx].second;
+            cbpMemoIdx++;
+            replayed = true;
+            impl->callCbpReplayed++;
+          }
         }
-        // The whole-level piece contains its definers INSIDE the node
-        // just substituted; restore them alongside the replaced form
-        // (totalised the same way the piece was).
-        if (rc == assertionsSMT2[level] && !levelDefiningConjuncts.empty())
+        if (!replayed)
         {
-          ASTVec parts;
-          for (const ASTNode& d : levelDefiningConjuncts)
-            parts.push_back(totaliseEarly ? impl->fpContext()->prepare(d)
-                                          : d);
-          parts.push_back(replaced);
-          replaced = bm->defaultNodeFactory->CreateNode(AND, parts);
+          if (totaliseEarly)
+            replaced = impl->fpContext()->prepare(replaced);
+          const bool isDefiner =
+              ctxSources.find(rc) != ctxSources.end();
+          if (!ctx.empty() && !isDefiner)
+          {
+            ASTNodeMap cache;
+            const ASTNode substituted = SubstitutionMap::replace(
+                replaced, ctx, cache, bm->defaultNodeFactory);
+            // Adopt the substituted form only if it builds no novel
+            // floating-point circuit (see introducesNovelFpOperations): a
+            // fold is the collapse this context exists for, a variant is a
+            // duplicate of a raw-keyed circuit and strictly harder to
+            // search than the raw conjunct it replaces. The refused
+            // conjunct encodes raw-keyed, sharing everything it always
+            // shared; its definers stay asserted, so nothing is lost but
+            // the rewrite.
+            if (!impl->introducesNovelFpOperations(replaced, substituted))
+              replaced = substituted;
+          }
+          // The whole-level piece contains its definers INSIDE the node
+          // just substituted; restore them alongside the replaced form
+          // (totalised the same way the piece was).
+          if (rc == assertionsSMT2[level] &&
+              !levelDefiningConjuncts.empty())
+          {
+            ASTVec parts;
+            for (const ASTNode& d : levelDefiningConjuncts)
+              parts.push_back(totaliseEarly
+                                  ? impl->fpContext()->prepare(d)
+                                  : d);
+            parts.push_back(replaced);
+            replaced = bm->defaultNodeFactory->CreateNode(AND, parts);
+          }
+
+          // Rewrite under the prefix's accumulated constant fixings
+          // BEFORE granularity is judged and the piece is prepared: a
+          // conjunct this collapses flows into the piece machinery (and
+          // from there to the transformer and the read registry) in its
+          // folded form, content-keyed like every other conjunct.
+          if (!cbpHit)
+            replaced = impl->cbpAdopt(replaced, cbpFacts);
+          if (cbpBuild)
+            impl->cbpMemo[level].rewrites.push_back(
+                std::make_pair(rc, replaced));
         }
 
         // An oversize conjunct (the deep define-fun chains) skips the
@@ -2915,7 +3457,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // million clauses against the substituted form's thousands.
         // rootLit's raw-keyed preparation (sigma0 and the plain
         // simplifier inside the cache) does the rest, as it always has.
-        if (impl->dagSizeUpTo(replaced, Impl::bigFormulaCap) >
+        if (impl->dagSizeUpToMemo(replaced, Impl::bigFormulaCap,
+                                  impl->dagSizeBigMemo) >
             Impl::bigFormulaCap)
         {
           conjuncts.push_back(replaced);
@@ -2975,7 +3518,39 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             ctxHasFp = true;
         }
       }
+
+      // The pinning facts justifying this level's adoptions are its
+      // conjuncts too: asserted under the same assumption, retracted
+      // with the same pop, and content-keyed like everything else. A
+      // replaying level re-asserts the facts it recorded.
+      if (cbpHit)
+      {
+        for (const ASTNode& f : impl->cbpMemo[level].facts)
+          conjuncts.push_back(f);
+      }
+      else
+      {
+        // Append rather than assign: a refuted level's memo already
+        // carries its FALSE.
+        if (cbpBuild)
+          for (const ASTNode& f : cbpFacts)
+            impl->cbpMemo[level].facts.push_back(f);
+        for (const ASTNode& f : cbpFacts)
+          conjuncts.push_back(f);
+      }
     }
+
+    // A feed that refuted the live prefix by bit-level reasoning alone
+    // asserts FALSE at the refuting level.
+    if (impl->callCbpConflict)
+    {
+      conjuncts.push_back(bm->ASTFalse);
+      impl->callCbpConflict = false;
+    }
+    // This level is past rewriting; its own parked fixings now serve
+    // the deeper levels.
+    impl->cbpFinishLevel();
+
     if (conjuncts.empty())
       continue;
 
@@ -3078,6 +3653,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               << ctx.size() << " pushed substitutions, "
               << impl->activeEliminatedDefs.size() << " eliminated"
               << std::endl;
+    if (impl->callCbpAdopted > 0 || impl->callCbpReplayed > 0)
+      std::cerr << "Incremental: cbp adopted " << impl->callCbpAdopted
+                << " rewrites (" << impl->callCbpReplayed
+                << " replayed) from " << impl->callCbpSubst.size()
+                << " fixed nodes" << std::endl;
   }
 
   // Array refinement needs a candidate model to find violated axioms, so
