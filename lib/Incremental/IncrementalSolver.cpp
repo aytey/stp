@@ -820,6 +820,73 @@ struct IncrementalSolver::Impl
       solver->unsatAssumptions(assumptions, lastFailedLits);
   }
 
+  // ── Unit promotion of stable prefixes ─────────────────────────────
+  //
+  // A pushed level asserted via an assumption pays for its
+  // retractability at every solve: the backend re-decides the
+  // assumption trail, and none of the level's clauses may take part in
+  // root-level preprocessing, because the solver must stay correct for
+  // calls that drop the assumption. A level that has sat IDENTICAL at
+  // the same depth for many consecutive solves is paying for a
+  // retraction that never comes -- the measured gap is large (the same
+  // instance solved 40.7s under its session's assumptions against
+  // 12.7s with those assumptions as units) -- so a stable PREFIX of
+  // the stack is promoted to permanent units. Prefix-only, mirroring
+  // stack discipline; never the deepest level (the churn point, and
+  // check-sat-assuming's per-assumption frame). The price is paid on
+  // retraction instead: any change to a promoted level starts the
+  // solver over (rebuildEncodings), and each such demotion DOUBLES the
+  // stability threshold for the session, so a session that keeps
+  // popping its prefix stops being gambled on.
+  //
+  // Unsat-core soundness: a promoted level's content is asserted
+  // unconditionally, so every refutation may silently rest on it. The
+  // failed-assumption story therefore floors every core at the
+  // promoted depth (lastUnsatCoreLevels), and the frontend's verdict
+  // cache can never record an unsat above a promoted level that may
+  // have carried it.
+  ASTVec lastStackSeen;
+  std::vector<size_t> levelStableSolves;
+  size_t promotedDepth = 0;
+  size_t promoteAfterSolves = 8;
+
+  // Track per-level stability against the last call's stack, and start
+  // the solver over if a PROMOTED level changed or vanished -- its
+  // units no longer describe the stack. Runs before any routing, so
+  // extensionality rounds see a coherent solver too.
+  void updateStackStability(const ASTVec& assertionsSMT2)
+  {
+    bool demote = false;
+    for (size_t i = 1; i <= promotedDepth; i++)
+    {
+      if (i >= assertionsSMT2.size() || i >= lastStackSeen.size() ||
+          !(assertionsSMT2[i] == lastStackSeen[i]))
+      {
+        demote = true;
+        break;
+      }
+    }
+    if (demote)
+    {
+      promotedDepth = 0;
+      promoteAfterSolves *= 2;
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "Incremental: promoted prefix retracted, solver "
+                     "restarted (threshold now "
+                  << promoteAfterSolves << " solves)" << std::endl;
+      rebuildEncodings(assertionsSMT2);
+    }
+
+    levelStableSolves.resize(assertionsSMT2.size(), 0);
+    for (size_t i = 0; i < assertionsSMT2.size(); i++)
+    {
+      const bool same = i < lastStackSeen.size() &&
+                        assertionsSMT2[i] == lastStackSeen[i];
+      levelStableSolves[i] = same ? levelStableSolves[i] + 1 : 0;
+    }
+    lastStackSeen = assertionsSMT2;
+  }
+
   // Whether the bounded-variable-addition decision has been taken for the
   // current backend instance. rebuildEncodings resets it: the fresh solver
   // reopens the configuration window. The warning latch is per session --
@@ -1540,6 +1607,10 @@ struct IncrementalSolver::Impl
 
   void rebuildEncodings(const ASTVec& assertionsSMT2)
   {
+    // The fresh solver has no promoted units; a still-stable prefix
+    // re-promotes on the next call's tail.
+    promotedDepth = 0;
+
     solver.reset(makeBackend(bm->UserFlags));
     solver->enableRefinement(true);
     if (trailReuseAllowed)
@@ -2228,6 +2299,16 @@ std::vector<size_t> IncrementalSolver::lastUnsatCoreLevels() const
   const std::unordered_set<int> failed(impl->lastFailedLits.begin(),
                                        impl->lastFailedLits.end());
   std::unordered_set<size_t> seen;
+  // A promoted level is asserted unconditionally, so every refutation
+  // may rest on it without any assumption failing: the core is floored
+  // at the promoted prefix, and the caller's verdict cache can never
+  // record an unsat above a level that may have carried it.
+  for (size_t i = 1; i <= impl->promotedDepth && i < impl->lastLevelCount;
+       i++)
+  {
+    if (seen.insert(i).second)
+      out.push_back(i);
+  }
   for (const std::pair<int, size_t>& ll : impl->assumedLitLevels)
   {
     if (failed.count(ll.first) && seen.insert(ll.second).second)
@@ -2407,6 +2488,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   impl->assumedLitLevels.clear();
   impl->lastLevelLitConjuncts.clear();
   impl->lastFailedLits.clear();
+
+  // Promoted-prefix bookkeeping first: if a promoted level changed or
+  // vanished, its units no longer describe the stack and the solver
+  // restarts here, before any routing can touch it.
+  impl->updateStackStability(assertionsSMT2);
 
   // The relief valve: once the solver is past the configured size and most
   // of its encodings belong to content no longer on the stack, start it
@@ -2812,6 +2898,45 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     {
       levelRoots.push_back(impl->rootLit(c));
       activeEncodedKeys.push_back(c);
+    }
+
+    // A level inside the promoted prefix is already asserted as units;
+    // nothing to assume. (Its preparation above still ran: deeper
+    // levels need its definitions in the context either way.)
+    if (level <= impl->promotedDepth)
+      continue;
+
+    // Promote the next prefix level once it has sat identical long
+    // enough. Never the deepest level: it is the churn point, and
+    // check-sat-assuming's per-assumption frame must stay assumed.
+    // Only once trail reuse has been retired -- the same session split
+    // as inprobing retirement, for the same reason: a session still
+    // riding the trail re-descends its stable assumptions nearly for
+    // free and only pays promotion's recurring root-level preprocessing
+    // over the new units (measured ~10% on the KLEE-class b64), while
+    // the sessions that shed the trail pay the full assumption descent
+    // every solve, which is exactly what promotion removes (measured
+    // ~16% on f84c6e97).
+    if (!individually && uf.incremental_promote_units &&
+        !impl->trailReuseAllowed &&
+        level == impl->promotedDepth + 1 &&
+        level + 1 < assertionsSMT2.size() &&
+        level < impl->levelStableSolves.size() &&
+        impl->levelStableSolves[level] >= impl->promoteAfterSolves)
+    {
+      for (const int r : levelRoots)
+      {
+        SATSolver::vec_literals unit;
+        unit.push(SATSolver::mkLit(r >> 1, r & 1));
+        impl->addClause(unit);
+      }
+      impl->promotedDepth = level;
+      if (uf.stats_flag)
+        std::cerr << "Incremental: promoted level " << level << " ("
+                  << levelRoots.size() << " conjuncts) to units after "
+                  << impl->levelStableSolves[level] << " stable solves"
+                  << std::endl;
+      continue;
     }
 
     if (individually)

@@ -96,6 +96,13 @@ public:
   // bit-blast memo). 0 disables the relief valve.
   int64_t incremental_reencode_limit = 1000000;
 
+  // Promote a pushed level that has sat identical at the same depth for
+  // many consecutive solves to permanent unit clauses: its assumption
+  // disappears and its clauses join root-level preprocessing. A later
+  // retraction of a promoted level restarts the solver, with the
+  // stability threshold doubling on each such demotion.
+  bool incremental_promote_units = true;
+
   // Decide whole-array equality/disequality (the extensional theory of
   // arrays) with the lemmas-on-demand procedure of Brummayer & Biere
   // (JSAT 2010). Runtime semantic option; it must be set before a

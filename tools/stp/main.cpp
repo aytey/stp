@@ -426,6 +426,13 @@ void ExtraMain::create_options()
             "belong to popped content. 0 disables the rebuild.",
             misc_group);
 
+  app.add_flag("--incremental-promote-units,!--no-incremental-promote-units",
+               bm->UserFlags.incremental_promote_units,
+               "promote long-stable pushed levels to permanent unit "
+               "clauses on the incremental driver; retracting a promoted "
+               "level restarts its solver")
+      ->group(misc_group);
+
   int64_arg("--max-num-confl,--max_num_confl,-g",
             bm->UserFlags.timeout_max_conflicts,
             "Number of conflicts after which the SAT solver gives up. "
