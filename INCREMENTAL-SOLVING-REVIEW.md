@@ -4,7 +4,7 @@ Status: 2026-08-07. The architectural comparison originally read STP branch
 `incremental-solving` at `0ff900332698c36f206476abfaf4f79d4678325a`, local
 `master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the following
 reference checkouts. The implementation and closeout status is updated through
-branch `45fe552b40ded411124761eddef54a359c0f7eaa`, which contains the merge of
+branch `9cb7b34bd0a83713a3a01f8be9e964f59d983df1`, which contains the merge of
 `master` at `34f69be1989910fd053008715de4b65c095fd770`.
 
 | Solver | Revision read |
@@ -15,7 +15,7 @@ branch `45fe552b40ded411124761eddef54a359c0f7eaa`, which contains the merge of
 
 Reference-solver paths and line numbers, and STP passages explicitly labelled
 as the original review, refer to those original revisions; implementation
-status without that qualification refers to `45fe552b`. Line numbers may have
+status without that qualification refers to `9cb7b34b`. Line numbers may have
 drifted as the branch was closed out. This is a maintainer-facing design
 record. `docs/incremental-solving.rst` remains the user-facing description of
 the implemented feature.
@@ -145,9 +145,9 @@ maintainability/lifetime project that should proceed only after the remaining
 branch-close work and further profiling. It should not be presented as an RTOS
 cold-start optimization.
 
-## Implementation update: integration, accounting, and campaign harness
+## Implementation update: integration, accounting, model repair, and harness
 
-The other concrete closeout work is now implemented through `45fe552b`:
+The other concrete closeout work is now implemented through `9cb7b34b`:
 
 - merge `4b60b401` integrates `master` through `34f69be1`, including the
   backend-neutral SAT literal/factory work and optional-MiniSat build shape;
@@ -159,7 +159,13 @@ The other concrete closeout work is now implemented through `45fe552b`:
   the profile separate lifetime, refinement, retained, live, and peak-live
   views;
 - `45fe552b` adds forced extensionality churn and monotonic-live regressions;
-  and
+- `02607540` restores active eager-Ackermann read observations before a model
+  can be constructed on an all-cache-hit round, with deferred-model and sanity
+  regressions;
+- `8e421b89` checks the absence of a spurious extensionality rebuild at every
+  live-growth round, rather than only at the first one;
+- `9cb7b34b` extends lazy exact live-cone repair to the union of all ordinary
+  and extensionality roots, with an ordinary shared-cone regression; and
 - `30680576` repairs the paired campaign harness and adds fake-solver tests for
   its sequence, timeout, order, resume, provenance, and revalidation behavior.
 
@@ -182,13 +188,15 @@ and reports only the current epoch.
 
 ### Live and peak ownership
 
-The retained total is exact; live mass is deliberately a conservative
-ownership model used as the relief ratio's denominator:
+The retained total is exact; live mass is a policy ownership model used as the
+relief ratio's denominator. Its inexpensive value is provisional, while a lazy
+exact structural-union guard prevents that value from authorizing a rebuild:
 
-- structural clauses are charged to the deterministic formula key whose
-  encoding first submitted them;
-- base root definitions and units, restored-base units, and promoted-level
-  units contribute to permanent `baseLiveMass` for the epoch;
+- structural submission deltas are charged to the deterministic formula key
+  whose encoding first emitted them, and that key also retains its actual AIG
+  root for the exact union;
+- base, restored-base, and promoted roots are recorded as permanent structural
+  roots, with their unit clauses counted separately for the epoch;
 - activation implication clauses are live only while that activation literal
   appears in the current assumptions;
 - retiring an activation forgets its live ownership, while its implication
@@ -198,28 +206,72 @@ ownership model used as the relief ratio's denominator:
 
 Owner-keying the theory lemmas is intentional. Calling every old lemma live
 would hide refinement-heavy dead growth; calling every permanent lemma dead
-would rebuild repeatedly on an unchanged live query. The live estimate is
-capped by the exact retained total, and its current value and epoch high-water
-mark are exposed as `live-clauses` and `peak-live-clauses`.
+would rebuild repeatedly on an unchanged live query. Every reported live value
+is capped by the exact retained total, and the current value and epoch
+high-water mark are exposed as `live-clauses` and `peak-live-clauses`.
 
-Whole-array equality needs one additional correction. Its deterministic
-`inputToSat` block key owns newly submitted structural clauses, but that delta
-can be much smaller than the current live block when a growing block reuses AIG
-nodes introduced by earlier blocks. The driver retains the block's regular AIG
-root and can count the complete unique encoded cone (three clauses per AND and
-one unit if the cone reaches the shared true node). Normal solving pays for
-that exact walk lazily,
-only when the cheap retained/peak estimate would otherwise authorize relief;
-opt-in profiling computes the exact cone for every active extensionality block.
-This preserves normal-path cost while preventing monotonic live growth from
-looking like reclaimable churn.
+A formula key's newly submitted structural delta can be much smaller than its
+current live cone whenever its AIG root reuses nodes first encoded for an
+earlier, now-popped key. This was first repaired for whole-array equality, but
+an independent ordinary-path regression then demonstrated the same failure: a
+composite ordinary root owned only nine newly submitted clauses while retaining
+roughly 2,900 clauses of multiplier cones introduced by prior roots. The cheap
+denominator could therefore authorize a false rebuild even though the whole
+cone remained live.
+
+Commit `9cb7b34b` records the actual AIG root for every encoded formula key.
+The exact structural measurement is the unique union reachable from the
+backend epoch's permanent roots and the current ordinary roots, or the current
+extensionality-block root: three clauses per AND plus one unit if the union
+reaches the shared true node. Permanent root units, active activation
+implications, and owner-keyed refinement mass are exact non-structural terms
+added separately. Taking a union both preserves sharing and prevents shared
+clauses from being counted twice.
+
+The normal path avoids this walk until it can affect policy. Below the
+re-encoding variable floor it neither collects an ordinary root vector nor
+walks a cone. Above the floor, each solve coalesces the previous state into one
+latest pending snapshot: normalized current roots, the permanent-root prefix
+length, and non-structural mass. Only if the cheap retained/peak ratio would
+otherwise authorize relief does the next check pay for one exact union walk,
+repair the historical peak, and test the ratio again. Retaining only the newest
+snapshot avoids quadratic memory on a growing stack, while popped historical
+stacks intentionally cease to protect dead clauses. Opt-in profiling computes
+the exact current union on every solve instead.
 
 The forced-churn regression proves extensionality-only dead growth can fire the
-valve and remain sound across the rebuild. The monotonic-live regression proves
-that successively larger live extensionality blocks repair the peak cone and do
-not spuriously rebuild. Profile coverage also checks that extensionality and
-refinement submissions appear in the total, that refinement is a subset, and
-that the current live estimate does not exceed the retained total.
+valve and remain sound across the rebuild. The strengthened monotonic-live
+regression checks every extensionality growth round for a false rebuild, and
+the ordinary shared-cone regression covers the analogous non-array case.
+Profile coverage also checks that extensionality and refinement submissions
+appear in the total, that refinement is a subset, and that the current live
+estimate does not exceed the retained total.
+
+Two accounting limitations are deliberate or theoretical. Refinement clauses
+are charged to the deterministic owner that emitted them; a lemma useful to a
+different live owner can therefore be omitted from live mass and cause an
+unnecessary rebuild, but rebuilding merely re-derives any needed theory facts
+and does not change satisfiability. The common exact-submission counter is a
+plain `uint64_t` increment and would wrap after `2^64` submissions; the derived
+mass additions saturate, but a session that reaches the interface-counter limit
+is outside any practical workload.
+
+### Eager-Ackermann model state on cache hits
+
+`Cpp_interface::resetSolver()` clears the batch `ArrayTransformer` tables before
+every solve. Lazy-array refinement calls `seedActiveReads()`, but eager
+Ackermannisation has no refinement loop that would do so. Consequently, an
+unchanged second solve could reuse every correct SAT encoding while leaving no
+active rows from which deferred `get-model`/`get-value` or immediate sanity
+checking could reconstruct the source array; the reported array cells could be
+missing or arbitrary despite a correct SAT answer.
+
+Commit `02607540` rematerializes the active read observations after a
+satisfiable eager-array solve whenever a model can be observed. This is model
+state only: it neither emits clauses nor redoes Ackermannisation. The new
+`ackermanize-model-cache.smt2` requests both models around an entirely
+cache-backed second solve, while `ackermanize-rounds.smt2` now also runs under
+`--check-sanity`.
 
 ### Repaired campaign harness
 
@@ -249,7 +301,7 @@ The full quiet-machine campaign remains outstanding.
 ## Scope and evidence
 
 The original review compared branch `0ff90033` and then-local master from merge
-base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Current branch `45fe552b`
+base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Current branch `9cb7b34b`
 contains master `34f69be1` through merge `4b60b401`; there is no unmerged
 master-side delta in this reviewed snapshot. Historical file/line/count claims
 from the initial audit should not be projected onto the larger current
@@ -260,6 +312,12 @@ the branch history. Neither the initial architecture review nor this
 documentation update repeated the 22,999-file campaign against the current
 tip. Focused and configured-suite checks at the implementation checkpoints do
 not replace that campaign.
+
+At the `9cb7b34b` closeout tip, the complete configured RelWithDebInfo suites
+passed with CaDiCaL plus floating point (115/115), MiniSat plus floating point
+(114/114), and MiniSat without floating point (86/86). These backend/build
+matrices validate the merged implementation and regressions; they are not a
+substitute for the external 22,999-file paired campaign.
 
 The original pre-implementation investigation is preserved in commit
 `f5235e54` (`Incremental solving: architecture review and phased plan`). It was
@@ -475,13 +533,15 @@ hook must preserve both contracts.
 The permanent encoding accumulates dead cones after pops. The relief valve
 rebuilds a fresh SAT backend from live content once the solver is large and
 the exact current-epoch submitted-clause total substantially exceeds the peak
-conservatively owned by a live working set. Structural formula keys,
-base/promoted units, active activation implications, and owner-keyed theory
-lemmas contribute to that live estimate; retired activation lifecycle clauses
-remain retained but dead. Extensionality repairs a cheap block delta with its
-full unique AIG-cone mass before that ratio may authorize a rebuild. The AIG
-and semantic registries survive, but SAT variables, root literals, learned
-clauses, and refinement lemmas are rematerialized or re-derived.
+owned by a live working set. Formula-key submission deltas provide a cheap
+structural estimate. Before that estimate may authorize a rebuild, one lazy
+exact walk repairs the peak from the unique AIG-cone union of the permanent and
+latest current roots, whether the solve took the ordinary or extensionality
+path. Permanent units, active activation implications, and owner-keyed theory
+lemmas supply the non-structural share; retired activation lifecycle clauses
+remain retained but dead. The AIG and semantic registries survive, but SAT
+variables, root literals, learned clauses, and refinement lemmas are
+rematerialized or re-derived.
 
 The branch also contains measured policies for persistent-solver workloads:
 
@@ -912,7 +972,7 @@ code rather than through a common scoped-state interface.
 |---|---|---|
 | Session-owned semantic content | fragment, symbol, DAG-size, generated-name, array-read, eager-Ackermann, and FP caches; retired-epoch clause-submission accumulator | Content-keyed maps and lifetime totals generally retained for the `IncrementalSolver` lifetime |
 | Explicitly invalidatable semantic caches | prepared pieces, elimination users, screened content | Retained until dependency invalidation or backend-repair logic drops/clears them |
-| SAT-backend epoch | SAT variables, AIG-to-variable map, root literals, activation literals, learned clauses, refinement lemmas, exact retained-submission counter, ownership maps, and current/peak live mass | Retained until a relief/policy rebuild; explicitly cleared or rematerialized by `rebuildEncodings()` |
+| SAT-backend epoch | SAT variables, AIG-to-variable map, root literals, activation literals, learned clauses, refinement lemmas, exact retained-submission counter, root/ownership maps, permanent-root/unit mass, one pending live-cone snapshot, and current/peak live mass | Retained until a relief/policy rebuild; explicitly cleared or rematerialized by `rebuildEncodings()` |
 | Permanent base semantics | `level0Asserted`, `sigma0`, restored base eliminations | Monotone sets/maps on the SMT-LIB path because reset destroys the driver |
 | Active user scopes | raw frontend `ASTVec` levels | Supplied again as a complete snapshot at each check |
 | Subsystem views of active scopes | CBP fed prefix/memos, promotion stability, active read-key refcounts, current eliminated definitions | Independently maintained ad hoc, usually by longest-common-prefix or set-difference logic |
@@ -1006,10 +1066,10 @@ up to here” index.
 ## Immediate risks and closeout work
 
 These items must be closed before a broad semantic-state migration. Items 1--3
-are implemented at `45fe552b`, item 4 is completed by this documentation
-update, and item 5, the full campaign, remains outstanding.
+are implemented through `9cb7b34b`, item 4 is completed by the accompanying
+documentation commits, and item 5, the full campaign, remains outstanding.
 
-### 1. Active-read state across a SAT rebuild (complete)
+### 1. Active-read state across rebuilds and eager cache hits (complete)
 
 `seedActiveReads()` maintains pushed read ownership by taking a set difference
 between `lastSeededKeys` and the current active keys. It keeps the resulting
@@ -1033,6 +1093,13 @@ and `foldedRowsOf` together, clearing the materialized batch tables, and
 re-queuing every permanent key. The canonical `myReads` registry remains
 session-owned.
 
+A second reachable problem affected eager Ackermannisation without changing
+the SAT answer. The frontend clears the batch transformer before every solve,
+and an all-cache-hit eager round had no refinement stage that would seed its
+active reads again. Commit `02607540` now rematerializes those observations
+after SAT whenever a model may be read, covering deferred model construction
+and immediate sanity checking without re-encoding the constraints.
+
 ### 2. Retained-clause accounting and extensionality (complete)
 
 The original inspection found that the ordinary path counted only structural
@@ -1043,13 +1110,16 @@ those blind spots: the common SAT facade supplies the exact current-epoch
 submission total, the driver separately preserves lifetime submissions across
 backend rebuilds, and theory-refinement submissions are a reported subset.
 
-Live/peak ownership now covers structural formula keys, base/restored/promoted
-units, currently assumed activation implications, and owner-keyed theory
-lemmas. Retired implications and their false pins stay retained but dead.
-Extensionality blocks are keyed by deterministic `inputToSat`; their live mass
-uses the full unique encoded AIG cone, computed lazily for normal relief checks
-and eagerly only under the opt-in profile. The forced-churn and monotonic-live
-regressions in `45fe552b` cover both sides of the policy.
+Live/peak ownership now covers actual structural AIG roots,
+base/restored/promoted units, currently assumed activation implications, and
+owner-keyed theory lemmas. Retired implications and their false pins stay
+retained but dead. `9cb7b34b` replaced the extensionality-only repair with one
+exact unique-cone union for both ordinary and extensionality paths. Normal
+solving retains only the latest snapshot above the variable floor and walks it
+only if the cheap ratio would rebuild; profiling measures the exact union on
+every solve. The forced-churn and monotonic-live tests in `45fe552b`, repaired
+per-round negative checks in `8e421b89`, and ordinary shared-cone regression in
+`9cb7b34b` cover the policy.
 
 ### 3. Integrate current master before structural work (complete)
 
@@ -1062,10 +1132,11 @@ before any assertion-journal work.
 ### 4. Keep the corrected documentation with the branch (complete)
 
 The user guide, source comments, and this review now describe third-solve
-automatic engagement, persistent CBP rollback, extensionality block reuse and
-live-cone accounting, exact retained versus lifetime clause counters, and the
-repaired campaign verdict/provenance rules. These are soundness and measurement
-contracts, not implementation trivia, and belong with the branch.
+automatic engagement, persistent CBP rollback, extensionality block reuse,
+unified live-cone accounting, eager-array model rematerialization, exact
+retained versus lifetime clause counters, and the repaired campaign
+verdict/provenance rules. These are soundness and measurement contracts, not
+implementation trivia, and belong with the branch.
 
 ### 5. Rerun the full campaign (outstanding)
 
@@ -1380,11 +1451,12 @@ specimen is the performance acceptance test, not the soundness test.
 
 ### Phase 0 (four of five complete): close the current branch
 
-1. **Complete:** add the forced-rebuild lazy-array test and resolve the
-   active-read state asymmetry (`9eb8e407`).
-2. **Complete:** define exact retained and conservative live/peak clause
-   accounting, cover extensionality and refinement, and add forced-churn plus
-   monotonic-live valve tests (`db4aab0a`, `c604e923`, `45fe552b`).
+1. **Complete:** resolve active-read state across a lazy-array rebuild and an
+   all-cache-hit eager-Ackermann model (`9eb8e407`, `02607540`).
+2. **Complete:** define exact retained and guarded live/peak clause accounting,
+   cover extensionality and refinement, and protect both extensionality and
+   ordinary shared live cones (`db4aab0a`, `c604e923`, `45fe552b`, `8e421b89`,
+   `9cb7b34b`).
 3. **Complete:** integrate master through `34f69be1` and resolve the backend
    construction/type overlap deliberately (`4b60b401`).
 4. **Complete:** reconcile the user guide, this review, source comments, and

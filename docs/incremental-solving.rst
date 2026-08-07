@@ -223,7 +223,12 @@ Under ``--ackermanize`` arrays are compiled away eagerly instead: each
 new read becomes a nested if-then-else over the reads already seen. That
 new-versus-existing shape is naturally monotone, so persisting the
 per-array read lists keeps pair coverage across check-sats, and there is
-nothing left to refine.
+nothing left to refine. The frontend does clear the batch array-transformer
+tables before every solve, however. After a satisfiable eager round in which a
+model can be observed, the driver therefore rematerializes the active read rows
+even when every encoding was a cache hit. This restores the source-level read
+observations needed by deferred ``get-model``/``get-value`` construction and
+``--check-sanity``; it does not add constraints or repeat Ackermannisation.
 
 Floating point
 --------------
@@ -258,15 +263,40 @@ nodes and re-mints their numbers, and the deterministic names are keyed
 on node numbers -- so the driver pins each round's node spine, and in
 general any cache in STP that keys on nodes must *hold* them.
 
-The same deterministic block node owns the block's clause mass for the relief
-valve. A newly submitted clause delta is not by itself a safe live-size
-estimate: a monotonically growing block can reuse most of an AIG cone that an
-earlier block first encoded. Normal solving therefore computes the complete
-unique AIG-cone mass lazily, only if the inexpensive retained/live ratio would
-otherwise permit a rebuild. ``--incremental-profile`` opts into the exact cone
-measurement for every active extensionality block. This keeps the normal path
-from paying for a whole-cone walk on every check while preventing live,
-monotonically growing stacks from being mistaken for dead churn.
+The deterministic block node participates in the same live-cone accounting as
+ordinary formula roots. Extensionality still differs semantically -- its block
+represents the complete active array graph -- but it does not have a separate
+relief-valve approximation.
+
+Live-cone accounting
+--------------------
+
+A newly submitted clause delta for one formula key is an inexpensive live-size
+estimate, but it is not exact. A current root -- ordinary or extensionality --
+can reuse most of an AIG cone first encoded for an earlier, now-popped key. The
+driver therefore records the actual AIG root for every encoded formula and can
+count the unique structural union reachable from all permanent roots and the
+current assumed roots. The exact non-structural share is added separately:
+permanent root units, currently assumed activation implications, and
+owner-keyed theory-refinement clauses.
+
+Normal solving does not collect an ordinary root vector or walk a cone below
+the configured re-encoding variable floor. Once that floor is crossed, each
+solve replaces one pending snapshot with its latest normalized current roots,
+the permanent-root prefix, and the non-structural mass. If the cheap
+retained/peak ratio would authorize relief before the next solve, one exact
+union walk first repairs the epoch's peak live mass and the ratio is tested
+again. Retaining only the latest snapshot avoids quadratic root-vector history;
+popped historical stacks are deliberately allowed to become reclaimable.
+``--incremental-profile`` instead opts into the exact union measurement on
+every solve.
+
+Theory-lemma ownership remains an intentional policy approximation: a lemma is
+charged to the deterministic query that emitted it even though it may later
+help a different live query. Missing that cross-owner usefulness can cause an
+unnecessary rebuild, but cannot change an answer. Clause counters are 64-bit;
+the common submission counter would wrap after ``2^64`` submissions, which is
+a theoretical rather than practical session limit.
 
 SAT backends
 ------------
@@ -325,9 +355,18 @@ freeze rule has a dedicated test that fails as sat-on-unsat without it),
 arrays with refinement across rounds, eager Ackermannisation, floating
 point, the extensionality block and its cache, and the driver's own
 reuse counters (run with ``-s``, the driver reports how much each check
-encoded -- a repeat check must report zero). The relief-valve cases include
-forced extensionality churn that must rebuild soundly and a monotonically
-growing live extensionality stack that must *not* be mistaken for dead churn.
+encoded -- a repeat check must report zero). Eager-array coverage includes an
+all-cache-hit second model and sanity checking. The relief-valve cases include
+forced extensionality churn that must rebuild soundly, negative checks on every
+round of a monotonically growing live extensionality stack, and an ordinary
+root built mostly from AIG cones first introduced by popped formulas. Neither
+live shape may be mistaken for dead churn.
+
+At implementation closeout through ``9cb7b34b``, the complete configured
+RelWithDebInfo suites passed with CaDiCaL and floating point (115/115), MiniSat
+and floating point (114/114), and MiniSat without floating point (86/86). These
+configured-suite results do not replace the outstanding external-corpus
+campaign.
 
 ``--incremental-profile`` enables a lower-noise profile for each invocation of
 the incremental driver. Pair it with ``--incremental`` to route the first
@@ -376,12 +415,15 @@ Clause counters have deliberately different lifetimes and meanings:
   that only holds a generic solver reference cannot bypass it. It can fall
   when a rebuild replaces the backend and does not try to mirror clauses a
   backend has internally simplified away.
-- ``live-clauses`` is the current solve's conservative ownership estimate and
+- ``live-clauses`` is the current solve's ownership estimate and
   ``peak-live-clauses`` is its high-water mark in the current backend epoch.
-  The estimate includes live structural keys, permanent base and promoted
-  units, implications of activation literals assumed by this solve, and
-  owner-keyed theory lemmas. Retired activation implications and pins remain
-  retained but dead. All live estimates are capped by the retained total.
+  The inexpensive normal-path value uses formula-key submission deltas; the
+  profiler measures the exact live AIG union, and the relief valve performs the
+  same exact walk on its latest pending snapshot before a cheap estimate may
+  authorize rebuilding. Permanent units, active activation implications, and
+  owner-keyed theory lemmas are added separately. Retired activation
+  implications and pins remain retained but dead. All live values are capped
+  by the retained total.
 
 ``scripts/incremental-bench.py`` retains its legacy single-solver mode, but a
 closeout campaign should use paired ``--solver-a``/``--solver-b`` mode. It
@@ -414,11 +456,13 @@ Limitations
   coarse: once the solver's variable count passes
   ``--incremental-reencode-limit`` (default one million; 0 disables) and
   the current backend's retained clause submissions substantially exceed the
-  peak conservatively owned by a live working set, the solver is rebuilt from
-  the live stack. Structural mass is keyed by its formula, base/promoted units
-  are permanently live for the epoch, activation implications are live only
-  while assumed, and theory lemmas are charged to their originating active
-  conjunction. Extensionality uses the lazy full-cone repair described above.
+  peak owned by a live working set, the solver is rebuilt from the live stack.
+  Formula-key deltas provide the cheap structural estimate; before that
+  estimate may trigger relief, the lazy guard repairs it from the unique union
+  of permanent and current AIG cones for both ordinary and extensionality
+  paths. Base/promoted units are permanently live for the epoch, activation
+  implications are live only while assumed, and theory lemmas are charged to
+  their originating active conjunction.
   Semantic stores survive and active content re-encodes through the bit-blast
   memo, but learned clauses and refinement axioms start over. The rebuild
   boundary is also the one
