@@ -787,12 +787,12 @@ struct IncrementalSolver::Impl
   bool callCbpOff = false;
   bool callCbpConflict = false;
   // A session that ever overflows the feed cap stops paying for the
-  // prepass at all: its stacks only grow, and re-feeding up to the
-  // cap every call is a steady tax on the deep hundred-solve
+  // prepass at all: repeatedly inspecting and feeding replacement
+  // suffixes near that cap is a steady tax on deep hundred-solve
   // sessions with nothing adopted to show for it. The same retirement
   // fires on evidence of futility: a session whose stack keeps
-  // diverging with no adoption to show for it is the KLEE-class
-  // pop-per-query shape,
+  // diverging with no adoption to show for its suffix propagation is
+  // the KLEE-class pop-per-query shape,
   // where the prefix never stabilises and the fixings never come.
   // The evidence is per-tier, because adoption timing says little on
   // its own (measured: the Industrial specimen's first adoption is
@@ -1223,9 +1223,9 @@ struct IncrementalSolver::Impl
 
     cbpFedLevels.push_back(levelConjunction);
     assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
-    // The memo entry parallels the feed; if this level was already
-    // memoised under the same conjunction (an engine reset re-feeding
-    // the stable prefix), the existing entry keeps replaying.
+    // The memo entry parallels the feed; if this level was already memoised
+    // under the same conjunction (the reset oracle/fallback re-feeding the
+    // stable prefix), the existing entry keeps replaying.
     if (cbpMemo.size() == level)
     {
       cbpMemo.push_back(CbpLevelMemo());

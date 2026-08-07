@@ -1,9 +1,10 @@
 # Incremental solving in STP: architecture review and roadmap
 
-Status: 2026-08-07. This review describes STP branch
+Status: 2026-08-07. The architectural comparison describes STP branch
 `incremental-solving` at `0ff900332698c36f206476abfaf4f79d4678325a`, local
-`master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the
-following reference checkouts:
+`master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the following
+reference checkouts. The implementation-results section below records the
+subsequent instrumentation and CBP rollback work through `842b03ef`.
 
 | Solver | Revision read |
 |---|---|
@@ -60,24 +61,84 @@ active-read refcounts, promotion state, and rebuild repair logic are symptoms
 of that choice.
 
 That does **not** make a general scoped-state refactor the immediate next patch.
-The branch has concrete correctness/integration work to close first, and the
-only clearly measured large residual reconstruction cost is CBP's whole-prefix
-re-feed after a pop. The recommended sequence is:
-
-1. resolve the active-read rebuild risk and retained-clause/extensionality
-   growth accounting;
-2. integrate current master, reconcile documentation, and run the owed quiet-box
-   full campaign;
-3. instrument semantic reconstruction by phase;
-4. implement a narrowly scoped, differential-tested CBP undo trail if the
-   measurements confirm the recorded result;
-5. introduce a versioned assertion journal and independent cursors as the
-   architectural foundation;
-6. migrate other semantic state only where profiles or recurring lifetime bugs
-   justify it.
+The active-read rebuild risk has been fixed, semantic reconstruction has been
+instrumented, and the measured CBP whole-prefix re-feed has been replaced by a
+differential-tested rollback trail (see the implementation update below). The
+remaining immediate work is retained-clause/extensionality growth accounting,
+master integration, documentation reconciliation, and the owed quiet-box full
+campaign. After that, introduce a versioned assertion journal and independent
+cursors only when profiles or recurring lifetime bugs justify the migration of
+another semantic consumer.
 
 The remaining RTOS small-file loss class appears to be engagement/cold-start
 overhead. Scoped semantic state is not presently supported as its remedy.
+
+## Implementation update: instrumentation and CBP rollback
+
+The recommendation to instrument first and then implement a narrow CBP trail
+has now been carried out:
+
+- `ded8d07e` added the opt-in per-check/session profiler, including stable
+  prefixes, fresh and re-fed CBP work, semantic construction, preparation,
+  encoding, array/refinement work, and SAT time;
+- `8f37f17b` added first-write engine checkpoints for fixed-bit state,
+  conflicts, multiplication state, and dependency-graph additions;
+- `842b03ef` added matching caller checkpoints for substitutions, fed
+  conjuncts, emitted facts, feed mass, array presence, and conflict state,
+  and changed divergence handling to roll back to the existing LCP and feed
+  only the replacement suffix;
+- `--incremental-cbp-reset` preserves the old reset-and-prefix-re-feed path as
+  a differential oracle and conservative fallback; and
+- rewrite memos now record a pinning fact's substitution-domain node
+  explicitly. The old attempt to recover it from the assertion shape was
+  ambiguous for a positive Boolean fact whose node was itself an equality.
+
+The implementation deliberately leaves the successful persistent SAT/AIG
+architecture and the LCP-based stack interface intact. It is a narrow scoped
+state transaction around the one measured reconstruction bottleneck, not the
+general assertion-journal refactor.
+
+### Measured result
+
+Release measurements compared the default rollback path with the forced-reset
+oracle in the same binary. The runs used `--incremental`; profile runs also
+used `--incremental-profile`. The Release build enabled CaDiCaL, floating
+point, and mimalloc and did not enable LibBF. Wall values are alternating-order
+means of four pairs for Industrial, `1ccb771c`, and RTOS, ten for `f84c6e97`,
+and three for each Automotive file. Answer streams matched in every pair.
+
+| Workload | Checks | Default rollback wall time | Forced reset wall time | Result |
+|---|---:|---:|---:|---|
+| Industrial `d58a9331` | 164 | 2.120 s | 2.728 s | 22% faster; mean RSS 29.6 vs 33.1 MB |
+| Robotics `f84c6e97` | 20 | 0.081 s | 0.083 s | neutral |
+| Aerospace `1ccb771c` | 118 | 1.810 s | 1.843 s | 2% faster |
+| RTOS `80f6692b` | 27 | 1.002 s | 1.005 s | neutral, as predicted |
+| Automotive `8c5a7a8f` | 42 | 0.750 s | 0.767 s | neutral-to-positive |
+| Automotive `7256a4bd` | 42 | 0.750 s | 0.760 s | neutral |
+| Automotive `115a02fc` | 42 | 0.727 s | 0.730 s | neutral |
+
+The single-check `Problem18_label55` canary has no divergence and showed parity,
+as expected: the rollback path is inert there.
+
+The Industrial profile explains the wall-time result. Nineteen rollbacks took
+0.211 ms in total and removed all 1,989 surviving-prefix re-feeds (1,455,220
+bounded DAG nodes). CBP time fell from 829.0 ms to 228.5 ms. On `1ccb771c`, 218
+re-fed levels disappeared and CBP time fell from 161.2 ms to 88.6 ms. RTOS had
+only 86 re-fed nodes under the oracle, so removing them could not materially
+change its roughly one-second run time.
+
+Correctness validation includes four engine unit tests; the complete 112-test
+configured suite; all 49 incremental SMT-LIB regression files;
+trail-versus-reset answer comparison both normally and under `--check-sanity`;
+conflict/pop/replacement, multi-level rollback, caller-substitution retraction,
+and cross-level array-fold regressions; and the Industrial specimen's
+164-answer stream. The broader campaign remains a pre-merge obligation.
+
+The result supports keeping the trail. The next architectural step remains an
+assertion journal with independent consumer cursors, but it is now a
+maintainability/lifetime project that should proceed only after the remaining
+branch-close work and further profiling. It should not be presented as an RTOS
+cold-start optimization.
 
 ## Scope and evidence
 
@@ -238,12 +299,13 @@ conjunctions are fed in order; facts discovered at level `L` may rewrite level
 circular "assume it, simplify it to true" reasoning. Rewrites happen before
 piece preparation, cache keying, and array transformation.
 
-The engine persists while the stack extends its previously fed prefix. A pop,
-changed level, or base growth resets the engine and re-feeds the surviving
-prefix. Per-level rewrite/fact memos survive when their own prefix remains
-valid (`IncrementalSolver.cpp:521-568, 600-819, 3118-3177`). This design fixed
-the Industrial_Control_C family but makes reset-and-re-feed the current
-measured scoped-state cost.
+At the original review baseline, the engine persisted only while the stack
+extended its previously fed prefix. A pop, changed level, or base growth reset
+the engine and re-fed the surviving prefix. Per-level rewrite/fact memos
+survived when their own prefix remained valid. This design fixed the
+Industrial_Control_C family but made reset-and-re-feed the leading measured
+scoped-state cost. The implementation update above records the subsequent
+engine/caller rollback trail that removed that cost.
 
 At the reviewed revision, the source comments in `IncrementalCBP.h` and the
 beginning of the CBP field block still described a per-call engine. They
@@ -768,7 +830,9 @@ work proportional to some or all of the active stack:
   encoding keys, and live clause mass;
 - computes the active read-key difference and materializes fresh batch array
   rows for refinement;
-- when CBP has diverged, resets the engine and re-feeds the surviving prefix;
+- when CBP has diverged, rolls its scoped engine/caller state back to the LCP
+  and feeds only the replacement suffix (the diagnostic oracle instead resets
+  and re-feeds the surviving prefix);
 - when a model is materialized, seeds current reconstruction definitions; when
   counterexample checking or array refinement requires validation, it also
   checks a candidate against the relevant raw/semantic active formula.
@@ -930,19 +994,19 @@ Two narrower policy questions can be settled at the same time:
 
 ## Instrumentation before refactoring
 
-The next performance implementation should make semantic reconstruction
-visible. Existing statistics report newly encoded conjuncts, clauses,
-assumptions, substitutions, CBP rewrites, and refinement rounds, but do not
-partition the driver time well enough to decide which scoped state will pay.
+The instrumentation phase made semantic reconstruction visible. The older
+statistics reported newly encoded conjuncts, clauses, assumptions,
+substitutions, CBP rewrites, and refinement rounds, but did not partition the
+driver time well enough to decide which scoped state would pay.
 
-Add per-check and session-aggregate counters/timers for:
+The per-check and session-aggregate profiler reports:
 
 - stack snapshot/LCP synchronization and promotion repair;
 - new-content screening and preparation invalidations;
 - pushed-definition harvest, context replay, and context size by level;
 - preparation attempts, cache hits/misses, and accepted/rejected trials;
-- CBP prefix comparison, reset count, re-fed levels/nodes, fresh feeds,
-  propagation, harvest, adoption, and memo replay;
+- CBP prefix comparison, divergence, rollback/reset count and work, re-fed
+  levels/nodes, fresh feeds, propagation, harvest, adoption, and memo replay;
 - root/activation lookup, assumption construction, active key count, tracked
   mass, and live mass;
 - active-read fold/unfold deltas, live-row materialization, and all-registry
@@ -953,13 +1017,13 @@ Add per-check and session-aggregate counters/timers for:
   required by refinement—raw/semantic formula validation;
 - time inside SAT, split by the initial solve and refinement re-solves.
 
-The output should distinguish cache-hit traversal from genuinely new semantic
-work and should include counts as well as time. A timer saying “context: 20 ms”
-is hard to interpret; “130 levels replayed, 4 new assertions, 0 preparation
-misses” identifies the missing cursor directly. The follow-up implementation
-uses a dedicated `--incremental-profile` switch rather than `-s`, whose verbose
-pass diagnostics would distort the measured scopes. Ordinary output and
-benchmark parsers therefore remain unchanged.
+The output distinguishes cache-hit traversal from genuinely new semantic work
+and includes counts as well as time. A timer saying “context: 20 ms” is hard to
+interpret; “130 levels replayed, 4 new assertions, 0 preparation misses”
+identifies the missing cursor directly. It uses a dedicated
+`--incremental-profile` switch rather than `-s`, whose verbose pass diagnostics
+would distort the measured scopes. Ordinary output and benchmark parsers
+therefore remain unchanged.
 
 Measure at least these workload shapes:
 
@@ -972,9 +1036,10 @@ Measure at least these workload shapes:
 - forced-rebuild lazy-array and extensionality cases;
 - representative QF_BV, QF_BVFP, and QF_ABVFP samples from the full campaign.
 
-Decide from cross-workload aggregates, not from the one Industrial specimen.
-The current evidence already makes CBP re-feed the leading candidate. If the
-new measurements instead show context reconstruction, active-root assembly,
+The measurements did confirm CBP re-feed as the leading narrow candidate and
+the implementation result is recorded above. Further cursor work should still
+be decided from cross-workload aggregates, not from the one Industrial
+specimen. If future profiles show context reconstruction, active-root assembly,
 or row materialization dominating important workloads, move that consumer
 forward in the cursor roadmap. If reconstruction stays small, scoped state
 remains a maintainability investment and should be paced accordingly.
@@ -1115,16 +1180,16 @@ scoped state would regress that contract.
 ## Why the CBP undo trail should precede the journal
 
 The assertion journal would tell CBP exactly which levels are new or popped,
-but it would not restore the engine's old `FixedBits`. The current engine
-tightens multiple `FixedBits` objects through bidirectional transfer functions,
-latches conflict, grows auxiliary multiplication state, and maintains a
-caller-side substitution/fact overlay. Without an undo mechanism it must still
-reset and re-feed the surviving prefix after every pop. Thus implementing the
-journal first is a broad refactor that leaves the one measured reconstruction
-bottleneck intact.
+but it would not restore the engine's old `FixedBits`. At the review baseline,
+the engine tightened multiple `FixedBits` objects through bidirectional
+transfer functions, latched conflict, grew auxiliary multiplication state, and
+maintained a caller-side substitution/fact overlay without an undo mechanism.
+It therefore had to reset and re-feed the surviving prefix after every pop.
+Thus implementing the journal first would have been a broad refactor that left
+the one measured reconstruction bottleneck intact.
 
-The narrow CBP change can use the longest-common-prefix synchronization already
-present at `IncrementalSolver.cpp:3118-3175`:
+The implemented narrow CBP change uses the existing longest-common-prefix
+synchronization:
 
 1. begin a level transaction before feeding it and commit only after feed,
    rewrite/adoption, memo and pinning-fact writes, and `cbpFinishLevel()` have
@@ -1154,13 +1219,12 @@ The trail must cover all semantic mutation, not just newly inserted map keys:
 - feed mass/cap and array-presence summaries;
 - the active fed-level and memo watermarks.
 
-Record each mutable object at most once per level (a first-write trail), even if
-the worklist visits it repeatedly. Restore entries in reverse order. The
-current engine does **not** reach every boundary with empty scratch:
-`newlyFixed` remains populated after a successful feed, and a conflict can
-return with queued work. `commitLevel()` must deliberately clear or snapshot
-the worklists, `newlyFixed`, and deferred scratch; a terminal-conflict commit
-needs an explicit path rather than pretending propagation quiesced.
+The implementation records each mutable object at most once per level (a
+first-write trail), even if the worklist visits it repeatedly, and restores
+entries in reverse order. `newlyFixed` deliberately remains populated as the
+successful feed's output until the next feed; rollback clears it. Conflict
+paths clear both work queues and the output immediately, and rollback clears
+all transient scratch defensively before restoring state.
 
 Session policy is a different lifetime. `cbpSessionRetired`, `cbpEverFixed`,
 and the retirement evidence counters describe observed workload behavior and
@@ -1168,10 +1232,10 @@ normally should not roll back with assertions. Preserve reset/re-feed as both a
 differential oracle and a fallback if trail memory/growth becomes more
 expensive than rebuilding.
 
-The grow-only parent graph and visited-DAG overlay may remain structural across
-pops. Extra edges to inactive nodes can cause harmless scheduling overhead, but
-they must not preserve scoped fixed bits or scoped assumptions. Measure their
-growth before deciding whether to trail them.
+The implementation trails exact parent-graph and visited-DAG additions. This
+keeps later replacement feeds from retaining dependency edges introduced only
+by a popped suffix and permits the caller's array-presence summary to roll back
+to the same boundary.
 
 `Backtrack.h` can supply the manager/watermark shape and insert-only pieces, but
 cannot trail in-place `FixedBits` mutations as written. Extend it with a
@@ -1195,9 +1259,8 @@ re-prove the current invariants; do not cherry-pick it as an implementation.
 
 ### Validation mode for the trail
 
-Keep the reset/re-feed behavior available behind a development switch while
-the trail is introduced. On every divergent check in differential mode, run or
-reconstruct both states and compare:
+The reset/re-feed behavior is available as `--incremental-cbp-reset`. Separate
+trail and oracle runs compare:
 
 - conflict status;
 - the set and value of harvested total fixings;
@@ -1211,7 +1274,7 @@ specimen is the performance acceptance test, not the soundness test.
 
 ## Phased roadmap
 
-### Phase 0: close the current branch
+### Phase 0 (partly complete): close the current branch
 
 1. Add the forced-rebuild lazy-array test and resolve the active-read state
    asymmetry if reachable.
@@ -1226,19 +1289,22 @@ A confirmed correctness issue preempts performance work. The tests and audits
 can be prepared alongside instrumentation, but no broad state migration should
 land on top of an ambiguous rebuild invariant.
 
-### Phase 1: instrument semantic reconstruction
+The forced-rebuild active-read asymmetry in item 1 is fixed and covered by a
+regression. The remaining accounting, master-integration, and full-campaign
+items are still outstanding.
+
+### Phase 1 (complete): instrument semantic reconstruction
 
 Land counters/timers without changing solver policy. Re-run the representative
 workloads and quantify both absolute cost and percentage of driver time. Record
 the result in this document or a checked-in benchmark ledger.
 
-### Phase 2: add the narrow CBP undo trail
+### Phase 2 (complete): add the narrow CBP undo trail
 
-Implement checkpoint/rollback inside the current engine, retain LCP-based stack
-synchronization initially, and validate against reset/re-feed mode. Success
-means the Industrial pop cost falls without moving answers or the established
-canaries. If trail mutation or memory cost exceeds the saved re-feed cost on
-the broader corpus, keep the existing reset design.
+Checkpoint/rollback now covers the engine and caller overlay while retaining
+LCP-based stack synchronization, with reset/re-feed as the oracle. It met the
+acceptance condition: Industrial pop cost fell without answer changes or a
+material canary regression. The measurements above support keeping the trail.
 
 ### Phase 3: introduce the journal and safe cursors
 
@@ -1332,14 +1398,15 @@ tests and selected performance specimens.
 The branch's persistent SAT/AIG architecture is sound in shape, portable across
 its backends, and responsible for the measured wins. Keep it.
 
-The next performance implementation should be instrumentation, followed—if the
-measurements confirm the existing Industrial evidence—by a narrowly designed
-CBP first-write undo trail. That directly attacks the measured pop-triggered
-whole-prefix re-feed and can be implemented against the current LCP machinery.
+Instrumentation and the narrowly designed CBP first-write undo trail are now
+implemented. They directly removed the measured pop-triggered whole-prefix
+re-feed, and the cross-workload results support retaining the change.
 
 The assertion journal with independent stage cursors remains the right
 architectural foundation after that. It should be introduced incrementally to
 make semantic lifetime explicit, remove repeated whole-stack bookkeeping, and
 reduce the likelihood of further manual cache/refcount/rebuild bugs. It is not
-the first patch because, by itself, it does not undo CBP state and does not
-address the likely fixed engagement cost in the RTOS tail.
+the next automatic performance patch: first close the remaining branch
+integration/accounting work and use the new profiler to establish another
+material target or recurring lifetime problem. The journal does not address
+the likely fixed engagement cost in the RTOS tail.
