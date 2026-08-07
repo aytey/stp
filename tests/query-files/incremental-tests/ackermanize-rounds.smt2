@@ -4,6 +4,7 @@
 ; lists persist across check-sats, so pair coverage holds session-wide.
 ; Same rounds and answers as arrays-rounds.smt2, no refinement loop.
 ; RUN: %solver --incremental --ackermanize -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental --ackermanize --check-sanity -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 8) (_ BitVec 8)))
 (declare-fun i () (_ BitVec 8))

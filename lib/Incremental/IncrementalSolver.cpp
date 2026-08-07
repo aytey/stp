@@ -4962,6 +4962,18 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     return SOLVER_UNSATISFIABLE;
   }
 
+  // resetSolver() clears the batch transformer's tables before every
+  // check-sat.  Eager Ackermannisation does not need them for refinement,
+  // but counterexample construction still uses the active read rows to
+  // evaluate source-level READ terms.  A round whose encodings are all cache
+  // hits otherwise leaves that table empty and can report an arbitrary array
+  // value even though the reused SAT encoding has the right read symbol.
+  // Materialise only after a satisfiable solve, and only when a model can be
+  // observed; the table then also remains available to deferred get-model /
+  // get-value construction.
+  if (construct && activeHasArrays && uf.ackermannisation)
+    impl->seedActiveReads(activeEncodedKeys);
+
   if (construct)
   {
     // Unless the model is read at solve time -- the self-check below is
