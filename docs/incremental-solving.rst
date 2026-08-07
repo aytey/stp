@@ -306,6 +306,41 @@ point, the extensionality block and its cache, and the driver's own
 reuse counters (run with ``-s``, the driver reports how much each check
 encoded -- a repeat check must report zero).
 
+``--incremental-profile`` enables a lower-noise profile for each invocation of
+the incremental driver. Pair it with ``--incremental`` to route the first
+check through that driver; the profile flag observes incremental work but does
+not itself change solver engagement. This is currently a command-line
+diagnostic rather than a C API option. Each invocation writes four keyed
+records to stderr (the per-check phase, work, and CBP/backend records followed
+by additive session totals), while SMT-LIB answers remain on stdout.
+
+The profile reports stack and cache work, including separately timed fresh
+and re-fed CBP levels, their bounded DAG-node mass, resets, rewrite replay and
+adoption attempts. It also covers semantic construction, preparation, actual
+bit-blast/CNF encoding, active-read seeding, backend rebuilds, initial and
+refinement SAT calls, and rolling session totals. Durations accumulate at
+nanosecond precision and are emitted as whole microseconds, so repeated short
+operations are retained in the cumulative values. It is deliberately separate
+from ``-s``: verbose diagnostics from individual passes would otherwise
+distort the phases being measured. Deterministic work counters are suitable
+for regression tests; elapsed values are measurements, not test expectations.
+
+The named sub-phase timings overlap their enclosing phase. On the ordinary
+equality-free route, ``semantic-us`` includes CBP synchronization, fresh and
+re-fed CBP work, preparation and encoding; the whole-array-equality route is
+instead enclosed by ``extensionality-us``. ``refinement-us`` includes its SAT
+re-solves. ``rebuild-reset-us`` measures backend replacement and base
+re-simplification; the subsequent live-stack re-encoding is reported under
+``encode-us``. ``total-us`` begins immediately before the driver's large-stack
+worker is launched, but does not include frontend assertion snapshot
+construction, checks answered from the frontend cache or batch path, or a
+model materialized lazily after the solve.
+
+``driver-clauses`` counts clauses emitted through the driver's structural and
+activation helpers; refinement and extensionality currently add clauses
+directly to the backend and are intentionally not misreported as part of that
+number.
+
 ``scripts/incremental-bench.py`` times a solver over a corpus, records
 each file's answer sequence, and diffs a later run against a saved
 baseline -- so a change can be checked for performance and, more

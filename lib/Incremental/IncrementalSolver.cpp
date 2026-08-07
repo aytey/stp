@@ -52,10 +52,13 @@ THE SOFTWARE.
 #endif
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -71,6 +74,48 @@ namespace stp
 
 namespace
 {
+
+using ProfileClock = std::chrono::steady_clock;
+
+class ScopedProfileTimer
+{
+  uint64_t* elapsed;
+  ProfileClock::time_point started;
+
+public:
+  ScopedProfileTimer(bool enabled, uint64_t& elapsed_)
+      : elapsed(enabled ? &elapsed_ : NULL)
+  {
+    if (elapsed != NULL)
+      started = ProfileClock::now();
+  }
+
+  void retarget(bool enabled, uint64_t& elapsed_)
+  {
+    if (enabled)
+    {
+      assert(elapsed != NULL);
+      elapsed = &elapsed_;
+    }
+  }
+
+  ~ScopedProfileTimer()
+  {
+    if (elapsed == NULL)
+      return;
+    *elapsed += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    ProfileClock::now() - started)
+                    .count();
+  }
+
+  ScopedProfileTimer(const ScopedProfileTimer&) = delete;
+  ScopedProfileTimer& operator=(const ScopedProfileTimer&) = delete;
+};
+
+uint64_t profileMicros(uint64_t nanoseconds)
+{
+  return nanoseconds / 1000;
+}
 
 // The one retraction mechanism is SAT assumptions, so the backend must
 // support them. Plain MiniSat stands in for the ones that cannot: the
@@ -180,6 +225,231 @@ bool containsArrayEquality(const ASTNode& root)
 
 struct IncrementalSolver::Impl
 {
+  enum class RebuildReason
+  {
+    Relief,
+    Promotion,
+    Inprobing,
+    Trail
+  };
+
+  // Fine-grained, opt-in measurements for deciding where scoped state will
+  // actually pay. Timers are enabled only under --incremental-profile; the
+  // counters travel with them so an ordinary solve does not read the clock or
+  // update counters in its hot loops. Durations accumulate as nanoseconds to
+  // avoid losing sub-microsecond level work and print as microseconds. Some
+  // timings deliberately overlap: semanticNs is
+  // the complete active-stack construction, while CBP, preparation and
+  // encoding are its named sub-phases; refinementNs likewise includes its SAT
+  // re-solves.
+  struct CheckProfile
+  {
+    bool enabled = false;
+    bool extensionality = false;
+    uint64_t check = 0;
+
+    uint64_t totalNs = 0;
+    uint64_t maintenanceNs = 0;
+    uint64_t semanticNs = 0;
+    uint64_t screenNs = 0;
+    uint64_t cbpNs = 0;
+    uint64_t cbpSyncNs = 0;
+    uint64_t cbpResetNs = 0;
+    uint64_t cbpFeedNs = 0;
+    uint64_t cbpFreshFeedNs = 0;
+    uint64_t cbpRefeedNs = 0;
+    uint64_t cbpRejectedFeedNs = 0;
+    uint64_t cbpPropagateNs = 0;
+    uint64_t cbpHarvestNs = 0;
+    uint64_t cbpAdoptNs = 0;
+    uint64_t cbpReplayNs = 0;
+    uint64_t cbpFinishNs = 0;
+    uint64_t prepareNs = 0;
+    uint64_t encodeNs = 0;
+    uint64_t readSeedNs = 0;
+    uint64_t registryNs = 0;
+    uint64_t extensionalityNs = 0;
+    uint64_t refinementNs = 0;
+    uint64_t satNs = 0;
+    uint64_t initialSatNs = 0;
+    uint64_t refinementSatNs = 0;
+    uint64_t rebuildNs = 0;
+
+    uint64_t levels = 0;
+    uint64_t stablePrefix = 0;
+    uint64_t screenNew = 0;
+    uint64_t screenCached = 0;
+    uint64_t preparationHits = 0;
+    uint64_t preparationMisses = 0;
+    uint64_t preparationInvalidations = 0;
+    uint64_t preparationNoop = 0;
+    uint64_t preparationCollapsed = 0;
+    uint64_t preparationRejected = 0;
+    uint64_t contextDefinitions = 0;
+    uint64_t contextEntries = 0;
+    uint64_t rootHits = 0;
+    uint64_t rootMisses = 0;
+    uint64_t activeKeys = 0;
+    uint64_t assumptions = 0;
+    uint64_t clauses = 0;
+    uint64_t cbpResets = 0;
+    uint64_t cbpFedLevels = 0;
+    uint64_t cbpFreshLevels = 0;
+    uint64_t cbpRefedLevels = 0;
+    uint64_t cbpFedNodes = 0;
+    uint64_t cbpFreshNodes = 0;
+    uint64_t cbpRefedNodes = 0;
+    uint64_t cbpFeedRejected = 0;
+    uint64_t cbpAdoptAttempts = 0;
+    uint64_t cbpAdoptions = 0;
+    uint64_t cbpReplayAttempts = 0;
+    uint64_t cbpReplays = 0;
+    uint64_t cbpDeferredRestored = 0;
+    uint64_t readKeysFolded = 0;
+    uint64_t readKeysUnfolded = 0;
+    uint64_t readRowsLive = 0;
+    uint64_t satCalls = 0;
+    uint64_t refinementSatCalls = 0;
+    uint64_t refinementRounds = 0;
+    uint64_t rebuilds = 0;
+    uint64_t rebuildRelief = 0;
+    uint64_t rebuildPromotion = 0;
+    uint64_t rebuildInprobing = 0;
+    uint64_t rebuildTrail = 0;
+  };
+
+  struct SessionProfile
+  {
+    uint64_t checks = 0;
+    uint64_t totalNs = 0;
+    uint64_t maintenanceNs = 0;
+    uint64_t semanticNs = 0;
+    uint64_t screenNs = 0;
+    uint64_t cbpNs = 0;
+    uint64_t cbpSyncNs = 0;
+    uint64_t cbpResetNs = 0;
+    uint64_t cbpFeedNs = 0;
+    uint64_t cbpFreshFeedNs = 0;
+    uint64_t cbpRefeedNs = 0;
+    uint64_t cbpRejectedFeedNs = 0;
+    uint64_t cbpPropagateNs = 0;
+    uint64_t cbpHarvestNs = 0;
+    uint64_t cbpAdoptNs = 0;
+    uint64_t cbpReplayNs = 0;
+    uint64_t cbpFinishNs = 0;
+    uint64_t prepareNs = 0;
+    uint64_t encodeNs = 0;
+    uint64_t readSeedNs = 0;
+    uint64_t registryNs = 0;
+    uint64_t extensionalityNs = 0;
+    uint64_t refinementNs = 0;
+    uint64_t satNs = 0;
+    uint64_t initialSatNs = 0;
+    uint64_t refinementSatNs = 0;
+    uint64_t rebuildNs = 0;
+    uint64_t cbpResets = 0;
+    uint64_t cbpFedLevels = 0;
+    uint64_t cbpFreshLevels = 0;
+    uint64_t cbpRefedLevels = 0;
+    uint64_t cbpFedNodes = 0;
+    uint64_t cbpFreshNodes = 0;
+    uint64_t cbpRefedNodes = 0;
+    uint64_t cbpFeedRejected = 0;
+    uint64_t cbpAdoptAttempts = 0;
+    uint64_t cbpAdoptions = 0;
+    uint64_t cbpReplayAttempts = 0;
+    uint64_t cbpReplays = 0;
+    uint64_t cbpDeferredRestored = 0;
+    uint64_t screenNew = 0;
+    uint64_t screenCached = 0;
+    uint64_t preparationHits = 0;
+    uint64_t preparationMisses = 0;
+    uint64_t preparationInvalidations = 0;
+    uint64_t preparationNoop = 0;
+    uint64_t preparationCollapsed = 0;
+    uint64_t preparationRejected = 0;
+    uint64_t contextDefinitions = 0;
+    uint64_t rootHits = 0;
+    uint64_t rootMisses = 0;
+    uint64_t readKeysFolded = 0;
+    uint64_t readKeysUnfolded = 0;
+    uint64_t clauses = 0;
+    uint64_t satCalls = 0;
+    uint64_t refinementSatCalls = 0;
+    uint64_t refinementRounds = 0;
+    uint64_t rebuilds = 0;
+    uint64_t rebuildRelief = 0;
+    uint64_t rebuildPromotion = 0;
+    uint64_t rebuildInprobing = 0;
+    uint64_t rebuildTrail = 0;
+
+    void add(const CheckProfile& p)
+    {
+      checks++;
+      totalNs += p.totalNs;
+      maintenanceNs += p.maintenanceNs;
+      semanticNs += p.semanticNs;
+      screenNs += p.screenNs;
+      cbpNs += p.cbpNs;
+      cbpSyncNs += p.cbpSyncNs;
+      cbpResetNs += p.cbpResetNs;
+      cbpFeedNs += p.cbpFeedNs;
+      cbpFreshFeedNs += p.cbpFreshFeedNs;
+      cbpRefeedNs += p.cbpRefeedNs;
+      cbpRejectedFeedNs += p.cbpRejectedFeedNs;
+      cbpPropagateNs += p.cbpPropagateNs;
+      cbpHarvestNs += p.cbpHarvestNs;
+      cbpAdoptNs += p.cbpAdoptNs;
+      cbpReplayNs += p.cbpReplayNs;
+      cbpFinishNs += p.cbpFinishNs;
+      prepareNs += p.prepareNs;
+      encodeNs += p.encodeNs;
+      readSeedNs += p.readSeedNs;
+      registryNs += p.registryNs;
+      extensionalityNs += p.extensionalityNs;
+      refinementNs += p.refinementNs;
+      satNs += p.satNs;
+      initialSatNs += p.initialSatNs;
+      refinementSatNs += p.refinementSatNs;
+      rebuildNs += p.rebuildNs;
+      cbpResets += p.cbpResets;
+      cbpFedLevels += p.cbpFedLevels;
+      cbpFreshLevels += p.cbpFreshLevels;
+      cbpRefedLevels += p.cbpRefedLevels;
+      cbpFedNodes += p.cbpFedNodes;
+      cbpFreshNodes += p.cbpFreshNodes;
+      cbpRefedNodes += p.cbpRefedNodes;
+      cbpFeedRejected += p.cbpFeedRejected;
+      cbpAdoptAttempts += p.cbpAdoptAttempts;
+      cbpAdoptions += p.cbpAdoptions;
+      cbpReplayAttempts += p.cbpReplayAttempts;
+      cbpReplays += p.cbpReplays;
+      cbpDeferredRestored += p.cbpDeferredRestored;
+      screenNew += p.screenNew;
+      screenCached += p.screenCached;
+      preparationHits += p.preparationHits;
+      preparationMisses += p.preparationMisses;
+      preparationInvalidations += p.preparationInvalidations;
+      preparationNoop += p.preparationNoop;
+      preparationCollapsed += p.preparationCollapsed;
+      preparationRejected += p.preparationRejected;
+      contextDefinitions += p.contextDefinitions;
+      rootHits += p.rootHits;
+      rootMisses += p.rootMisses;
+      readKeysFolded += p.readKeysFolded;
+      readKeysUnfolded += p.readKeysUnfolded;
+      clauses += p.clauses;
+      satCalls += p.satCalls;
+      refinementSatCalls += p.refinementSatCalls;
+      refinementRounds += p.refinementRounds;
+      rebuilds += p.rebuilds;
+      rebuildRelief += p.rebuildRelief;
+      rebuildPromotion += p.rebuildPromotion;
+      rebuildInprobing += p.rebuildInprobing;
+      rebuildTrail += p.rebuildTrail;
+    }
+  };
+
   STPMgr* bm;
   AbsRefine_CounterExample* ce;
   Simplifier* batchSimp;
@@ -618,13 +888,22 @@ struct IncrementalSolver::Impl
     // prefix this session already carries.
     if (level != cbpFedLevels.size())
       return;
+    const bool refeed = level < cbpMemoStable;
+    ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
+    ScopedProfileTimer feedTimer(profile.enabled, profile.cbpFeedNs);
+    ScopedProfileTimer feedClassTimer(
+        profile.enabled, refeed ? profile.cbpRefeedNs : profile.cbpFreshFeedNs);
     if (!callCbp)
       callCbp.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
 
-    callCbpFed += dagSizeUpToMemo(levelConjunction, cbpFeedCap,
-                                  dagSizeFeedMemo);
+    const size_t levelNodes =
+        dagSizeUpToMemo(levelConjunction, cbpFeedCap, dagSizeFeedMemo);
+    callCbpFed += levelNodes;
     if (callCbpFed > cbpFeedCap)
     {
+      if (profile.enabled)
+        profile.cbpFeedRejected++;
+      feedClassTimer.retarget(profile.enabled, profile.cbpRejectedFeedNs);
       callCbpOff = true;
       cbpSessionRetired = true;
       if (bm->UserFlags.stats_flag)
@@ -633,6 +912,21 @@ struct IncrementalSolver::Impl
                   << std::endl;
       return;
     }
+    if (profile.enabled)
+    {
+      profile.cbpFedLevels++;
+      profile.cbpFedNodes += levelNodes;
+      if (refeed)
+      {
+        profile.cbpRefedLevels++;
+        profile.cbpRefedNodes += levelNodes;
+      }
+      else
+      {
+        profile.cbpFreshLevels++;
+        profile.cbpFreshNodes += levelNodes;
+      }
+    }
 
     ASTVec fed;
     splitConjuncts(levelConjunction, bm->ASTTrue, fed);
@@ -640,7 +934,13 @@ struct IncrementalSolver::Impl
     for (const ASTNode& c : fed)
       callCbpFedConjuncts.insert(c);
 
-    if (!callCbp->feedLevel(levelConjunction))
+    bool consistent;
+    {
+      ScopedProfileTimer propagationTimer(profile.enabled,
+                                          profile.cbpPropagateNs);
+      consistent = callCbp->feedLevel(levelConjunction);
+    }
+    if (!consistent)
     {
       // The live prefix is contradictory by bit-level reasoning
       // alone; the caller asserts FALSE at this level. The feed
@@ -681,50 +981,53 @@ struct IncrementalSolver::Impl
     // prefix cannot put an array-carrying node in the delta, and the
     // per-node walks were the dominant cost of feeding a large
     // array-free formula.
-    if (!cbpFedArrays && containsArrayOps(levelConjunction, bm))
-      cbpFedArrays = true;
+    {
+      ScopedProfileTimer harvestTimer(profile.enabled, profile.cbpHarvestNs);
+      if (!cbpFedArrays && containsArrayOps(levelConjunction, bm))
+        cbpFedArrays = true;
 
-    const std::vector<ASTNode>& feedDelta = callCbp->takeNewlyFixed();
-    ASTNodeSet feedSymbols;
-    for (const ASTNode& n : feedDelta)
-    {
-      if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
-        break;
-      if (n.GetKind() != SYMBOL)
-        continue;
-      const ASTNode k = callCbp->constantOf(n);
-      if (k.IsNull())
-        continue;
-      callCbpDeferred.push_back(std::make_pair(n, k));
-      feedSymbols.insert(n);
-      cbpEverFixed = true;
-    }
-    for (const ASTNode& n : feedDelta)
-    {
-      if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
-        break;
-      if (n.GetKind() == SYMBOL || n.GetKind() == BVEXTRACT ||
-          n.GetKind() == BVCONCAT)
-        continue;
-      const ASTNode k = callCbp->constantOf(n);
-      if (k.IsNull())
-        continue;
-      if (cbpFedArrays && containsArrayOps(n, bm))
-        continue;
-      if (!feedSymbols.empty() && reachesAnyOf(n, feedSymbols))
-        callCbpDeferred.push_back(std::make_pair(n, k));
-      else
-        callCbpSubst[n] = k;
-      cbpEverFixed = true;
-    }
-
-    for (const ASTNode& c : fed)
-    {
-      ASTNodeMap::iterator it = callCbpSubst.find(c);
-      if (it != callCbpSubst.end())
+      const std::vector<ASTNode>& feedDelta = callCbp->takeNewlyFixed();
+      ASTNodeSet feedSymbols;
+      for (const ASTNode& n : feedDelta)
       {
-        callCbpDeferred.push_back(*it);
-        callCbpSubst.erase(it);
+        if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
+          break;
+        if (n.GetKind() != SYMBOL)
+          continue;
+        const ASTNode k = callCbp->constantOf(n);
+        if (k.IsNull())
+          continue;
+        callCbpDeferred.push_back(std::make_pair(n, k));
+        feedSymbols.insert(n);
+        cbpEverFixed = true;
+      }
+      for (const ASTNode& n : feedDelta)
+      {
+        if (callCbpSubst.size() + callCbpDeferred.size() >= cbpHarvestCap)
+          break;
+        if (n.GetKind() == SYMBOL || n.GetKind() == BVEXTRACT ||
+            n.GetKind() == BVCONCAT)
+          continue;
+        const ASTNode k = callCbp->constantOf(n);
+        if (k.IsNull())
+          continue;
+        if (cbpFedArrays && containsArrayOps(n, bm))
+          continue;
+        if (!feedSymbols.empty() && reachesAnyOf(n, feedSymbols))
+          callCbpDeferred.push_back(std::make_pair(n, k));
+        else
+          callCbpSubst[n] = k;
+        cbpEverFixed = true;
+      }
+
+      for (const ASTNode& c : fed)
+      {
+        ASTNodeMap::iterator it = callCbpSubst.find(c);
+        if (it != callCbpSubst.end())
+        {
+          callCbpDeferred.push_back(*it);
+          callCbpSubst.erase(it);
+        }
       }
     }
 
@@ -743,6 +1046,12 @@ struct IncrementalSolver::Impl
   // level's own conjuncts are past rewriting.
   void cbpFinishLevel()
   {
+    if (callCbpDeferred.empty())
+      return;
+    ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
+    ScopedProfileTimer finishTimer(profile.enabled, profile.cbpFinishNs);
+    if (profile.enabled)
+      profile.cbpDeferredRestored += callCbpDeferred.size();
     for (const std::pair<ASTNode, ASTNode>& e : callCbpDeferred)
       callCbpSubst[e.first] = e.second;
     callCbpDeferred.clear();
@@ -766,6 +1075,10 @@ struct IncrementalSolver::Impl
   {
     if (callCbpOff || callCbpSubst.empty())
       return conjunct;
+    ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
+    ScopedProfileTimer adoptTimer(profile.enabled, profile.cbpAdoptNs);
+    if (profile.enabled)
+      profile.cbpAdoptAttempts++;
 
     // The conjunct's own entry (a ctx-substituted form can be fixed
     // as an interior node without being a fed conjunct) never rewrites
@@ -817,6 +1130,8 @@ struct IncrementalSolver::Impl
 
     callCbpAdopted++;
     cbpEpochAdopted++;
+    if (profile.enabled)
+      profile.cbpAdoptions++;
     return adopted;
   }
 
@@ -897,7 +1212,13 @@ struct IncrementalSolver::Impl
   void screenNewContent(const ASTNode& raw)
   {
     if (!screenedContent.insert(raw).second)
+    {
+      if (profile.enabled)
+        profile.screenCached++;
       return;
+    }
+    if (profile.enabled)
+      profile.screenNew++;
     if (eliminationUsers.empty() && baseEliminatedDefs.empty())
       return;
     for (const ASTNode& s : symbolsOf(raw))
@@ -948,6 +1269,8 @@ struct IncrementalSolver::Impl
     std::map<ASTNode, PreparedPiece>::iterator it = preparedPieceOf.find(key);
     if (it == preparedPieceOf.end())
       return;
+    if (profile.enabled)
+      profile.preparationInvalidations++;
     for (const ASTNode& v : it->second.eliminatedVars)
     {
       std::map<ASTNode, std::vector<ASTNode>>::iterator ui =
@@ -999,14 +1322,21 @@ struct IncrementalSolver::Impl
     return bm->defaultNodeFactory->CreateNode(EQ, var, def);
   }
 
-  const PreparedPiece& preparePiece(
-      const ASTNode& replaced, size_t levelIdx, const ASTVec& stack,
-      const std::map<ASTNode, size_t>& conjunctCountOf)
+  const PreparedPiece&
+  preparePiece(const ASTNode& replaced, size_t levelIdx, const ASTVec& stack,
+               const std::map<ASTNode, size_t>& conjunctCountOf)
   {
+    ScopedProfileTimer preparationTimer(profile.enabled, profile.prepareNs);
     std::map<ASTNode, PreparedPiece>::iterator hit =
         preparedPieceOf.find(replaced);
     if (hit != preparedPieceOf.end())
+    {
+      if (profile.enabled)
+        profile.preparationHits++;
       return hit->second;
+    }
+    if (profile.enabled)
+      profile.preparationMisses++;
 
     // The batch front pipeline, on the conjunct alone: harvest defining
     // equations (PropagateEqualities fills the scratch SolverMap and
@@ -1022,8 +1352,8 @@ struct IncrementalSolver::Impl
     if (!sigma0.empty())
     {
       ASTNodeMap cache;
-      out = SubstitutionMap::replace(out, sigma0, cache,
-                                     bm->defaultNodeFactory);
+      out =
+          SubstitutionMap::replace(out, sigma0, cache, bm->defaultNodeFactory);
     }
     // The equality-propagation-and-simplify pipeline is a TRIAL, run on
     // its own scratch state. Its result is NOVEL nodes: adopting it
@@ -1051,6 +1381,7 @@ struct IncrementalSolver::Impl
       SubstitutionMap trialSm(bm);
       Simplifier trial(bm, &trialSm);
       ASTNode trialOut = out;
+      bool rejectedBeforeSimplify = false;
       if (bm->UserFlags.propagate_equalities)
       {
         PropagateEqualities pe(&trial, bm->defaultNodeFactory, bm);
@@ -1062,7 +1393,10 @@ struct IncrementalSolver::Impl
       // propagation-exploded intermediate can take minutes before any
       // post-hoc check would see it.
       if (dagSizeUpTo(trialOut, budget) > budget)
+      {
+        rejectedBeforeSimplify = true;
         trialOut = out;
+      }
       else
         trialOut = trial.SimplifyFormula_TopLevel(trialOut, false);
       // Unconstrained-variable elimination is deliberately NOT run on
@@ -1075,12 +1409,23 @@ struct IncrementalSolver::Impl
       // the reuse penalty; see rebuildEncodings.
       if (trialOut == out || dagSizeUpTo(trialOut, budget) <= budget)
       {
+        if (profile.enabled)
+        {
+          if (rejectedBeforeSimplify)
+            profile.preparationRejected++;
+          else if (trialOut == out)
+            profile.preparationNoop++;
+          else
+            profile.preparationCollapsed++;
+        }
         out = trialOut;
         DenseNodeMap* harvested = trial.Return_SolverMap();
         for (DenseNodeMap::const_iterator it = harvested->begin();
              it != harvested->end(); ++it)
           scratchSm.Return_SolverMap()->insert(*it);
       }
+      else if (profile.enabled)
+        profile.preparationRejected++;
     }
 
     PreparedPiece pl;
@@ -1281,7 +1626,7 @@ struct IncrementalSolver::Impl
         std::cerr << "Incremental: promoted prefix retracted, solver "
                      "restarted (threshold now "
                   << promoteAfterSolves << " solves)" << std::endl;
-      rebuildEncodings(assertionsSMT2);
+      rebuildEncodings(assertionsSMT2, RebuildReason::Promotion);
     }
 
     levelStableSolves.resize(assertionsSMT2.size(), 0);
@@ -1301,9 +1646,13 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
-  // Per-call statistics, printed under --stats.
+  // Per-call counters printed under -s.
   uint64_t clausesAdded;
   uint64_t encodesThisCall;
+  CheckProfile profile;
+  SessionProfile sessionProfile;
+  ProfileClock::time_point profileStarted;
+  uint64_t profileClausesBefore = 0;
 
   Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_,
        ArrayTransformer* batchAT_)
@@ -1335,6 +1684,174 @@ struct IncrementalSolver::Impl
     // third of small variant-push sessions); the batch pipeline's
     // single-solve instances keep it.
     solver->disableLuckyPhases();
+  }
+
+  void beginProfile(size_t levels)
+  {
+    if (!bm->UserFlags.incremental_profile)
+    {
+      profile.enabled = false;
+      return;
+    }
+    profile = CheckProfile();
+    profile.enabled = true;
+    profile.check = sessionProfile.checks + 1;
+    profile.levels = levels;
+    profileClausesBefore = clausesAdded;
+    profileStarted = ProfileClock::now();
+  }
+
+  void finishProfile()
+  {
+    if (!profile.enabled)
+      return;
+
+    profile.totalNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          ProfileClock::now() - profileStarted)
+                          .count();
+    profile.clauses = clausesAdded - profileClausesBefore;
+    sessionProfile.add(profile);
+
+    // Assemble the report before writing it. SMT answers use stdout while
+    // profiles use stderr; one write keeps redirected 2>&1 logs line-safe.
+    std::ostringstream out;
+    out << "Incremental profile: check=" << profile.check
+        << " levels=" << profile.levels
+        << " total-us=" << profileMicros(profile.totalNs)
+        << " maintenance-us=" << profileMicros(profile.maintenanceNs)
+        << " semantic-us=" << profileMicros(profile.semanticNs)
+        << " screen-us=" << profileMicros(profile.screenNs)
+        << " cbp-us=" << profileMicros(profile.cbpNs)
+        << " cbp-sync-us=" << profileMicros(profile.cbpSyncNs)
+        << " cbp-reset-us=" << profileMicros(profile.cbpResetNs)
+        << " cbp-feed-us=" << profileMicros(profile.cbpFeedNs)
+        << " cbp-fresh-feed-us=" << profileMicros(profile.cbpFreshFeedNs)
+        << " cbp-refeed-us=" << profileMicros(profile.cbpRefeedNs)
+        << " cbp-rejected-feed-us=" << profileMicros(profile.cbpRejectedFeedNs)
+        << " cbp-engine-us=" << profileMicros(profile.cbpPropagateNs)
+        << " cbp-harvest-us=" << profileMicros(profile.cbpHarvestNs)
+        << " cbp-adopt-us=" << profileMicros(profile.cbpAdoptNs)
+        << " cbp-replay-us=" << profileMicros(profile.cbpReplayNs)
+        << " cbp-finish-us=" << profileMicros(profile.cbpFinishNs)
+        << " prepare-us=" << profileMicros(profile.prepareNs)
+        << " encode-us=" << profileMicros(profile.encodeNs)
+        << " read-seed-us=" << profileMicros(profile.readSeedNs)
+        << " registry-us=" << profileMicros(profile.registryNs)
+        << " extensionality-us=" << profileMicros(profile.extensionalityNs)
+        << " refinement-us=" << profileMicros(profile.refinementNs)
+        << " sat-us=" << profileMicros(profile.satNs)
+        << " initial-sat-us=" << profileMicros(profile.initialSatNs)
+        << " refinement-sat-us=" << profileMicros(profile.refinementSatNs)
+        << " rebuild-reset-us=" << profileMicros(profile.rebuildNs) << '\n';
+    out << "Incremental profile work: check=" << profile.check
+        << " stable-prefix=" << profile.stablePrefix
+        << " screen-new=" << profile.screenNew
+        << " screen-cached=" << profile.screenCached
+        << " prepare-hits=" << profile.preparationHits
+        << " prepare-misses=" << profile.preparationMisses
+        << " prepare-invalidated=" << profile.preparationInvalidations
+        << " prepare-noop=" << profile.preparationNoop
+        << " prepare-collapsed=" << profile.preparationCollapsed
+        << " prepare-rejected=" << profile.preparationRejected
+        << " context-definitions=" << profile.contextDefinitions
+        << " context-entries=" << profile.contextEntries
+        << " root-hits=" << profile.rootHits
+        << " root-misses=" << profile.rootMisses
+        << " active-keys=" << profile.activeKeys
+        << " assumptions=" << profile.assumptions << '\n';
+    out << "Incremental profile cbp/backend: check=" << profile.check
+        << " cbp-resets=" << profile.cbpResets
+        << " cbp-fed-levels=" << profile.cbpFedLevels
+        << " cbp-fresh-levels=" << profile.cbpFreshLevels
+        << " cbp-refed-levels=" << profile.cbpRefedLevels
+        << " cbp-fed-nodes=" << profile.cbpFedNodes
+        << " cbp-fresh-nodes=" << profile.cbpFreshNodes
+        << " cbp-refed-nodes=" << profile.cbpRefedNodes
+        << " cbp-feed-rejected=" << profile.cbpFeedRejected
+        << " cbp-adopt-attempts=" << profile.cbpAdoptAttempts
+        << " cbp-adoptions=" << profile.cbpAdoptions
+        << " cbp-replay-attempts=" << profile.cbpReplayAttempts
+        << " cbp-replays=" << profile.cbpReplays
+        << " cbp-deferred-restored=" << profile.cbpDeferredRestored
+        << " read-keys-folded=" << profile.readKeysFolded
+        << " read-keys-unfolded=" << profile.readKeysUnfolded
+        << " live-read-rows=" << profile.readRowsLive
+        << " driver-clauses=" << profile.clauses
+        << " sat-calls=" << profile.satCalls
+        << " refinement-sat-calls=" << profile.refinementSatCalls
+        << " refinement-rounds=" << profile.refinementRounds
+        << " rebuilds=" << profile.rebuilds
+        << " rebuild-relief=" << profile.rebuildRelief
+        << " rebuild-promotion=" << profile.rebuildPromotion
+        << " rebuild-inprobing=" << profile.rebuildInprobing
+        << " rebuild-trail=" << profile.rebuildTrail
+        << " extensionality=" << (profile.extensionality ? 1 : 0) << '\n';
+    out << "Incremental profile total: checks=" << sessionProfile.checks
+        << " total-us=" << profileMicros(sessionProfile.totalNs)
+        << " maintenance-us=" << profileMicros(sessionProfile.maintenanceNs)
+        << " semantic-us=" << profileMicros(sessionProfile.semanticNs)
+        << " screen-us=" << profileMicros(sessionProfile.screenNs)
+        << " cbp-us=" << profileMicros(sessionProfile.cbpNs)
+        << " cbp-sync-us=" << profileMicros(sessionProfile.cbpSyncNs)
+        << " cbp-reset-us=" << profileMicros(sessionProfile.cbpResetNs)
+        << " cbp-feed-us=" << profileMicros(sessionProfile.cbpFeedNs)
+        << " cbp-fresh-feed-us=" << profileMicros(sessionProfile.cbpFreshFeedNs)
+        << " cbp-refeed-us=" << profileMicros(sessionProfile.cbpRefeedNs)
+        << " cbp-rejected-feed-us="
+        << profileMicros(sessionProfile.cbpRejectedFeedNs)
+        << " cbp-engine-us=" << profileMicros(sessionProfile.cbpPropagateNs)
+        << " cbp-harvest-us=" << profileMicros(sessionProfile.cbpHarvestNs)
+        << " cbp-adopt-us=" << profileMicros(sessionProfile.cbpAdoptNs)
+        << " cbp-replay-us=" << profileMicros(sessionProfile.cbpReplayNs)
+        << " cbp-finish-us=" << profileMicros(sessionProfile.cbpFinishNs)
+        << " prepare-us=" << profileMicros(sessionProfile.prepareNs)
+        << " encode-us=" << profileMicros(sessionProfile.encodeNs)
+        << " read-seed-us=" << profileMicros(sessionProfile.readSeedNs)
+        << " registry-us=" << profileMicros(sessionProfile.registryNs)
+        << " extensionality-us="
+        << profileMicros(sessionProfile.extensionalityNs)
+        << " refinement-us=" << profileMicros(sessionProfile.refinementNs)
+        << " sat-us=" << profileMicros(sessionProfile.satNs)
+        << " initial-sat-us=" << profileMicros(sessionProfile.initialSatNs)
+        << " refinement-sat-us="
+        << profileMicros(sessionProfile.refinementSatNs)
+        << " rebuild-reset-us=" << profileMicros(sessionProfile.rebuildNs)
+        << " cbp-resets=" << sessionProfile.cbpResets
+        << " cbp-fed-levels=" << sessionProfile.cbpFedLevels
+        << " cbp-fresh-levels=" << sessionProfile.cbpFreshLevels
+        << " cbp-refed-levels=" << sessionProfile.cbpRefedLevels
+        << " cbp-fed-nodes=" << sessionProfile.cbpFedNodes
+        << " cbp-fresh-nodes=" << sessionProfile.cbpFreshNodes
+        << " cbp-refed-nodes=" << sessionProfile.cbpRefedNodes
+        << " cbp-feed-rejected=" << sessionProfile.cbpFeedRejected
+        << " cbp-adopt-attempts=" << sessionProfile.cbpAdoptAttempts
+        << " cbp-adoptions=" << sessionProfile.cbpAdoptions
+        << " cbp-replay-attempts=" << sessionProfile.cbpReplayAttempts
+        << " cbp-replays=" << sessionProfile.cbpReplays
+        << " cbp-deferred-restored=" << sessionProfile.cbpDeferredRestored
+        << " screen-new=" << sessionProfile.screenNew
+        << " screen-cached=" << sessionProfile.screenCached
+        << " prepare-hits=" << sessionProfile.preparationHits
+        << " prepare-misses=" << sessionProfile.preparationMisses
+        << " prepare-invalidated=" << sessionProfile.preparationInvalidations
+        << " prepare-noop=" << sessionProfile.preparationNoop
+        << " prepare-collapsed=" << sessionProfile.preparationCollapsed
+        << " prepare-rejected=" << sessionProfile.preparationRejected
+        << " context-definitions=" << sessionProfile.contextDefinitions
+        << " root-hits=" << sessionProfile.rootHits
+        << " root-misses=" << sessionProfile.rootMisses
+        << " read-keys-folded=" << sessionProfile.readKeysFolded
+        << " read-keys-unfolded=" << sessionProfile.readKeysUnfolded
+        << " driver-clauses=" << sessionProfile.clauses
+        << " sat-calls=" << sessionProfile.satCalls
+        << " refinement-sat-calls=" << sessionProfile.refinementSatCalls
+        << " refinement-rounds=" << sessionProfile.refinementRounds
+        << " rebuilds=" << sessionProfile.rebuilds
+        << " rebuild-relief=" << sessionProfile.rebuildRelief
+        << " rebuild-promotion=" << sessionProfile.rebuildPromotion
+        << " rebuild-inprobing=" << sessionProfile.rebuildInprobing
+        << " rebuild-trail=" << sessionProfile.rebuildTrail << '\n';
+    std::cerr << out.str();
   }
 
   int varOfAig(Aig_Obj_t* regular)
@@ -1628,8 +2145,8 @@ struct IncrementalSolver::Impl
       // node factory, so the node-local rewrite rules already run over the
       // substituted result as it is built.
       ASTNodeMap cache;
-      out = SubstitutionMap::replace(out, sigma0, cache,
-                                     bm->defaultNodeFactory);
+      out =
+          SubstitutionMap::replace(out, sigma0, cache, bm->defaultNodeFactory);
     }
 
     return simplifyAlone(out);
@@ -1643,9 +2160,9 @@ struct IncrementalSolver::Impl
   // rewritten node on the pushed-definitions path -- and the registry rows
   // the transform visits are recorded under the same key, so a later cache
   // hit finds its rows by the node it hit with.
-  int encodePrepared(const ASTNode& key, ASTNode toEncode,
-                     const Fragment& frag)
+  int encodePrepared(const ASTNode& key, ASTNode toEncode, const Fragment& frag)
   {
+    ScopedProfileTimer encodingTimer(profile.enabled, profile.encodeNs);
     if (frag.fp)
       toEncode = fpContext()->lowerPrepared(toEncode);
 
@@ -1676,8 +2193,7 @@ struct IncrementalSolver::Impl
       // separated bindings from their users). Every conjunct therefore
       // re-conjoins the bindings of every row it touches; for rows whose
       // binding is already inside, the AND simply deduplicates.
-      if (!bm->UserFlags.ackermannisation &&
-          !readsOfEncoded[key].empty())
+      if (!bm->UserFlags.ackermannisation && !readsOfEncoded[key].empty())
       {
         ASTVec binds;
         for (const std::pair<ASTNode, ASTNode>& ai : readsOfEncoded[key])
@@ -1693,8 +2209,8 @@ struct IncrementalSolver::Impl
           const ASTNode& indexSym = rit->second.index_symbol;
           if (ai.second == indexSym || indexSym.IsNull())
             continue;
-          binds.push_back(bm->defaultNodeFactory->CreateNode(
-              EQ, ai.second, indexSym));
+          binds.push_back(
+              bm->defaultNodeFactory->CreateNode(EQ, ai.second, indexSym));
         }
         if (!binds.empty())
         {
@@ -1712,8 +2228,7 @@ struct IncrementalSolver::Impl
     bm->GetRunTimes()->start(RunTimes::CNFConversion);
     Aig_Obj_t* regular = Aig_Regular(root.n);
     ensureEncoded(regular);
-    const int lit =
-        2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
+    const int lit = 2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
     bm->GetRunTimes()->stop(RunTimes::CNFConversion);
 
     // Clause mass per encoding key feeds the relief valve's deadness
@@ -1736,22 +2251,30 @@ struct IncrementalSolver::Impl
   {
     NodeToLitMap::const_iterator it = rootLitOf.find(conjunct);
     if (it != rootLitOf.end())
+    {
+      if (profile.enabled)
+        profile.rootHits++;
       return it->second;
-
-    const Fragment& frag = fragment(conjunct);
-
+    }
+    if (profile.enabled)
+      profile.rootMisses++;
+    const Fragment* frag = NULL;
     ASTNode toEncode = conjunct;
+    {
+      ScopedProfileTimer preparationTimer(profile.enabled, profile.prepareNs);
+      frag = &fragment(conjunct);
 
-    // Totalise partial floating-point operations and pin rounding modes
-    // before the formula is used for anything, as the batch pipeline does;
-    // the word-level rewriting runs on the totalised form, and lowering to
-    // the packed circuit comes after it.
-    if (frag.fp)
-      toEncode = fpContext()->prepare(toEncode);
+      // Totalise partial floating-point operations and pin rounding modes
+      // before the formula is used for anything, as the batch pipeline does;
+      // the word-level rewriting runs on the totalised form, and lowering to
+      // the packed circuit comes after it.
+      if (frag->fp)
+        toEncode = fpContext()->prepare(toEncode);
 
-    toEncode = prepareConjunct(toEncode);
+      toEncode = prepareConjunct(toEncode);
+    }
 
-    const int lit = encodePrepared(conjunct, toEncode, frag);
+    const int lit = encodePrepared(conjunct, toEncode, *frag);
     rootLitOf[conjunct] = lit;
     return lit;
   }
@@ -1863,6 +2386,8 @@ struct IncrementalSolver::Impl
   {
     if (foldedRowsOf.find(key) != foldedRowsOf.end())
       return;
+    if (profile.enabled)
+      profile.readKeysFolded++;
     std::vector<std::pair<ASTNode, ASTNode>>& folded = foldedRowsOf[key];
     std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::
         const_iterator rit = readsOfEncoded.find(key);
@@ -1877,10 +2402,12 @@ struct IncrementalSolver::Impl
 
   void unfoldKeyReads(const ASTNode& key)
   {
-    std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::iterator
-        fit = foldedRowsOf.find(key);
+    std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::iterator fit =
+        foldedRowsOf.find(key);
     if (fit == foldedRowsOf.end())
       return;
+    if (profile.enabled)
+      profile.readKeysUnfolded++;
     for (const std::pair<ASTNode, ASTNode>& ai : fit->second)
     {
       std::map<std::pair<ASTNode, ASTNode>, size_t>::iterator rr =
@@ -1893,6 +2420,7 @@ struct IncrementalSolver::Impl
 
   void seedActiveReads(const std::vector<ASTNode>& pushedActiveKeys)
   {
+    ScopedProfileTimer readTimer(profile.enabled, profile.readSeedNs);
     // The seeded table is maintained INCREMENTALLY. Base keys arrive
     // through pendingBaseSeed as they are first asserted and fold
     // exactly once -- the base never retracts, so they never unfold.
@@ -1904,9 +2432,8 @@ struct IncrementalSolver::Impl
     // walk below touches only what changed.
     std::vector<ASTNode> sortedPushed = pushedActiveKeys;
     std::sort(sortedPushed.begin(), sortedPushed.end(),
-              [](const ASTNode& a, const ASTNode& b) {
-                return a.GetNodeNum() < b.GetNodeNum();
-              });
+              [](const ASTNode& a, const ASTNode& b)
+              { return a.GetNodeNum() < b.GetNodeNum(); });
     sortedPushed.erase(std::unique(sortedPushed.begin(), sortedPushed.end()),
                        sortedPushed.end());
 
@@ -1928,9 +2455,8 @@ struct IncrementalSolver::Impl
     for (const ASTNode& k : lastSeededKeys)
       if (level0Asserted.find(k) == level0Asserted.end() &&
           !std::binary_search(sortedPushed.begin(), sortedPushed.end(), k,
-                              [](const ASTNode& a, const ASTNode& b) {
-                                return a.GetNodeNum() < b.GetNodeNum();
-                              }))
+                              [](const ASTNode& a, const ASTNode& b)
+                              { return a.GetNodeNum() < b.GetNodeNum(); }))
         unfoldKeyReads(k);
     for (const ASTNode& k : sortedPushed)
       if (foldedRowsOf.find(k) == foldedRowsOf.end())
@@ -1956,10 +2482,13 @@ struct IncrementalSolver::Impl
     batchAT->arrayToIndexToRead = fresh;
     lastSeededKeys.swap(sortedPushed);
     batchTablesSeeded = true;
+    if (profile.enabled)
+      profile.readRowsLive = seededRowRef.size();
   }
 
   void totalizeRegistrySymbols()
   {
+    ScopedProfileTimer registryTimer(profile.enabled, profile.registryNs);
     // Only the refinement machinery encodes axioms over registry symbols,
     // and --ackermanize never refines.
     if (bm->UserFlags.ackermannisation)
@@ -1987,6 +2516,7 @@ struct IncrementalSolver::Impl
   // mid-round.
   void totalizeBatchRegistrySymbols()
   {
+    ScopedProfileTimer registryTimer(profile.enabled, profile.registryNs);
     for (ArrayTransformer::ArrType::const_iterator it =
              batchAT->arrayToIndexToRead.begin();
          it != batchAT->arrayToIndexToRead.end(); ++it)
@@ -2077,8 +2607,28 @@ struct IncrementalSolver::Impl
                 << " retired activation literals" << std::endl;
   }
 
-  void rebuildEncodings(const ASTVec& assertionsSMT2)
+  void rebuildEncodings(const ASTVec& assertionsSMT2, RebuildReason reason)
   {
+    ScopedProfileTimer timer(profile.enabled, profile.rebuildNs);
+    if (profile.enabled)
+    {
+      profile.rebuilds++;
+      switch (reason)
+      {
+        case RebuildReason::Relief:
+          profile.rebuildRelief++;
+          break;
+        case RebuildReason::Promotion:
+          profile.rebuildPromotion++;
+          break;
+        case RebuildReason::Inprobing:
+          profile.rebuildInprobing++;
+          break;
+        case RebuildReason::Trail:
+          profile.rebuildTrail++;
+          break;
+      }
+    }
     // The fresh solver has no promoted units; a still-stable prefix
     // re-promotes on the next call's tail.
     promotedDepth = 0;
@@ -2488,6 +3038,17 @@ public:
     (void)input;
 
     solveCount++;
+    const bool refinementSolve = d->profile.satCalls > 0;
+    if (d->profile.enabled)
+    {
+      if (refinementSolve)
+        d->profile.refinementSatCalls++;
+      d->profile.satCalls++;
+    }
+    ScopedProfileTimer satTimer(d->profile.enabled, d->profile.satNs);
+    uint64_t& phaseSatNs =
+        refinementSolve ? d->profile.refinementSatNs : d->profile.initialSatNs;
+    ScopedProfileTimer phaseSatTimer(d->profile.enabled, phaseSatNs);
     bm->GetRunTimes()->start(RunTimes::Solving);
     bool sat;
     if (assumps != NULL && assumps->size() > 0)
@@ -2531,6 +3092,9 @@ ToSATBase* IncrementalSolver::Impl::ensureAdapter()
 SOLVER_RETURN_TYPE
 IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
 {
+  profile.extensionality = true;
+  ScopedProfileTimer extensionalityTimer(profile.enabled,
+                                         profile.extensionalityNs);
   UserDefinedFlags& uf = bm->UserFlags;
 
   // Eager Ackermannization expands reads into if-then-else chains,
@@ -2627,11 +3191,16 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
     NodeToLitMap::const_iterator hit = rootLitOf.find(inputToSat);
     if (hit != rootLitOf.end())
     {
+      if (profile.enabled)
+        profile.rootHits++;
       blockLit = hit->second;
       blockReused = true;
     }
     else
     {
+      if (profile.enabled)
+        profile.rootMisses++;
+      ScopedProfileTimer encodingTimer(profile.enabled, profile.encodeNs);
       bm->GetRunTimes()->start(RunTimes::BitBlasting);
       BBNodeAIG root = bb.BBForm(inputToSat);
       bm->GetRunTimes()->stop(RunTimes::BitBlasting);
@@ -2681,6 +3250,11 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   everAssumedLits[blockLit] = engagedSolves;
   assumptions.push(SATSolver::mkLit(blockLit >> 1, blockLit & 1));
   hintRetractedLevels(assumptions);
+  if (profile.enabled)
+  {
+    profile.activeKeys = 1;
+    profile.assumptions = assumptions.size();
+  }
 
   IncrementalToSAT* tosat = static_cast<IncrementalToSAT*>(ensureAdapter());
   tosat->setAssumptions(&assumptions);
@@ -2694,6 +3268,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // checker inactive.
   totalizeBatchRegistrySymbols();
 
+  ScopedProfileTimer refinementTimer(profile.enabled, profile.refinementNs);
   SOLVER_RETURN_TYPE res = ce->CallSAT_ResultCheck(
       *solver, bm->ASTTrue, semantic, prepared, tosat, true);
 
@@ -2729,6 +3304,8 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   if (uf.stats_flag && refinementRounds > 0)
     std::cerr << "Incremental: array-equality refinement converged after "
               << refinementRounds << " rounds" << std::endl;
+  if (profile.enabled)
+    profile.refinementRounds += refinementRounds;
 
   // The whole round rode one block literal, so an unsat answer has no
   // per-level or per-assumption granularity: the core is everything.
@@ -2935,11 +3512,13 @@ void IncrementalSolver::runOnDriverStack(const std::function<void()>& body)
 SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
                                                bool assumeLastLevelPerConjunct)
 {
+  impl->beginProfile(assertionsSMT2.size());
   SOLVER_RETURN_TYPE result = SOLVER_ERROR;
   runOnDriverStack([&]() {
     result =
         checkSatOnCurrentStack(assertionsSMT2, assumeLastLevelPerConjunct);
   });
+  impl->finishProfile();
   return result;
 }
 
@@ -2990,114 +3569,117 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   impl->lastLevelLitConjuncts.clear();
   impl->lastFailedLits.clear();
 
-  // Promoted-prefix bookkeeping first: if a promoted level changed or
-  // vanished, its units no longer describe the stack and the solver
-  // restarts here, before any routing can touch it.
-  impl->updateStackStability(assertionsSMT2);
-
-  // The relief valve: once the solver is past the configured size and most
-  // of its encodings belong to content no longer on the stack, start it
-  // over from the live stack. Checked before routing so extensionality
-  // rounds benefit too. Deadness is measured by CLAUSE MASS against the
-  // peak live mass any solve has used since the last rebuild -- conjunct
-  // counts, the original proxy, missed variant-push sessions whose few
-  // dozen distinct conjuncts each carry a huge circuit (a million
-  // variables of ~95% popped content never tripped the count ratio) --
-  // and comparing with the PEAK is the hysteresis: after a rebuild the
-  // tracked mass restarts at the working set, so firing again takes
-  // another fourfold growth.
-  if (uf.incremental_reencode_limit > 0 &&
-      (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit &&
-      impl->trackedClauseMass >= 4 * (impl->maxLiveClauseMass + 1))
   {
-    if (uf.stats_flag)
-      std::cerr << "Incremental: re-encoded from scratch (solver had "
-                << impl->solver->nVars() << " variables, "
-                << impl->trackedClauseMass << " tracked clauses for a "
-                << impl->maxLiveClauseMass << " clause working set)"
-                << std::endl;
-    impl->rebuildEncodings(assertionsSMT2);
-  }
+    ScopedProfileTimer maintenanceTimer(impl->profile.enabled,
+                                        impl->profile.maintenanceNs);
 
-  // Probe-based inprocessing is the opposite trade to the valve above:
-  // it re-runs over the WHOLE persistent encoding at every solve, so on
-  // many-solve sessions its recurring cost dominates what it earns
-  // (measured 2x of the total runtime on generated variant-push
-  // corpora), while a session that is one or two big searches genuinely
-  // profits from it. The option is configuration-window-only, so
-  // retirement -- once the session qualifies, or immediately under an
-  // explicit 'off' -- means one bounded rebuild onto a fresh solver
-  // configured without it. AUTO additionally requires trail reuse to
-  // have been retired already: a session still riding the trail is the
-  // many-small-queries shape whose accumulated search state a rebuild
-  // would throw away for a technique that measured neutral there, while
-  // the sessions inprobing hurts (the floating-point variant-push
-  // families) have always shed the trail first. The capability is
-  // probed without touching the live solver, and a backend that cannot
-  // control it simply never retires.
-  impl->engagedSolves++;
-  if (!impl->inprobingRetired &&
-      impl->solver->supportsInprobingControl() &&
-      (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
-       (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
-        !impl->trailReuseAllowed &&
-        impl->engagedSolves > Impl::inprobingRetireSolves &&
-        impl->solver->nVars() >= Impl::inprobingRetireMinVars)))
-  {
-    impl->inprobingRetired = true;
-    if (uf.stats_flag)
-      std::cerr << "Incremental: inprobing retired ("
-                << impl->engagedSolves
-                << " solves), solver restarted without it" << std::endl;
-    impl->rebuildEncodings(assertionsSMT2);
-  }
+    // Promoted-prefix bookkeeping first: if a promoted level changed or
+    // vanished, its units no longer describe the stack and the solver
+    // restarts here, before any routing can touch it.
+    impl->updateStackStability(assertionsSMT2);
 
-  // Trail reuse pays on the many-small-queries sessions and hurts on the
-  // floating-point families, whose search is phase-sensitive and whose
-  // instances are large -- every measured loss had FP content, every win
-  // was FP-free. The option is configuration-window-only, so retirement
-  // means starting the solver over without it: free when FP is present
-  // from the first solve (nothing is encoded yet), and one bounded
-  // rebuild if FP arrives -- or the encoding outgrows the size belt --
-  // mid-session.
-  if (impl->trailReuseAllowed)
-  {
-    bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
-    for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
-      retire = impl->fragment(assertionsSMT2[i]).fp;
-    if (retire)
+    // The relief valve: once the solver is past the configured size and most
+    // of its encodings belong to content no longer on the stack, start it
+    // over from the live stack. Checked before routing so extensionality
+    // rounds benefit too. Deadness is measured by CLAUSE MASS against the
+    // peak live mass any solve has used since the last rebuild -- conjunct
+    // counts, the original proxy, missed variant-push sessions whose few
+    // dozen distinct conjuncts each carry a huge circuit (a million
+    // variables of ~95% popped content never tripped the count ratio) --
+    // and comparing with the PEAK is the hysteresis: after a rebuild the
+    // tracked mass restarts at the working set, so firing again takes
+    // another fourfold growth.
+    if (uf.incremental_reencode_limit > 0 &&
+        (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit &&
+        impl->trackedClauseMass >= 4 * (impl->maxLiveClauseMass + 1))
     {
-      impl->trailReuseAllowed = false;
       if (uf.stats_flag)
-        std::cerr << "Incremental: trail reuse retired ("
-                  << impl->solver->nVars()
-                  << " variables), solver restarted without it" << std::endl;
-      // If the session already qualifies for inprobing retirement --
-      // whose AUTO gate waits for exactly this trail retirement -- take
-      // both in ONE rebuild. Left to its own block, the retirement
-      // would fire on the NEXT solve and rebuild a freshly re-encoded
-      // solver all over again; a session whose trail died at fifty
-      // thousand variables measured 2x slower from that double rebuild.
-      if (!impl->inprobingRetired &&
-          uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
-          impl->solver->supportsInprobingControl() &&
-          impl->engagedSolves > Impl::inprobingRetireSolves &&
-          impl->solver->nVars() >= Impl::inprobingRetireMinVars)
-      {
-        impl->inprobingRetired = true;
-        if (uf.stats_flag)
-          std::cerr << "Incremental: inprobing retired with it ("
-                    << impl->engagedSolves << " solves)" << std::endl;
-      }
-      impl->rebuildEncodings(assertionsSMT2);
+        std::cerr << "Incremental: re-encoded from scratch (solver had "
+                  << impl->solver->nVars() << " variables, "
+                  << impl->trackedClauseMass << " tracked clauses for a "
+                  << impl->maxLiveClauseMass << " clause working set)"
+                  << std::endl;
+      impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Relief);
     }
-  }
 
-  // The backend's configuration window closes at its first clause; take
-  // the bounded-variable-addition decision while it is still open. This
-  // must precede the extensionality routing below: an equality round
-  // encodes into the same persistent solver.
-  impl->decideBVA(assertionsSMT2);
+    // Probe-based inprocessing is the opposite trade to the valve above:
+    // it re-runs over the WHOLE persistent encoding at every solve, so on
+    // many-solve sessions its recurring cost dominates what it earns
+    // (measured 2x of the total runtime on generated variant-push
+    // corpora), while a session that is one or two big searches genuinely
+    // profits from it. The option is configuration-window-only, so
+    // retirement -- once the session qualifies, or immediately under an
+    // explicit 'off' -- means one bounded rebuild onto a fresh solver
+    // configured without it. AUTO additionally requires trail reuse to
+    // have been retired already: a session still riding the trail is the
+    // many-small-queries shape whose accumulated search state a rebuild
+    // would throw away for a technique that measured neutral there, while
+    // the sessions inprobing hurts (the floating-point variant-push
+    // families) have always shed the trail first. The capability is
+    // probed without touching the live solver, and a backend that cannot
+    // control it simply never retires.
+    impl->engagedSolves++;
+    if (!impl->inprobingRetired && impl->solver->supportsInprobingControl() &&
+        (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
+         (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
+          !impl->trailReuseAllowed &&
+          impl->engagedSolves > Impl::inprobingRetireSolves &&
+          impl->solver->nVars() >= Impl::inprobingRetireMinVars)))
+    {
+      impl->inprobingRetired = true;
+      if (uf.stats_flag)
+        std::cerr << "Incremental: inprobing retired (" << impl->engagedSolves
+                  << " solves), solver restarted without it" << std::endl;
+      impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Inprobing);
+    }
+
+    // Trail reuse pays on the many-small-queries sessions and hurts on the
+    // floating-point families, whose search is phase-sensitive and whose
+    // instances are large -- every measured loss had FP content, every win
+    // was FP-free. The option is configuration-window-only, so retirement
+    // means starting the solver over without it: free when FP is present
+    // from the first solve (nothing is encoded yet), and one bounded
+    // rebuild if FP arrives -- or the encoding outgrows the size belt --
+    // mid-session.
+    if (impl->trailReuseAllowed)
+    {
+      bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
+      for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
+        retire = impl->fragment(assertionsSMT2[i]).fp;
+      if (retire)
+      {
+        impl->trailReuseAllowed = false;
+        if (uf.stats_flag)
+          std::cerr << "Incremental: trail reuse retired ("
+                    << impl->solver->nVars()
+                    << " variables), solver restarted without it" << std::endl;
+        // If the session already qualifies for inprobing retirement --
+        // whose AUTO gate waits for exactly this trail retirement -- take
+        // both in ONE rebuild. Left to its own block, the retirement
+        // would fire on the NEXT solve and rebuild a freshly re-encoded
+        // solver all over again; a session whose trail died at fifty
+        // thousand variables measured 2x slower from that double rebuild.
+        if (!impl->inprobingRetired &&
+            uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
+            impl->solver->supportsInprobingControl() &&
+            impl->engagedSolves > Impl::inprobingRetireSolves &&
+            impl->solver->nVars() >= Impl::inprobingRetireMinVars)
+        {
+          impl->inprobingRetired = true;
+          if (uf.stats_flag)
+            std::cerr << "Incremental: inprobing retired with it ("
+                      << impl->engagedSolves << " solves)" << std::endl;
+        }
+        impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Trail);
+      }
+    }
+
+    // The backend's configuration window closes at its first clause; take
+    // the bounded-variable-addition decision while it is still open. This
+    // must precede the extensionality routing below: an equality round
+    // encodes into the same persistent solver.
+    impl->decideBVA(assertionsSMT2);
+  }
 
   // Whole-array equality routes the entire check-sat through the
   // extensionality block: the procedure owns the round's complete array
@@ -3125,19 +3707,30 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const uint64_t clausesBefore = impl->clausesAdded;
   impl->encodesThisCall = 0;
 
+  ProfileClock::time_point semanticStarted;
+  if (impl->profile.enabled)
+    semanticStarted = ProfileClock::now();
+
   // Constant-bit propagation state persists while the live stack only
   // extends what the engine has fed; a pop, a changed level or base
   // growth resets the engine (reset is the undo -- the live stack
   // re-feeds below) and trims the memo to the prefix that still
   // matches (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
   {
+    ScopedProfileTimer cbpTimer(impl->profile.enabled, impl->profile.cbpNs);
+    ScopedProfileTimer syncTimer(impl->profile.enabled,
+                                 impl->profile.cbpSyncNs);
     size_t lcp = 0;
     while (lcp < impl->cbpFedLevels.size() && lcp < assertionsSMT2.size() &&
            impl->cbpFedLevels[lcp] == assertionsSMT2[lcp])
       lcp++;
+    if (impl->profile.enabled)
+      impl->profile.stablePrefix = lcp;
     const bool didReset = lcp < impl->cbpFedLevels.size();
     if (didReset)
     {
+      if (impl->profile.enabled)
+        impl->profile.cbpResets++;
       // Futility accounting: an epoch (the span since the last
       // divergence) that adopted nothing lengthens the barren run;
       // one fresh adoption clears it.
@@ -3161,7 +3754,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         impl->cbpBarrenResets = 0;
       }
       impl->cbpEpochAdopted = 0;
-      impl->cbpReset();
+      {
+        ScopedProfileTimer resetTimer(impl->profile.enabled,
+                                      impl->profile.cbpResetNs);
+        impl->cbpReset();
+      }
     }
 
     size_t memoLcp = 0;
@@ -3183,7 +3780,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               (f.GetKind() == EQ || f.GetKind() == NOT) ? f[0] : f;
           impl->callCbpFactEmitted.insert(n);
         }
-
   }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
@@ -3228,7 +3824,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // New content first invalidates any cached level whose elimination it
     // contradicts, and joins the base symbol set the privacy check
     // consults -- both before anything is harvested or encoded.
-    impl->screenNewContent(c);
+    {
+      ScopedProfileTimer screenTimer(impl->profile.enabled,
+                                     impl->profile.screenNs);
+      impl->screenNewContent(c);
+    }
     const ASTNodeSet& syms = impl->symbolsOf(c);
     impl->baseSymbols.insert(syms.begin(), syms.end());
     if (uf.optimize_flag)
@@ -3248,8 +3848,12 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // is prepared or encoded: a later level's mention of a variable an
   // earlier level's cached preparation eliminated invalidates that cache
   // entry now, not after the stale entry was already used.
-  for (size_t level = 1; level < assertionsSMT2.size(); level++)
-    impl->screenNewContent(assertionsSMT2[level]);
+  {
+    ScopedProfileTimer screenTimer(impl->profile.enabled,
+                                   impl->profile.screenNs);
+    for (size_t level = 1; level < assertionsSMT2.size(); level++)
+      impl->screenNewContent(assertionsSMT2[level]);
+  }
 
   // The base level seeds the constant-bit engine: its conjuncts are
   // permanent units, so their truth is sound for every fact any
@@ -3259,8 +3863,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // so a session that never pushes never pays for the feed (a huge
   // single-check formula measured two minutes of fixpoint and harvest
   // with nothing downstream to spend it on).
-  if (uf.optimize_flag && uf.bitConstantProp_flag &&
-      assertionsSMT2.size() > 1)
+  if (uf.optimize_flag && uf.bitConstantProp_flag && assertionsSMT2.size() > 1)
   {
     impl->cbpFeedLevel(0, assertionsSMT2[0]);
     impl->cbpFinishLevel();
@@ -3305,10 +3908,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     ASTVec levelDefiningConjuncts;
     if (uf.optimize_flag)
     {
+      const size_t contextBefore = ctx.size();
       conjuncts.clear();
       splitConjuncts(assertionsSMT2[level], bm->ASTTrue, conjuncts);
       for (const ASTNode& c : conjuncts)
         impl->harvestPushed(c, ctx, ctxSources, ctxHasFp);
+      if (impl->profile.enabled)
+        impl->profile.contextDefinitions += ctx.size() - contextBefore;
       // A defining conjunct must never be rewritten under its own entry:
       // substituting x -> t into (= x t) yields TRUE and the constraint
       // silently vanishes -- with no replay record, so the model channel
@@ -3388,10 +3994,9 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // live map may hold deeper levels' fixings by now, and prefix
       // discipline forbids folding those into a shallower conjunct.
       const bool cbpHit = level < impl->cbpMemoStable;
-      const bool cbpBuild = !cbpHit &&
-                            impl->cbpMemo.size() == level + 1 &&
-                            impl->cbpMemo[level].conjunction ==
-                                assertionsSMT2[level];
+      const bool cbpBuild =
+          !cbpHit && impl->cbpMemo.size() == level + 1 &&
+          impl->cbpMemo[level].conjunction == assertionsSMT2[level];
       size_t cbpMemoIdx = 0;
       ASTVec cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
@@ -3400,6 +4005,12 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         bool replayed = false;
         if (cbpHit)
         {
+          ScopedProfileTimer cbpTimer(impl->profile.enabled,
+                                      impl->profile.cbpNs);
+          ScopedProfileTimer replayTimer(impl->profile.enabled,
+                                         impl->profile.cbpReplayNs);
+          if (impl->profile.enabled)
+            impl->profile.cbpReplayAttempts++;
           const std::vector<std::pair<ASTNode, ASTNode>>& rw =
               impl->cbpMemo[level].rewrites;
           if (cbpMemoIdx < rw.size() && rw[cbpMemoIdx].first == rc)
@@ -3408,14 +4019,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             cbpMemoIdx++;
             replayed = true;
             impl->callCbpReplayed++;
+            if (impl->profile.enabled)
+              impl->profile.cbpReplays++;
           }
         }
         if (!replayed)
         {
           if (totaliseEarly)
             replaced = impl->fpContext()->prepare(replaced);
-          const bool isDefiner =
-              ctxSources.find(rc) != ctxSources.end();
+          const bool isDefiner = ctxSources.find(rc) != ctxSources.end();
           if (!ctx.empty() && !isDefiner)
           {
             ASTNodeMap cache;
@@ -3435,8 +4047,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           // The whole-level piece contains its definers INSIDE the node
           // just substituted; restore them alongside the replaced form
           // (totalised the same way the piece was).
-          if (rc == assertionsSMT2[level] &&
-              !levelDefiningConjuncts.empty())
+          if (rc == assertionsSMT2[level] && !levelDefiningConjuncts.empty())
           {
             ASTVec parts;
             for (const ASTNode& d : levelDefiningConjuncts)
@@ -3523,6 +4134,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               Impl::defInlineCap)
             continue;
           ctx[d.first] = expanded;
+          if (impl->profile.enabled)
+            impl->profile.contextDefinitions++;
           if (!ctxHasFp && bm->has_floating_point_theory &&
               containsFloatingPointTheory(expanded, bm))
             ctxHasFp = true;
@@ -3652,22 +4265,31 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       impl->maxLiveClauseMass = liveMass;
   }
 
+  if (impl->profile.enabled)
+  {
+    impl->profile.semanticNs +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            ProfileClock::now() - semanticStarted)
+            .count();
+    impl->profile.activeKeys = activeEncodedKeys.size();
+    impl->profile.assumptions = assumptions.size();
+    impl->profile.contextEntries = ctx.size();
+  }
+
   if (uf.stats_flag)
   {
     std::cerr << "Incremental: encoded " << impl->encodesThisCall
               << " new conjuncts, added "
               << (impl->clausesAdded - clausesBefore) << " clauses, assumed "
               << assumptions.size() << " literals, solver has "
-              << impl->solver->nVars() << " variables, "
-              << impl->sigma0.size() << " base-level and "
-              << ctx.size() << " pushed substitutions, "
+              << impl->solver->nVars() << " variables, " << impl->sigma0.size()
+              << " base-level and " << ctx.size() << " pushed substitutions, "
               << impl->activeEliminatedDefs.size() << " eliminated"
               << std::endl;
     if (impl->callCbpAdopted > 0 || impl->callCbpReplayed > 0)
       std::cerr << "Incremental: cbp adopted " << impl->callCbpAdopted
-                << " rewrites (" << impl->callCbpReplayed
-                << " replayed) from " << impl->callCbpSubst.size()
-                << " fixed nodes" << std::endl;
+                << " rewrites (" << impl->callCbpReplayed << " replayed) from "
+                << impl->callCbpSubst.size() << " fixed nodes" << std::endl;
   }
 
   // Array refinement needs a candidate model to find violated axioms, so
@@ -3715,6 +4337,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   if (needRefinement)
   {
+    ScopedProfileTimer refinementTimer(impl->profile.enabled,
+                                       impl->profile.refinementNs);
     // The batch pipeline's own CEGAR: candidate model, violated congruence
     // axioms as direct (permanent -- they are tautologies of the canonical
     // read abstraction) clauses, solve again. The adapter re-solves under
@@ -3758,8 +4382,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // livelock would just hang (the ext refinement driver has the same
       // guard for its lemma channel).
       const size_t solvesBefore = adapter->solveCount;
-      res = impl->ce->SATBased_ArrayReadRefinement(
-          *impl->solver, activeConjunction, adapter);
+      res = impl->ce->SATBased_ArrayReadRefinement(*impl->solver,
+                                                   activeConjunction, adapter);
       if (res == SOLVER_UNDECIDED && adapter->solveCount == solvesBefore)
         FatalError("IncrementalSolver: an array refinement round rejected "
                    "the candidate but found no congruence axiom to add -- "
@@ -3770,6 +4394,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     if (uf.stats_flag && refinementRounds > 0)
       std::cerr << "Incremental: array refinement converged after "
                 << refinementRounds << " rounds" << std::endl;
+    if (impl->profile.enabled)
+      impl->profile.refinementRounds += refinementRounds;
 
     if (uf.stats_flag)
       impl->solver->printStats();
@@ -3783,12 +4409,19 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
 
   bm->GetRunTimes()->start(RunTimes::Solving);
+  if (impl->profile.enabled)
+    impl->profile.satCalls++;
   bool sat;
-  if (assumptions.size() == 0)
-    sat = impl->solver->solve(bm->soft_timeout_expired);
-  else
-    sat = impl->solver->solveWithAssumptions(assumptions,
-                                             bm->soft_timeout_expired);
+  {
+    ScopedProfileTimer satTimer(impl->profile.enabled, impl->profile.satNs);
+    ScopedProfileTimer initialSatTimer(impl->profile.enabled,
+                                       impl->profile.initialSatNs);
+    if (assumptions.size() == 0)
+      sat = impl->solver->solve(bm->soft_timeout_expired);
+    else
+      sat = impl->solver->solveWithAssumptions(assumptions,
+                                               bm->soft_timeout_expired);
+  }
   bm->GetRunTimes()->stop(RunTimes::Solving);
 
   if (uf.stats_flag)

@@ -825,9 +825,9 @@ up to here” index.
 
 ## Immediate risks and closeout work
 
-These items should be closed before a broad semantic-state migration. The first
-two are findings from code inspection; neither is claimed here as a reproduced
-wrong-answer bug.
+These items should be closed before a broad semantic-state migration. The
+active-read issue was subsequently reproduced and fixed; the retained-clause
+item remains a finding from code inspection.
 
 ### 1. Active-read state across a SAT rebuild
 
@@ -843,16 +843,15 @@ forgotten old-key set can no longer drive `unfoldKeyReads()`. A stale popped
 row can consequently remain materialized, while an apparently new key that is
 still in `foldedRowsOf` will not be folded again.
 
-This is a concrete asymmetry, not proof of reachability. The first action should
-be a forced-valve regression that changes the lazy-array cone across the
-rebuild, then inspects the seeded rows and checks the answer/model against
-master. If it is reachable, either preserve `lastSeededKeys` across a semantic
-registry-preserving rebuild only after proving that re-encoding cannot change
-the exact rows recorded under each key, or—preferably—explicitly unwind and
-reconstruct all three structures as one transaction. `readsOfEncoded` can be
-overwritten during re-encoding while `foldedRowsOf` records the old exact rows,
-so preserving one watermark casually is not sufficient. Clearing only one side
-is not a valid state.
+Follow-up confirmed reachability. A permanent read initially encoded at
+`A[i+1]`, followed by the permanent definition `i = 0` and enough dead pushed
+circuits to trigger the valve, re-encoded the same base key at `A[1]`. The stale
+folding state then seeded `A[i+1]` and omitted the replacement, causing the
+refinement no-progress guard to abort. Commit `9eb8e407` adds the forced-valve
+regression and fixes the rebuild by clearing `lastSeededKeys`, `seededRowRef`
+and `foldedRowsOf` together, clearing the materialized batch tables, and
+re-queuing every permanent key. The canonical `myReads` registry remains
+session-owned.
 
 ### 2. Retained-clause accounting has important blind spots
 
@@ -957,9 +956,10 @@ Add per-check and session-aggregate counters/timers for:
 The output should distinguish cache-hit traversal from genuinely new semantic
 work and should include counts as well as time. A timer saying “context: 20 ms”
 is hard to interpret; “130 levels replayed, 4 new assertions, 0 preparation
-misses” identifies the missing cursor directly. Keep instrumentation behind
-the existing statistics/debug mechanism so ordinary output and benchmark
-parsers do not change.
+misses” identifies the missing cursor directly. The follow-up implementation
+uses a dedicated `--incremental-profile` switch rather than `-s`, whose verbose
+pass diagnostics would distort the measured scopes. Ordinary output and
+benchmark parsers therefore remain unchanged.
 
 Measure at least these workload shapes:
 

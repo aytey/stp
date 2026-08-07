@@ -89,6 +89,11 @@ public:
   // the start with --incremental; sessions that never push are untouched.
   bool incremental_solving = false;
 
+  // Emit fine-grained per-check and cumulative measurements for the
+  // incremental driver. Kept separate from the general -s diagnostics so
+  // profiling is not distorted by verbose pass/backend output.
+  bool incremental_profile = false;
+
   // The persistent encoding grows monotonically; when the solver's variable
   // count passes this limit AND most encodings belong to popped,
   // never-returning content, the solver is rebuilt from the live stack

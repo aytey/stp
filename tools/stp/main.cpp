@@ -419,6 +419,12 @@ void ExtraMain::create_options()
                "SMT-LIB2 only.")
       ->group(misc_group);
 
+  app.add_flag("--incremental-profile", bm->UserFlags.incremental_profile,
+               "print fine-grained per-check and cumulative timings and "
+               "work counters for the incremental driver (use with "
+               "--incremental to profile from the first check)")
+      ->group(misc_group);
+
   int64_arg("--incremental-reencode-limit",
             bm->UserFlags.incremental_reencode_limit,
             "rebuild the incremental solver from the live assertion stack "
