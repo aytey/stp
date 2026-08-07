@@ -22,8 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ********************************************************************/
 
-/* Per-call constant-bit propagation over the incremental driver's live
- * stack.
+/* Prefix constant-bit propagation over the incremental driver's live stack.
  *
  * A worklist engine around the batch transfer functions
  * (ConstantBitPropagation::dispatchToTransferFunctions), fed one level
@@ -53,10 +52,12 @@ THE SOFTWARE.
  * constantOf refuses their types, so feeding raw word-level content
  * is safe.
  *
- * The instance lives for ONE check-sat call.  Persistence across
- * calls was deliberately rejected: an earlier prototype's undo-log
- * rollback traded correctness hazards and bookkeeping for a phase
- * this per-call engine spends milliseconds in.
+ * The engine itself is monotone: feedLevel extends its state and it has no
+ * notion of user scopes. IncrementalSolver keeps the instance across calls
+ * while the assertion stack extends the already-fed prefix. On a pop, changed
+ * level or base growth the owner destroys it and re-feeds the surviving
+ * prefix; per-level rewrite/fact memos can still replay. There is currently no
+ * undo trail inside this class.
  */
 
 #ifndef INCREMENTALCBP_H_

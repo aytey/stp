@@ -22,8 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ********************************************************************/
 
-/* Per-call constant-bit propagation for the incremental driver; see
- * the header for the contract. The worklist scheme follows the batch
+/* Prefix constant-bit propagation for the incremental driver; see the header
+ * for its cross-call ownership contract. The worklist scheme follows the batch
  * WorkList (cheap transfer functions drain before expensive ones);
  * the transfer functions themselves ARE the batch ones, reached
  * through ConstantBitPropagation::dispatchToTransferFunctions, so the

@@ -2,29 +2,32 @@ Incremental solving
 ===================
 
 STP solves incremental SMT-LIB2 sessions -- ``push``, ``pop``, repeated
-``(check-sat)``, ``(check-sat-assuming ...)`` -- by keeping one SAT solver
-and one bit-blasted encoding alive for the whole session, instead of
-re-solving the conjoined assertion stack from scratch at every check.
-Everything that is encoded is a conservative extension (fresh Tseitin
-variables and definitional clauses), so it is never retracted; what changes
-between checks is only which root literals are asserted. A base-level
-assertion becomes a permanent unit clause; an assertion at a pushed level
-has its root literal *assumed* per check-sat, so a pop retracts it by
-simply no longer assuming it. Learned clauses therefore survive both
-check-sats and pops by construction.
+``(check-sat)``, ``(check-sat-assuming ...)`` -- by normally keeping one SAT
+solver and one bit-blasted encoding alive across checks, instead of
+re-solving the conjoined assertion stack from scratch at every check. The
+structural circuit encoding is a conservative extension (fresh Tseitin
+variables and definitional clauses), so it is retained; what normally changes
+between checks is which root literals are asserted. On the SMT-LIB path a
+base-level assertion becomes a permanent unit clause; an assertion at a pushed
+level has its root literal *assumed* per check-sat, so a pop retracts it by
+simply no longer assuming it. Learned clauses therefore survive check-sats and
+pops by construction, until an explicit relief/policy rebuild starts a fresh
+backend epoch.
 
 Usage
 -----
 
-Nothing needs to be enabled. A session becomes incremental at its first
-``(push ...)``; sessions that never push are entirely untouched and take
+Nothing needs to be enabled. Unless explicitly forced with ``--incremental``, a
+session becomes incremental at its first explicit or internal assertion scope:
+normally ``(push ...)``, while ``check-sat-assuming`` creates a temporary scope
+itself. Ordinary sessions that create neither are entirely untouched and take
 the classic single-shot pipeline. Two refinements to know about:
 
-- The incremental driver engages from the *second* real solve of a
-  session. The first solve carries the largest all-new formula -- for
-  single-check-sat files that happen to use ``push``, the only formula --
-  and the batch pipeline's whole-formula simplification earns its keep
-  there; encoding reuse can only pay off once a second solve exists.
+- The incremental driver engages from the *third* real solve of a
+  session. The first two solves use the batch pipeline: two-check sessions
+  cannot repay the cost of constructing a persistent encoding, while longer
+  sessions can reuse it after engagement. ``check-sat`` calls made before the
+  first explicit/internal scope still count toward this threshold.
   ``--incremental`` on the command line engages the driver from the first
   solve instead.
 - Independent of the driver, the frontend keeps a per-level verdict
@@ -43,7 +46,7 @@ exists.
 
 The C API takes the same route: a session becomes incremental at its
 first ``vc_push`` (or from the first query with ``vc_setFlags(vc, 'i')``),
-and from the second solve on, ``vc_query`` runs on the persistent driver.
+and from the third solve on, ``vc_query`` runs on the persistent driver.
 ``vc_query`` decides *asserts AND NOT query*, and the negated query is
 appended as one more retractable level -- an assumption for exactly that
 call, retracted by construction. The API's historical model contract is
@@ -61,24 +64,32 @@ below.
 The driver, in one page
 -----------------------
 
-The driver (``lib/Incremental/IncrementalSolver.cpp``) holds **no
-per-level state**. Each check-sat receives the assertion stack as one
-conjunction per level; each level is split into its top-level conjuncts,
-and the assumption set is recomputed from scratch against permanent
-caches:
+The driver (``lib/Incremental/IncrementalSolver.cpp``) has no single
+first-class record for a level and receives no direct ``push``/``pop``
+notification. Each check-sat receives the assertion stack as one conjunction
+per level; each level is split into its top-level conjuncts, and the active
+preprocessing context and assumption set are reconstructed against permanent
+caches. A few targeted structures now track level prefixes or liveness across
+calls -- notably constant-bit propagation memos, promotion stability, and
+active array-read reference counts -- but each manages its own lifetime.
 
-- conjunct -> root literal (the encoding cache; a conjunct is bit-blasted
-  and Tseitin-encoded at most once per session),
-- the bit-blaster's term memo and one AIG manager,
-- AIG node -> CNF variable.
+The persistent encoding state includes:
 
-Recomputing rather than tracking levels is what makes ``push``/``pop``
-need no hooks at all: the parser's assertion stack is the single source
-of truth, and a popped assertion vanishes by not being present the next
-time. It also sidesteps a subtle trap: the per-level conjunction nodes
-are re-collapsed and re-simplified by the node factory on every check, so
-any state keyed by *level* rather than by *formula* would chase a moving
-target.
+- conjunct -> root literal (a conjunct is bit-blasted and Tseitin-encoded at
+  most once per SAT-backend epoch),
+- the session-long bit-blaster term memo and AIG manager,
+- AIG node -> CNF variable for the current SAT-backend epoch.
+
+A relief-valve or policy rebuild starts a new backend epoch: SAT variables and
+root literals are rematerialized, while the semantic and AIG caches survive.
+
+Reconstructing from the current snapshot is what lets ``push``/``pop`` need no
+driver hooks: the parser's assertion stack is the source of truth, and a
+popped assertion vanishes by not being present the next time. State that does
+track a level compares the current conjunction with its saved prefix and
+repairs or resets on divergence. The conjunction can also change when an
+assertion is appended at the current depth, so depth alone is never a stable
+identity.
 
 Each check-sat runs on a worker thread with a large explicit stack.
 Several passes walk formulas by recursion -- the per-conjunct
@@ -146,6 +157,26 @@ rather than by backtracking:
   or encoded, never-seen content has its symbols checked against the
   live eliminations, and a mention invalidates the cached preparation --
   it re-prepares with the variable now shared and the equation kept.
+
+Cross-level constant-bit propagation
+------------------------------------
+
+The definition context only propagates equations of recognised forms. A
+separate word-level constant-bit engine is fed the raw level conjunctions in
+prefix order and can discover fixed Boolean/bit-vector symbols and interior
+nodes across levels. Those fixings rewrite a level before preparation, cache
+keying, and array transformation, so fixed array indices can collapse long
+read-over-write chains before they are encoded.
+
+The engine and its per-level rewrite/fact memos persist while later checks only
+extend the previously fed stack. A pop, changed level, or base growth resets
+the engine and re-feeds the surviving prefix; matching memo entries replay the
+rewritten outputs produced under their original prefix. A fixing is never
+allowed to erase the assertion from which it was derived: a level's own
+fixings are deferred until deeper levels, and other adopted fixings bring an
+equivalent pinning fact asserted at the adopting level. Conflicts are recorded
+as part of the fed prefix so popping a contradictory level removes their
+effect.
 
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
@@ -219,7 +250,7 @@ general any cache in STP that keys on nodes must *hold* them.
 SAT backends
 ------------
 
-The one retraction mechanism is solving under assumptions, which every
+The normal retraction mechanism is solving under assumptions, which every
 wrapped backend except the simplifying MiniSat supports natively; that
 one is substituted with plain MiniSat under incremental use, since its
 variable elimination cannot accept later clauses over eliminated
@@ -257,11 +288,12 @@ trail reuse, only takes inside the backend's configuration window);
 ``off`` retires from the first driver solve; ``on`` never retires.
 Backends without the option simply never retire.
 
-Resource budgets are per check-sat: a conflict or time budget is re-armed
-at each check, measured from the arming point, and the check's refinement
-iterations share it -- on a long-lived solver, budgets measured from the
-solver's birth would shrink to nothing, which is pinned by a regression
-test.
+Resource budgets are re-armed per check-sat rather than measured from the
+persistent solver's birth. The time deadline spans all refinement solves in
+that check. Conflict-budget sharing is backend-dependent: CryptoMiniSat and
+the MiniSat-style counters can account for what earlier refinement calls used;
+CaDiCaL exposes no cumulative consumed-conflict count, so each internal
+``solve`` receives the configured conflict limit again.
 
 Testing and measurement
 -----------------------
@@ -313,3 +345,10 @@ Limitations
   all-new formula deliberately trades the batch pipeline's global
   simplification for encoding reuse that cannot pay off yet; the default
   engagement policy exists precisely because of this.
+
+Maintainer architecture review
+------------------------------
+
+``INCREMENTAL-SOLVING-REVIEW.md`` records the branch-versus-master review,
+comparisons with Bitwuzla, cvc5, and Z3, the state-lifetime audit, open risks,
+and the recommended instrumentation/CBP-undo/assertion-journal roadmap.

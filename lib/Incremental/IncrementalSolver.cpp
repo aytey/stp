@@ -436,11 +436,12 @@ struct IncrementalSolver::Impl
     return s;
   }
 
-  // ── Per-call constant-bit propagation over the live prefix ────────
+  // ── Session-persistent constant-bit propagation over the live prefix ──
   //
-  // One IncrementalCBP per check-sat, fed each live level's RAW
-  // word-level conjunction in stack order, each level's conjunction
-  // assumed true (it is asserted for this whole call). Facts
+  // One IncrementalCBP persists while the live stack extends its fed prefix;
+  // divergence resets and re-feeds it (see Cross-call reuse below). It is fed
+  // each live level's RAW word-level conjunction in stack order, each level's
+  // conjunction assumed true while that prefix is active. Facts
   // discovered while feeding level L depend only on levels <= L --
   // the pushed-definition context's prefix discipline, for the same
   // reason: rewritten forms stay stable as the stack grows
@@ -2511,13 +2512,13 @@ ToSATBase* IncrementalSolver::Impl::ensureAdapter()
 // active set is lowered, prepared and encoded as ONE per-round block,
 // assumed as a single root literal on the persistent solver, mirroring the
 // batch choreography (TopLevelSTP/TopLevelSTPAux) step for step. The
-// block's registry rows and witness symbols are solve-local by the
-// procedure's design (beginSolve wipes them), so nothing here touches the
-// driver's persistent lazy registry, and block roots are deliberately not
-// cached: a cached root would resurrect circuits over witnesses whose
-// records the next round regenerated. Reuse still happens one level down
-// -- the bit-blaster's memo shares every unchanged subcircuit, and learned
-// clauses over those survive.
+// block's registry rows and witness records are solve-local by the procedure's
+// design (beginSolve wipes them), so nothing here touches the driver's
+// persistent lazy registry. Generated names are deterministic, however, and
+// the structural block root is cached: an identical active stack recreates the
+// same names and root, while the solve-local records are rebuilt for checking.
+// The bit-blaster also shares every unchanged subcircuit, and learned clauses
+// over those survive.
 SOLVER_RETURN_TYPE
 IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
 {
