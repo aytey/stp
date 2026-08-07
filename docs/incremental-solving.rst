@@ -187,6 +187,12 @@ piece eliminated a symbol that has since become protected, the entry is
 invalidated and prepared again. Protecting eligible domains up front covers a
 fact discovered by a later piece in the same level.
 
+Cache hits revalidate every eliminated definition against the complete live
+scope, not only against CBP facts. Raw nodes are screened once when first seen,
+so an elimination cache entry can be created after a conflicting node was
+popped and screened; re-pushing that node must still retire the now-non-private
+entry.
+
 ``--incremental-cbp-reset`` retains the previous reset-and-prefix-re-feed
 behavior as a diagnostic oracle. It is intended for differential validation,
 not normal solving.
@@ -371,7 +377,7 @@ round of a monotonically growing live extensionality stack, and an ordinary
 root built mostly from AIG cones first introduced by popped formulas. Neither
 live shape may be mistaken for dead churn.
 
-At implementation closeout through ``56de220c``, the complete configured
+At implementation closeout through ``ee8685bb``, the complete configured
 RelWithDebInfo suites passed with CaDiCaL and floating point (116/116), MiniSat
 and floating point (115/115), and MiniSat without floating point (87/87). These
 configured-suite results do not replace the outstanding external-corpus
