@@ -33,7 +33,7 @@ THE SOFTWARE.
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/STPManager/STPManager.h"
-#include "stp/Sat/MinisatCore.h"
+#include "stp/Sat/SATSolverFactory.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
@@ -41,19 +41,14 @@ THE SOFTWARE.
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/ToSat/ToSATBase.h"
 
-#ifdef USE_CRYPTOMINISAT
-#include "stp/Sat/CryptoMinisat5.h"
-#endif
-#ifdef USE_RISS
-#include "stp/Sat/Riss.h"
-#endif
-#ifdef USE_CADICAL
-#include "stp/Sat/Cadical.h"
+#ifdef USE_MINISAT
+#include "stp/Sat/MinisatCore.h"
 #endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <map>
@@ -122,45 +117,48 @@ uint64_t profileMicros(uint64_t nanoseconds)
 // simplifying MiniSat eliminates variables, and a later batch of definitional
 // clauses may mention an eliminated variable again, which it cannot cope
 // with -- the same reason cvc5 turns SatELite off under incremental solving.
-SATSolver* makeBackend(UserDefinedFlags& uf)
+SATSolver* makeBackend(UserDefinedFlags& uf, bool warn)
 {
   SATSolver* s = NULL;
-  switch (uf.solver_to_use)
+  if (uf.solver_to_use == UserDefinedFlags::SIMPLIFYING_MINISAT_SOLVER)
   {
-    case UserDefinedFlags::CRYPTOMINISAT5_SOLVER:
-#ifdef USE_CRYPTOMINISAT
-      s = new CryptoMiniSat5(uf.num_solver_threads);
-#endif
-      break;
-    case UserDefinedFlags::RISS_SOLVER:
-#ifdef USE_RISS
-      s = new RissCore();
-#endif
-      break;
-    case UserDefinedFlags::CADICAL_SOLVER:
-#ifdef USE_CADICAL
-      s = new Cadical();
-#endif
-      break;
-    case UserDefinedFlags::SIMPLIFYING_MINISAT_SOLVER:
+    if (warn)
       std::cerr << "Warning: the simplifying MiniSat cannot retract "
                    "assumptions safely; incremental solving uses plain "
                    "MiniSat instead."
                 << std::endl;
-      break;
-    default:
-      break;
+#ifdef USE_MINISAT
+    s = new MinisatCore;
+#else
+    // Let the central factory issue its standard, precise diagnostic for a
+    // solver that was not compiled in.
+    return createSATSolver(uf);
+#endif
   }
+  else
+    s = createSATSolver(uf);
 
-  if (s != NULL && !s->supportsAssumptions())
+  if (!s->supportsAssumptions())
   {
     delete s;
-    s = NULL;
+    std::cerr << "ERROR: the selected SAT backend does not support "
+                 "incremental assumptions"
+              << std::endl;
+    exit(-1);
   }
 
-  if (s == NULL)
-    s = new MinisatCore;
-
+  // Match the batch solver's configuration. Some backends only accept the
+  // bias while they are still empty, so it belongs here for both the initial
+  // solver and every relief rebuild. Warn once for the session, not once per
+  // rebuild.
+  if (uf.search_bias != SearchBias::NONE &&
+      !s->setSearchBias(uf.search_bias) && warn)
+  {
+    std::cerr << "Warning: the SAT solver in use has no '"
+              << searchBiasName(uf.search_bias)
+              << "' search bias to select; using its own settings instead."
+              << std::endl;
+  }
   return s;
 }
 
@@ -1854,7 +1852,7 @@ struct IncrementalSolver::Impl
   Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_,
        ArrayTransformer* batchAT_)
       : bm(bm_), ce(ce_), batchSimp(batchSimp_), batchAT(batchAT_),
-        solver(makeBackend(bm_->UserFlags)), substitutionMap(bm_),
+        solver(makeBackend(bm_->UserFlags, true)), substitutionMap(bm_),
         simp(bm_, &substitutionMap),
         bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
         trueVar(-1), lastUnsat(false), lastUnsatCoarse(false),
@@ -2851,7 +2849,7 @@ struct IncrementalSolver::Impl
     // re-promotes on the next call's tail.
     promotedDepth = 0;
 
-    solver.reset(makeBackend(bm->UserFlags));
+    solver.reset(makeBackend(bm->UserFlags, false));
     solver->enableRefinement(true);
     if (trailReuseAllowed)
       solver->enableTrailReuse();

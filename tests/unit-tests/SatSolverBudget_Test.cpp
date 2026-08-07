@@ -6,8 +6,13 @@
  * LICENSE: Please view LICENSE file in the home dir of this Program
  ********************************************************************/
 
+#include "stp/Sat/SATSolver.h"
+#ifdef USE_CRYPTOMINISAT
 #include "stp/Sat/CryptoMinisat5.h"
+#endif
+#ifdef USE_MINISAT
 #include "stp/Sat/MinisatCore.h"
+#endif
 #include <gtest/gtest.h>
 
 // A conflict budget belongs to the query it was armed for, measured from
@@ -24,6 +29,8 @@
 
 namespace
 {
+
+#if defined(USE_CRYPTOMINISAT) || defined(USE_MINISAT)
 
 // Pigeonhole 6 pigeons / 5 holes over fresh solver variables, every clause
 // guarded by ~sel so the whole formula is retractable.
@@ -85,6 +92,8 @@ void budgetIsPerArming(stp::SATSolver& s)
   EXPECT_FALSE(timeout);
 }
 
+#endif
+
 } // namespace
 
 #ifdef USE_CRYPTOMINISAT
@@ -95,8 +104,10 @@ TEST(SatSolverBudget, cryptominisat_budget_is_per_arming)
 }
 #endif
 
+#ifdef USE_MINISAT
 TEST(SatSolverBudget, minisat_budget_is_per_arming)
 {
   stp::MinisatCore s;
   budgetIsPerArming(s);
 }
+#endif

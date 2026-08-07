@@ -36,6 +36,15 @@ using namespace MiniSat;
 namespace stp
 {
 
+// STP's literal encoding (variable*2 + sign) is the one MiniSat itself
+// uses, so translation is a straight reinterpretation of each literal.
+static void convert(const SATSolver::vec_literals& ps,
+                    Minisat::vec<Minisat::Lit>& out)
+{
+  for (int i = 0; i < ps.size(); i++)
+    out.push(Minisat::toLit(SATSolver::toInt(ps[i])));
+}
+
 uint8_t MinisatCore::value(uint32_t x) const
 {
   return Minisat::toInt(s->value(x));
@@ -60,7 +69,9 @@ void MinisatCore::setMaxConflicts(int64_t max_confl)
 bool MinisatCore::addClause(
     const SATSolver::vec_literals& ps) // Add a clause to the solver.
 {
-  return s->addClause(ps);
+  Minisat::vec<Minisat::Lit> clause;
+  convert(ps, clause);
+  return s->addClause_(clause);
 }
 
 void MinisatCore::unsatAssumptions(const vec_literals& assumps,
@@ -72,7 +83,9 @@ void MinisatCore::unsatAssumptions(const vec_literals& assumps,
   out.clear();
   for (int i = 0; i < assumps.size(); i++)
   {
-    if (s->conflict.has(~assumps[i]))
+    const Minisat::Lit assumed =
+        Minisat::toLit(SATSolver::toInt(assumps[i]));
+    if (s->conflict.has(~assumed))
       out.push_back(assumps[i].x);
   }
 }
@@ -91,7 +104,9 @@ bool MinisatCore::propagateWithAssumptions(
     return false;
 
   setMaxConflicts(0);
-  Minisat::lbool ret = s->solveLimited(assumps);
+  Minisat::vec<Minisat::Lit> ms_assumps;
+  convert(assumps, ms_assumps);
+  Minisat::lbool ret = s->solveLimited(ms_assumps);
   assert(s->conflicts ==0);
   return ret != (Minisat::lbool)Minisat::l_False;
 }
@@ -119,7 +134,9 @@ bool MinisatCore::solveWithAssumptionsInternal(
   if (!s->simplify())
     return false;
 
-  Minisat::lbool ret = s->solveLimited(assumps);
+  Minisat::vec<Minisat::Lit> ms_assumps;
+  convert(assumps, ms_assumps);
+  Minisat::lbool ret = s->solveLimited(ms_assumps);
   if (ret == (Minisat::lbool)Minisat::l_Undef)
   {
     timeout_expired = true;
@@ -143,7 +160,7 @@ void MinisatCore::setVerbosity(int v)
   s->verbosity = v;
 }
 
-unsigned long MinisatCore::nVars() const
+uint32_t MinisatCore::nVars() const
 {
   return s->nVars();
 }

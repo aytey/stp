@@ -8,10 +8,12 @@
 // CaDiCaL's lucky-phase probing can satisfy small instances before any
 // decision consults a phase, so asserting model shapes here would test
 // the solver's mood, not our contract.)
-#include "stp/Sat/MinisatCore.h"
 #include "stp/Sat/SATSolver.h"
 #include <gtest/gtest.h>
 
+#ifdef USE_MINISAT
+#include "stp/Sat/MinisatCore.h"
+#endif
 #ifdef USE_CADICAL
 #include "stp/Sat/Cadical.h"
 #endif
@@ -19,6 +21,7 @@
 using stp::SATSolver;
 
 // The base-class default ignores hints; solving must be unaffected.
+#ifdef USE_MINISAT
 TEST(SuggestPhase, MinisatIgnoresHints)
 {
   stp::MinisatCore s;
@@ -31,6 +34,7 @@ TEST(SuggestPhase, MinisatIgnoresHints)
   ASSERT_TRUE(s.solve(timed_out));
   EXPECT_EQ(s.modelValue(a), s.true_literal());
 }
+#endif
 
 #ifdef USE_CADICAL
 

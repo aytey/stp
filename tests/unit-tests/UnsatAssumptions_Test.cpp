@@ -5,12 +5,14 @@
 // qualifies, so the assertions accept supersets but insist the culprit is
 // present and that irrelevant assumptions are droppable: solving again
 // without the reported literals' complement must stay consistent.
-#include "stp/Sat/MinisatCore.h"
 #include "stp/Sat/SATSolver.h"
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <vector>
 
+#ifdef USE_MINISAT
+#include "stp/Sat/MinisatCore.h"
+#endif
 #ifdef USE_CADICAL
 #include "stp/Sat/Cadical.h"
 #endif
@@ -51,7 +53,7 @@ template <class Backend> void culpritIsReported()
   {
     bool known = false;
     for (int i = 0; i < assumps.size(); i++)
-      known |= assumps[i].x == lit;
+      known |= static_cast<int>(assumps[i].x) == lit;
     EXPECT_TRUE(known);
   }
   // Dropping the culprit leaves a satisfiable assumption set.
@@ -63,10 +65,12 @@ template <class Backend> void culpritIsReported()
 
 } // namespace
 
+#ifdef USE_MINISAT
 TEST(UnsatAssumptions, MinisatReportsCulprit)
 {
   culpritIsReported<stp::MinisatCore>();
 }
+#endif
 
 #ifdef USE_CADICAL
 TEST(UnsatAssumptions, CadicalReportsCulprit)

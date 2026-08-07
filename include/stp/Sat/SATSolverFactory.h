@@ -1,7 +1,7 @@
 /********************************************************************
- * AUTHORS: Trevor Hansen
+ * AUTHORS: Andrew Teylu
  *
- * BEGIN DATE: 2010
+ * BEGIN DATE: August, 2026
  *
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,53 +22,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ********************************************************************/
 
-#ifndef SIMPLIFYINGMINISAT_H_
-#define SIMPLIFYINGMINISAT_H_
-
-#include "SATSolver.h"
-
-namespace Minisat
-{
-class SimpSolver;
-}
+#ifndef SATSOLVERFACTORY_H_
+#define SATSOLVERFACTORY_H_
 
 namespace stp
 {
-class SimplifyingMinisat : public SATSolver
-{
-  Minisat::SimpSolver* s;
+class SATSolver;
+struct UserDefinedFlags;
 
-public:
-  SimplifyingMinisat();
-  ~SimplifyingMinisat();
-
-  bool addClause(const vec_literals& ps) override; // Add a clause to the solver.
-
-  bool okay() const override; // FALSE means solver is in a conflicting state
-
-  bool simplify() override; // Removes already satisfied clauses.
-
-  void setMaxConflicts(int64_t max_confl) override;
-
-  void setVerbosity(int v) override;
-
-  uint8_t modelValue(uint32_t x) const override;
-
-  uint32_t newVar() override;
-
-  uint32_t nVars() const override;
-
-  void printStats() const override;
-
-  lbool true_literal() const override { return ((uint8_t)0); }
-  lbool false_literal() const override { return ((uint8_t)1); }
-  lbool undef_literal() const override { return ((uint8_t)2); }
-
-  void setFrozen(uint32_t x) override;
-
-protected:
-  bool solveInternal(bool& timeout_expired) override;
-};
+// Construct the SAT backend that flags.solver_to_use selects, or exit with
+// a diagnostic if that backend was not compiled in. The caller owns the
+// returned solver.
+SATSolver* createSATSolver(const UserDefinedFlags& flags);
 }
 
-#endif /* CORE_H_ */
+#endif

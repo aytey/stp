@@ -1,4 +1,4 @@
-# AUTHORS: Dan Liew, Ryan Govostes, Mate Soos
+# AUTHORS: Trevor Hansen
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -18,31 +18,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-set(sat_lib_to_add
-    SATSolverFactory.cpp
+add_executable(difficulty_bench
+    main.cpp
 )
 
-if (USE_MINISAT)
-    set(sat_lib_to_add ${sat_lib_to_add}
-        MinisatCore.cpp
-        SimplifyingMinisat.cpp
-    )
-endif()
-
-if (USE_CRYPTOMINISAT)
-    include_directories(${CRYPTOMINISAT5_INCLUDE_DIRS})
-    set(sat_lib_to_add ${sat_lib_to_add} CryptoMinisat5.cpp)
-endif()
-
-if (USE_CADICAL)
-    include_directories(${CADICAL_INCLUDE_DIR})
-    set(sat_lib_to_add ${sat_lib_to_add} Cadical.cpp)
-endif()
-
-
-if (USE_RISS)
-    set(sat_lib_to_add ${sat_lib_to_add} RissCore.cpp)
-endif()
-
-add_library(sat OBJECT ${sat_lib_to_add})
-
+# difficulty_bench builds the AIG itself rather than reaching it through
+# libstp: BBNodeManagerAIG's inline constructor and destructor call
+# Aig_ManStart and Aig_ManStop. libstp localises the ABC symbols it links
+# (--exclude-libs, see lib/CMakeLists.txt), so a direct user of ABC has to
+# link it directly.
+target_link_libraries(difficulty_bench
+    stp
+    $<TARGET_FILE:libabc-pic>
+)
+# $<TARGET_FILE:...> names a file rather than a target, so the build order has
+# to be spelled out, exactly as lib/CMakeLists.txt does for libstp.
+add_dependencies(difficulty_bench libabc-pic)

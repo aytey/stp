@@ -70,7 +70,8 @@ bool RissCore::addClause(
   Riss::vec<Lit> &v = *(Riss::vec<Riss::Lit> *)riss_clause;
   v.capacity(ps.size());
   v.clear();
-  for(int i = 0 ; i < ps.size(); ++ i) v.push_(Riss::toLit(Minisat::toInt(ps[i])));
+  for(int i = 0 ; i < ps.size(); ++ i)
+    v.push_(Riss::toLit(SATSolver::toInt(ps[i])));
 
   return s->addClause(v);
 }
@@ -94,7 +95,8 @@ bool RissCore::propagateWithAssumptions(
   Riss::vec<Lit> &v = *(Riss::vec<Riss::Lit> *)riss_clause;
   v.capacity(assumps.size());
   v.clear();
-  for(int i = 0 ; i < assumps.size(); ++ i) v.push_(Riss::toLit(Minisat::toInt(assumps[i])));
+  for(int i = 0 ; i < assumps.size(); ++ i)
+    v.push_(Riss::toLit(SATSolver::toInt(assumps[i])));
 
   Riss::lbool ret = s->solveLimited(v);
   assert(s->conflicts ==0);
@@ -126,7 +128,7 @@ bool RissCore::solveWithAssumptionsInternal(
   Riss::vec<Riss::Lit> riss_assumps;
   riss_assumps.capacity(assumps.size());
   for (int i = 0; i < assumps.size(); ++i)
-    riss_assumps.push_(Riss::toLit(Minisat::toInt(assumps[i])));
+    riss_assumps.push_(Riss::toLit(SATSolver::toInt(assumps[i])));
 
   Riss::lbool ret = s->solveLimited(riss_assumps);
   if (ret == (Riss::lbool)l_Undef)
@@ -152,7 +154,7 @@ void RissCore::setVerbosity(int v)
   s->verbosity = v;
 }
 
-unsigned long RissCore::nVars() const
+uint32_t RissCore::nVars() const
 {
   return s->nVars();
 }

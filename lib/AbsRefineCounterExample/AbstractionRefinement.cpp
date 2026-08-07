@@ -43,7 +43,28 @@ void getSatVariables(const ASTNode& a, vector<unsigned>& v_a,
 {
   ToSATBase::ASTNodeToSATVar::iterator it = satVar.find(a);
   if (it != satVar.end())
+  {
     v_a = it->second;
+
+    // ToCNFAIG::fill_node_to_var() writes ~0u for a bit of a symbol that
+    // reached no SAT variable, and the same value arrives from a CNF
+    // generator that left an object's variable number at -1. getEquals()
+    // indexes this vector straight into mkLit(), where the sentinel wraps
+    // into a variable far past the solver's range: MiniSat then indexes
+    // its assignment array out of bounds, and Cadical is handed a literal
+    // beyond max_var.
+    //
+    // There is no safe recovery. Allocating a fresh variable for the
+    // missing bit -- what the branch below does for a symbol that was
+    // never bit-blasted at all -- would carry no connection to the term
+    // the axiom is about, so the congruence clause could fail to rule out
+    // the candidate model it was built from. The array-equality encoder
+    // rejects the same shape for the same reason; see
+    // ExtensionalityContext::checkPreencodedBV().
+    for (size_t i = 0, size = v_a.size(); i < size; ++i)
+      if (v_a[i] == ~((unsigned)0))
+        FatalError("An array axiom leaf has a bit with no SAT variable: ", a);
+  }
   else if (!a.isConstant())
   {
     assert(a.GetKind() == SYMBOL);
@@ -64,8 +85,8 @@ void getSatVariables(const ASTNode& a, vector<unsigned>& v_a,
 // (which it returns).
 // Because it's used to create array axionms (a=b)-> (c=d), it can be
 // used to only add one of the two polarities.
-Minisat::Var getEquals(SATSolver& SatSolver, const ASTNode& a, const ASTNode& b,
-                       ToSATBase::ASTNodeToSATVar& satVar, Polarity polary)
+uint32_t getEquals(SATSolver& SatSolver, const ASTNode& a, const ASTNode& b,
+                   ToSATBase::ASTNodeToSATVar& satVar, Polarity polary)
 {
   const unsigned width = a.GetValueWidth();
   assert(width == b.GetValueWidth());
@@ -75,19 +96,6 @@ Minisat::Var getEquals(SATSolver& SatSolver, const ASTNode& a, const ASTNode& b,
 
   getSatVariables(a, v_a, SatSolver, satVar);
   getSatVariables(b, v_b, SatSolver, satVar);
-
-  // A symbol can be PARTIALLY encoded: present in the map, but with the
-  // missing-bit marker where the formula's cone never needed a bit. The
-  // caller must totalise such symbols before encoding axioms over them;
-  // a literal built from the marker corrupts the axiom silently on most
-  // backends and crashes CaDiCaL's factor translation. Fail loudly: this
-  // is a caller bug, never an input property.
-  for (size_t i = 0; i < v_a.size(); i++)
-    if (v_a[i] == 0xFFFFFFFFu)
-      FatalError("getEquals: congruence axiom over an unencoded bit of: ", a);
-  for (size_t i = 0; i < v_b.size(); i++)
-    if (v_b[i] == 0xFFFFFFFFu)
-      FatalError("getEquals: congruence axiom over an unencoded bit of: ", b);
 
   // The only time v_a or v_b will be empty is if "a" resp. "b" is a constant.
 
@@ -238,10 +246,10 @@ struct AxiomToBe
 void applyAxiomToSAT(SATSolver& SatSolver, AxiomToBe& toBe,
                      ToSATBase::ASTNodeToSATVar& satVar)
 {
-  Minisat::Var a = getEquals(SatSolver, toBe.index0, toBe.index1, satVar,
-                             Polarity::LEFT_ONLY);
-  Minisat::Var b = getEquals(SatSolver, toBe.value0, toBe.value1, satVar,
-                             Polarity::RIGHT_ONLY);
+  uint32_t a = getEquals(SatSolver, toBe.index0, toBe.index1, satVar,
+                         Polarity::LEFT_ONLY);
+  uint32_t b = getEquals(SatSolver, toBe.value0, toBe.value1, satVar,
+                         Polarity::RIGHT_ONLY);
   SATSolver::vec_literals satSolverClause;
   satSolverClause.push(SATSolver::mkLit(a, true));
   satSolverClause.push(SATSolver::mkLit(b, false));

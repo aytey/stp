@@ -5,21 +5,25 @@
 // exact usage pattern -- solves whose assumption sequences share prefixes,
 // clauses added between solves under unchanged assumptions -- keeps
 // producing the right verdicts and model values.
-#include "stp/Sat/MinisatCore.h"
 #include "stp/Sat/SATSolver.h"
 #include <gtest/gtest.h>
 
+#ifdef USE_MINISAT
+#include "stp/Sat/MinisatCore.h"
+#endif
 #ifdef USE_CADICAL
 #include "stp/Sat/Cadical.h"
 #endif
 
 using stp::SATSolver;
 
+#ifdef USE_MINISAT
 TEST(TrailReuse, MinisatReportsNoSupport)
 {
   stp::MinisatCore s;
   EXPECT_FALSE(s.enableTrailReuse());
 }
+#endif
 
 #ifdef USE_CADICAL
 
