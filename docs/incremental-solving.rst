@@ -190,7 +190,10 @@ proportional to the number of levels. The literal is cached on the
 level's sorted root-literal set, not its formula: pushed-level
 substitutions can make the same formula encode to different roots under
 different live definitions, and the roots are what the literal must
-imply.
+imply. Its implication clauses count as live only while that activation
+literal is assumed. If the activation is retired, both its implications and
+the unit that pins it false remain in the backend, but are classified as dead
+mass that a relief rebuild may reclaim.
 
 Arrays
 ------
@@ -203,7 +206,11 @@ lazy CEGAR loop is the batch pipeline's own (driven through a small
 ``ToSATBase`` adapter that re-solves under the check-sat's assumptions),
 and the congruence axioms it learns are added as *permanent* clauses --
 they are tautologies of the canonical abstraction, valid whichever levels
-are live. The driver's loop also carries a guard the batch pipeline never
+are live. For growth accounting they are nevertheless charged to the
+deterministic active conjunction that caused them to be emitted. That owner
+classification keeps a repeated live query from triggering rebuilds while
+allowing lemmas associated only with popped query shapes to become reclaimable
+mass. The driver's loop also carries a guard the batch pipeline never
 needed: a round that rejects the candidate model while finding no
 congruence axiom to add cannot be repaired by refinement -- it means the
 encoding and the word-level evaluation disagree somewhere -- and dies as
@@ -250,6 +257,16 @@ subtlety makes this work: STP garbage-collects unreferenced interior
 nodes and re-mints their numbers, and the deterministic names are keyed
 on node numbers -- so the driver pins each round's node spine, and in
 general any cache in STP that keys on nodes must *hold* them.
+
+The same deterministic block node owns the block's clause mass for the relief
+valve. A newly submitted clause delta is not by itself a safe live-size
+estimate: a monotonically growing block can reuse most of an AIG cone that an
+earlier block first encoded. Normal solving therefore computes the complete
+unique AIG-cone mass lazily, only if the inexpensive retained/live ratio would
+otherwise permit a rebuild. ``--incremental-profile`` opts into the exact cone
+measurement for every active extensionality block. This keeps the normal path
+from paying for a whole-cone walk on every check while preventing live,
+monotonically growing stacks from being mistaken for dead churn.
 
 SAT backends
 ------------
@@ -308,7 +325,9 @@ freeze rule has a dedicated test that fails as sat-on-unsat without it),
 arrays with refinement across rounds, eager Ackermannisation, floating
 point, the extensionality block and its cache, and the driver's own
 reuse counters (run with ``-s``, the driver reports how much each check
-encoded -- a repeat check must report zero).
+encoded -- a repeat check must report zero). The relief-valve cases include
+forced extensionality churn that must rebuild soundly and a monotonically
+growing live extensionality stack that must *not* be mistaken for dead churn.
 
 ``--incremental-profile`` enables a lower-noise profile for each invocation of
 the incremental driver. Pair it with ``--incremental`` to route the first
@@ -342,18 +361,51 @@ worker is launched, but does not include frontend assertion snapshot
 construction, checks answered from the frontend cache or batch path, or a
 model materialized lazily after the solve.
 
-``driver-clauses`` counts clauses emitted through the driver's structural and
-activation helpers; refinement and extensionality currently add clauses
-directly to the backend and are intentionally not misreported as part of that
-number.
+Clause counters have deliberately different lifetimes and meanings:
 
-``scripts/incremental-bench.py`` times a solver over a corpus, records
-each file's answer sequence, and diffs a later run against a saved
-baseline -- so a change can be checked for performance and, more
-importantly, for answer agreement. The main soundness instrument during
-development was differential testing between the batch and incremental
-engines over SMT-LIB incremental benchmarks: the two must agree on every
-answer of every file.
+- ``driver-clauses`` is the number of clauses submitted through STP's
+  backend-neutral SAT interface: the current check's delta on a per-check
+  record, and the cumulative driver-lifetime total on the session record. It
+  includes structural, activation, unit, extensionality and theory-refinement
+  submissions. The lifetime total is carried across backend rebuilds.
+- ``refinement-clauses`` is the subset of ``driver-clauses`` emitted by lazy
+  array or extensionality checking/refinement. It is a classification, not an
+  additional total.
+- ``retained-clauses`` is the exact number submitted to the *current* SAT
+  backend epoch. It comes from the common ``SATSolver`` facade, so theory code
+  that only holds a generic solver reference cannot bypass it. It can fall
+  when a rebuild replaces the backend and does not try to mirror clauses a
+  backend has internally simplified away.
+- ``live-clauses`` is the current solve's conservative ownership estimate and
+  ``peak-live-clauses`` is its high-water mark in the current backend epoch.
+  The estimate includes live structural keys, permanent base and promoted
+  units, implications of activation literals assumed by this solve, and
+  owner-keyed theory lemmas. Retired activation implications and pins remain
+  retained but dead. All live estimates are capped by the retained total.
+
+``scripts/incremental-bench.py`` retains its legacy single-solver mode, but a
+closeout campaign should use paired ``--solver-a``/``--solver-b`` mode. It
+records every ``sat``, ``unsat`` and ``unknown`` answer, including the answer
+prefix produced before a timeout, and gives each pair one of three verdicts:
+
+- ``FULL_OK``: both processes completed successfully with identical complete
+  answer sequences;
+- ``PREFIX_ONLY_INCONCLUSIVE``: their common prefix agrees, but at least one
+  process did not complete successfully; this is not a correctness success;
+- ``DISAGREEMENT``: the common prefix differs, or two completed processes
+  produced different sequence lengths.
+
+The harness deterministically balances AB/BA execution order by file and run,
+flushes each complete pair, and supports identity-checked ``--resume`` plus
+reproducible manifests and shards. Sidecar metadata fingerprints each solver's
+binary hash, arguments, embedded revision and build options, dynamic-library
+listing, and linked ``libstp`` hash; it also refuses to resume against changed
+identity or finish after an arm changes underneath the run. Outliers,
+timeouts, and non-``FULL_OK`` results receive a longer revalidation run unless
+that phase is explicitly deferred. The main soundness instrument during
+development remains answer-sequence differential testing between the batch
+and incremental engines: they must agree on every answer they both produce,
+and only complete identical streams count as a full success.
 
 Limitations
 -----------
@@ -361,10 +413,15 @@ Limitations
 - The persistent encoding grows monotonically, and the relief valve is
   coarse: once the solver's variable count passes
   ``--incremental-reencode-limit`` (default one million; 0 disables) and
-  most encodings belong to popped, never-returning content, the solver is
-  rebuilt from the live stack -- semantic stores survive and active
-  content re-encodes through the bit-blast memo, but learned clauses and
-  refinement axioms start over. The rebuild boundary is also the one
+  the current backend's retained clause submissions substantially exceed the
+  peak conservatively owned by a live working set, the solver is rebuilt from
+  the live stack. Structural mass is keyed by its formula, base/promoted units
+  are permanently live for the epoch, activation implications are live only
+  while assumed, and theory lemmas are charged to their originating active
+  conjunction. Extensionality uses the lazy full-cone repair described above.
+  Semantic stores survive and active content re-encodes through the bit-blast
+  memo, but learned clauses and refinement axioms start over. The rebuild
+  boundary is also the one
   place a GLOBAL simplification pass over the base is both sound and
   free -- everything re-encodes anyway, and the base never retracts --
   so the driver runs the batch equality-propagation, simplification and

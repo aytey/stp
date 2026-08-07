@@ -1,10 +1,11 @@
 # Incremental solving in STP: architecture review and roadmap
 
-Status: 2026-08-07. The architectural comparison describes STP branch
+Status: 2026-08-07. The architectural comparison originally read STP branch
 `incremental-solving` at `0ff900332698c36f206476abfaf4f79d4678325a`, local
 `master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the following
-reference checkouts. The implementation-results section below records the
-subsequent instrumentation and CBP rollback work through `842b03ef`.
+reference checkouts. The implementation and closeout status is updated through
+branch `45fe552b40ded411124761eddef54a359c0f7eaa`, which contains the merge of
+`master` at `34f69be1989910fd053008715de4b65c095fd770`.
 
 | Solver | Revision read |
 |---|---|
@@ -12,9 +13,12 @@ subsequent instrumentation and CBP rollback work through `842b03ef`.
 | cvc5 | `e8c0387caeceaf631e0d3b114373b1bc7942334b` |
 | Z3 | `4af3410d104ad291437275ad1553d2b82b152727` |
 
-The paths and line numbers below refer to those revisions. This is a
-maintainer-facing design record. `docs/incremental-solving.rst` remains the
-user-facing description of the implemented feature.
+Reference-solver paths and line numbers, and STP passages explicitly labelled
+as the original review, refer to those original revisions; implementation
+status without that qualification refers to `45fe552b`. Line numbers may have
+drifted as the branch was closed out. This is a maintainer-facing design
+record. `docs/incremental-solving.rst` remains the user-facing description of
+the implemented feature.
 
 ## Executive conclusions
 
@@ -62,10 +66,10 @@ of that choice.
 
 That does **not** make a general scoped-state refactor the immediate next patch.
 The active-read rebuild risk has been fixed, semantic reconstruction has been
-instrumented, and the measured CBP whole-prefix re-feed has been replaced by a
-differential-tested rollback trail (see the implementation update below). The
-remaining immediate work is retained-clause/extensionality growth accounting,
-master integration, documentation reconciliation, and the owed quiet-box full
+instrumented, the measured CBP whole-prefix re-feed has been replaced by a
+differential-tested rollback trail, retained/extensionality clause accounting
+has been repaired, and current master has been merged (see the implementation
+updates below). The remaining branch-close gate is the owed quiet-box full
 campaign. After that, introduce a versioned assertion journal and independent
 cursors only when profiles or recurring lifetime bugs justify the migration of
 another semantic consumer.
@@ -127,12 +131,13 @@ re-fed levels disappeared and CBP time fell from 161.2 ms to 88.6 ms. RTOS had
 only 86 re-fed nodes under the oracle, so removing them could not materially
 change its roughly one-second run time.
 
-Correctness validation includes four engine unit tests; the complete 112-test
-configured suite; all 49 incremental SMT-LIB regression files;
+Correctness validation for the CBP rollback checkpoint included four engine
+unit tests; the complete configured suite at that checkpoint; all 49
+then-existing incremental SMT-LIB regression files;
 trail-versus-reset answer comparison both normally and under `--check-sanity`;
 conflict/pop/replacement, multi-level rollback, caller-substitution retraction,
 and cross-level array-fold regressions; and the Industrial specimen's
-164-answer stream. The broader campaign remains a pre-merge obligation.
+164-answer stream. The broader campaign remains a branch-close obligation.
 
 The result supports keeping the trail. The next architectural step remains an
 assertion journal with independent consumer cursors, but it is now a
@@ -140,19 +145,121 @@ maintainability/lifetime project that should proceed only after the remaining
 branch-close work and further profiling. It should not be presented as an RTOS
 cold-start optimization.
 
+## Implementation update: integration, accounting, and campaign harness
+
+The other concrete closeout work is now implemented through `45fe552b`:
+
+- merge `4b60b401` integrates `master` through `34f69be1`, including the
+  backend-neutral SAT literal/factory work and optional-MiniSat build shape;
+- `db4aab0a` makes clause submission a non-virtual `SATSolver` facade operation
+  and counts every submission before delegating to a backend, so generic theory
+  code cannot bypass the count;
+- `c604e923` replaces the relief valve's partial structural proxy with exact
+  current-epoch retained submissions plus explicit live ownership, and gives
+  the profile separate lifetime, refinement, retained, live, and peak-live
+  views;
+- `45fe552b` adds forced extensionality churn and monotonic-live regressions;
+  and
+- `30680576` repairs the paired campaign harness and adds fake-solver tests for
+  its sequence, timeout, order, resume, provenance, and revalidation behavior.
+
+### Retained total versus lifetime submissions
+
+`SATSolver::submittedClauses()` is the exact number of input-clause submissions
+to the current backend instance. It counts at the common interface boundary,
+including a submission that discovers an already-inconsistent formula, rather
+than relying on backend statistics that may omit simplified clauses or not
+exist. This is the relief valve's retained total for the current backend epoch.
+
+Before a backend rebuild, the driver adds that epoch's count to
+`retiredClauseSubmissions`. The profile's historical `driver-clauses` name now
+means all clause submissions during the current check, and the session record
+is their driver-lifetime cumulative total across rebuilds. The separately
+reported `refinement-clauses` is a subset of that total: clauses emitted by
+lazy-array or extensionality checking/refinement. It must not be added to
+`driver-clauses` again. `retained-clauses`, by contrast, resets with the backend
+and reports only the current epoch.
+
+### Live and peak ownership
+
+The retained total is exact; live mass is deliberately a conservative
+ownership model used as the relief ratio's denominator:
+
+- structural clauses are charged to the deterministic formula key whose
+  encoding first submitted them;
+- base root definitions and units, restored-base units, and promoted-level
+  units contribute to permanent `baseLiveMass` for the epoch;
+- activation implication clauses are live only while that activation literal
+  appears in the current assumptions;
+- retiring an activation forgets its live ownership, while its implication
+  clauses and false pin remain retained dead mass; and
+- theory-valid array/refinement lemmas are owner-keyed to the deterministic
+  active conjunction or extensionality block that caused them to be emitted.
+
+Owner-keying the theory lemmas is intentional. Calling every old lemma live
+would hide refinement-heavy dead growth; calling every permanent lemma dead
+would rebuild repeatedly on an unchanged live query. The live estimate is
+capped by the exact retained total, and its current value and epoch high-water
+mark are exposed as `live-clauses` and `peak-live-clauses`.
+
+Whole-array equality needs one additional correction. Its deterministic
+`inputToSat` block key owns newly submitted structural clauses, but that delta
+can be much smaller than the current live block when a growing block reuses AIG
+nodes introduced by earlier blocks. The driver retains the block's regular AIG
+root and can count the complete unique encoded cone (three clauses per AND and
+one unit if the cone reaches the shared true node). Normal solving pays for
+that exact walk lazily,
+only when the cheap retained/peak estimate would otherwise authorize relief;
+opt-in profiling computes the exact cone for every active extensionality block.
+This preserves normal-path cost while preventing monotonic live growth from
+looking like reclaimable churn.
+
+The forced-churn regression proves extensionality-only dead growth can fire the
+valve and remain sound across the rebuild. The monotonic-live regression proves
+that successively larger live extensionality blocks repair the peak cone and do
+not spuriously rebuild. Profile coverage also checks that extensionality and
+refinement submissions appear in the total, that refinement is a subset, and
+that the current live estimate does not exceed the retained total.
+
+### Repaired campaign harness
+
+Paired mode now takes explicit solver A and B paths and records every
+`sat`/`unsat`/`unknown` answer, including the answer prefix available when a
+process times out. Its verdicts have narrow meanings:
+
+- `FULL_OK`: both arms completed successfully with identical full sequences;
+- `PREFIX_ONLY_INCONCLUSIVE`: the common prefix agrees but at least one arm did
+  not complete successfully, which is not a correctness success; and
+- `DISAGREEMENT`: an answer in the common prefix differs, or two completed arms
+  produced sequences of different lengths.
+
+Execution order is deterministically balanced AB/BA by file and run. Complete
+pairs are flushed as they finish; `--resume` accepts them only when the
+sidecar manifest and identity metadata still match. Sorted manifests and
+deterministic `--shard-index`/`--shard-count` selection make independent chunks
+reproducible. Each arm's metadata includes its binary SHA-256, arguments,
+embedded STP SHA and compilation options, `ldd` output, and hashes of linked
+`libstp` libraries; the harness also checks that the arm did not change during
+the run. Non-full results, timeouts, and large timing ratios are selected for a
+longer revalidation phase, which may be explicitly deferred.
+
+The harness is ready; no new whole-corpus result is claimed in this document.
+The full quiet-machine campaign remains outstanding.
+
 ## Scope and evidence
 
-The branch and local master have merge base
-`f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. The branch has 57 branch-side
-commits; local master has two commits not yet integrated, `d272dc2a` and
-`fa211128`. The three-dot diff contains 96 files, 9,446 additions, and 73
-deletions. The main implementation is the 3,844-line
-`lib/Incremental/IncrementalSolver.cpp`.
+The original review compared branch `0ff90033` and then-local master from merge
+base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Current branch `45fe552b`
+contains master `34f69be1` through merge `4b60b401`; there is no unmerged
+master-side delta in this reviewed snapshot. Historical file/line/count claims
+from the initial audit should not be projected onto the larger current
+implementation.
 
 The recorded performance figures in this document come from `HANDOVER.md` and
-the branch history. The present architecture review did not independently
-repeat the 22,999-file campaign. The local regression suite was independently
-run during the review and passed 111/111 tests.
+the branch history. Neither the initial architecture review nor this
+documentation update repeated the 22,999-file campaign against the current
+tip. Focused and configured-suite checks at the implementation checkpoints do
+not replace that campaign.
 
 The original pre-implementation investigation is preserved in commit
 `f5235e54` (`Incremental solving: architecture review and phased plan`). It was
@@ -367,10 +474,14 @@ hook must preserve both contracts.
 
 The permanent encoding accumulates dead cones after pops. The relief valve
 rebuilds a fresh SAT backend from live content once the solver is large and
-tracked encoded clause mass substantially exceeds the peak live working set
-(`IncrementalSolver.cpp:2003-2123, 2988-3010`). The AIG and semantic registries
-survive, but SAT variables, root literals, learned clauses, and refinement
-lemmas are rematerialized or re-derived.
+the exact current-epoch submitted-clause total substantially exceeds the peak
+conservatively owned by a live working set. Structural formula keys,
+base/promoted units, active activation implications, and owner-keyed theory
+lemmas contribute to that live estimate; retired activation lifecycle clauses
+remain retained but dead. Extensionality repairs a cheap block delta with its
+full unique AIG-cone mass before that ratio may authorize a rebuild. The AIG
+and semantic registries survive, but SAT variables, root literals, learned
+clauses, and refinement lemmas are rematerialized or re-derived.
 
 The branch also contains measured policies for persistent-solver workloads:
 
@@ -388,15 +499,20 @@ exists.
 
 ## Results and established invariants
 
-The fixed-harness campaign recorded in `HANDOVER.md` covered 22,999 files with
-zero answer disagreements, 7,520 wins of at least 2x, 258 losses of at least
-5x, and median runtime 0.086s versus master's 0.164s. That campaign predates the
-latest tip and is still owed a quiet-machine rerun.
+The historical campaign recorded in `HANDOVER.md` covered 22,999 files and
+reported 7,520 wins of at least 2x, 258 losses of at least 5x, median runtime
+0.086s versus master's 0.164s, and no disagreement under that harness's
+comparison. It predates the latest tip and the repaired paired harness. In
+particular, it should not be promoted to a current all-answer-sequence claim;
+the quiet-machine rerun described below is still owed.
 
-At the current tip, the recorded Industrial_Control_C specimen improved from at
-least 90 seconds to 2.6 seconds, versus master at 1.5 seconds, with 164/164
-answers agreeing. A 31-file family sample agreed fully. The same CBP work took
-three Automotive stragglers from roughly 12--18 seconds to roughly 0.8 seconds.
+At an earlier implementation checkpoint, the recorded Industrial_Control_C
+specimen improved from at least 90 seconds to 2.6 seconds, versus master at 1.5
+seconds, with 164/164 answers agreeing. A 31-file family sample agreed fully.
+The same CBP work took three Automotive stragglers from roughly 12--18 seconds
+to roughly 0.8 seconds. The later rollback-versus-reset measurements above are
+more specific to the retained CBP trail; neither set substitutes for a current
+full campaign.
 
 Other measurements materially shaped the design:
 
@@ -794,9 +910,9 @@ code rather than through a common scoped-state interface.
 
 | Lifetime | Representative state | Current mechanism |
 |---|---|---|
-| Session-owned semantic content | fragment, symbol, DAG-size, generated-name, array-read, eager-Ackermann, and FP caches | Content-keyed maps generally retained for the `IncrementalSolver` lifetime |
+| Session-owned semantic content | fragment, symbol, DAG-size, generated-name, array-read, eager-Ackermann, and FP caches; retired-epoch clause-submission accumulator | Content-keyed maps and lifetime totals generally retained for the `IncrementalSolver` lifetime |
 | Explicitly invalidatable semantic caches | prepared pieces, elimination users, screened content | Retained until dependency invalidation or backend-repair logic drops/clears them |
-| SAT-backend epoch | SAT variables, AIG-to-variable map, root literals, activation literals, learned clauses, refinement lemmas, clause-mass accounting, base live mass | Retained until a relief/policy rebuild; explicitly cleared or rematerialized by `rebuildEncodings()` |
+| SAT-backend epoch | SAT variables, AIG-to-variable map, root literals, activation literals, learned clauses, refinement lemmas, exact retained-submission counter, ownership maps, and current/peak live mass | Retained until a relief/policy rebuild; explicitly cleared or rematerialized by `rebuildEncodings()` |
 | Permanent base semantics | `level0Asserted`, `sigma0`, restored base eliminations | Monotone sets/maps on the SMT-LIB path because reset destroys the driver |
 | Active user scopes | raw frontend `ASTVec` levels | Supplied again as a complete snapshot at each check |
 | Subsystem views of active scopes | CBP fed prefix/memos, promotion stability, active read-key refcounts, current eliminated definitions | Independently maintained ad hoc, usually by longest-common-prefix or set-difference logic |
@@ -889,11 +1005,11 @@ up to here” index.
 
 ## Immediate risks and closeout work
 
-These items should be closed before a broad semantic-state migration. The
-active-read issue was subsequently reproduced and fixed; the retained-clause
-item remains a finding from code inspection.
+These items must be closed before a broad semantic-state migration. Items 1--3
+are implemented at `45fe552b`, item 4 is completed by this documentation
+update, and item 5, the full campaign, remains outstanding.
 
-### 1. Active-read state across a SAT rebuild
+### 1. Active-read state across a SAT rebuild (complete)
 
 `seedActiveReads()` maintains pushed read ownership by taking a set difference
 between `lastSeededKeys` and the current active keys. It keeps the resulting
@@ -917,64 +1033,51 @@ and `foldedRowsOf` together, clearing the materialized batch tables, and
 re-queuing every permanent key. The canonical `myReads` registry remains
 session-owned.
 
-### 2. Retained-clause accounting has important blind spots
+### 2. Retained-clause accounting and extensionality (complete)
 
-The ordinary encoding path snapshots `clausesAdded`, calls `ensureEncoded()`,
-and records the delta in `clauseMassOf` and `trackedClauseMass`
-(`IncrementalSolver.cpp:1706-1723`). The extensionality path calls
-`ensureEncoded()` directly and caches the block root at lines 2625-2634. It
-returns before the ordinary live-mass calculation at lines 3629-3643, and
-checker/refinement lemmas also bypass an encoding-key mass record.
+The original inspection found that the ordinary path counted only structural
+encoding deltas, while direct theory clauses, extensionality blocks,
+activation lifecycle clauses, and permanent units could bypass either the
+retained total or its live ownership model. `db4aab0a` and `c604e923` close
+those blind spots: the common SAT facade supplies the exact current-epoch
+submission total, the driver separately preserves lifetime submissions across
+backend rebuilds, and theory-refinement submissions are a reported subset.
 
-Extensionality is the largest obvious omission, but not the only one. Lazy-array
-refinement lemmas, activation implications, retired-activation pins, promoted
-units, and restored base units are also added outside the per-encoding-key
-delta. Some are globally useful permanent clauses; some belong to a live or
-dead assertion cone. Counting only structural root encodings is therefore not
-the same as counting everything retained by the backend.
+Live/peak ownership now covers structural formula keys, base/restored/promoted
+units, currently assumed activation implications, and owner-keyed theory
+lemmas. Retired implications and their false pins stay retained but dead.
+Extensionality blocks are keyed by deterministic `inputToSat`; their live mass
+uses the full unique encoded AIG cone, computed lazily for normal relief checks
+and eagerly only under the opt-in profile. The forced-churn and monotonic-live
+regressions in `45fe552b` cover both sides of the policy.
 
-The relief valve at lines 2988-3009 can therefore undercount an
-extensionality-heavy solver and lacks a meaningful extensionality live-working-
-set denominator. Reframe the metric as retained-clause accounting with explicit
-total/live/permanent classifications: at minimum, charge each newly encoded
-block to its deterministic block key and include the active block in live mass;
-then deliberately classify activation lifecycle clauses and theory-valid
-refinement/checker lemmas. Treating every permanent lemma as dead would cause
-rebuild thrashing, while ignoring all of them can hide real backend growth. Add
-a forced-growth test that proves the valve can fire and rebuild soundly on this
-path.
+### 3. Integrate current master before structural work (complete)
 
-### 3. Integrate current master before structural work
+Merge `4b60b401` integrates master through `34f69be1`, including the earlier
+`d272dc2a` difficulty/FP work and `fa211128` fixed-width types, plus the later
+SAT-backend factory, backend-neutral literal, and optional-MiniSat changes. The
+incremental code was adapted to that backend construction and build matrix
+before any assertion-journal work.
 
-The branch is 57 commits ahead of its merge base, but local master has two
-unmerged commits:
+### 4. Keep the corrected documentation with the branch (complete)
 
-- `d272dc2a`, which changes difficulty scoring and adds floating-point
-  coverage;
-- `fa211128`, which replaces platform-dependent `long` uses with fixed-width
-  types across interfaces, SAT wrappers, timing, and tests.
+The user guide, source comments, and this review now describe third-solve
+automatic engagement, persistent CBP rollback, extensionality block reuse and
+live-cone accounting, exact retained versus lifetime clause counters, and the
+repaired campaign verdict/provenance rules. These are soundness and measurement
+contracts, not implementation trivia, and belong with the branch.
 
-Both overlap areas changed by this branch. Integration, compilation under the
-supported backends, and the normal regression suite should precede a journal
-refactor so the refactor is not developed against a stale type/policy base.
+### 5. Rerun the full campaign (outstanding)
 
-### 4. Keep the corrected documentation with the branch
-
-At the reviewed revision, the user documentation said automatic engagement
-occurred on the second solve and that the driver had no per-level state. Both
-became false after `cf911af5` and `0ff90033`. The CBP header/field comments and
-the extensionality block-cache comment were stale as well. The documentation
-and comment changes accompanying this review reconcile those descriptions.
-They should land with the review because they describe soundness boundaries,
-not merely implementation trivia.
-
-### 5. Rerun the full campaign
-
-The 22,999-file result predates the latest CBP tip. Before upstreaming, run the
-fixed harness on an otherwise idle machine, compare every answer sequence with
-master, and reclassify the performance tail. Sequential spot timings on the
-known thermally sensitive FP families are not evidence. Preserve full/prefix
-agreement distinctions for timeout-truncated files.
+The 22,999-file result predates the latest tip and used the predecessor
+comparison behavior. Before upstreaming, run the repaired paired harness on an
+otherwise idle machine, compare every answer sequence with master, and
+reclassify the performance tail. A timeout with a matching prefix is
+`PREFIX_ONLY_INCONCLUSIVE`, not agreement; only identical streams from two
+successfully completed arms are `FULL_OK`. Preserve the manifests, shard
+identity, arm fingerprints, main CSVs, and longer revalidation results.
+Sequential spot timings on the known thermally sensitive FP families are not
+evidence.
 
 ### 6. Treat the RTOS tail as engagement overhead until measured otherwise
 
@@ -1007,8 +1110,9 @@ The per-check and session-aggregate profiler reports:
 - preparation attempts, cache hits/misses, and accepted/rejected trials;
 - CBP prefix comparison, divergence, rollback/reset count and work, re-fed
   levels/nodes, fresh feeds, propagation, harvest, adoption, and memo replay;
-- root/activation lookup, assumption construction, active key count, tracked
-  mass, and live mass;
+- root/activation lookup, assumption construction, active key count, lifetime
+  clause submissions, refinement submissions, exact current-epoch retained
+  submissions, and current/peak live ownership;
 - active-read fold/unfold deltas, live-row materialization, and all-registry
   totalization;
 - extensionality lowering, preparation, encoding, totalization, checking, and
@@ -1274,24 +1378,28 @@ specimen is the performance acceptance test, not the soundness test.
 
 ## Phased roadmap
 
-### Phase 0 (partly complete): close the current branch
+### Phase 0 (four of five complete): close the current branch
 
-1. Add the forced-rebuild lazy-array test and resolve the active-read state
-   asymmetry if reachable.
-2. Define retained-clause total/live/permanent accounting, cover the
-   extensionality and refinement blind spots, and add a forced-valve test.
-3. Integrate the two current master commits and resolve overlap deliberately.
-4. Reconcile the documentation and source comments.
-5. Run the full quiet-machine campaign and preserve the results as the new
-   baseline.
+1. **Complete:** add the forced-rebuild lazy-array test and resolve the
+   active-read state asymmetry (`9eb8e407`).
+2. **Complete:** define exact retained and conservative live/peak clause
+   accounting, cover extensionality and refinement, and add forced-churn plus
+   monotonic-live valve tests (`db4aab0a`, `c604e923`, `45fe552b`).
+3. **Complete:** integrate master through `34f69be1` and resolve the backend
+   construction/type overlap deliberately (`4b60b401`).
+4. **Complete:** reconcile the user guide, this review, source comments, and
+   campaign-harness contract.
+5. **Outstanding:** run the full quiet-machine paired campaign and preserve the
+   manifests, fingerprints, full answer streams, timeout prefixes, and
+   revalidation results as the new baseline.
 
 A confirmed correctness issue preempts performance work. The tests and audits
 can be prepared alongside instrumentation, but no broad state migration should
 land on top of an ambiguous rebuild invariant.
 
-The forced-rebuild active-read asymmetry in item 1 is fixed and covered by a
-regression. The remaining accounting, master-integration, and full-campaign
-items are still outstanding.
+The implementation and documentation prerequisites are closed. The repaired
+harness is tested, but no current-tip whole-corpus result has yet replaced the
+historical campaign. That campaign remains the final Phase 0 gate.
 
 ### Phase 1 (complete): instrument semantic reconstruction
 
@@ -1406,7 +1514,8 @@ The assertion journal with independent stage cursors remains the right
 architectural foundation after that. It should be introduced incrementally to
 make semantic lifetime explicit, remove repeated whole-stack bookkeeping, and
 reduce the likelihood of further manual cache/refcount/rebuild bugs. It is not
-the next automatic performance patch: first close the remaining branch
-integration/accounting work and use the new profiler to establish another
-material target or recurring lifetime problem. The journal does not address
-the likely fixed engagement cost in the RTOS tail.
+the next automatic performance patch: integration, accounting, and
+documentation are now closed, so first complete the repaired-harness full
+campaign and then use the profiler to establish another material target or a
+recurring lifetime problem. The journal does not address the likely fixed
+engagement cost in the RTOS tail.
