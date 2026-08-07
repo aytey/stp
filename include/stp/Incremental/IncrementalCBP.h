@@ -52,12 +52,11 @@ THE SOFTWARE.
  * constantOf refuses their types, so feeding raw word-level content
  * is safe.
  *
- * The engine itself is monotone: feedLevel extends its state and it has no
- * notion of user scopes. IncrementalSolver keeps the instance across calls
- * while the assertion stack extends the already-fed prefix. On a pop, changed
- * level or base growth the owner destroys it and re-feeds the surviving
- * prefix; per-level rewrite/fact memos can still replay. There is currently no
- * undo trail inside this class.
+ * Each feed is a level transaction. rollbackTo() restores the exact fixed-bit,
+ * multiplication-cache and dependency state at an earlier level boundary;
+ * worklists are quiescent at successful boundaries and explicitly cleared
+ * when rolling back a conflicting feed. This lets IncrementalSolver preserve
+ * a common prefix instead of destroying the engine and re-feeding it.
  */
 
 #ifndef INCREMENTALCBP_H_
@@ -69,6 +68,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/constantBitP/MultiplicationStats.h"
 #include "stp/Simplifier/constantBitP/NodeToFixedBitsMap.h"
 
+#include <cstddef>
 #include <map>
 #include <set>
 #include <vector>
@@ -80,6 +80,15 @@ class STPMgr;
 class IncrementalCBP
 {
 public:
+  struct RollbackStats
+  {
+    size_t levels = 0;
+    size_t fixedStates = 0;
+    size_t createdFixedStates = 0;
+    size_t dependencyNodes = 0;
+    size_t multiplicationStates = 0;
+  };
+
   IncrementalCBP(STPMgr* mgr, NodeFactory* nf);
   ~IncrementalCBP();
 
@@ -90,6 +99,13 @@ public:
   /// propagate to a fixpoint. Returns false on conflict -- the live
   /// stack up to this level is unsatisfiable.
   bool feedLevel(const ASTNode& conjunction);
+
+  /// Restore the state after exactly `levels` successful or conflicting
+  /// feedLevel transactions. Structural and value state introduced by later
+  /// levels is removed. Returns deterministic work counts for profiling.
+  RollbackStats rollbackTo(size_t levels);
+
+  size_t levelCount() const { return checkpoints.size(); }
 
   /// Nodes that became fully determined during the last feedLevel call
   /// (cleared by the call itself). Constants excluded.
@@ -102,12 +118,52 @@ public:
   bool inConflict() const { return conflict; }
 
 private:
+  struct FixedUndo
+  {
+    ASTNode node;
+    simplifier::constantBitP::FixedBits oldBits;
+
+    FixedUndo(const ASTNode& node_,
+              const simplifier::constantBitP::FixedBits& oldBits_)
+        : node(node_), oldBits(oldBits_)
+    {
+    }
+  };
+
+  struct MultiplicationUndo
+  {
+    ASTNode node;
+    simplifier::constantBitP::MultiplicationStats oldStats;
+
+    MultiplicationUndo(
+        const ASTNode& node_,
+        const simplifier::constantBitP::MultiplicationStats& oldStats_)
+        : node(node_), oldStats(oldStats_)
+    {
+    }
+  };
+
+  struct Checkpoint
+  {
+    size_t fixedUndo;
+    size_t fixedCreated;
+    size_t dependenciesAdded;
+    size_t multiplicationUndo;
+    size_t multiplicationCreated;
+    bool conflict;
+  };
+
+  void beginLevel();
+  void finishLevel();
   void extendParentMap(const ASTNode& root);
   void seedWorklist(const ASTNode& n);
   void pushWork(const ASTNode& n);
   ASTNode popWork();
   bool workEmpty() const;
   simplifier::constantBitP::FixedBits* getOrCreate(const ASTNode& n);
+  void recordBeforeMutation(const ASTNode& n,
+                            simplifier::constantBitP::FixedBits* bits);
+  void recordMultiplicationBeforeMutation(const ASTNode& n);
   void scheduleParents(const ASTNode& n, const ASTNode& except);
   void propagate();
 
@@ -121,6 +177,19 @@ private:
   // Growable parent overlay: child -> parents, extended per feed.
   std::map<uint64_t, std::vector<ASTNode>> parentMap;
   ASTNodeSet depsVisited;
+
+  // Per-level undo logs. A FixedBits object is copied at most once in one
+  // feed, immediately before an opaque batch transfer function may mutate it;
+  // objects first created in the feed need only be deleted on rollback.
+  std::vector<Checkpoint> checkpoints;
+  std::vector<FixedUndo> fixedUndo;
+  std::vector<ASTNode> fixedCreated;
+  std::vector<ASTNode> dependenciesAdded;
+  std::vector<MultiplicationUndo> multiplicationUndo;
+  std::vector<ASTNode> multiplicationCreated;
+  ASTNodeSet currentFixedTrailed;
+  ASTNodeSet currentFixedCreated;
+  ASTNodeSet currentMultiplicationTrailed;
 
   // Two-tier worklist: cheap transfer functions drain before the
   // expensive arithmetic ones run (the batch WorkList's discipline).

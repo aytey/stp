@@ -39,6 +39,8 @@ THE SOFTWARE.
 
 #include "extlib-constbv/constantbv.h"
 
+#include <cassert>
+
 using simplifier::constantBitP::ConstantBitPropagation;
 using simplifier::constantBitP::FixedBits;
 using simplifier::constantBitP::MultiplicationStatsMap;
@@ -60,6 +62,119 @@ IncrementalCBP::~IncrementalCBP()
   delete msm;
 }
 
+void IncrementalCBP::beginLevel()
+{
+  assert(workEmpty());
+  assert(currentFixedTrailed.empty());
+  assert(currentFixedCreated.empty());
+  assert(currentMultiplicationTrailed.empty());
+  checkpoints.push_back(Checkpoint{
+      fixedUndo.size(), fixedCreated.size(), dependenciesAdded.size(),
+      multiplicationUndo.size(), multiplicationCreated.size(), conflict});
+}
+
+void IncrementalCBP::finishLevel()
+{
+  currentFixedTrailed.clear();
+  currentFixedCreated.clear();
+  currentMultiplicationTrailed.clear();
+}
+
+IncrementalCBP::RollbackStats IncrementalCBP::rollbackTo(size_t levels)
+{
+  assert(levels <= checkpoints.size());
+  RollbackStats stats;
+
+  // A conflicting transfer returns immediately and leaves its remaining
+  // work queued. No queued node belongs to a committed boundary: successful
+  // feeds drain both tiers, and every level at or below the conflict is being
+  // discarded before propagation may resume.
+  cheapWork.clear();
+  expensiveWork.clear();
+  newlyFixed.clear();
+  childBits.clear();
+  prevChildCounts.clear();
+  finishLevel();
+
+  while (checkpoints.size() > levels)
+  {
+    const Checkpoint checkpoint = checkpoints.back();
+    checkpoints.pop_back();
+    stats.levels++;
+
+    while (multiplicationCreated.size() > checkpoint.multiplicationCreated)
+    {
+      msm->map.erase(multiplicationCreated.back());
+      multiplicationCreated.pop_back();
+      stats.multiplicationStates++;
+    }
+    while (multiplicationUndo.size() > checkpoint.multiplicationUndo)
+    {
+      const MultiplicationUndo& undo = multiplicationUndo.back();
+      MultiplicationStatsMap::NodeToStats::iterator it =
+          msm->map.find(undo.node);
+      if (it == msm->map.end())
+        msm->map.insert(std::make_pair(undo.node, undo.oldStats));
+      else
+        it->second = undo.oldStats;
+      multiplicationUndo.pop_back();
+      stats.multiplicationStates++;
+    }
+
+    // Dependency edges were appended in the same order as
+    // dependenciesAdded. Removing newly visited nodes in reverse therefore
+    // pops precisely their own edges, including duplicate child positions.
+    while (dependenciesAdded.size() > checkpoint.dependenciesAdded)
+    {
+      const ASTNode n = dependenciesAdded.back();
+      dependenciesAdded.pop_back();
+      for (unsigned i = n.Degree(); i > 0; i--)
+      {
+        const ASTNode& child = n[i - 1];
+        if (child.isConstant())
+          continue;
+        std::map<uint64_t, std::vector<ASTNode>>::iterator parents =
+            parentMap.find(child.GetNodeNum());
+        assert(parents != parentMap.end());
+        assert(!parents->second.empty());
+        assert(parents->second.back() == n);
+        parents->second.pop_back();
+        if (parents->second.empty())
+          parentMap.erase(parents);
+      }
+      const size_t erased = depsVisited.erase(n);
+      assert(erased == 1);
+      (void)erased;
+      stats.dependencyNodes++;
+    }
+
+    while (fixedCreated.size() > checkpoint.fixedCreated)
+    {
+      const ASTNode n = fixedCreated.back();
+      fixedCreated.pop_back();
+      NodeToFixedBitsMap::NodeToFixedBitsMapType::iterator it =
+          fixedMap->map->find(n);
+      assert(it != fixedMap->map->end());
+      delete it->second;
+      fixedMap->map->erase(it);
+      stats.createdFixedStates++;
+    }
+    while (fixedUndo.size() > checkpoint.fixedUndo)
+    {
+      const FixedUndo& undo = fixedUndo.back();
+      NodeToFixedBitsMap::NodeToFixedBitsMapType::iterator it =
+          fixedMap->map->find(undo.node);
+      assert(it != fixedMap->map->end());
+      *it->second = undo.oldBits;
+      fixedUndo.pop_back();
+      stats.fixedStates++;
+    }
+
+    conflict = checkpoint.conflict;
+  }
+  return stats;
+}
+
 void IncrementalCBP::extendParentMap(const ASTNode& root)
 {
   std::vector<ASTNode> stack;
@@ -74,6 +189,7 @@ void IncrementalCBP::extendParentMap(const ASTNode& root)
       continue;
     if (!depsVisited.insert(n).second)
       continue;
+    dependenciesAdded.push_back(n);
 
     for (unsigned i = 0; i < n.Degree(); i++)
     {
@@ -173,6 +289,7 @@ void IncrementalCBP::seedWorklist(const ASTNode& n)
 
 FixedBits* IncrementalCBP::getOrCreate(const ASTNode& n)
 {
+  assert(!checkpoints.empty());
   NodeToFixedBitsMap::NodeToFixedBitsMapType::iterator it =
       fixedMap->map->find(n);
   if (it != fixedMap->map->end())
@@ -202,7 +319,30 @@ FixedBits* IncrementalCBP::getOrCreate(const ASTNode& n)
   }
 
   fixedMap->map->insert(std::make_pair(n, fb));
+  fixedCreated.push_back(n);
+  currentFixedCreated.insert(n);
   return fb;
+}
+
+void IncrementalCBP::recordBeforeMutation(const ASTNode& n, FixedBits* bits)
+{
+  assert(!checkpoints.empty());
+  if (currentFixedCreated.find(n) != currentFixedCreated.end())
+    return;
+  if (currentFixedTrailed.insert(n).second)
+    fixedUndo.push_back(FixedUndo(n, *bits));
+}
+
+void IncrementalCBP::recordMultiplicationBeforeMutation(const ASTNode& n)
+{
+  assert(!checkpoints.empty());
+  if (!currentMultiplicationTrailed.insert(n).second)
+    return;
+  MultiplicationStatsMap::NodeToStats::const_iterator it = msm->map.find(n);
+  if (it == msm->map.end())
+    multiplicationCreated.push_back(n);
+  else
+    multiplicationUndo.push_back(MultiplicationUndo(n, it->second));
 }
 
 void IncrementalCBP::scheduleParents(const ASTNode& n, const ASTNode& except)
@@ -243,12 +383,25 @@ void IncrementalCBP::propagate()
 
     Result status = simplifier::constantBitP::NO_CHANGE;
     if (SYMBOL != n.GetKind())
+    {
+      // The batch transfer functions are intentionally opaque here and may
+      // fix the result or any operand. Snapshot each pre-existing object at
+      // most once in this level; newly created objects are removed wholesale.
+      recordBeforeMutation(n, nBits);
+      for (unsigned i = 0; i < degree; i++)
+        recordBeforeMutation(n[i], childBits[i]);
+      if (BVMULT == n.GetKind())
+        recordMultiplicationBeforeMutation(n);
       status = ConstantBitPropagation::dispatchToTransferFunctions(
           mgr, n.GetKind(), childBits, *nBits, n, msm);
+    }
 
     if (simplifier::constantBitP::CONFLICT == status)
     {
       conflict = true;
+      cheapWork.clear();
+      expensiveWork.clear();
+      newlyFixed.clear();
       return;
     }
 
@@ -268,8 +421,7 @@ void IncrementalCBP::propagate()
         scheduleParents(n[i], n);
         pushWork(n[i]);
         const bool wasTotal = prevChildCounts[i] == childBits[i]->getWidth();
-        if (!wasTotal && childBits[i]->isTotallyFixed() &&
-            !n[i].isConstant())
+        if (!wasTotal && childBits[i]->isTotallyFixed() && !n[i].isConstant())
           newlyFixed.push_back(n[i]);
       }
     }
@@ -278,10 +430,13 @@ void IncrementalCBP::propagate()
 
 bool IncrementalCBP::feedLevel(const ASTNode& conjunction)
 {
-  if (conflict)
-    return false;
-
+  beginLevel();
   newlyFixed.clear();
+  if (conflict)
+  {
+    finishLevel();
+    return false;
+  }
 
   extendParentMap(conjunction);
   seedWorklist(conjunction);
@@ -290,8 +445,19 @@ bool IncrementalCBP::feedLevel(const ASTNode& conjunction)
   // assumption for every consequence drawn this call. The AND transfer
   // function pushes the truth down to every conjunct from here.
   FixedBits* topBits = getOrCreate(conjunction);
+  if (conjunction.GetType() == BOOLEAN_TYPE && topBits->isTotallyFixed() &&
+      !topBits->getValue(0))
+  {
+    conflict = true;
+    cheapWork.clear();
+    expensiveWork.clear();
+    newlyFixed.clear();
+    finishLevel();
+    return false;
+  }
   if (conjunction.GetType() == BOOLEAN_TYPE && !topBits->isTotallyFixed())
   {
+    recordBeforeMutation(conjunction, topBits);
     topBits->setFixed(0, true);
     topBits->setValue(0, true);
     // The assumption is a fixing like any other: a single-conjunct
@@ -303,6 +469,8 @@ bool IncrementalCBP::feedLevel(const ASTNode& conjunction)
   pushWork(conjunction);
 
   propagate();
+  assert(workEmpty());
+  finishLevel();
   return !conflict;
 }
 
