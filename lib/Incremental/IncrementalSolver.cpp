@@ -1532,11 +1532,14 @@ struct IncrementalSolver::Impl
   // context is level-uniform, so a same-level use elsewhere would keep a
   // reference to the variable), and never bit-blasted.
   bool levelPrivate(const ASTNode& v, size_t levelIdx, const ASTVec& stack,
-                    const std::map<ASTNode, size_t>& conjunctCountOf)
+                    const std::map<ASTNode, size_t>& conjunctCountOf,
+                    const ASTNodeSet& protectedSymbols)
   {
     if (bbMgr.symbolToBBNode.find(v) != bbMgr.symbolToBBNode.end())
       return false;
     if (baseSymbols.find(v) != baseSymbols.end())
+      return false;
+    if (protectedSymbols.find(v) != protectedSymbols.end())
       return false;
     std::map<ASTNode, size_t>::const_iterator cnt = conjunctCountOf.find(v);
     if (cnt != conjunctCountOf.end() && cnt->second > 1)
@@ -1565,16 +1568,33 @@ struct IncrementalSolver::Impl
 
   const PreparedPiece&
   preparePiece(const ASTNode& replaced, size_t levelIdx, const ASTVec& stack,
-               const std::map<ASTNode, size_t>& conjunctCountOf)
+               const std::map<ASTNode, size_t>& conjunctCountOf,
+               const ASTNodeSet& protectedSymbols)
   {
     ScopedProfileTimer preparationTimer(profile.enabled, profile.prepareNs);
     std::map<ASTNode, PreparedPiece>::iterator hit =
         preparedPieceOf.find(replaced);
     if (hit != preparedPieceOf.end())
     {
-      if (profile.enabled)
-        profile.preparationHits++;
-      return hit->second;
+      // Ordinary raw-content changes invalidate through screenNewContent.
+      // CBP facts are derived and bypass that screen, so revalidate only the
+      // protection dimension introduced by those facts here.
+      bool factSafe = true;
+      for (const ASTNode& v : hit->second.eliminatedVars)
+      {
+        if (protectedSymbols.find(v) != protectedSymbols.end())
+        {
+          factSafe = false;
+          break;
+        }
+      }
+      if (factSafe)
+      {
+        if (profile.enabled)
+          profile.preparationHits++;
+        return hit->second;
+      }
+      dropPreparedLevel(replaced);
     }
     if (profile.enabled)
       profile.preparationMisses++;
@@ -1684,7 +1704,8 @@ struct IncrementalSolver::Impl
       // and substituting a big replacement destroys the sharing its
       // variable provides.
       if (var.GetKind() != SYMBOL || var.GetIndexWidth() != 0 ||
-          !levelPrivate(var, levelIdx, stack, conjunctCountOf) ||
+          !levelPrivate(var, levelIdx, stack, conjunctCountOf,
+                        protectedSymbols) ||
           dagSizeUpTo(def, defInlineCap) > defInlineCap)
       {
         keep.push_back(definitionEquation(var, def));
@@ -4440,6 +4461,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   ASTNodeMap ctx;
   ASTNodeSet ctxSources;
   bool ctxHasFp = false;
+  // Pinning facts emitted by CBP are real, scoped conjuncts.  Their symbols
+  // must participate in private-definition decisions just like symbols in
+  // the raw assertion stack: eliminating a definition and then appending a
+  // fact that still mentions its variable leaves that fact unconstrained.
+  // Accumulate the facts of shallower live levels for the deeper levels'
+  // privacy checks.
+  ASTNodeSet activeCbpFactSymbols;
   impl->activeEliminatedDefs.clear();
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
@@ -4538,6 +4566,32 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       const bool cbpBuild =
           !cbpHit && impl->cbpMemo.size() == level + 1 &&
           impl->cbpMemo[level].conjunction == assertionsSMT2[level];
+      ASTNodeSet cbpProtectedSymbols = activeCbpFactSymbols;
+      const auto protectSymbols = [&](const ASTNode& n)
+      {
+        const ASTNodeSet& symbols = impl->symbolsOf(n);
+        cbpProtectedSymbols.insert(symbols.begin(), symbols.end());
+      };
+      if (cbpHit)
+      {
+        for (const Impl::CbpLevelMemo::Fact& f : impl->cbpMemo[level].facts)
+          protectSymbols(f.assertion);
+      }
+      else if (cbpBuild)
+      {
+        // The facts this level will emit are discovered while its pieces are
+        // being prepared.  Protect the symbols of every eligible fixed
+        // domain up front, so a fact discovered by a later piece cannot make
+        // an earlier piece's definition elimination unsound.  This is a
+        // conservative superset: cbpAdopt emits only reachable domains.
+        for (ASTNodeMap::const_iterator it = impl->callCbpSubst.begin();
+             it != impl->callCbpSubst.end(); ++it)
+        {
+          if (impl->callCbpFedConjuncts.find(it->first) ==
+              impl->callCbpFedConjuncts.end())
+            protectSymbols(it->first);
+        }
+      }
       size_t cbpMemoIdx = 0;
       std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
@@ -4605,7 +4659,12 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           // from there to the transformer and the read registry) in its
           // folded form, content-keyed like every other conjunct.
           if (!cbpHit)
+          {
+            const size_t factsBefore = cbpFacts.size();
             replaced = impl->cbpAdopt(replaced, cbpFacts);
+            for (size_t i = factsBefore; i < cbpFacts.size(); ++i)
+              protectSymbols(cbpFacts[i].assertion);
+          }
           if (cbpBuild)
             impl->cbpMemo[level].rewrites.push_back(
                 std::make_pair(rc, replaced));
@@ -4636,8 +4695,9 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             (levelHasFp ||
              (ctxHasFp && containsFloatingPointTheory(replaced, bm))))
           replaced = impl->fpContext()->prepare(replaced);
-        const auto& pp = impl->preparePiece(replaced, level, assertionsSMT2,
-                                            conjunctCountOf);
+        const auto& pp =
+            impl->preparePiece(replaced, level, assertionsSMT2, conjunctCountOf,
+                               cbpProtectedSymbols);
         for (const ASTNode& pc : pp.conjuncts)
           conjuncts.push_back(pc);
         // Eliminated definitions are recorded for the model, and joined
@@ -4708,6 +4768,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             impl->cbpMemo[level].facts.push_back(f);
         for (const Impl::CbpLevelMemo::Fact& f : cbpFacts)
           conjuncts.push_back(f.assertion);
+      }
+
+      const std::vector<Impl::CbpLevelMemo::Fact>& activeFacts =
+          cbpHit ? impl->cbpMemo[level].facts : cbpFacts;
+      for (const Impl::CbpLevelMemo::Fact& f : activeFacts)
+      {
+        const ASTNodeSet& symbols = impl->symbolsOf(f.assertion);
+        activeCbpFactSymbols.insert(symbols.begin(), symbols.end());
       }
     }
 
