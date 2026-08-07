@@ -1576,19 +1576,23 @@ struct IncrementalSolver::Impl
         preparedPieceOf.find(replaced);
     if (hit != preparedPieceOf.end())
     {
-      // Ordinary raw-content changes invalidate through screenNewContent.
-      // CBP facts are derived and bypass that screen, so revalidate only the
-      // protection dimension introduced by those facts here.
-      bool factSafe = true;
+      // Revalidate cached eliminations against the complete current scope.
+      // Usually screenNewContent invalidates an entry before a new mention
+      // can make its variable shared.  Raw nodes are screened only once,
+      // however, and an entry eliminating one of their symbols may be
+      // created after that first screening while the node is popped.  A
+      // later re-push must not reuse that now-non-private elimination.
+      bool privateStill = true;
       for (const ASTNode& v : hit->second.eliminatedVars)
       {
-        if (protectedSymbols.find(v) != protectedSymbols.end())
+        if (!levelPrivate(v, levelIdx, stack, conjunctCountOf,
+                          protectedSymbols))
         {
-          factSafe = false;
+          privateStill = false;
           break;
         }
       }
-      if (factSafe)
+      if (privateStill)
       {
         if (profile.enabled)
           profile.preparationHits++;
