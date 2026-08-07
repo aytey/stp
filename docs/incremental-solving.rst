@@ -178,6 +178,15 @@ deferred until deeper levels, and other adopted fixings bring an equivalent
 pinning fact asserted at the adopting level. Conflicts are recorded as part of
 the fed prefix so popping a contradictory level removes their effect.
 
+Those pinning facts also participate in private-definition liveness. CBP can
+replace an opaque Boolean shell while retaining that shell as a fact; a symbol
+used by the fact must therefore keep its defining equation in the SAT formula.
+Symbols in replayed facts, newly emitted facts, and domains eligible to emit a
+fact are protected before private-definition elimination. If a cached prepared
+piece eliminated a symbol that has since become protected, the entry is
+invalidated and prepared again. Protecting eligible domains up front covers a
+fact discovered by a later piece in the same level.
+
 ``--incremental-cbp-reset`` retains the previous reset-and-prefix-re-feed
 behavior as a diagnostic oracle. It is intended for differential validation,
 not normal solving.
@@ -362,11 +371,25 @@ round of a monotonically growing live extensionality stack, and an ordinary
 root built mostly from AIG cones first introduced by popped formulas. Neither
 live shape may be mistaken for dead churn.
 
-At implementation closeout through ``9cb7b34b``, the complete configured
-RelWithDebInfo suites passed with CaDiCaL and floating point (115/115), MiniSat
-and floating point (114/114), and MiniSat without floating point (86/86). These
+At implementation closeout through ``56de220c``, the complete configured
+RelWithDebInfo suites passed with CaDiCaL and floating point (116/116), MiniSat
+and floating point (115/115), and MiniSat without floating point (87/87). These
 configured-suite results do not replace the outstanding external-corpus
 campaign.
+
+The initial closeout reconnaissance invalidated its frozen ``9cb7b34b``
+candidate and was stopped at the first answer disagreement. On
+``QF_FP/schanda/spark/precise.smt2``, master answered unsat in all four scopes,
+while the candidate answered sat in the third; ``--check-sanity`` confirmed
+that its model violated the asserted result equality. The cause was the CBP
+fact/private-definition interaction described above: preparation eliminated
+``result`` from its defining equation before a later pinning fact made the
+symbol live, leaving the fact disconnected from the floating-point operation.
+The narrow protection and cache-invalidation fix is covered by
+``cbp-fact-private-definition.smt2`` in default, forced-incremental,
+reset-oracle, and memo-replay modes. The stopped campaign's partial rows are
+diagnostic evidence only; a fresh frozen candidate and the full external
+campaign remain to be run, so no corpus result is claimed here.
 
 ``--incremental-profile`` enables a lower-noise profile for each invocation of
 the incremental driver. Pair it with ``--incremental`` to route the first
