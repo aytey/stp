@@ -71,7 +71,7 @@ void CryptoMiniSat5::setMaxConflicts(int64_t _max_confl)
   confl_base = s->get_sum_conflicts();
 }
 
-bool CryptoMiniSat5::addClause(
+bool CryptoMiniSat5::addClauseInternal(
     const vec_literals& ps) // Add a clause to the solver.
 {
   // Cryptominisat uses a slightly different vec class.

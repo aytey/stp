@@ -321,7 +321,8 @@ void Cadical::declareNewVariables()
 #endif
 }
 
-bool Cadical::addClause(const vec_literals& ps) // Add a clause to the solver.
+bool Cadical::addClauseInternal(
+    const vec_literals& ps) // Add a clause to the solver.
 {
   declareNewVariables();
   for (int i=0; i < ps.size(); i++)

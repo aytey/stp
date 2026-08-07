@@ -63,7 +63,7 @@ void RissCore::setMaxConflicts(int64_t max_confl)
   s->setConfBudget(max_confl);
 }
 
-bool RissCore::addClause(
+bool RissCore::addClauseInternal(
     const SATSolver::vec_literals& ps) // Add a clause to the solver.
 {
   // convert the vector

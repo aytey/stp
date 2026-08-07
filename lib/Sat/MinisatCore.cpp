@@ -66,7 +66,7 @@ void MinisatCore::setMaxConflicts(int64_t max_confl)
   s->setConfBudget(max_confl);
 }
 
-bool MinisatCore::addClause(
+bool MinisatCore::addClauseInternal(
     const SATSolver::vec_literals& ps) // Add a clause to the solver.
 {
   Minisat::vec<Minisat::Lit> clause;

@@ -54,8 +54,6 @@ public:
 
   void setMaxConflicts(int64_t max_confl) override; // set max solver conflicts
 
-  bool addClause(const vec_literals& ps) override; // Add a clause to the solver.
-
   bool okay() const override; // FALSE means solver is in a conflicting state
 
   uint8_t modelValue(uint32_t x) const override;
@@ -85,6 +83,7 @@ public:
   bool supportsAssumptions() const override { return true; }
 
 protected:
+  bool addClauseInternal(const vec_literals& ps) override;
   bool solveInternal(bool& timeout_expired) override;
   bool solveWithAssumptionsInternal(const vec_literals& assumps,
                                     bool& timeout_expired) override;

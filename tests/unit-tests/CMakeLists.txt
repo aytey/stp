@@ -25,6 +25,7 @@
 AddSTPGTest(Backtrack_Test.cpp)
 AddSTPGTest(IncrementalCBP_Test.cpp)
 AddSTPGTest(IncrementalActiveReads_Test.cpp)
+AddSTPGTest(SATSolver_Test.cpp)
 AddSTPGTest(SatSolverBudget_Test.cpp)
 AddSTPGTest(TrailReuse_Test.cpp)
 AddSTPGTest(SuggestPhase_Test.cpp)

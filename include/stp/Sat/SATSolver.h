@@ -64,8 +64,19 @@ public:
     Lit operator[](int i) const { return lits[static_cast<size_t>(i)]; }
   };
 
-  virtual bool addClause(
-      const SATSolver::vec_literals& ps) = 0; // Add a clause to the solver.
+  // Add a clause to the solver and count the submission at the common API
+  // boundary. Backend-reported clause counts are not suitable for persistent
+  // accounting: preprocessing may remove input clauses, and some backends do
+  // not expose a count at all. This monotone counter instead records exactly
+  // what STP has handed to the current backend instance, including a clause
+  // whose submission discovers that the formula is already inconsistent.
+  bool addClause(const SATSolver::vec_literals& ps)
+  {
+    submitted_clauses++;
+    return addClauseInternal(ps);
+  }
+
+  uint64_t submittedClauses() const { return submitted_clauses; }
 
   virtual bool okay() const = 0; // FALSE means solver is in a conflicting state
 
@@ -309,6 +320,11 @@ public:
   }
 
 protected:
+  // Backend-specific clause translation. Callers use addClause(), whose
+  // non-virtual facade keeps submission accounting complete for every path,
+  // including theory refinement code that only sees SATSolver&.
+  virtual bool addClauseInternal(const vec_literals& ps) = 0;
+
   // Search without assumptions, having already been given a non-empty share
   // of whatever budget was configured. Implemented by each backend.
   virtual bool solveInternal(bool& timeout_expired) = 0;
@@ -329,6 +345,7 @@ protected:
   virtual bool canInterruptSearch() const { return false; }
 
 private:
+  uint64_t submitted_clauses = 0;
   std::chrono::steady_clock::time_point deadline;
   bool deadline_set = false;
 };
