@@ -1414,11 +1414,24 @@ struct IncrementalSolver::Impl
   }
 
   // What the last refinement-driven check-sat seeded into the batch-side
-  // read table; kept for seededReadsForTesting().
-  std::vector<std::pair<ASTNode, ASTNode>> lastSeededReads;
+  // ── Incrementally maintained active-read seeding ──────────────────
+  // Reference counts over the (array, index) row KEYS the active cone
+  // touches (several keys can touch one row), and the exact row list
+  // each key folded (so unfolds mirror folds even if the key's
+  // recorded rows change in between). Base keys queue in
+  // pendingBaseSeed as they are first asserted and fold exactly once.
+  // Deliberately keys only, never row values: the registry's row
+  // structs are re-read fresh at every seeding, exactly as the old
+  // full rebuild did -- a fold-time copy went stale against later
+  // registry updates and the model check tripped the refinement
+  // no-progress guard on the divergence.
+  std::map<std::pair<ASTNode, ASTNode>, size_t> seededRowRef;
+  std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>> foldedRowsOf;
+  std::vector<ASTNode> pendingBaseSeed;
 
   // Whether the batch-side tables still hold exactly what seedActiveReads
-  // last put there, and for which active keys (sorted by node number).
+  // last put there, and for which PUSHED keys (sorted by node number;
+  // base keys fold monotonically and need no fingerprint).
   // Rebuilding the filtered tables costs a map lookup per registry row,
   // every refinement-driven solve; sessions that check the same stack
   // repeatedly -- the KLEE bracket pattern -- pay it for an identical
@@ -1434,55 +1447,107 @@ struct IncrementalSolver::Impl
   // (active) encodings, drawn from the persistent registry. The keys are
   // whatever this round's literals were cached under: base-level conjuncts
   // and, for the pushed levels, the prepared conjuncts that were assumed.
-  void seedActiveReads(const std::vector<ASTNode>& activeKeys)
+  // Fold one encoded key's registry rows into the maintained table.
+  // The rows actually folded are remembered against the key, so a later
+  // unfold decrements exactly what this fold incremented even if the
+  // key's recorded rows change in between (a re-encode overwrites
+  // readsOfEncoded).
+  void foldKeyReads(const ASTNode& key)
   {
-    // The fingerprint is only worth computing when a hit is possible: the
-    // tables must be clean AND the key count unchanged. Sessions that add
-    // content every check fail the size test in O(1) -- copying and
-    // sorting an ever-growing key vector for a compare that cannot
-    // succeed was measured at a few percent of a whole KLEE-style run.
-    std::vector<ASTNode> sortedKeys;
-    if (batchTablesSeeded && activeKeys.size() == lastSeededKeys.size())
+    if (foldedRowsOf.find(key) != foldedRowsOf.end())
+      return;
+    std::vector<std::pair<ASTNode, ASTNode>>& folded = foldedRowsOf[key];
+    std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::
+        const_iterator rit = readsOfEncoded.find(key);
+    if (rit == readsOfEncoded.end())
+      return;
+    for (const std::pair<ASTNode, ASTNode>& ai : rit->second)
     {
-      sortedKeys = activeKeys;
-      std::sort(sortedKeys.begin(), sortedKeys.end(),
-                [](const ASTNode& a, const ASTNode& b) {
-                  return a.GetNodeNum() < b.GetNodeNum();
-                });
-      if (sortedKeys == lastSeededKeys)
-        return;
+      seededRowRef[ai]++;
+      folded.push_back(ai);
     }
+  }
 
-    ArrayTransformer::ArrType filtered;
-    for (const ASTNode& c : activeKeys)
+  void unfoldKeyReads(const ASTNode& key)
+  {
+    std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::iterator
+        fit = foldedRowsOf.find(key);
+    if (fit == foldedRowsOf.end())
+      return;
+    for (const std::pair<ASTNode, ASTNode>& ai : fit->second)
     {
-      std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>>::
-          const_iterator rit = readsOfEncoded.find(c);
-      if (rit == readsOfEncoded.end())
+      std::map<std::pair<ASTNode, ASTNode>, size_t>::iterator rr =
+          seededRowRef.find(ai);
+      if (rr != seededRowRef.end() && --rr->second == 0)
+        seededRowRef.erase(rr);
+    }
+    foldedRowsOf.erase(fit);
+  }
+
+  void seedActiveReads(const std::vector<ASTNode>& pushedActiveKeys)
+  {
+    // The seeded table is maintained INCREMENTALLY. Base keys arrive
+    // through pendingBaseSeed as they are first asserted and fold
+    // exactly once -- the base never retracts, so they never unfold.
+    // Pushed keys fold and unfold by set difference against the last
+    // solve, with per-row reference counts arbitrating rows that
+    // several keys touch. Rebuilding the filtered table from the whole
+    // ever-grown base every refinement-driven solve was measured at 42%
+    // of a KLEE-style session by its thousandth query; the difference
+    // walk below touches only what changed.
+    std::vector<ASTNode> sortedPushed = pushedActiveKeys;
+    std::sort(sortedPushed.begin(), sortedPushed.end(),
+              [](const ASTNode& a, const ASTNode& b) {
+                return a.GetNodeNum() < b.GetNodeNum();
+              });
+    sortedPushed.erase(std::unique(sortedPushed.begin(), sortedPushed.end()),
+                       sortedPushed.end());
+
+    // No skip-if-unchanged fast path: the refinement machinery mutates
+    // the batch-side table during its rounds, and every refinement
+    // entry must start from a freshly materialised one -- the old
+    // full-rebuild code re-assigned on effectively every solve and its
+    // correctness silently leaned on that. Materialisation is O(live
+    // rows) here, so re-assigning every time costs nothing worth
+    // gambling against.
+    for (const ASTNode& k : pendingBaseSeed)
+      foldKeyReads(k);
+    pendingBaseSeed.clear();
+
+    // Two sorted walks: keys leaving the pushed set unfold, keys
+    // entering it fold. A key that is ALSO a base conjunct never
+    // unfolds -- its base assertion is permanent, and unfolding the
+    // shared entry would strip the base's rows with it.
+    for (const ASTNode& k : lastSeededKeys)
+      if (level0Asserted.find(k) == level0Asserted.end() &&
+          !std::binary_search(sortedPushed.begin(), sortedPushed.end(), k,
+                              [](const ASTNode& a, const ASTNode& b) {
+                                return a.GetNodeNum() < b.GetNodeNum();
+                              }))
+        unfoldKeyReads(k);
+    for (const ASTNode& k : sortedPushed)
+      if (foldedRowsOf.find(k) == foldedRowsOf.end())
+        foldKeyReads(k);
+
+    // Materialise the table for the refcounted row keys with FRESH
+    // registry values -- O(live rows), not O(ever-asserted base).
+    ArrayTransformer::ArrType fresh;
+    for (std::map<std::pair<ASTNode, ASTNode>, size_t>::const_iterator it =
+             seededRowRef.begin();
+         it != seededRowRef.end(); ++it)
+    {
+      const std::pair<ASTNode, ASTNode>& ai = it->first;
+      ArrayTransformer::ArrType::const_iterator ait = myReads.find(ai.first);
+      if (ait == myReads.end())
         continue;
-      for (const std::pair<ASTNode, ASTNode>& ai : rit->second)
-      {
-        ArrayTransformer::ArrType::const_iterator ait = myReads.find(ai.first);
-        if (ait == myReads.end())
-          continue;
-        ArrayTransformer::arrTypeMap::const_iterator iit =
-            ait->second.find(ai.second);
-        if (iit == ait->second.end())
-          continue;
-        filtered[ai.first].insert(*iit);
-      }
+      ArrayTransformer::arrTypeMap::const_iterator iit =
+          ait->second.find(ai.second);
+      if (iit == ait->second.end())
+        continue;
+      fresh[ai.first].insert(*iit);
     }
-
-    lastSeededReads.clear();
-    for (ArrayTransformer::ArrType::const_iterator ait = filtered.begin();
-         ait != filtered.end(); ++ait)
-      for (ArrayTransformer::arrTypeMap::const_iterator iit =
-               ait->second.begin();
-           iit != ait->second.end(); ++iit)
-        lastSeededReads.push_back(std::make_pair(ait->first, iit->first));
-
-    batchAT->arrayToIndexToRead = filtered;
-    lastSeededKeys.swap(sortedKeys);
+    batchAT->arrayToIndexToRead = fresh;
+    lastSeededKeys.swap(sortedPushed);
     batchTablesSeeded = true;
   }
 
@@ -2256,7 +2321,16 @@ IncrementalSolver::IncrementalSolver(STPMgr* bm, AbsRefine_CounterExample* ce,
 std::vector<std::pair<ASTNode, ASTNode>>
 IncrementalSolver::seededReadsForTesting() const
 {
-  return impl->lastSeededReads;
+  std::vector<std::pair<ASTNode, ASTNode>> out;
+  for (std::map<std::pair<ASTNode, ASTNode>, size_t>::const_iterator it =
+           impl->seededRowRef.begin();
+       it != impl->seededRowRef.end(); ++it)
+    if (impl->myReads.find(it->first.first) != impl->myReads.end() &&
+        impl->myReads.find(it->first.first)
+                ->second.find(it->first.second) !=
+            impl->myReads.find(it->first.first)->second.end())
+      out.push_back(it->first);
+  return out;
 }
 
 bool IncrementalSolver::lastSolveWasUnsat() const
@@ -2657,6 +2731,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   {
     if (!impl->level0Asserted.insert(c).second)
       continue;
+    impl->pendingBaseSeed.push_back(c);
     newLevel0.push_back(c);
     // New content first invalidates any cached level whose elimination it
     // contradicts, and joins the base symbol set the privacy check
@@ -3048,14 +3123,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         static_cast<IncrementalToSAT*>(impl->ensureAdapter());
 
     // Restrict the batch tables to the active cone's reads; stale rows
-    // from popped scopes must not reach model construction or refinement.
-    {
-      std::vector<ASTNode> active(impl->level0Asserted.begin(),
-                                  impl->level0Asserted.end());
-      active.insert(active.end(), activeEncodedKeys.begin(),
-                    activeEncodedKeys.end());
-      impl->seedActiveReads(active);
-    }
+    // from popped scopes must not reach model construction or
+    // refinement. Base keys have already queued themselves as they were
+    // first asserted; only the pushed cone is passed per solve.
+    impl->seedActiveReads(activeEncodedKeys);
     impl->seedEliminatedIntoModelChannel();
 
     // Idempotent when nothing changed; essential after a re-encode, when
