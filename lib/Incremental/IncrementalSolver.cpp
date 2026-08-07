@@ -2109,7 +2109,16 @@ struct IncrementalSolver::Impl
     actLitOf.clear();
     everAssumedLits.clear();
     batchTablesSeeded = false;
+    // Folding records describe readsOfEncoded from the OLD backend epoch.
+    // Re-encoding can overwrite a key with a different row set (for example
+    // after new permanent substitutions fold an index), so rebuild the
+    // active-row view transactionally and queue every permanent key again.
+    batchAT->arrayToIndexToRead.clear();
+    batchAT->ack_pair.clear();
     lastSeededKeys.clear();
+    seededRowRef.clear();
+    foldedRowsOf.clear();
+    pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
     trackedClauseMass = 0;
     baseLiveMass = 0;
