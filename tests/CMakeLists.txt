@@ -188,6 +188,19 @@ if (ENABLE_FLOATING_POINT)
     add_test(NAME test_fprewrites COMMAND test_fprewrites)
 endif()
 
+# The campaign harness is pure Python and uses fake solvers, so its sequence,
+# timeout-prefix, resume and interleaving contracts can be checked without
+# running or building another STP binary.
+add_test(
+  NAME incremental-bench-harness
+  COMMAND ${PYTHON_EXECUTABLE}
+          ${PROJECT_SOURCE_DIR}/tests/scripts/incremental_bench_tests.py
+)
+set_tests_properties(incremental-bench-harness PROPERTIES
+  TIMEOUT 30
+  LABELS "scripts"
+)
+
 # -----------------------------------------------------------------------------
 # Default-off baseline differential for the array-equality feature
 #
