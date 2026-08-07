@@ -1,4 +1,4 @@
-; REQUIRES: floating-point
+; REQUIRES: floating-point, cadical
 ; Probe-based inprocessing re-runs over the whole persistent encoding
 ; at every solve, so once a session proves itself many-solve -- and has
 ; grown a solver big enough for inprobing to cost anything -- the driver

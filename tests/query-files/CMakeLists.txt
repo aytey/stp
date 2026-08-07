@@ -36,6 +36,11 @@ if (USE_MINISAT)
 else()
     set(STP_MINISAT_PYBOOL "False")
 endif()
+if (USE_CADICAL)
+    set(STP_CADICAL_PYBOOL "True")
+else()
+    set(STP_CADICAL_PYBOOL "False")
+endif()
 
 # Create llvm-lit configuration file
 configure_file(lit.site.cfg.in lit.site.cfg.g @ONLY)
