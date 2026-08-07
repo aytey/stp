@@ -145,6 +145,16 @@ public:
   virtual bool supportsInprobingControl() const { return false; }
   virtual bool disableInprobing() { return false; }
 
+  // The rest of the recurring-inprocessing retirement, applied alongside
+  // disableInprobing under the same configuration-window rule: bounded
+  // variable elimination re-eliminates restored variables every solve on
+  // a persistent solver whose content churns (retractable encodings
+  // mention eliminated variables and CaDiCaL restores them on contact),
+  // and learned-clause shrinking taxes every conflict of a many-solve
+  // session. Both measured as steady per-solve losses on the sessions
+  // that retire inprobing, and their removal composes with it.
+  virtual bool disableEliminationAndShrinking() { return false; }
+
   // Turn off the backend's lucky-phase probing, which re-tries trivial
   // whole-assignment patterns over the entire clause database at every
   // solve call. Worth its price once per formula; on a persistent

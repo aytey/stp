@@ -1681,7 +1681,18 @@ struct IncrementalSolver::Impl
     if (trailReuseAllowed)
       solver->enableTrailReuse();
     if (inprobingRetired)
+    {
       solver->disableInprobing();
+      // The rest of the recurring-inprocessing tax goes with it, on the
+      // same measured session class: bounded variable elimination
+      // re-eliminates restored variables every solve on a churning
+      // persistent encoding, and clause shrinking taxes every conflict
+      // of a many-solve session (interleaved on f84c6e97: retirement
+      // alone 7.7s, with elimination and shrinking retired 5.0s; the
+      // deep 1ccb771c class and the small variant-push sessions
+      // measured neutral).
+      solver->disableEliminationAndShrinking();
+    }
     solver->disableLuckyPhases();
     bvaDecided = false;
 

@@ -246,6 +246,13 @@ bool Cadical::disableInprobing()
   return s->set("inprobing", 0);
 }
 
+bool Cadical::disableEliminationAndShrinking()
+{
+  const bool a = s->set("elim", 0);
+  const bool b = s->set("shrink", 0);
+  return a && b;
+}
+
 bool Cadical::disableLuckyPhases()
 {
   return s->set("lucky", 0);
