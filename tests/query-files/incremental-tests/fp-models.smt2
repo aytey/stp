@@ -1,6 +1,7 @@
 ; Floating-point models from the incremental driver: get-value answers
 ; through the session-long encoding context, and pinned values round-trip
 ; bit for bit.
+; REQUIRES: floating-point
 ; RUN: %solver --incremental %s | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_BVFP)
