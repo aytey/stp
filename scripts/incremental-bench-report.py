@@ -12,14 +12,16 @@ Typical closeout usage::
 
 Input globs may be quoted: this tool expands them itself.  Every input CSV must
 have the schema-2 ``.meta.json`` and ``.manifest`` sidecars written by
-``incremental-bench.py``.  Solver identities must agree across all shards and
-phases, and ``(file, run)`` keys must be unique within each phase.
+``incremental-bench.py``.  Each main CSV must also have its completed
+``.revalidate.manifest`` selection artifact.  Solver identities must agree
+across all shards and phases, and ``(file, run)`` keys must be unique within
+each phase.
 
-Revalidation is selected by its sidecar manifests, not by the rows that happen
-to have completed.  All main rows for those files are replaced, exposing an
-interrupted revalidation as missing work.  A disagreement observed in either
-phase remains a sticky campaign failure.  With ``--output-prefix PREFIX`` the
-tool writes:
+Revalidation is selected by each main result's ``.revalidate.manifest``, not
+by the revalidation rows that happen to have completed.  All main rows for
+those files are replaced, exposing an interrupted revalidation as missing
+work.  A disagreement observed in either phase remains a sticky campaign
+failure.  With ``--output-prefix PREFIX`` the tool writes:
 
 * ``PREFIX.combined.csv``: effective rows, retaining complete answer streams;
 * ``PREFIX.disagreements.csv``: every disagreement observation, including
@@ -269,6 +271,34 @@ def load_csv(csv_path, required_phase):
         raise ReportError(csv_path + " sidecar manifest digest does not match")
     identity = solver_identity(metadata)
 
+    revalidation_selection = []
+    source_output = None
+    if required_phase == "main":
+        selection_path = csv_path + ".revalidate.manifest"
+        if not os.path.isfile(selection_path):
+            raise ReportError(
+                "%s is missing completed revalidation selection: %s"
+                % (csv_path, selection_path)
+            )
+        revalidation_selection = read_manifest(selection_path)
+        outside_manifest = set(revalidation_selection) - set(manifest)
+        if outside_manifest:
+            raise ReportError(
+                "%s revalidation selection contains a file absent from its "
+                "main manifest: %s"
+                % (csv_path, sorted(outside_manifest)[0])
+            )
+    else:
+        source_output_value = metadata.get("source_output")
+        if not isinstance(source_output_value, str) or not source_output_value:
+            raise ReportError(
+                csv_path + " revalidation metadata is missing source_output"
+            )
+        source_output = os.path.normpath(
+            source_output_value if os.path.isabs(source_output_value)
+            else os.path.join(os.path.dirname(csv_path), source_output_value)
+        )
+
     observations = []
     with open(csv_path, newline="", encoding="utf-8") as source:
         reader = csv.DictReader(source)
@@ -294,6 +324,8 @@ def load_csv(csv_path, required_phase):
         "identity": identity,
         "runs": runs,
         "manifest": manifest,
+        "revalidation_selection": revalidation_selection,
+        "source_output": source_output,
         "observations": observations,
     }
 
@@ -304,12 +336,14 @@ def load_phase(paths, phase):
         return {
             "inputs": [], "manifest": set(), "observations": [],
             "by_key": {}, "identity": None, "runs": None,
+            "revalidation_selection": set(),
         }
     identity = inputs[0]["identity"]
     runs = inputs[0]["runs"]
     timeout = inputs[0]["metadata"].get("timeout_seconds")
     observations = []
     manifests = set()
+    revalidation_selection = set()
     by_key = {}
     for item in inputs:
         if item["identity"] != identity:
@@ -322,6 +356,7 @@ def load_phase(paths, phase):
         if item["metadata"].get("timeout_seconds") != timeout:
             raise ReportError("timeouts differ within %s phase" % phase)
         manifests.update(item["manifest"])
+        revalidation_selection.update(item["revalidation_selection"])
         for observation in item["observations"]:
             key = observation["key"]
             if key in by_key:
@@ -338,6 +373,7 @@ def load_phase(paths, phase):
         "by_key": by_key,
         "identity": identity,
         "runs": runs,
+        "revalidation_selection": revalidation_selection,
     }
 
 
@@ -558,10 +594,14 @@ def make_summary(main, revalidation, effective, file_rows, intended_files,
         },
         "solvers": main["identity"],
         "replacement": {
-            "selected_files": len(revalidation["manifest"]),
+            "selected_files": len(main["revalidation_selection"]),
+            "output_manifest_files": len(revalidation["manifest"]),
+            "missing_output_files": sorted(
+                main["revalidation_selection"] - revalidation["manifest"]
+            ),
             "main_rows_replaced": sum(
                 1 for item in main["observations"]
-                if item["path"] in revalidation["manifest"]
+                if item["path"] in main["revalidation_selection"]
             ),
             "revalidation_rows": len(revalidation["observations"]),
         },
@@ -692,6 +732,12 @@ def human_report(summary, file_rows, top):
             completeness["expected_files"] - len(completeness["missing_files"]),
             completeness["expected_files"],
             summary["replacement"]["selected_files"],
+        ),
+        "  revalidation output manifests: %d/%d selected files; absent: %d"
+        % (
+            summary["replacement"]["output_manifest_files"],
+            summary["replacement"]["selected_files"],
+            len(summary["replacement"]["missing_output_files"]),
         ),
         "  missing pairs: %d; unexpected pairs: %d"
         % (len(completeness["missing_pairs"]),
@@ -879,6 +925,25 @@ def aggregate(args):
             raise ReportError("solver identities differ between main and revalidation")
         if revalidation["runs"] != main["runs"]:
             raise ReportError("metadata run counts differ between phases")
+        main_by_path = {
+            os.path.normpath(item["path"]): item for item in main["inputs"]
+        }
+        for item in revalidation["inputs"]:
+            source = main_by_path.get(item["source_output"])
+            if source is None:
+                raise ReportError(
+                    "%s names an unloaded main source_output: %s"
+                    % (item["path"], item["source_output"])
+                )
+            outside_selection = (
+                set(item["manifest"])
+                - set(source["revalidation_selection"])
+            )
+            if outside_selection:
+                raise ReportError(
+                    "%s revalidates a file absent from its main selection: %s"
+                    % (item["path"], sorted(outside_selection)[0])
+                )
     absent_from_main = revalidation["manifest"] - main["manifest"]
     if absent_from_main:
         raise ReportError(
@@ -886,9 +951,10 @@ def aggregate(args):
             + sorted(absent_from_main)[0]
         )
 
+    selected_for_revalidation = main["revalidation_selection"]
     effective = {
         key: item for key, item in main["by_key"].items()
-        if item["path"] not in revalidation["manifest"]
+        if item["path"] not in selected_for_revalidation
     }
     effective.update(revalidation["by_key"])
 

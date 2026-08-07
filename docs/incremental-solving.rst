@@ -459,11 +459,13 @@ shards. For example::
     --expected-answers 1865826 \
     --output-prefix /results/final/report --require-full-ok
 
-The reporter checks the schema, sidecar manifests, solver identities, and
-unique ``(file, run)`` keys. A revalidation manifest replaces every main row
-for each selected file, so an interrupted revalidation is reported as missing
-rather than falling back to a shorter run. Any disagreement ever observed is
-kept as a sticky failure and retained with its complete answer streams in the
+The reporter checks the schema, sidecar manifests, solver identities, phase
+provenance, and unique ``(file, run)`` keys. The main phase's
+``.revalidate.manifest`` artifacts select replacement files independently of
+whether their revalidation CSVs were created. Every main row for those files
+is removed, so an interrupted revalidation is reported as missing rather than
+falling back to a shorter run. Any disagreement ever observed is kept as a
+sticky failure and retained with its complete answer streams in the
 ``.disagreements.csv`` evidence file. The other outputs contain the effective
 combined rows, per-file median timing classifications, correctness and process
 status counts, answer totals, and logic/family breakdowns.

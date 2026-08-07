@@ -59,7 +59,7 @@ def pair_row(path, run, a_seconds, b_seconds, a_answers=("sat",),
 
 
 def write_input(directory, name, phase, files, rows, runs=2, identity=None,
-                timeout=30.0):
+                timeout=30.0, revalidation_selection=(), source_output=None):
     path = directory / name
     files = [str(file) for file in files]
     with path.open("w", newline="", encoding="utf-8") as target:
@@ -79,6 +79,13 @@ def write_input(directory, name, phase, files, rows, runs=2, identity=None,
         "manifest_sha256": REPORT.digest_lines(files),
         "solvers": identity or solver_identity(),
     }
+    if phase == "main":
+        Path(str(path) + ".revalidate.manifest").write_text(
+            "".join(str(file) + "\n" for file in revalidation_selection),
+            encoding="utf-8",
+        )
+    else:
+        metadata["source_output"] = str(source_output)
     Path(str(path) + ".meta.json").write_text(
         json.dumps(metadata), encoding="utf-8"
     )
@@ -175,11 +182,12 @@ class IncrementalBenchReportTests(unittest.TestCase):
                 pair_row(query, 1, 2.0, 2.0, ("sat", "sat")),
             ]
             main = write_input(
-                directory, "main.csv", "main", [query], main_rows
+                directory, "main.csv", "main", [query], main_rows,
+                revalidation_selection=[query],
             )
             revalidation = write_input(
                 directory, "revalidation.csv", "revalidation", [query],
-                revalidation_rows, timeout=120.0,
+                revalidation_rows, timeout=120.0, source_output=main,
             )
             prefix = directory / "report"
             self.run_reporter([
@@ -218,10 +226,11 @@ class IncrementalBenchReportTests(unittest.TestCase):
             main = write_input(directory, "main.csv", "main", [query], [
                 pair_row(query, 0, 1.0, 1.0),
                 pair_row(query, 1, 1.0, 1.0),
-            ])
+            ], revalidation_selection=[query])
             revalidation = write_input(
                 directory, "revalidation.csv", "revalidation", [query],
                 [pair_row(query, 0, 2.0, 2.0)], timeout=120.0,
+                source_output=main,
             )
             prefix = directory / "report"
             self.run_reporter([
@@ -258,6 +267,7 @@ class IncrementalBenchReportTests(unittest.TestCase):
             revalidation = write_input(
                 directory, "revalidation.csv", "revalidation", [query], [row],
                 runs=1, identity=solver_identity("changed"), timeout=120.0,
+                source_output=first,
             )
             proc = self.run_reporter([
                 "--main", str(first), "--revalidation", str(revalidation),
@@ -294,6 +304,54 @@ class IncrementalBenchReportTests(unittest.TestCase):
             self.assertEqual({"exit-11": 1}, summary["statuses"]["a"])
             self.assertEqual(1, summary["answers"]["a_shortfall"])
             self.assertEqual(1, summary["answers"]["b_shortfall"])
+
+    def test_missing_revalidation_csv_never_falls_back_to_main_timing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            query = directory / "QF_BV" / "Family" / "query.smt2"
+            main = write_input(
+                directory, "main.csv", "main", [query],
+                [pair_row(query, 0, 1.0, 5.0)], runs=1,
+                revalidation_selection=[query],
+            )
+            prefix = directory / "report"
+            self.run_reporter([
+                "--main", str(main), "--expected-runs", "1",
+                "--output-prefix", str(prefix),
+            ], expected_returncode=1)
+
+            self.assertEqual([], read_rows(directory / "report.combined.csv"))
+            summary = json.loads(
+                (directory / "report.summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(1, summary["replacement"]["selected_files"])
+            self.assertEqual(
+                [str(query)],
+                summary["replacement"]["missing_output_files"],
+            )
+            self.assertEqual(
+                [{"file": str(query), "run": 0}],
+                summary["completeness"]["missing_pairs"],
+            )
+
+    def test_revalidation_must_name_its_loaded_selected_main_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            query = directory / "QF_BV" / "query.smt2"
+            row = pair_row(query, 0, 1.0, 1.0)
+            main = write_input(
+                directory, "main.csv", "main", [query], [row], runs=1,
+                revalidation_selection=[query],
+            )
+            revalidation = write_input(
+                directory, "revalidation.csv", "revalidation", [query],
+                [row], runs=1, timeout=120.0,
+                source_output=directory / "different-main.csv",
+            )
+            proc = self.run_reporter([
+                "--main", str(main), "--revalidation", str(revalidation),
+            ], expected_returncode=2)
+            self.assertIn("unloaded main source_output", proc.stderr)
 
 
 if __name__ == "__main__":
