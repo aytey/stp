@@ -51,6 +51,7 @@ THE SOFTWARE.
 #include <cstdlib>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -291,6 +292,10 @@ struct IncrementalSolver::Impl
     uint64_t activeKeys = 0;
     uint64_t assumptions = 0;
     uint64_t clauses = 0;
+    uint64_t refinementClauses = 0;
+    uint64_t retainedClauses = 0;
+    uint64_t liveClauses = 0;
+    uint64_t peakLiveClauses = 0;
     uint64_t cbpResets = 0;
     uint64_t cbpDivergences = 0;
     uint64_t cbpRollbacks = 0;
@@ -390,6 +395,7 @@ struct IncrementalSolver::Impl
     uint64_t readKeysFolded = 0;
     uint64_t readKeysUnfolded = 0;
     uint64_t clauses = 0;
+    uint64_t refinementClauses = 0;
     uint64_t satCalls = 0;
     uint64_t refinementSatCalls = 0;
     uint64_t refinementRounds = 0;
@@ -464,6 +470,7 @@ struct IncrementalSolver::Impl
       readKeysFolded += p.readKeysFolded;
       readKeysUnfolded += p.readKeysUnfolded;
       clauses += p.clauses;
+      refinementClauses += p.refinementClauses;
       satCalls += p.satCalls;
       refinementSatCalls += p.refinementSatCalls;
       refinementRounds += p.refinementRounds;
@@ -649,16 +656,44 @@ struct IncrementalSolver::Impl
   // decided first.
   ASTVec pendingRebuiltBase;
 
-  // Clause mass per encoding key, and the relief valve's deadness
-  // accounting built from it. Conjunct COUNTS were the original proxy
-  // for "mostly dead" and failed on variant-push sessions: a few dozen
-  // distinct conjuncts, each a huge floating-point circuit, grew the
-  // solver to a million variables of ~95% popped content without ever
-  // tripping a count ratio. Mass is what the solver actually carries.
+  // Newly submitted structural clauses, owned by the formula key whose
+  // encoding first introduced them. The retained total comes directly from
+  // SATSolver::submittedClauses(); ownership says which part of that total a
+  // live assertion stack would need after a rebuild.
   std::map<ASTNode, uint64_t> clauseMassOf;
-  uint64_t trackedClauseMass = 0;
-  // Permanent (base) part of the live mass, maintained incrementally.
+
+  // Theory clauses are globally valid, but their useful lifetime is best
+  // approximated by the solve that caused them to be emitted. Charging them
+  // to that deterministic owner avoids both extremes: treating every old
+  // lemma as dead rebuilds a repeated query forever, while treating all old
+  // lemmas as permanently live hides refinement-heavy dead growth.
+  std::map<ASTNode, uint64_t> refinementMassOf;
+
+  // Extensionality encodes the complete active stack as one block. Its newly
+  // submitted delta is not a safe live-mass estimate for a monotonically
+  // growing stack, because the current block reuses cones first introduced by
+  // earlier block keys. Retain its AIG root and lazily compute the complete
+  // unique cone only when the cheap estimate would otherwise permit relief.
+  std::map<ASTNode, Aig_Obj_t*> extAigRootOf;
+  std::map<ASTNode, uint64_t> extConeMassOf;
+  struct PendingExtLive
+  {
+    Aig_Obj_t* root = NULL;
+    uint64_t permanentMass = 0;
+    uint64_t refinementMass = 0;
+  };
+  std::map<ASTNode, PendingExtLive> pendingExtLive;
+
+  // Permanent-for-this-backend-epoch mass: base root units and definitions,
+  // plus promoted units. A promoted level's retraction forces a rebuild, so
+  // its units really are live until the epoch ends.
   uint64_t baseLiveMass = 0;
+  // Activation implications are live only while their activation literal is
+  // assumed. Retired implications and their false pins deliberately remain
+  // outside this map and therefore count as reclaimable dead mass.
+  std::unordered_map<int, uint64_t> activationMassOf;
+
+  uint64_t currentLiveClauseMass = 0;
   // The largest live mass any solve has used since the last rebuild:
   // the valve's denominator. Comparing against the PEAK working set --
   // not the last solve's, which may be momentarily tiny -- gives the
@@ -1453,7 +1488,8 @@ struct IncrementalSolver::Impl
           SATSolver::vec_literals unit;
           unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
           addClause(unit);
-          baseLiveMass += clauseMassOf[r];
+          baseLiveMass = addMass(baseLiveMass,
+                                 addMass(clauseMassOf[r], 1));
         }
       }
     }
@@ -1841,8 +1877,18 @@ struct IncrementalSolver::Impl
   bool bvaDecided;
   bool bvaWarned;
 
+  // Clause submissions are counted by SATSolver so direct theory-refinement
+  // clients cannot bypass the accounting. Keep the mass of retired backend
+  // epochs separately: profiles report work over the whole driver lifetime,
+  // while retained/liveness decisions use only the current solver's count.
+  uint64_t retiredClauseSubmissions = 0;
+
+  uint64_t lifetimeClauseSubmissions() const
+  {
+    return addMass(retiredClauseSubmissions, solver->submittedClauses());
+  }
+
   // Per-call counters printed under -s.
-  uint64_t clausesAdded;
   uint64_t encodesThisCall;
   CheckProfile profile;
   SessionProfile sessionProfile;
@@ -1858,7 +1904,7 @@ struct IncrementalSolver::Impl
         trueVar(-1), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
         trailReuseAllowed(true), lastLevelCount(0), bvaDecided(false),
-        bvaWarned(false), clausesAdded(0), encodesThisCall(0),
+        bvaWarned(false), encodesThisCall(0),
         batchTablesSeeded(false)
   {
     // Refinement adds clauses between solve calls; tell backends that need
@@ -1892,7 +1938,7 @@ struct IncrementalSolver::Impl
     profile.enabled = true;
     profile.check = sessionProfile.checks + 1;
     profile.levels = levels;
-    profileClausesBefore = clausesAdded;
+    profileClausesBefore = lifetimeClauseSubmissions();
     profileStarted = ProfileClock::now();
   }
 
@@ -1904,7 +1950,10 @@ struct IncrementalSolver::Impl
     profile.totalNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           ProfileClock::now() - profileStarted)
                           .count();
-    profile.clauses = clausesAdded - profileClausesBefore;
+    profile.clauses = lifetimeClauseSubmissions() - profileClausesBefore;
+    profile.retainedClauses = retainedClauseMass();
+    profile.liveClauses = currentLiveClauseMass;
+    profile.peakLiveClauses = maxLiveClauseMass;
     sessionProfile.add(profile);
 
     // Assemble the report before writing it. SMT answers use stdout while
@@ -1982,6 +2031,10 @@ struct IncrementalSolver::Impl
         << " read-keys-unfolded=" << profile.readKeysUnfolded
         << " live-read-rows=" << profile.readRowsLive
         << " driver-clauses=" << profile.clauses
+        << " refinement-clauses=" << profile.refinementClauses
+        << " retained-clauses=" << profile.retainedClauses
+        << " live-clauses=" << profile.liveClauses
+        << " peak-live-clauses=" << profile.peakLiveClauses
         << " sat-calls=" << profile.satCalls
         << " refinement-sat-calls=" << profile.refinementSatCalls
         << " refinement-rounds=" << profile.refinementRounds
@@ -2059,6 +2112,10 @@ struct IncrementalSolver::Impl
         << " read-keys-folded=" << sessionProfile.readKeysFolded
         << " read-keys-unfolded=" << sessionProfile.readKeysUnfolded
         << " driver-clauses=" << sessionProfile.clauses
+        << " refinement-clauses=" << sessionProfile.refinementClauses
+        << " retained-clauses=" << retainedClauseMass()
+        << " live-clauses=" << currentLiveClauseMass
+        << " peak-live-clauses=" << maxLiveClauseMass
         << " sat-calls=" << sessionProfile.satCalls
         << " refinement-sat-calls=" << sessionProfile.refinementSatCalls
         << " refinement-rounds=" << sessionProfile.refinementRounds
@@ -2089,7 +2146,177 @@ struct IncrementalSolver::Impl
   void addClause(SATSolver::vec_literals& c)
   {
     solver->addClause(c);
-    clausesAdded++;
+  }
+
+  static uint64_t addMass(uint64_t a, uint64_t b)
+  {
+    const uint64_t limit = std::numeric_limits<uint64_t>::max();
+    return b > limit - a ? limit : a + b;
+  }
+
+  uint64_t retainedClauseMass() const { return solver->submittedClauses(); }
+
+  void recordPeakLiveClauseMass(uint64_t mass)
+  {
+    // Ownership can conservatively count one shared clause through two live
+    // roots. It may delay relief, but it must never manufacture more live
+    // retained mass than the backend actually received.
+    mass = std::min(mass, retainedClauseMass());
+    maxLiveClauseMass = std::max(maxLiveClauseMass, mass);
+  }
+
+  void recordLiveClauseMass(uint64_t mass)
+  {
+    mass = std::min(mass, retainedClauseMass());
+    currentLiveClauseMass = std::max(currentLiveClauseMass, mass);
+    recordPeakLiveClauseMass(mass);
+  }
+
+  bool reliefSizeReached() const
+  {
+    return bm->UserFlags.incremental_reencode_limit > 0 &&
+           (int64_t)solver->nVars() >=
+               bm->UserFlags.incremental_reencode_limit;
+  }
+
+  bool reliefRatioReached() const
+  {
+    // Equivalent to retained >= 4 * (peak + 1), without overflowing the
+    // multiplication or peak+1 at the uint64_t boundary.
+    return maxLiveClauseMass != std::numeric_limits<uint64_t>::max() &&
+           maxLiveClauseMass + 1 <= retainedClauseMass() / 4;
+  }
+
+  uint64_t refinementMass(const ASTNode& owner) const
+  {
+    std::map<ASTNode, uint64_t>::const_iterator it =
+        refinementMassOf.find(owner);
+    return it == refinementMassOf.end() ? 0 : it->second;
+  }
+
+  uint64_t accountRefinementClauses(const ASTNode& owner,
+                                    uint64_t submittedBefore)
+  {
+    const uint64_t submittedAfter = solver->submittedClauses();
+    assert(submittedAfter >= submittedBefore);
+    const uint64_t delta = submittedAfter - submittedBefore;
+    if (delta == 0)
+      return 0;
+    refinementMassOf[owner] = addMass(refinementMassOf[owner], delta);
+    if (profile.enabled)
+      profile.refinementClauses =
+          addMass(profile.refinementClauses, delta);
+    return delta;
+  }
+
+  uint64_t activeActivationMass(
+      const SATSolver::vec_literals& assumptions) const
+  {
+    uint64_t mass = 0;
+    for (int i = 0; i < assumptions.size(); i++)
+    {
+      std::unordered_map<int, uint64_t>::const_iterator it =
+          activationMassOf.find((int)assumptions[i].x);
+      if (it != activationMassOf.end())
+        mass = addMass(mass, it->second);
+    }
+    return mass;
+  }
+
+  // Exact number of clauses ensureEncoded() submits for the unique AIG nodes
+  // reachable from one root: three per AND and one for the shared TRUE
+  // variable when the cone reaches the constant. CIs allocate variables but
+  // no clauses. The root has already been encoded in this backend epoch.
+  uint64_t encodedAigConeMass(Aig_Obj_t* regular)
+  {
+    assert(regular != NULL);
+    std::unordered_set<unsigned> seen;
+    std::vector<Aig_Obj_t*> pending(1, regular);
+    uint64_t mass = 0;
+    while (!pending.empty())
+    {
+      Aig_Obj_t* node = Aig_Regular(pending.back());
+      pending.pop_back();
+      if (!seen.insert(Aig_ObjId(node)).second)
+        continue;
+      assert(varOfAig(node) != -1);
+      if (Aig_ObjIsConst1(node))
+      {
+        mass = addMass(mass, 1);
+        continue;
+      }
+      if (Aig_ObjIsCi(node))
+        continue;
+      assert(Aig_ObjIsAnd(node));
+      mass = addMass(mass, 3);
+      pending.push_back(Aig_ObjFanin0(node));
+      pending.push_back(Aig_ObjFanin1(node));
+    }
+    return mass;
+  }
+
+  void stageExtensionalityLiveMass(const ASTNode& owner,
+                                   Aig_Obj_t* regular)
+  {
+    uint64_t structural = 0;
+    std::map<ASTNode, uint64_t>::const_iterator full =
+        extConeMassOf.find(owner);
+    bool hasFull = full != extConeMassOf.end();
+    if (hasFull)
+      structural = full->second;
+    else if (profile.enabled)
+    {
+      // Profiling is opt-in instrumentation, so pay for an exact current
+      // working-set measurement instead of reporting the lazy lower bound.
+      structural = encodedAigConeMass(regular);
+      extConeMassOf[owner] = structural;
+      pendingExtLive.erase(owner);
+      hasFull = true;
+    }
+    else
+    {
+      std::map<ASTNode, uint64_t>::const_iterator delta =
+          clauseMassOf.find(owner);
+      if (delta != clauseMassOf.end())
+        structural = delta->second;
+    }
+
+    const uint64_t theory = refinementMass(owner);
+    uint64_t live = addMass(baseLiveMass, structural);
+    live = addMass(live, theory);
+    recordLiveClauseMass(live);
+
+    if (!hasFull)
+    {
+      PendingExtLive& pending = pendingExtLive[owner];
+      pending.root = regular;
+      pending.permanentMass = baseLiveMass;
+      pending.refinementMass = theory;
+    }
+  }
+
+  // Pay the pending whole-cone walks only when the cheap ownership estimate
+  // would otherwise authorize a rebuild. This repairs monotonic
+  // extensionality stacks without imposing an O(live cone) walk on every
+  // ordinary check-sat. Profiling opts into an exact current measurement
+  // above and therefore has no pending entry for that block.
+  void expandPendingExtensionalityLiveMass()
+  {
+    for (std::map<ASTNode, PendingExtLive>::const_iterator it =
+             pendingExtLive.begin();
+         it != pendingExtLive.end(); ++it)
+    {
+      assert(it->second.root != NULL);
+      uint64_t structural = encodedAigConeMass(it->second.root);
+      extConeMassOf[it->first] = structural;
+      uint64_t live = addMass(it->second.permanentMass, structural);
+      live = addMass(live, it->second.refinementMass);
+      // This pending block belongs to a previous solve. Discovering its exact
+      // cone repairs the epoch's historical high-water mark, but must not
+      // report that old working set as live in the check about to start.
+      recordPeakLiveClauseMass(live);
+    }
+    pendingExtLive.clear();
   }
 
   void addBinary(int lit_a, int lit_b)
@@ -2436,7 +2663,7 @@ struct IncrementalSolver::Impl
       }
     }
 
-    const uint64_t clausesPre = clausesAdded;
+    const uint64_t clausesPre = solver->submittedClauses();
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
     BBNodeAIG root = bb.BBForm(toEncode);
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
@@ -2450,9 +2677,8 @@ struct IncrementalSolver::Impl
     // Clause mass per encoding key feeds the relief valve's deadness
     // measure: the valve compares the mass of everything encoded against
     // the mass the live stack actually uses.
-    const uint64_t delta = clausesAdded - clausesPre;
+    const uint64_t delta = solver->submittedClauses() - clausesPre;
     clauseMassOf[key] = delta;
-    trackedClauseMass += delta;
 
     encodesThisCall++;
     return lit;
@@ -2804,6 +3030,7 @@ struct IncrementalSolver::Impl
       unit.push(SATSolver::mkLit(lit >> 1, (lit & 1) == 0));
       addClause(unit);
       everAssumedLits.erase(lit);
+      activationMassOf.erase(lit);
       it = actLitOf.erase(it);
       pinned++;
     }
@@ -2849,6 +3076,8 @@ struct IncrementalSolver::Impl
     // re-promotes on the next call's tail.
     promotedDepth = 0;
 
+    retiredClauseSubmissions =
+        addMass(retiredClauseSubmissions, solver->submittedClauses());
     solver.reset(makeBackend(bm->UserFlags, false));
     solver->enableRefinement(true);
     if (trailReuseAllowed)
@@ -2886,8 +3115,13 @@ struct IncrementalSolver::Impl
     foldedRowsOf.clear();
     pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
-    trackedClauseMass = 0;
+    refinementMassOf.clear();
+    extAigRootOf.clear();
+    extConeMassOf.clear();
+    pendingExtLive.clear();
+    activationMassOf.clear();
     baseLiveMass = 0;
+    currentLiveClauseMass = 0;
     maxLiveClauseMass = 0;
     // Content screened before this rebuild must be screened again: the
     // base pass below may eliminate a variable that only popped levels
@@ -3122,6 +3356,7 @@ struct IncrementalSolver::Impl
     ActLitEntry& entry = actLitOf[roots];
     entry.lit = actLit;
     entry.lastUsed = engagedSolves;
+    activationMassOf[actLit] = roots.size();
     return actLit;
   }
 
@@ -3402,6 +3637,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // encoding free -- and the recycled names keep previously encoded
   // checker lemmas attached to the right SAT variables.
   int blockLit;
+  Aig_Obj_t* blockRegular = NULL;
   bool blockReused = false;
   {
     NodeToLitMap::const_iterator hit = rootLitOf.find(inputToSat);
@@ -3411,23 +3647,42 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
         profile.rootHits++;
       blockLit = hit->second;
       blockReused = true;
+      std::map<ASTNode, Aig_Obj_t*>::const_iterator root =
+          extAigRootOf.find(inputToSat);
+      if (root != extAigRootOf.end())
+        blockRegular = root->second;
+      else
+      {
+        // rootLitOf can contain this pure-BV key through another encoding
+        // route. BBForm is session-memoised; recover the AIG root without
+        // submitting any clause.
+        BBNodeAIG recovered = bb.BBForm(inputToSat);
+        blockRegular = Aig_Regular(recovered.n);
+        extAigRootOf[inputToSat] = blockRegular;
+      }
     }
     else
     {
       if (profile.enabled)
         profile.rootMisses++;
       ScopedProfileTimer encodingTimer(profile.enabled, profile.encodeNs);
+      const uint64_t submittedBefore = solver->submittedClauses();
       bm->GetRunTimes()->start(RunTimes::BitBlasting);
       BBNodeAIG root = bb.BBForm(inputToSat);
       bm->GetRunTimes()->stop(RunTimes::BitBlasting);
       bm->GetRunTimes()->start(RunTimes::CNFConversion);
-      Aig_Obj_t* regular = Aig_Regular(root.n);
-      ensureEncoded(regular);
-      blockLit = 2 * varOfAig(regular) + (Aig_IsComplement(root.n) ? 1 : 0);
+      blockRegular = Aig_Regular(root.n);
+      ensureEncoded(blockRegular);
+      blockLit =
+          2 * varOfAig(blockRegular) + (Aig_IsComplement(root.n) ? 1 : 0);
       bm->GetRunTimes()->stop(RunTimes::CNFConversion);
       rootLitOf[inputToSat] = blockLit;
+      extAigRootOf[inputToSat] = blockRegular;
+      clauseMassOf[inputToSat] =
+          solver->submittedClauses() - submittedBefore;
     }
   }
+  assert(blockRegular != NULL);
 
   // Refinement lemmas are encoded over the abstraction/witness/scalar
   // names; give every bit of every such symbol a variable before the
@@ -3484,6 +3739,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   // checker inactive.
   totalizeBatchRegistrySymbols();
 
+  const uint64_t refinementClausesBefore = solver->submittedClauses();
   ScopedProfileTimer refinementTimer(profile.enabled, profile.refinementNs);
   SOLVER_RETURN_TYPE res = ce->CallSAT_ResultCheck(
       *solver, bm->ASTTrue, semantic, prepared, tosat, true);
@@ -3522,6 +3778,9 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
               << refinementRounds << " rounds" << std::endl;
   if (profile.enabled)
     profile.refinementRounds += refinementRounds;
+
+  accountRefinementClauses(inputToSat, refinementClausesBefore);
+  stageExtensionalityLiveMass(inputToSat, blockRegular);
 
   // The whole round rode one block literal, so an unsat answer has no
   // per-level or per-assumption granularity: the core is everything.
@@ -3775,6 +4034,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   assert(!assertionsSMT2.empty());
 
+  impl->currentLiveClauseMass = 0;
+
   // The unsat story is per solve; a stale one must not answer for this
   // call.
   impl->lastUnsat = false;
@@ -3805,14 +4066,16 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // and comparing with the PEAK is the hysteresis: after a rebuild the
     // tracked mass restarts at the working set, so firing again takes
     // another fourfold growth.
-    if (uf.incremental_reencode_limit > 0 &&
-        (int64_t)impl->solver->nVars() >= uf.incremental_reencode_limit &&
-        impl->trackedClauseMass >= 4 * (impl->maxLiveClauseMass + 1))
+    if (impl->reliefSizeReached() && impl->reliefRatioReached())
+      impl->expandPendingExtensionalityLiveMass();
+
+    if (impl->reliefSizeReached() && impl->reliefRatioReached())
     {
       if (uf.stats_flag)
         std::cerr << "Incremental: re-encoded from scratch (solver had "
                   << impl->solver->nVars() << " variables, "
-                  << impl->trackedClauseMass << " tracked clauses for a "
+                  << impl->retainedClauseMass()
+                  << " retained clauses for a "
                   << impl->maxLiveClauseMass << " clause working set)"
                   << std::endl;
       impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Relief);
@@ -3920,7 +4183,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   if (staleExt != NULL && staleExt->active())
     staleExt->beginSolve();
 
-  const uint64_t clausesBefore = impl->clausesAdded;
+  const uint64_t clausesBefore = impl->lifetimeClauseSubmissions();
   impl->encodesThisCall = 0;
 
   ProfileClock::time_point semanticStarted;
@@ -4041,7 +4304,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       SATSolver::vec_literals unit;
       unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
       impl->addClause(unit);
-      impl->baseLiveMass += impl->clauseMassOf[c];
+      impl->baseLiveMass = Impl::addMass(
+          impl->baseLiveMass, Impl::addMass(impl->clauseMassOf[c], 1));
     }
     impl->pendingRebuiltBase.clear();
   }
@@ -4080,7 +4344,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     SATSolver::vec_literals unit;
     unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
     impl->addClause(unit);
-    impl->baseLiveMass += impl->clauseMassOf[c];
+    impl->baseLiveMass = Impl::addMass(
+        impl->baseLiveMass, Impl::addMass(impl->clauseMassOf[c], 1));
   }
 
   // Screening must see the WHOLE stack's new raw content before any level
@@ -4460,6 +4725,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         unit.push(SATSolver::mkLit(r >> 1, r & 1));
         impl->addClause(unit);
       }
+      impl->baseLiveMass = Impl::addMass(impl->baseLiveMass,
+                                         levelRoots.size());
       impl->promotedDepth = level;
       if (uf.stats_flag)
         std::cerr << "Incremental: promoted level " << level << " ("
@@ -4495,20 +4762,29 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
   impl->hintRetractedLevels(assumptions);
 
+  ASTNode ordinaryOwner;
+  if (assertionsSMT2.size() > 1)
+    ordinaryOwner = bm->CreateNode(AND, assertionsSMT2);
+  else
+    ordinaryOwner = assertionsSMT2[0];
+
   // This solve's live clause mass -- what the assumed stack actually
   // uses -- feeds the relief valve's deadness measure on LATER solves.
   // The peak since the last rebuild is the valve's denominator.
+  uint64_t ordinaryLiveMass = impl->baseLiveMass;
   {
-    uint64_t liveMass = impl->baseLiveMass;
     for (const ASTNode& k : activeEncodedKeys)
     {
       std::map<ASTNode, uint64_t>::const_iterator mit =
           impl->clauseMassOf.find(k);
       if (mit != impl->clauseMassOf.end())
-        liveMass += mit->second;
+        ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, mit->second);
     }
-    if (liveMass > impl->maxLiveClauseMass)
-      impl->maxLiveClauseMass = liveMass;
+    ordinaryLiveMass = Impl::addMass(
+        ordinaryLiveMass, impl->activeActivationMass(assumptions));
+    ordinaryLiveMass = Impl::addMass(
+        ordinaryLiveMass, impl->refinementMass(ordinaryOwner));
+    impl->recordLiveClauseMass(ordinaryLiveMass);
   }
 
   if (impl->profile.enabled)
@@ -4526,7 +4802,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   {
     std::cerr << "Incremental: encoded " << impl->encodesThisCall
               << " new conjuncts, added "
-              << (impl->clausesAdded - clausesBefore) << " clauses, assumed "
+              << (impl->lifetimeClauseSubmissions() - clausesBefore)
+              << " clauses, assumed "
               << assumptions.size() << " literals, solver has "
               << impl->solver->nVars() << " variables, " << impl->sigma0.size()
               << " base-level and " << ctx.size() << " pushed substitutions, "
@@ -4605,13 +4882,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // axiom encoder reads their bits unconditionally.
     impl->totalizeRegistrySymbols();
 
-    ASTNode activeConjunction;
-    if (assertionsSMT2.size() > 1)
-      activeConjunction = bm->CreateNode(AND, assertionsSMT2);
-    else
-      activeConjunction = assertionsSMT2[0];
+    const ASTNode& activeConjunction = ordinaryOwner;
 
     adapter->setAssumptions(&assumptions);
+    const uint64_t refinementClausesBefore =
+        impl->solver->submittedClauses();
     size_t refinementRounds = 0;
     SOLVER_RETURN_TYPE res = impl->ce->CallSAT_ResultCheck(
         *impl->solver, bm->ASTTrue, activeConjunction, activeConjunction,
@@ -4642,6 +4917,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                 << refinementRounds << " rounds" << std::endl;
     if (impl->profile.enabled)
       impl->profile.refinementRounds += refinementRounds;
+
+    const uint64_t newRefinementMass = impl->accountRefinementClauses(
+        ordinaryOwner, refinementClausesBefore);
+    impl->recordLiveClauseMass(
+        Impl::addMass(ordinaryLiveMass, newRefinementMass));
 
     if (uf.stats_flag)
       impl->solver->printStats();
