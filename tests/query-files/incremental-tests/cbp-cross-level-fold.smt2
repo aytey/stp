@@ -1,15 +1,16 @@
 ; A shallow level's content fixes an index expression by bit-level
 ; reasoning alone, and a deeper level's read over an ite-indexed write
 ; chain must collapse under that CROSS-LEVEL fixing: the driver's
-; per-call constant-bit propagation feeds the live prefix in stack
-; order, folds the deep level's write index to a constant, and the
+; session-persistent constant-bit propagation maintains the live prefix in
+; stack order, folds the deep level's write index to a constant, and the
 ; simplifying factory's chaseRead then penetrates the chain (the
 ; Industrial_Control_C timeout family's mechanism, where per-level
 ; preparation is structurally blind). The pinning facts assert what
 ; the substitution consumed, and popping the fixing level must retract
 ; every fold derived from it -- the final block is satisfiable only
 ; with the flag the other way.
-; RUN: %solver --incremental -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental --check-sanity -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental --incremental-cbp-reset --check-sanity -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun A () (Array (_ BitVec 8) (_ BitVec 8)))
 (declare-fun flag () Bool)

@@ -54,9 +54,10 @@ THE SOFTWARE.
  *
  * Each feed is a level transaction. rollbackTo() restores the exact fixed-bit,
  * multiplication-cache and dependency state at an earlier level boundary;
- * worklists are quiescent at successful boundaries and explicitly cleared
- * when rolling back a conflicting feed. This lets IncrementalSolver preserve
- * a common prefix instead of destroying the engine and re-feeding it.
+ * worklists are quiescent at successful boundaries, cleared immediately on
+ * conflict, and defensively cleared again on rollback. This lets
+ * IncrementalSolver preserve a common prefix instead of destroying the engine
+ * and re-feeding it.
  */
 
 #ifndef INCREMENTALCBP_H_

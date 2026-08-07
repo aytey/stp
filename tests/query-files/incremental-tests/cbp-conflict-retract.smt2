@@ -5,8 +5,10 @@
 ; divergence check compares only recorded feeds) and the engine's
 ; latched conflict then refutes whatever level is pushed in its place.
 ; The pop below re-pushes consistent content and must come back sat;
-; the identical re-push after it must replay the recorded FALSE.
-; RUN: %solver --incremental -s %s 2>&1 | %OutputCheck %s
+; re-pushing the contradiction later must derive the conflict again. (The
+; intervening replacement trimmed that suffix's memo entry.)
+; RUN: %solver --incremental --check-sanity -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental --incremental-cbp-reset --check-sanity -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun flag () Bool)
 (declare-fun x () (_ BitVec 8))
@@ -29,7 +31,8 @@
 (check-sat)
 (pop 1)
 (push 1)
-; Identical re-push of the refuted level: the memo replays FALSE.
+; Re-push of the refuted content after an intervening replacement: the
+; replacement trimmed this suffix's memo, so CBP derives the conflict again.
 (assert (not flag))
 ; CHECK: ^unsat
 (check-sat)

@@ -255,6 +255,7 @@ struct IncrementalSolver::Impl
     uint64_t cbpNs = 0;
     uint64_t cbpSyncNs = 0;
     uint64_t cbpResetNs = 0;
+    uint64_t cbpRollbackNs = 0;
     uint64_t cbpFeedNs = 0;
     uint64_t cbpFreshFeedNs = 0;
     uint64_t cbpRefeedNs = 0;
@@ -293,6 +294,14 @@ struct IncrementalSolver::Impl
     uint64_t assumptions = 0;
     uint64_t clauses = 0;
     uint64_t cbpResets = 0;
+    uint64_t cbpDivergences = 0;
+    uint64_t cbpRollbacks = 0;
+    uint64_t cbpRolledLevels = 0;
+    uint64_t cbpRollbackFixed = 0;
+    uint64_t cbpRollbackCreated = 0;
+    uint64_t cbpRollbackDependencies = 0;
+    uint64_t cbpRollbackMultiplications = 0;
+    uint64_t cbpRollbackCallerEntries = 0;
     uint64_t cbpFedLevels = 0;
     uint64_t cbpFreshLevels = 0;
     uint64_t cbpRefedLevels = 0;
@@ -328,6 +337,7 @@ struct IncrementalSolver::Impl
     uint64_t cbpNs = 0;
     uint64_t cbpSyncNs = 0;
     uint64_t cbpResetNs = 0;
+    uint64_t cbpRollbackNs = 0;
     uint64_t cbpFeedNs = 0;
     uint64_t cbpFreshFeedNs = 0;
     uint64_t cbpRefeedNs = 0;
@@ -348,6 +358,14 @@ struct IncrementalSolver::Impl
     uint64_t refinementSatNs = 0;
     uint64_t rebuildNs = 0;
     uint64_t cbpResets = 0;
+    uint64_t cbpDivergences = 0;
+    uint64_t cbpRollbacks = 0;
+    uint64_t cbpRolledLevels = 0;
+    uint64_t cbpRollbackFixed = 0;
+    uint64_t cbpRollbackCreated = 0;
+    uint64_t cbpRollbackDependencies = 0;
+    uint64_t cbpRollbackMultiplications = 0;
+    uint64_t cbpRollbackCallerEntries = 0;
     uint64_t cbpFedLevels = 0;
     uint64_t cbpFreshLevels = 0;
     uint64_t cbpRefedLevels = 0;
@@ -393,6 +411,7 @@ struct IncrementalSolver::Impl
       cbpNs += p.cbpNs;
       cbpSyncNs += p.cbpSyncNs;
       cbpResetNs += p.cbpResetNs;
+      cbpRollbackNs += p.cbpRollbackNs;
       cbpFeedNs += p.cbpFeedNs;
       cbpFreshFeedNs += p.cbpFreshFeedNs;
       cbpRefeedNs += p.cbpRefeedNs;
@@ -413,6 +432,14 @@ struct IncrementalSolver::Impl
       refinementSatNs += p.refinementSatNs;
       rebuildNs += p.rebuildNs;
       cbpResets += p.cbpResets;
+      cbpDivergences += p.cbpDivergences;
+      cbpRollbacks += p.cbpRollbacks;
+      cbpRolledLevels += p.cbpRolledLevels;
+      cbpRollbackFixed += p.cbpRollbackFixed;
+      cbpRollbackCreated += p.cbpRollbackCreated;
+      cbpRollbackDependencies += p.cbpRollbackDependencies;
+      cbpRollbackMultiplications += p.cbpRollbackMultiplications;
+      cbpRollbackCallerEntries += p.cbpRollbackCallerEntries;
       cbpFedLevels += p.cbpFedLevels;
       cbpFreshLevels += p.cbpFreshLevels;
       cbpRefedLevels += p.cbpRefedLevels;
@@ -688,7 +715,8 @@ struct IncrementalSolver::Impl
 
   // The two fixed-cap measurements recur for the same nodes on every
   // call of a deep session (every level's granularity is re-judged
-  // per check-sat, and a reset re-walks the whole stack's feeds);
+  // per check-sat, and the reset-mode oracle re-walks the whole stack's
+  // feeds);
   // nodes are immutable, so the clipped count is a permanent fact.
   typedef std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
                              ASTNode::ASTNodeEqual>
@@ -708,10 +736,11 @@ struct IncrementalSolver::Impl
 
   // ── Session-persistent constant-bit propagation over the live prefix ──
   //
-  // One IncrementalCBP persists while the live stack extends its fed prefix;
-  // divergence resets and re-feeds it (see Cross-call reuse below). It is fed
-  // each live level's RAW word-level conjunction in stack order, each level's
-  // conjunction assumed true while that prefix is active. Facts
+  // One IncrementalCBP persists across stack changes. Divergence rolls its
+  // engine and caller overlay back to the longest common prefix (see Cross-call
+  // reuse below); reset/re-feed remains available as a diagnostic oracle. It
+  // is fed each live level's RAW word-level conjunction in stack order, each
+  // level's conjunction assumed true while that prefix is active. Facts
   // discovered while feeding level L depend only on levels <= L --
   // the pushed-definition context's prefix discipline, for the same
   // reason: rewritten forms stay stable as the stack grows
@@ -752,7 +781,7 @@ struct IncrementalSolver::Impl
   size_t callCbpAdopted = 0;
   size_t callCbpReplayed = 0;
   size_t cbpEpochAdopted = 0;
-  size_t cbpBarrenResets = 0;
+  size_t cbpBarrenDivergences = 0;
   bool cbpEverFixed = false;
   bool cbpFedArrays = false;
   bool callCbpOff = false;
@@ -762,8 +791,8 @@ struct IncrementalSolver::Impl
   // cap every call is a steady tax on the deep hundred-solve
   // sessions with nothing adopted to show for it. The same retirement
   // fires on evidence of futility: a session whose stack keeps
-  // DIVERGING (every divergence is a full engine re-feed) with no
-  // adoption to show for it is the KLEE-class pop-per-query shape,
+  // diverging with no adoption to show for it is the KLEE-class
+  // pop-per-query shape,
   // where the prefix never stabilises and the fixings never come.
   // The evidence is per-tier, because adoption timing says little on
   // its own (measured: the Industrial specimen's first adoption is
@@ -792,12 +821,10 @@ struct IncrementalSolver::Impl
   // ── Cross-call reuse ──────────────────────────────────────────────
   //
   // The engine state after feeding levels 0..L is a pure function of
-  // those levels' conjunctions, so while the live stack only EXTENDS
-  // the fed prefix, this call's state is last call's state -- kept,
-  // not recomputed. Any divergence (a pop, a changed level, base
-  // growth) resets the engine and re-feeds the live stack level by
-  // level; there is no undo log, reset IS the undo. The rewrites are
-  // memoised per level the same way, with one stronger property: a
+  // those levels' conjunctions. A divergence (a pop, a changed level, or
+  // base growth) rolls the engine and its caller-side semantic overlay back
+  // to the longest common prefix, then feeds only the replacement suffix.
+  // The rewrites are memoised per level with one stronger property: a
   // memo entry records its outputs as derived at BUILD time, when the
   // accumulated substitution held exactly the entry's own prefix --
   // so replaying it under a deeper live stack cannot leak a deeper
@@ -806,25 +833,176 @@ struct IncrementalSolver::Impl
   // own prefix changes).
   struct CbpLevelMemo
   {
+    struct Fact
+    {
+      ASTNode domain;
+      ASTNode assertion;
+
+      Fact(const ASTNode& domain_, const ASTNode& assertion_)
+          : domain(domain_), assertion(assertion_)
+      {
+      }
+    };
+
     // The raw level conjunction this entry was built from.
     ASTNode conjunction;
     // Raw conjunct -> its final rewritten form (context substitution,
     // definers restored, constant fixings adopted), in processing
     // order.
     std::vector<std::pair<ASTNode, ASTNode>> rewrites;
-    // The pinning facts this level's adoptions appended.
-    ASTVec facts;
+    // The pinning facts this level's adoptions appended, paired with the
+    // substitution-domain node whose emission they record. Keeping the
+    // domain explicit matters for a positive Boolean fact that is itself an
+    // EQ node: it cannot be recovered by inspecting the assertion's kind.
+    std::vector<Fact> facts;
   };
+
+  struct CbpSubstUndo
+  {
+    ASTNode key;
+    ASTNode oldValue;
+    bool existed;
+
+    CbpSubstUndo(const ASTNode& key_, const ASTNode& oldValue_, bool existed_)
+        : key(key_), oldValue(oldValue_), existed(existed_)
+    {
+    }
+  };
+
+  struct CbpCallerCheckpoint
+  {
+    size_t substUndo;
+    size_t fedConjunctsAdded;
+    size_t factsAdded;
+    size_t fedBefore;
+    bool fedArraysBefore;
+    bool offBefore;
+    bool conflictBefore;
+  };
+
   // Fed level conjunctions in feed order (index == stack level; the
   // engine's validity domain), and the per-level memo (its own,
   // prefix-trimmed validity domain). Equal lengths at call
   // boundaries; the memo outlives an engine reset.
   std::vector<ASTNode> cbpFedLevels;
   std::vector<CbpLevelMemo> cbpMemo;
+  std::vector<CbpCallerCheckpoint> cbpCallerCheckpoints;
+  std::vector<CbpSubstUndo> cbpSubstUndo;
+  std::vector<ASTNode> cbpFedConjunctsAdded;
+  std::vector<ASTNode> cbpFactsAdded;
+  ASTNodeSet cbpSubstTrailedThisLevel;
+  bool cbpCallerLevelOpen = false;
   // Levels below this replay their memo this call (set at call
   // start): their prefix is unchanged, so their recorded outputs are
   // exactly what recomputation would derive.
   size_t cbpMemoStable = 0;
+
+  void cbpBeginCallerLevel(size_t fedBefore)
+  {
+    assert(callCbpDeferred.empty());
+    assert(!cbpCallerLevelOpen);
+    assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
+    cbpSubstTrailedThisLevel.clear();
+    cbpCallerCheckpoints.push_back(CbpCallerCheckpoint{
+        cbpSubstUndo.size(), cbpFedConjunctsAdded.size(), cbpFactsAdded.size(),
+        fedBefore, cbpFedArrays, callCbpOff, callCbpConflict});
+    cbpCallerLevelOpen = true;
+  }
+
+  void cbpTrailSubstitution(const ASTNode& key)
+  {
+    assert(cbpCallerLevelOpen);
+    if (!cbpSubstTrailedThisLevel.insert(key).second)
+      return;
+    ASTNodeMap::const_iterator it = callCbpSubst.find(key);
+    cbpSubstUndo.push_back(
+        CbpSubstUndo(key, it == callCbpSubst.end() ? ASTNode() : it->second,
+                     it != callCbpSubst.end()));
+  }
+
+  void cbpAssignSubstitution(const ASTNode& key, const ASTNode& value)
+  {
+    cbpTrailSubstitution(key);
+    callCbpSubst[key] = value;
+  }
+
+  void cbpEraseSubstitution(const ASTNode& key)
+  {
+    cbpTrailSubstitution(key);
+    callCbpSubst.erase(key);
+  }
+
+  void cbpInsertFedConjunct(const ASTNode& node)
+  {
+    if (callCbpFedConjuncts.find(node) != callCbpFedConjuncts.end())
+      return;
+    assert(cbpCallerLevelOpen);
+    if (!cbpCallerLevelOpen)
+      return;
+    callCbpFedConjuncts.insert(node);
+    cbpFedConjunctsAdded.push_back(node);
+  }
+
+  bool cbpInsertFactDomain(const ASTNode& node)
+  {
+    if (callCbpFactEmitted.find(node) != callCbpFactEmitted.end())
+      return false;
+    assert(cbpCallerLevelOpen);
+    if (!cbpCallerLevelOpen)
+      return false;
+    callCbpFactEmitted.insert(node);
+    cbpFactsAdded.push_back(node);
+    return true;
+  }
+
+  size_t cbpRollbackCallerTo(size_t levels)
+  {
+    assert(levels <= cbpCallerCheckpoints.size());
+    assert(callCbpDeferred.empty());
+    assert(!cbpCallerLevelOpen);
+    size_t entries = 0;
+    while (cbpCallerCheckpoints.size() > levels)
+    {
+      const CbpCallerCheckpoint checkpoint = cbpCallerCheckpoints.back();
+      cbpCallerCheckpoints.pop_back();
+      while (cbpSubstUndo.size() > checkpoint.substUndo)
+      {
+        const CbpSubstUndo& undo = cbpSubstUndo.back();
+        if (undo.existed)
+          callCbpSubst[undo.key] = undo.oldValue;
+        else
+          callCbpSubst.erase(undo.key);
+        cbpSubstUndo.pop_back();
+        entries++;
+      }
+      while (cbpFedConjunctsAdded.size() > checkpoint.fedConjunctsAdded)
+      {
+        const size_t erased =
+            callCbpFedConjuncts.erase(cbpFedConjunctsAdded.back());
+        assert(erased == 1);
+        (void)erased;
+        cbpFedConjunctsAdded.pop_back();
+        entries++;
+      }
+      while (cbpFactsAdded.size() > checkpoint.factsAdded)
+      {
+        const size_t erased = callCbpFactEmitted.erase(cbpFactsAdded.back());
+        assert(erased == 1);
+        (void)erased;
+        cbpFactsAdded.pop_back();
+        entries++;
+      }
+      callCbpFed = checkpoint.fedBefore;
+      cbpFedArrays = checkpoint.fedArraysBefore;
+      callCbpOff = checkpoint.offBefore;
+      callCbpConflict = checkpoint.conflictBefore;
+    }
+    cbpSubstTrailedThisLevel.clear();
+    cbpCallerLevelOpen = false;
+    callCbpDeferred.clear();
+    cbpFedLevels.resize(levels);
+    return entries;
+  }
 
   void cbpReset()
   {
@@ -834,6 +1012,12 @@ struct IncrementalSolver::Impl
     callCbpFactEmitted.clear();
     callCbpFedConjuncts.clear();
     cbpFedLevels.clear();
+    cbpCallerCheckpoints.clear();
+    cbpSubstUndo.clear();
+    cbpFedConjunctsAdded.clear();
+    cbpFactsAdded.clear();
+    cbpSubstTrailedThisLevel.clear();
+    cbpCallerLevelOpen = false;
     callCbpFed = 0;
     cbpFedArrays = false;
   }
@@ -898,8 +1082,9 @@ struct IncrementalSolver::Impl
 
     const size_t levelNodes =
         dagSizeUpToMemo(levelConjunction, cbpFeedCap, dagSizeFeedMemo);
-    callCbpFed += levelNodes;
-    if (callCbpFed > cbpFeedCap)
+    const size_t fedBefore = callCbpFed;
+    assert(callCbpFed <= cbpFeedCap);
+    if (levelNodes > cbpFeedCap - callCbpFed)
     {
       if (profile.enabled)
         profile.cbpFeedRejected++;
@@ -912,6 +1097,8 @@ struct IncrementalSolver::Impl
                   << std::endl;
       return;
     }
+    callCbpFed += levelNodes;
+    cbpBeginCallerLevel(fedBefore);
     if (profile.enabled)
     {
       profile.cbpFedLevels++;
@@ -932,7 +1119,7 @@ struct IncrementalSolver::Impl
     splitConjuncts(levelConjunction, bm->ASTTrue, fed);
     fed.push_back(levelConjunction);
     for (const ASTNode& c : fed)
-      callCbpFedConjuncts.insert(c);
+      cbpInsertFedConjunct(c);
 
     bool consistent;
     {
@@ -940,6 +1127,7 @@ struct IncrementalSolver::Impl
                                           profile.cbpPropagateNs);
       consistent = callCbp->feedLevel(levelConjunction);
     }
+    assert(callCbp->levelCount() == cbpCallerCheckpoints.size());
     if (!consistent)
     {
       // The live prefix is contradictory by bit-level reasoning
@@ -954,11 +1142,13 @@ struct IncrementalSolver::Impl
       callCbpConflict = true;
       callCbpOff = true;
       cbpFedLevels.push_back(levelConjunction);
+      assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
       if (cbpMemo.size() == level)
       {
         cbpMemo.push_back(CbpLevelMemo());
         cbpMemo.back().conjunction = levelConjunction;
-        cbpMemo.back().facts.push_back(bm->ASTFalse);
+        cbpMemo.back().facts.push_back(
+            CbpLevelMemo::Fact(ASTNode(), bm->ASTFalse));
       }
       return;
     }
@@ -1016,7 +1206,7 @@ struct IncrementalSolver::Impl
         if (!feedSymbols.empty() && reachesAnyOf(n, feedSymbols))
           callCbpDeferred.push_back(std::make_pair(n, k));
         else
-          callCbpSubst[n] = k;
+          cbpAssignSubstitution(n, k);
         cbpEverFixed = true;
       }
 
@@ -1026,12 +1216,13 @@ struct IncrementalSolver::Impl
         if (it != callCbpSubst.end())
         {
           callCbpDeferred.push_back(*it);
-          callCbpSubst.erase(it);
+          cbpEraseSubstitution(c);
         }
       }
     }
 
     cbpFedLevels.push_back(levelConjunction);
+    assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
     // The memo entry parallels the feed; if this level was already
     // memoised under the same conjunction (an engine reset re-feeding
     // the stable prefix), the existing entry keeps replaying.
@@ -1046,15 +1237,20 @@ struct IncrementalSolver::Impl
   // level's own conjuncts are past rewriting.
   void cbpFinishLevel()
   {
-    if (callCbpDeferred.empty())
+    if (!cbpCallerLevelOpen)
+    {
+      assert(callCbpDeferred.empty());
       return;
+    }
     ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
     ScopedProfileTimer finishTimer(profile.enabled, profile.cbpFinishNs);
     if (profile.enabled)
       profile.cbpDeferredRestored += callCbpDeferred.size();
     for (const std::pair<ASTNode, ASTNode>& e : callCbpDeferred)
-      callCbpSubst[e.first] = e.second;
+      cbpAssignSubstitution(e.first, e.second);
     callCbpDeferred.clear();
+    cbpSubstTrailedThisLevel.clear();
+    cbpCallerLevelOpen = false;
   }
 
   // Rewrite one conjunct under the constants accumulated from levels
@@ -1071,9 +1267,10 @@ struct IncrementalSolver::Impl
   // refinement loop validates stay models of the raw stack. Fed
   // conjuncts are exempt: their own levels assert them for at least
   // as long as any adopter lives.
-  ASTNode cbpAdopt(const ASTNode& conjunct, ASTVec& factsOut)
+  ASTNode cbpAdopt(const ASTNode& conjunct,
+                   std::vector<CbpLevelMemo::Fact>& factsOut)
   {
-    if (callCbpOff || callCbpSubst.empty())
+    if (callCbpOff || !cbpCallerLevelOpen || callCbpSubst.empty())
       return conjunct;
     ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
     ScopedProfileTimer adoptTimer(profile.enabled, profile.cbpAdoptNs);
@@ -1088,13 +1285,13 @@ struct IncrementalSolver::Impl
     if (selfEntry != callCbpSubst.end())
     {
       selfConstant = selfEntry->second;
-      callCbpSubst.erase(selfEntry);
+      cbpEraseSubstitution(conjunct);
     }
     ASTNodeMap cache;
     const ASTNode adopted = SubstitutionMap::replace(
         conjunct, callCbpSubst, cache, bm->defaultNodeFactory);
     if (!selfConstant.IsNull())
-      callCbpSubst[conjunct] = selfConstant;
+      cbpAssignSubstitution(conjunct, selfConstant);
     if (adopted == conjunct)
       return conjunct;
 
@@ -1113,16 +1310,16 @@ struct IncrementalSolver::Impl
       ASTNodeMap::const_iterator sit = callCbpSubst.find(cur);
       if (sit != callCbpSubst.end() &&
           callCbpFedConjuncts.find(cur) == callCbpFedConjuncts.end() &&
-          callCbpFactEmitted.insert(cur).second)
+          cbpInsertFactDomain(cur))
       {
+        ASTNode fact;
         if (cur.GetType() == BOOLEAN_TYPE)
-          factsOut.push_back(
-              sit->second == bm->ASTTrue
-                  ? cur
-                  : bm->defaultNodeFactory->CreateNode(NOT, cur));
+          fact = sit->second == bm->ASTTrue
+                     ? cur
+                     : bm->defaultNodeFactory->CreateNode(NOT, cur);
         else
-          factsOut.push_back(
-              bm->defaultNodeFactory->CreateNode(EQ, cur, sit->second));
+          fact = bm->defaultNodeFactory->CreateNode(EQ, cur, sit->second);
+        factsOut.push_back(CbpLevelMemo::Fact(cur, fact));
       }
       for (unsigned j = 0; j < cur.Degree(); j++)
         pending.push_back(cur[j]);
@@ -1724,6 +1921,7 @@ struct IncrementalSolver::Impl
         << " cbp-us=" << profileMicros(profile.cbpNs)
         << " cbp-sync-us=" << profileMicros(profile.cbpSyncNs)
         << " cbp-reset-us=" << profileMicros(profile.cbpResetNs)
+        << " cbp-rollback-us=" << profileMicros(profile.cbpRollbackNs)
         << " cbp-feed-us=" << profileMicros(profile.cbpFeedNs)
         << " cbp-fresh-feed-us=" << profileMicros(profile.cbpFreshFeedNs)
         << " cbp-refeed-us=" << profileMicros(profile.cbpRefeedNs)
@@ -1761,6 +1959,15 @@ struct IncrementalSolver::Impl
         << " assumptions=" << profile.assumptions << '\n';
     out << "Incremental profile cbp/backend: check=" << profile.check
         << " cbp-resets=" << profile.cbpResets
+        << " cbp-divergences=" << profile.cbpDivergences
+        << " cbp-rollbacks=" << profile.cbpRollbacks
+        << " cbp-rolled-levels=" << profile.cbpRolledLevels
+        << " cbp-rollback-fixed=" << profile.cbpRollbackFixed
+        << " cbp-rollback-created=" << profile.cbpRollbackCreated
+        << " cbp-rollback-dependencies=" << profile.cbpRollbackDependencies
+        << " cbp-rollback-multiplications="
+        << profile.cbpRollbackMultiplications
+        << " cbp-rollback-caller=" << profile.cbpRollbackCallerEntries
         << " cbp-fed-levels=" << profile.cbpFedLevels
         << " cbp-fresh-levels=" << profile.cbpFreshLevels
         << " cbp-refed-levels=" << profile.cbpRefedLevels
@@ -1794,6 +2001,7 @@ struct IncrementalSolver::Impl
         << " cbp-us=" << profileMicros(sessionProfile.cbpNs)
         << " cbp-sync-us=" << profileMicros(sessionProfile.cbpSyncNs)
         << " cbp-reset-us=" << profileMicros(sessionProfile.cbpResetNs)
+        << " cbp-rollback-us=" << profileMicros(sessionProfile.cbpRollbackNs)
         << " cbp-feed-us=" << profileMicros(sessionProfile.cbpFeedNs)
         << " cbp-fresh-feed-us=" << profileMicros(sessionProfile.cbpFreshFeedNs)
         << " cbp-refeed-us=" << profileMicros(sessionProfile.cbpRefeedNs)
@@ -1817,6 +2025,16 @@ struct IncrementalSolver::Impl
         << profileMicros(sessionProfile.refinementSatNs)
         << " rebuild-reset-us=" << profileMicros(sessionProfile.rebuildNs)
         << " cbp-resets=" << sessionProfile.cbpResets
+        << " cbp-divergences=" << sessionProfile.cbpDivergences
+        << " cbp-rollbacks=" << sessionProfile.cbpRollbacks
+        << " cbp-rolled-levels=" << sessionProfile.cbpRolledLevels
+        << " cbp-rollback-fixed=" << sessionProfile.cbpRollbackFixed
+        << " cbp-rollback-created=" << sessionProfile.cbpRollbackCreated
+        << " cbp-rollback-dependencies="
+        << sessionProfile.cbpRollbackDependencies
+        << " cbp-rollback-multiplications="
+        << sessionProfile.cbpRollbackMultiplications
+        << " cbp-rollback-caller=" << sessionProfile.cbpRollbackCallerEntries
         << " cbp-fed-levels=" << sessionProfile.cbpFedLevels
         << " cbp-fresh-levels=" << sessionProfile.cbpFreshLevels
         << " cbp-refed-levels=" << sessionProfile.cbpRefedLevels
@@ -3711,11 +3929,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   if (impl->profile.enabled)
     semanticStarted = ProfileClock::now();
 
-  // Constant-bit propagation state persists while the live stack only
-  // extends what the engine has fed; a pop, a changed level or base
-  // growth resets the engine (reset is the undo -- the live stack
-  // re-feeds below) and trims the memo to the prefix that still
-  // matches (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
+  // Constant-bit propagation state persists across calls. A pop, changed
+  // level, or base growth rolls the engine and caller overlay back to their
+  // longest common prefix; the diagnostic reset mode rebuilds that prefix
+  // instead. The rewrite/fact memo has its own matching-prefix watermark
+  // (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
   {
     ScopedProfileTimer cbpTimer(impl->profile.enabled, impl->profile.cbpNs);
     ScopedProfileTimer syncTimer(impl->profile.enabled,
@@ -3726,37 +3944,72 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       lcp++;
     if (impl->profile.enabled)
       impl->profile.stablePrefix = lcp;
-    const bool didReset = lcp < impl->cbpFedLevels.size();
-    if (didReset)
+    const bool diverged = lcp < impl->cbpFedLevels.size();
+    if (diverged)
     {
       if (impl->profile.enabled)
-        impl->profile.cbpResets++;
+        impl->profile.cbpDivergences++;
       // Futility accounting: an epoch (the span since the last
       // divergence) that adopted nothing lengthens the barren run;
       // one fresh adoption clears it.
       if (impl->cbpEpochAdopted == 0)
       {
-        impl->cbpBarrenResets++;
+        impl->cbpBarrenDivergences++;
         const size_t leash = impl->cbpEverFixed
                                  ? Impl::cbpRetireBarrenFixed
                                  : Impl::cbpRetireBarrenNeverFixed;
-        if (!impl->cbpSessionRetired && impl->cbpBarrenResets >= leash)
+        if (!impl->cbpSessionRetired && impl->cbpBarrenDivergences >= leash)
         {
           impl->cbpSessionRetired = true;
           if (uf.stats_flag)
             std::cerr << "Incremental: cbp retired for the session ("
-                      << impl->cbpBarrenResets
+                      << impl->cbpBarrenDivergences
                       << " adoption-free stack divergences)" << std::endl;
         }
       }
       else
       {
-        impl->cbpBarrenResets = 0;
+        impl->cbpBarrenDivergences = 0;
       }
       impl->cbpEpochAdopted = 0;
+
+      const size_t fedLevelsBefore = impl->cbpFedLevels.size();
+      const bool aligned =
+          impl->callCbp.get() != NULL &&
+          impl->callCbp->levelCount() == fedLevelsBefore &&
+          impl->cbpCallerCheckpoints.size() == fedLevelsBefore &&
+          !impl->cbpCallerLevelOpen && impl->callCbpDeferred.empty();
+      const bool useRollback =
+          !impl->cbpSessionRetired && !uf.incremental_cbp_reset && aligned;
+      if (useRollback)
+      {
+        ScopedProfileTimer rollbackTimer(impl->profile.enabled,
+                                         impl->profile.cbpRollbackNs);
+        const IncrementalCBP::RollbackStats stats =
+            impl->callCbp->rollbackTo(lcp);
+        const size_t callerEntries = impl->cbpRollbackCallerTo(lcp);
+        assert(stats.levels == fedLevelsBefore - lcp);
+        assert(impl->callCbp->levelCount() == lcp);
+        assert(impl->cbpCallerCheckpoints.size() == lcp);
+        assert(impl->cbpFedLevels.size() == lcp);
+        if (impl->profile.enabled)
+        {
+          impl->profile.cbpRollbacks++;
+          impl->profile.cbpRolledLevels += stats.levels;
+          impl->profile.cbpRollbackFixed += stats.fixedStates;
+          impl->profile.cbpRollbackCreated += stats.createdFixedStates;
+          impl->profile.cbpRollbackDependencies += stats.dependencyNodes;
+          impl->profile.cbpRollbackMultiplications +=
+              stats.multiplicationStates;
+          impl->profile.cbpRollbackCallerEntries += callerEntries;
+        }
+      }
+      else
       {
         ScopedProfileTimer resetTimer(impl->profile.enabled,
                                       impl->profile.cbpResetNs);
+        if (impl->profile.enabled)
+          impl->profile.cbpResets++;
         impl->cbpReset();
       }
     }
@@ -3768,18 +4021,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       memoLcp++;
     impl->cbpMemo.resize(memoLcp);
     impl->cbpMemoStable = memoLcp;
-
-    // The reset cleared the emitted-fact record but the surviving
-    // memo levels keep replaying their facts; re-seed the record from
-    // them so this call's rebuilt levels do not emit duplicates.
-    if (didReset)
-      for (const Impl::CbpLevelMemo& m : impl->cbpMemo)
-        for (const ASTNode& f : m.facts)
-        {
-          const ASTNode n =
-              (f.GetKind() == EQ || f.GetKind() == NOT) ? f[0] : f;
-          impl->callCbpFactEmitted.insert(n);
-        }
   }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
@@ -3998,7 +4239,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           !cbpHit && impl->cbpMemo.size() == level + 1 &&
           impl->cbpMemo[level].conjunction == assertionsSMT2[level];
       size_t cbpMemoIdx = 0;
-      ASTVec cbpFacts;
+      std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
       {
         ASTNode replaced = rc;
@@ -4148,18 +4389,25 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // replaying level re-asserts the facts it recorded.
       if (cbpHit)
       {
-        for (const ASTNode& f : impl->cbpMemo[level].facts)
-          conjuncts.push_back(f);
+        for (const Impl::CbpLevelMemo::Fact& f : impl->cbpMemo[level].facts)
+        {
+          // A retired session will never adopt again and creates no new
+          // caller checkpoints. Its memo still supplies already-recorded
+          // assertions, but there is no scoped fact-emission state to seed.
+          if (!f.domain.IsNull() && !impl->cbpSessionRetired)
+            impl->cbpInsertFactDomain(f.domain);
+          conjuncts.push_back(f.assertion);
+        }
       }
       else
       {
         // Append rather than assign: a refuted level's memo already
         // carries its FALSE.
         if (cbpBuild)
-          for (const ASTNode& f : cbpFacts)
+          for (const Impl::CbpLevelMemo::Fact& f : cbpFacts)
             impl->cbpMemo[level].facts.push_back(f);
-        for (const ASTNode& f : cbpFacts)
-          conjuncts.push_back(f);
+        for (const Impl::CbpLevelMemo::Fact& f : cbpFacts)
+          conjuncts.push_back(f.assertion);
       }
     }
 

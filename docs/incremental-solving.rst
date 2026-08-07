@@ -168,15 +168,19 @@ nodes across levels. Those fixings rewrite a level before preparation, cache
 keying, and array transformation, so fixed array indices can collapse long
 read-over-write chains before they are encoded.
 
-The engine and its per-level rewrite/fact memos persist while later checks only
-extend the previously fed stack. A pop, changed level, or base growth resets
-the engine and re-feeds the surviving prefix; matching memo entries replay the
-rewritten outputs produced under their original prefix. A fixing is never
-allowed to erase the assertion from which it was derived: a level's own
-fixings are deferred until deeper levels, and other adopted fixings bring an
-equivalent pinning fact asserted at the adopting level. Conflicts are recorded
-as part of the fed prefix so popping a contradictory level removes their
-effect.
+The engine, its caller-side substitution/fact overlay, and its per-level
+rewrite/fact memos persist across checks. A pop, changed level, or base growth
+rolls the engine and caller overlay back to the longest common prefix, then
+feeds only the replacement suffix; matching memo entries replay the rewritten
+outputs produced under their original prefix. A fixing is never allowed to
+erase the assertion from which it was derived: a level's own fixings are
+deferred until deeper levels, and other adopted fixings bring an equivalent
+pinning fact asserted at the adopting level. Conflicts are recorded as part of
+the fed prefix so popping a contradictory level removes their effect.
+
+``--incremental-cbp-reset`` retains the previous reset-and-prefix-re-feed
+behavior as a diagnostic oracle. It is intended for differential validation,
+not normal solving.
 
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
@@ -314,8 +318,9 @@ diagnostic rather than a C API option. Each invocation writes four keyed
 records to stderr (the per-check phase, work, and CBP/backend records followed
 by additive session totals), while SMT-LIB answers remain on stdout.
 
-The profile reports stack and cache work, including separately timed fresh
-and re-fed CBP levels, their bounded DAG-node mass, resets, rewrite replay and
+The profile reports stack and cache work, including CBP divergences,
+rollbacks, discarded levels and state entries, fresh and re-fed levels, their
+bounded DAG-node mass, reset-oracle/fallback rebuilds, rewrite replay, and
 adoption attempts. It also covers semantic construction, preparation, actual
 bit-blast/CNF encoding, active-read seeding, backend rebuilds, initial and
 refinement SAT calls, and rolling session totals. Durations accumulate at
@@ -326,8 +331,9 @@ distort the phases being measured. Deterministic work counters are suitable
 for regression tests; elapsed values are measurements, not test expectations.
 
 The named sub-phase timings overlap their enclosing phase. On the ordinary
-equality-free route, ``semantic-us`` includes CBP synchronization, fresh and
-re-fed CBP work, preparation and encoding; the whole-array-equality route is
+equality-free route, ``semantic-us`` includes CBP synchronization, rollback,
+fresh and reset-mode re-fed CBP work, preparation and encoding; the
+whole-array-equality route is
 instead enclosed by ``extensionality-us``. ``refinement-us`` includes its SAT
 re-solves. ``rebuild-reset-us`` measures backend replacement and base
 re-simplification; the subsequent live-stack re-encoding is reported under

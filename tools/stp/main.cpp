@@ -425,6 +425,11 @@ void ExtraMain::create_options()
                "--incremental to profile from the first check)")
       ->group(misc_group);
 
+  app.add_flag("--incremental-cbp-reset", bm->UserFlags.incremental_cbp_reset,
+               "use reset and prefix re-feed instead of CBP level rollback "
+               "on stack divergence (diagnostic oracle)")
+      ->group(misc_group);
+
   int64_arg("--incremental-reencode-limit",
             bm->UserFlags.incremental_reencode_limit,
             "rebuild the incremental solver from the live assertion stack "

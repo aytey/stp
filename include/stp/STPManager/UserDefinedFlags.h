@@ -94,6 +94,11 @@ public:
   // profiling is not distorted by verbose pass/backend output.
   bool incremental_profile = false;
 
+  // Diagnostic oracle for the CBP level trail: discard the engine on every
+  // stack divergence and re-feed the surviving prefix, as the pre-trail
+  // implementation did. This is intentionally off in normal solving.
+  bool incremental_cbp_reset = false;
+
   // The persistent encoding grows monotonically; when the solver's variable
   // count passes this limit AND most encodings belong to popped,
   // never-returning content, the solver is rebuilt from the live stack

@@ -85,10 +85,10 @@ IncrementalCBP::RollbackStats IncrementalCBP::rollbackTo(size_t levels)
   assert(levels <= checkpoints.size());
   RollbackStats stats;
 
-  // A conflicting transfer returns immediately and leaves its remaining
-  // work queued. No queued node belongs to a committed boundary: successful
-  // feeds drain both tiers, and every level at or below the conflict is being
-  // discarded before propagation may resume.
+  // Conflict handling already clears both queues. Clear all transient output
+  // defensively here too: no queued node or per-feed delta belongs to a
+  // committed boundary, and every discarded level must leave clean scratch
+  // before propagation may resume.
   cheapWork.clear();
   expensiveWork.clear();
   newlyFixed.clear();
