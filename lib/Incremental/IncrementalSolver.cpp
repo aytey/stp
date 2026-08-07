@@ -669,25 +669,34 @@ struct IncrementalSolver::Impl
   // lemmas as permanently live hides refinement-heavy dead growth.
   std::map<ASTNode, uint64_t> refinementMassOf;
 
-  // Extensionality encodes the complete active stack as one block. Its newly
-  // submitted delta is not a safe live-mass estimate for a monotonically
-  // growing stack, because the current block reuses cones first introduced by
-  // earlier block keys. Retain its AIG root and lazily compute the complete
-  // unique cone only when the cheap estimate would otherwise permit relief.
-  std::map<ASTNode, Aig_Obj_t*> extAigRootOf;
-  std::map<ASTNode, uint64_t> extConeMassOf;
-  struct PendingExtLive
+  // The actual AIG root encoded under each formula key. Newly submitted
+  // clause deltas are a cheap live-mass estimate, but not an exact one: a
+  // current root can reuse a large cone first introduced by a now-popped key.
+  // Retain the roots and lazily walk their unique live cone only when the
+  // cheap estimate would otherwise permit relief. Only the most recent solve
+  // is retained: it is the one a false rebuild on a persistent live stack
+  // must protect, while keeping every growing root vector would itself take
+  // quadratic memory. Popped historical content should not prevent relief.
+  std::map<ASTNode, Aig_Obj_t*> aigRootOf;
+  struct PendingLiveCone
   {
-    Aig_Obj_t* root = NULL;
-    uint64_t permanentMass = 0;
-    uint64_t refinementMass = 0;
+    std::vector<Aig_Obj_t*> currentRoots;
+    size_t permanentRootCount = 0;
+    uint64_t nonStructuralMass = 0;
   };
-  std::map<ASTNode, PendingExtLive> pendingExtLive;
+  PendingLiveCone pendingLiveCone;
+  bool hasPendingLiveCone = false;
 
   // Permanent-for-this-backend-epoch mass: base root units and definitions,
   // plus promoted units. A promoted level's retraction forces a rebuild, so
   // its units really are live until the epoch ends.
   uint64_t baseLiveMass = 0;
+  // Roots and unit clauses which are permanent in this backend epoch. Keeping
+  // the roots separate lets the lazy exact walk take their structural union
+  // with the current assumed roots rather than either missing shared clauses
+  // or counting shared clauses twice.
+  std::vector<Aig_Obj_t*> permanentAigRoots;
+  uint64_t permanentUnitMass = 0;
   // Activation implications are live only while their activation literal is
   // assumed. Retired implications and their false pins deliberately remain
   // outside this map and therefore count as reclaimable dead mass.
@@ -1490,6 +1499,7 @@ struct IncrementalSolver::Impl
           addClause(unit);
           baseLiveMass = addMass(baseLiveMass,
                                  addMass(clauseMassOf[r], 1));
+          recordPermanentRoot(r);
         }
       }
     }
@@ -2223,15 +2233,48 @@ struct IncrementalSolver::Impl
     return mass;
   }
 
-  // Exact number of clauses ensureEncoded() submits for the unique AIG nodes
-  // reachable from one root: three per AND and one for the shared TRUE
-  // variable when the cone reaches the constant. CIs allocate variables but
-  // no clauses. The root has already been encoded in this backend epoch.
-  uint64_t encodedAigConeMass(Aig_Obj_t* regular)
+  Aig_Obj_t* aigRoot(const ASTNode& key) const
   {
-    assert(regular != NULL);
+    std::map<ASTNode, Aig_Obj_t*>::const_iterator it = aigRootOf.find(key);
+    assert(it != aigRootOf.end());
+    return it->second;
+  }
+
+  void recordPermanentRoot(const ASTNode& key)
+  {
+    permanentAigRoots.push_back(aigRoot(key));
+    permanentUnitMass = addMass(permanentUnitMass, 1);
+  }
+
+  static void normalizeAigRoots(std::vector<Aig_Obj_t*>& roots)
+  {
+    std::sort(roots.begin(), roots.end(), [](Aig_Obj_t* a, Aig_Obj_t* b) {
+      return Aig_ObjId(Aig_Regular(a)) < Aig_ObjId(Aig_Regular(b));
+    });
+    roots.erase(std::unique(roots.begin(), roots.end(),
+                            [](Aig_Obj_t* a, Aig_Obj_t* b) {
+                              return Aig_ObjId(Aig_Regular(a)) ==
+                                     Aig_ObjId(Aig_Regular(b));
+                            }),
+                roots.end());
+  }
+
+  // Exact number of clauses ensureEncoded() submitted for the unique AIG
+  // nodes reachable from the permanent-root prefix and current roots: three
+  // per AND and one for the shared TRUE variable when a cone reaches the
+  // constant. CIs allocate variables but no clauses. Every root has already
+  // been encoded in this backend epoch.
+  uint64_t encodedAigConeMass(
+      const std::vector<Aig_Obj_t*>& currentRoots,
+      size_t permanentRootCount)
+  {
+    assert(permanentRootCount <= permanentAigRoots.size());
     std::unordered_set<unsigned> seen;
-    std::vector<Aig_Obj_t*> pending(1, regular);
+    std::vector<Aig_Obj_t*> pending;
+    pending.reserve(permanentRootCount + currentRoots.size());
+    pending.insert(pending.end(), permanentAigRoots.begin(),
+                   permanentAigRoots.begin() + permanentRootCount);
+    pending.insert(pending.end(), currentRoots.begin(), currentRoots.end());
     uint64_t mass = 0;
     while (!pending.empty())
     {
@@ -2255,68 +2298,64 @@ struct IncrementalSolver::Impl
     return mass;
   }
 
-  void stageExtensionalityLiveMass(const ASTNode& owner,
-                                   Aig_Obj_t* regular)
+  // Record a solve's cheap live estimate now and retain enough of its actual
+  // AIG roots to repair that estimate lazily if it would later authorize a
+  // rebuild. `nonStructuralMass` is the exact live unit/activation/theory
+  // share; the cone walk supplies only structural clauses.
+  void stageLiveConeMass(std::vector<Aig_Obj_t*> currentRoots,
+                         uint64_t cheapLiveMass,
+                         uint64_t nonStructuralMass)
   {
-    uint64_t structural = 0;
-    std::map<ASTNode, uint64_t>::const_iterator full =
-        extConeMassOf.find(owner);
-    bool hasFull = full != extConeMassOf.end();
-    if (hasFull)
-      structural = full->second;
-    else if (profile.enabled)
+    uint64_t live = cheapLiveMass;
+    if (profile.enabled)
     {
       // Profiling is opt-in instrumentation, so pay for an exact current
       // working-set measurement instead of reporting the lazy lower bound.
-      structural = encodedAigConeMass(regular);
-      extConeMassOf[owner] = structural;
-      pendingExtLive.erase(owner);
-      hasFull = true;
+      normalizeAigRoots(currentRoots);
+      const uint64_t structural =
+          encodedAigConeMass(currentRoots, permanentAigRoots.size());
+      live = addMass(structural, nonStructuralMass);
+    }
+    recordLiveClauseMass(live);
+
+    // A pending exact walk is only useful once the variable floor has been
+    // crossed. Coalesce to this solve's snapshot: retaining every historical
+    // root vector on a growing ordinary stack would be quadratic memory, and
+    // stale popped stacks are precisely the content relief should reclaim.
+    if (!profile.enabled && reliefSizeReached())
+    {
+      normalizeAigRoots(currentRoots);
+      pendingLiveCone.currentRoots.swap(currentRoots);
+      pendingLiveCone.permanentRootCount = permanentAigRoots.size();
+      pendingLiveCone.nonStructuralMass = nonStructuralMass;
+      hasPendingLiveCone = true;
     }
     else
     {
-      std::map<ASTNode, uint64_t>::const_iterator delta =
-          clauseMassOf.find(owner);
-      if (delta != clauseMassOf.end())
-        structural = delta->second;
-    }
-
-    const uint64_t theory = refinementMass(owner);
-    uint64_t live = addMass(baseLiveMass, structural);
-    live = addMass(live, theory);
-    recordLiveClauseMass(live);
-
-    if (!hasFull)
-    {
-      PendingExtLive& pending = pendingExtLive[owner];
-      pending.root = regular;
-      pending.permanentMass = baseLiveMass;
-      pending.refinementMass = theory;
+      pendingLiveCone.currentRoots.clear();
+      hasPendingLiveCone = false;
     }
   }
 
-  // Pay the pending whole-cone walks only when the cheap ownership estimate
-  // would otherwise authorize a rebuild. This repairs monotonic
-  // extensionality stacks without imposing an O(live cone) walk on every
-  // ordinary check-sat. Profiling opts into an exact current measurement
-  // above and therefore has no pending entry for that block.
-  void expandPendingExtensionalityLiveMass()
+  // Pay pending whole-cone walks only when the cheap ownership estimate would
+  // otherwise authorize a rebuild. Newest first repairs a monotonically
+  // growing live stack with one walk; stop immediately once the recovered
+  // high-water mark disproves relief. The staging side has already coalesced
+  // history to the last solve, so this is at most one full-cone walk.
+  void expandPendingLiveConeMass()
   {
-    for (std::map<ASTNode, PendingExtLive>::const_iterator it =
-             pendingExtLive.begin();
-         it != pendingExtLive.end(); ++it)
-    {
-      assert(it->second.root != NULL);
-      uint64_t structural = encodedAigConeMass(it->second.root);
-      extConeMassOf[it->first] = structural;
-      uint64_t live = addMass(it->second.permanentMass, structural);
-      live = addMass(live, it->second.refinementMass);
-      // This pending block belongs to a previous solve. Discovering its exact
-      // cone repairs the epoch's historical high-water mark, but must not
-      // report that old working set as live in the check about to start.
-      recordPeakLiveClauseMass(live);
-    }
-    pendingExtLive.clear();
+    if (!hasPendingLiveCone)
+      return;
+    const uint64_t structural = encodedAigConeMass(
+        pendingLiveCone.currentRoots, pendingLiveCone.permanentRootCount);
+    const uint64_t live =
+        addMass(structural, pendingLiveCone.nonStructuralMass);
+    // This snapshot belongs to the previous solve. Discovering its exact cone
+    // repairs the epoch's historical high-water mark, but must not report that
+    // old working set as live in the check about to start.
+    recordPeakLiveClauseMass(live);
+    pendingLiveCone.currentRoots.clear();
+    hasPendingLiveCone = false;
   }
 
   void addBinary(int lit_a, int lit_b)
@@ -2679,6 +2718,7 @@ struct IncrementalSolver::Impl
     // the mass the live stack actually uses.
     const uint64_t delta = solver->submittedClauses() - clausesPre;
     clauseMassOf[key] = delta;
+    aigRootOf[key] = regular;
 
     encodesThisCall++;
     return lit;
@@ -3116,11 +3156,13 @@ struct IncrementalSolver::Impl
     pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
     refinementMassOf.clear();
-    extAigRootOf.clear();
-    extConeMassOf.clear();
-    pendingExtLive.clear();
+    aigRootOf.clear();
+    pendingLiveCone.currentRoots.clear();
+    hasPendingLiveCone = false;
     activationMassOf.clear();
     baseLiveMass = 0;
+    permanentAigRoots.clear();
+    permanentUnitMass = 0;
     currentLiveClauseMass = 0;
     maxLiveClauseMass = 0;
     // Content screened before this rebuild must be screened again: the
@@ -3647,19 +3689,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
         profile.rootHits++;
       blockLit = hit->second;
       blockReused = true;
-      std::map<ASTNode, Aig_Obj_t*>::const_iterator root =
-          extAigRootOf.find(inputToSat);
-      if (root != extAigRootOf.end())
-        blockRegular = root->second;
-      else
-      {
-        // rootLitOf can contain this pure-BV key through another encoding
-        // route. BBForm is session-memoised; recover the AIG root without
-        // submitting any clause.
-        BBNodeAIG recovered = bb.BBForm(inputToSat);
-        blockRegular = Aig_Regular(recovered.n);
-        extAigRootOf[inputToSat] = blockRegular;
-      }
+      blockRegular = aigRoot(inputToSat);
     }
     else
     {
@@ -3677,7 +3707,7 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
           2 * varOfAig(blockRegular) + (Aig_IsComplement(root.n) ? 1 : 0);
       bm->GetRunTimes()->stop(RunTimes::CNFConversion);
       rootLitOf[inputToSat] = blockLit;
-      extAigRootOf[inputToSat] = blockRegular;
+      aigRootOf[inputToSat] = blockRegular;
       clauseMassOf[inputToSat] =
           solver->submittedClauses() - submittedBefore;
     }
@@ -3780,7 +3810,12 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
     profile.refinementRounds += refinementRounds;
 
   accountRefinementClauses(inputToSat, refinementClausesBefore);
-  stageExtensionalityLiveMass(inputToSat, blockRegular);
+  const uint64_t theoryMass = refinementMass(inputToSat);
+  uint64_t cheapLiveMass = addMass(baseLiveMass, clauseMassOf[inputToSat]);
+  cheapLiveMass = addMass(cheapLiveMass, theoryMass);
+  std::vector<Aig_Obj_t*> currentRoots(1, blockRegular);
+  stageLiveConeMass(currentRoots, cheapLiveMass,
+                    addMass(permanentUnitMass, theoryMass));
 
   // The whole round rode one block literal, so an unsat answer has no
   // per-level or per-assumption granularity: the core is everything.
@@ -4067,7 +4102,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // tracked mass restarts at the working set, so firing again takes
     // another fourfold growth.
     if (impl->reliefSizeReached() && impl->reliefRatioReached())
-      impl->expandPendingExtensionalityLiveMass();
+      impl->expandPendingLiveConeMass();
 
     if (impl->reliefSizeReached() && impl->reliefRatioReached())
     {
@@ -4306,6 +4341,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       impl->addClause(unit);
       impl->baseLiveMass = Impl::addMass(
           impl->baseLiveMass, Impl::addMass(impl->clauseMassOf[c], 1));
+      impl->recordPermanentRoot(c);
     }
     impl->pendingRebuiltBase.clear();
   }
@@ -4346,6 +4382,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     impl->addClause(unit);
     impl->baseLiveMass = Impl::addMass(
         impl->baseLiveMass, Impl::addMass(impl->clauseMassOf[c], 1));
+    impl->recordPermanentRoot(c);
   }
 
   // Screening must see the WHOLE stack's new raw content before any level
@@ -4727,6 +4764,9 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       }
       impl->baseLiveMass = Impl::addMass(impl->baseLiveMass,
                                          levelRoots.size());
+      assert(conjuncts.size() == levelRoots.size());
+      for (const ASTNode& c : conjuncts)
+        impl->recordPermanentRoot(c);
       impl->promotedDepth = level;
       if (uf.stats_flag)
         std::cerr << "Incremental: promoted level " << level << " ("
@@ -4772,6 +4812,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // uses -- feeds the relief valve's deadness measure on LATER solves.
   // The peak since the last rebuild is the valve's denominator.
   uint64_t ordinaryLiveMass = impl->baseLiveMass;
+  std::vector<Aig_Obj_t*> ordinaryCurrentRoots;
+  const bool trackOrdinaryRoots =
+      impl->profile.enabled || impl->reliefSizeReached();
+  if (trackOrdinaryRoots)
+    ordinaryCurrentRoots.reserve(activeEncodedKeys.size());
+  const uint64_t activationMass = impl->activeActivationMass(assumptions);
+  const uint64_t oldRefinementMass = impl->refinementMass(ordinaryOwner);
   {
     for (const ASTNode& k : activeEncodedKeys)
     {
@@ -4779,12 +4826,17 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           impl->clauseMassOf.find(k);
       if (mit != impl->clauseMassOf.end())
         ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, mit->second);
+      if (trackOrdinaryRoots)
+        ordinaryCurrentRoots.push_back(impl->aigRoot(k));
     }
-    ordinaryLiveMass = Impl::addMass(
-        ordinaryLiveMass, impl->activeActivationMass(assumptions));
-    ordinaryLiveMass = Impl::addMass(
-        ordinaryLiveMass, impl->refinementMass(ordinaryOwner));
-    impl->recordLiveClauseMass(ordinaryLiveMass);
+    ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, activationMass);
+    ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, oldRefinementMass);
+    uint64_t nonStructuralMass =
+        Impl::addMass(impl->permanentUnitMass, activationMass);
+    nonStructuralMass =
+        Impl::addMass(nonStructuralMass, oldRefinementMass);
+    impl->stageLiveConeMass(ordinaryCurrentRoots, ordinaryLiveMass,
+                            nonStructuralMass);
   }
 
   if (impl->profile.enabled)
@@ -4920,8 +4972,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
     const uint64_t newRefinementMass = impl->accountRefinementClauses(
         ordinaryOwner, refinementClausesBefore);
-    impl->recordLiveClauseMass(
-        Impl::addMass(ordinaryLiveMass, newRefinementMass));
+    uint64_t refinedNonStructuralMass =
+        Impl::addMass(impl->permanentUnitMass, activationMass);
+    refinedNonStructuralMass = Impl::addMass(
+        refinedNonStructuralMass, impl->refinementMass(ordinaryOwner));
+    impl->stageLiveConeMass(
+        ordinaryCurrentRoots,
+        Impl::addMass(ordinaryLiveMass, newRefinementMass),
+        refinedNonStructuralMass);
 
     if (uf.stats_flag)
       impl->solver->printStats();
