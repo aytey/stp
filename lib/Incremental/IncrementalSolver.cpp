@@ -1824,15 +1824,18 @@ struct IncrementalSolver::Impl
   // Trail reuse is a size gamble: on sessions of many small queries the
   // saved per-solve re-descent dominates (the issue #483 KLEE files, 36%
   // and 19% faster at ~11k variables), while on large instances the kept
-  // trail suppresses the fresh restarts the search needs (the
-  // phase-sensitive QF_ABVFP families: up to 13x slower at ~185k
-  // variables, with identical refinement behaviour -- the search itself
-  // degrades). The backend accepts the option only in its configuration
-  // window, so crossing the boundary retires it for the session by
-  // starting the solver over without it; the boundary is measured, not
-  // principled.
+  // trail suppresses the fresh restarts the search needs. Floating point is
+  // a useful early-session predictor of that phase-sensitive class, but it
+  // is not a reason to throw away a solver after the session has already
+  // demonstrated the many-query shape: late-arriving FP in the Vector
+  // families made that rebuild lose its array-refinement history and cost
+  // 2x--6x. The size belt still retires an eventually large solver. The
+  // backend accepts the option only in its configuration window, so
+  // retirement starts the solver over without it; the boundaries are
+  // measured, not principled.
   bool trailReuseAllowed;
   static const unsigned long trailReuseVarLimit = 100000;
+  static const size_t trailReuseFpRetireSolves = 7;
   std::vector<int> lastFailedLits;
   size_t lastLevelCount;
 
@@ -4180,26 +4183,27 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Inprobing);
     }
 
-    // Trail reuse pays on the many-small-queries sessions and hurts on the
-    // floating-point families, whose search is phase-sensitive and whose
-    // instances are large -- every measured loss had FP content, every win
-    // was FP-free. The option is configuration-window-only, so retirement
-    // means starting the solver over without it: free when FP is present
-    // from the first solve (nothing is encoded yet), and one bounded
-    // rebuild if FP arrives -- or the encoding outgrows the size belt --
-    // mid-session.
+    // Trail reuse pays on many-small-query sessions and is phase-sensitive
+    // on floating-point families. Retire for FP only during the initial
+    // short-session window. Once a session has crossed the measured
+    // short-session cutoff, late FP is weaker evidence than the useful
+    // SAT/refinement state already accumulated; keep that state until the
+    // independent size belt says otherwise.
     if (impl->trailReuseAllowed)
     {
       bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
-      for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
-        retire = impl->fragment(assertionsSMT2[i]).fp;
+      if (!retire &&
+          impl->engagedSolves < Impl::trailReuseFpRetireSolves)
+        for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
+          retire = impl->fragment(assertionsSMT2[i]).fp;
       if (retire)
       {
         impl->trailReuseAllowed = false;
         if (uf.stats_flag)
           std::cerr << "Incremental: trail reuse retired ("
                     << impl->solver->nVars()
-                    << " variables), solver restarted without it" << std::endl;
+                    << " variables after " << impl->engagedSolves
+                    << " solves), solver restarted without it" << std::endl;
         // If the session already qualifies for inprobing retirement --
         // whose AUTO gate waits for exactly this trail retirement -- take
         // both in ONE rebuild. Left to its own block, the retirement
