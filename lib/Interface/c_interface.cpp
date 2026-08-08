@@ -369,9 +369,8 @@ void vc_printExprFile(VC vc, Expr e, int fd)
 static void materializePendingModel(VC vc)
 {
   stp::STP* stp_i = (stp::STP*)vc;
-  stp::IncrementalSolver* inc = stp_i->getIncrementalSolver();
-  if (inc != NULL)
-    inc->materializePendingModel();
+  if (stp_i->hasIncrementalSolver())
+    stp_i->getIncrementalSolver()->materializePendingModel();
 }
 
 static void vc_printVarDeclsToStream(VC vc, ostream& os)
@@ -3218,6 +3217,7 @@ int getIWidth(Expr ex)
 
 void vc_printCounterExampleFile(VC vc, int fd)
 {
+  materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
 
