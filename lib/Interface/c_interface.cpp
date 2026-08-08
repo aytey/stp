@@ -31,7 +31,7 @@ THE SOFTWARE.
 #include <cstring>
 
 #include "stp/Incremental/IncrementalSolver.h"
-#include "stp/Interface/fdstream.h"
+#include "stp/Interface/FdOStream.h"
 #include "stp/Parser/parser.h"
 #include "stp/Printer/printers.h"
 #include "stp/cpp_interface.h"
@@ -49,7 +49,6 @@ using std::cout;
 using std::ostream;
 using std::stringstream;
 using std::string;
-using std::fdostream;
 using std::endl;
 
 // Defined further down, but used by the boolean expression builders above it.
@@ -358,7 +357,7 @@ void vc_printExprFile(VC vc, Expr e, int fd)
 {
   stp::STPMgr* b = mgr(vc);
 
-  fdostream os(fd);
+  stp::FdOStream os(fd);
 
   ((stp::ASTNode*)e)->PL_Print(os, b);
   // os.flush();
@@ -3222,7 +3221,7 @@ void vc_printCounterExampleFile(VC vc, int fd)
   stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = stp_i->bm;
 
-  fdostream os(fd);
+  stp::FdOStream os(fd);
   stp::AbsRefine_CounterExample* ce =
       (stp::AbsRefine_CounterExample*)(stp_i->Ctr_Example);
 
