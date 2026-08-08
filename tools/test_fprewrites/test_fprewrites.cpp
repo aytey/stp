@@ -558,10 +558,21 @@ static void run(Ctx& c)
 
   // The reflexive pair: `=` is reflexive on the abstract domain (one NaN
   // value), fp.eq is not (NaN compares equal to nothing, itself included).
+  // Batch mode folds the SMT equality immediately. Incremental mode retains
+  // it until bit-blasting to preserve the persistent pipeline's encoding
+  // order; the exhaustive comparison below pins that delayed form as the
+  // same tautology.
   {
     ASTNode x = c.fp(EB, SB);
     report("x = x -> true",
            c.nf->CreateNode(FP_SMT_EQ, {x, x}) == c.mgr.ASTTrue);
+    c.mgr.UserFlags.incremental_solving = true;
+    const ASTNode delayed = c.nf->CreateNode(FP_SMT_EQ, {x, x});
+    report("incremental x = x waits for bit-blasting",
+           delayed.GetKind() == FP_SMT_EQ);
+    const std::string why = c.firstDisagreement(c.mgr.ASTTrue, delayed);
+    report("delayed incremental x = x remains true", why.empty(), why);
+    c.mgr.UserFlags.incremental_solving = false;
     report("fp.eq(x, x) -> not isNaN(x)",
            c.nf->CreateNode(FP_EQ, {x, x}) ==
                c.hf->CreateNode(NOT, {c.hf->CreateNode(FP_ISNAN, {x})}));

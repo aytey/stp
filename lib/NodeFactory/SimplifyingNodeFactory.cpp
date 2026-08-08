@@ -686,10 +686,18 @@ ASTNode SimplifyingNodeFactory::CreateNode(Kind kind, const ASTVec& children)
       {
         // x = x is reflexively true; fp.eq(x, x) fails exactly when x is NaN
         // (the FP_GEQ rule above, restated for the other reflexive predicate).
+        // In incremental mode retain the SMT equality until bit-blasting,
+        // where BBeqFP still collapses identical operands to true. Eagerly
+        // deleting it changes the word-level DAG/order without changing the
+        // final AIG or clause count; on the Newton family that alone perturbs
+        // CaDiCaL by more than 3x. Batch solving keeps the ordinary eager
+        // fold, while the persistent driver gets the stable encoding order.
         if (children[0] == children[1])
         {
           if (kind == stp::FP_SMT_EQ)
-            result = bm.ASTTrue;
+            result = bm.UserFlags.incremental_solving
+                         ? hashing.CreateNode(kind, children)
+                         : bm.ASTTrue;
           else
             result = NodeFactory::CreateNode(
                 stp::NOT,
