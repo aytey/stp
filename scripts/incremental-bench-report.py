@@ -4,8 +4,8 @@
 
 Typical closeout usage::
 
-  incremental-bench-report.py --main '/results/final/main-shard-*.csv'
-      --revalidation '/results/final/revalidation-shard-*.csv'
+  incremental-bench-report.py --main '/results/final/main-shard-[0-9][0-9].csv'
+      --revalidation '/results/final/main-shard-[0-9][0-9].revalidation.csv'
       --expected-manifest /results/corpus.manifest --expected-runs 3
       --expected-answers 1865826
       --output-prefix /results/final/report --require-full-ok

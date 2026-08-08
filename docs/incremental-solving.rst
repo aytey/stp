@@ -380,8 +380,8 @@ live shape may be mistaken for dead churn.
 At implementation closeout through ``ee8685bb``, the complete configured
 RelWithDebInfo suites passed with CaDiCaL and floating point (116/116), MiniSat
 and floating point (115/115), and MiniSat without floating point (87/87). These
-configured-suite results do not replace the outstanding external-corpus
-campaign.
+configured-suite results are complemented by the frozen external-corpus
+reconciliation below.
 
 The initial closeout reconnaissance invalidated its frozen ``9cb7b34b``
 candidate and was stopped at the first answer disagreement. On
@@ -394,8 +394,51 @@ symbol live, leaving the fact disconnected from the floating-point operation.
 The narrow protection and cache-invalidation fix is covered by
 ``cbp-fact-private-definition.smt2`` in default, forced-incremental,
 reset-oracle, and memo-replay modes. The stopped campaign's partial rows are
-diagnostic evidence only; a fresh frozen candidate and the full external
-campaign remain to be run, so no corpus result is claimed here.
+diagnostic evidence only. They were discarded and the campaign was restarted
+with a freshly frozen candidate containing both privacy fixes.
+
+Frozen closeout reconciliation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The restarted closeout campaign compared master
+``34f69be1989910fd053008715de4b65c095fd770`` with candidate
+``e5a26c30f83b2cd9cc0ccb274b62f210865023cd``. The latter is the
+``ee8685bb`` implementation plus documentation only. Both were frozen Release
+builds using CaDiCaL 3.0.1, floating-point support, shared libraries, and the
+system allocator. The master and candidate executable SHA-256 values were,
+respectively, ``6f03a9edbbbfe6db2918ca9a36e6f2fd3903f5061e6a520db0c489f19212517a``
+and ``2c9186d98aa55df055d751e3ea3b40d7f3d13f248b19789fea1ab57d2bbdb8ce``;
+their linked ``libstp`` hashes were
+``0f063a88125c10070b403e2d107e25b9b0cb9177c8aa22b95decff6bc4553a6b``
+and ``84a36b4f447ab47ca97f2ea60b03cfe5628a65cef9f722b4d2a9bef7ab17e03f``.
+
+The corpus contained 22,999 sorted, unique files totalling 20,308,257,767
+bytes. Every file was checked against a content ledger. The corpus-manifest
+SHA-256 was
+``cd1310ebac50f4d35c837df0a01e6f8ffe020c3e6df1a8f8b03d13a9bbf784d7``
+and the content-ledger SHA-256 was
+``7c0fca20fc75e5cd7506b0e225621d17aa20dc98e087b28f159f0dd40f4d98db``.
+A 36-pair smoke phase and its nine selected longer reruns were all
+``FULL_OK`` before the full pass began.
+
+The reconciliation ran each file once with a 30-second limit. It selected 518
+files for an authoritative 120-second rerun. Coverage was exact: all 22,999
+effective ``(file, run)`` pairs and all 518 selected reruns were present, and
+no disagreement was observed in either phase. After replacement by the longer
+rows, 22,765 files were ``FULL_OK`` and 234 were
+``PREFIX_ONLY_INCONCLUSIVE``. The latter comprised 21 shared ``exit-11``
+rows, 155 shared timeouts, 17 master-``ok``/candidate-timeout rows, and 41
+master-timeout/candidate-``ok`` rows. Their answer prefixes agreed, but they
+remain inconclusive rather than correctness successes. The effective streams
+retained 607,747 master and 607,180 candidate answers out of the structural
+621,942 per arm; the incomplete rows account for the shortfall.
+
+The original ``precise.smt2`` oracle was also clean in the frozen campaign:
+both master and candidate completed with ``unsat`` in all four scopes. Thus
+the restarted corpus reconciliation found no recurrence of the CBP/private-
+definition soundness bug. A separate three-run performance campaign is in
+progress; the one-run reconciliation is correctness evidence and should not
+be used for quantitative timing conclusions.
 
 ``--incremental-profile`` enables a lower-noise profile for each invocation of
 the incremental driver. Pair it with ``--incremental`` to route the first
@@ -455,7 +498,7 @@ Clause counters have deliberately different lifetimes and meanings:
   by the retained total.
 
 ``scripts/incremental-bench.py`` retains its legacy single-solver mode, but a
-closeout campaign should use paired ``--solver-a``/``--solver-b`` mode. It
+closeout campaign uses paired ``--solver-a``/``--solver-b`` mode. It
 records every ``sat``, ``unsat`` and ``unknown`` answer, including the answer
 prefix produced before a timeout, and gives each pair one of three verdicts:
 
@@ -482,8 +525,8 @@ and only complete identical streams count as a full success.
 shards. For example::
 
   scripts/incremental-bench-report.py \
-    --main '/results/final/main-shard-*.csv' \
-    --revalidation '/results/final/revalidation-shard-*.csv' \
+    --main '/results/final/main-shard-[0-9][0-9].csv' \
+    --revalidation '/results/final/main-shard-[0-9][0-9].revalidation.csv' \
     --expected-manifest /results/corpus.manifest --expected-runs 3 \
     --expected-answers 1865826 \
     --output-prefix /results/final/report --require-full-ok
@@ -501,7 +544,12 @@ status counts, answer totals, and logic/family breakdowns.
 
 ``--expected-answers`` requires an exact total for each arm, making answer
 prefixes lost to common timeouts or crashes visible even when both processes
-stopped at the same point.
+stopped at the same point. ``--require-full-ok`` is appropriate for a strict
+all-complete campaign. Omit it when intentionally retaining shared failures
+or timeouts for classification; expected-answer shortfalls will still make the
+reporter return failure after it writes the evidence files. Keep main and
+revalidation globs phase-specific: a broad ``main-shard-*.csv`` also matches
+``.revalidation.csv`` files in this layout and is rejected as a phase mismatch.
 
 Limitations
 -----------
