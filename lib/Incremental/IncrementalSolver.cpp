@@ -1672,13 +1672,12 @@ struct IncrementalSolver::Impl
       // see, it already gets). The base conjunction at a rebuild
       // boundary is the one place a global pass is sound and free of
       // the reuse penalty; see rebuildEncodings.
-      if (trialOut == out || dagSizeUpTo(trialOut, budget) <= budget)
+      if (!rejectedBeforeSimplify &&
+          (trialOut == out || dagSizeUpTo(trialOut, budget) <= budget))
       {
         if (profile.enabled)
         {
-          if (rejectedBeforeSimplify)
-            profile.preparationRejected++;
-          else if (trialOut == out)
+          if (trialOut == out)
             profile.preparationNoop++;
           else
             profile.preparationCollapsed++;
@@ -1725,6 +1724,15 @@ struct IncrementalSolver::Impl
       out = bm->defaultNodeFactory->CreateNode(AND, keep);
     }
     splitConjuncts(out, bm->ASTTrue, pl.conjuncts);
+
+#ifndef NDEBUG
+    // Recording an elimination while any retained conjunct still mentions
+    // its variable would leave live backend bits alongside model-only
+    // metadata.  Adopted substitutions must remove every such use.
+    for (const ASTNode& v : pl.eliminatedVars)
+      for (const ASTNode& c : pl.conjuncts)
+        assert(symbolsOf(c).find(v) == symbolsOf(c).end());
+#endif
 
     for (const ASTNode& v : pl.eliminatedVars)
       eliminationUsers[v].push_back(replaced);
