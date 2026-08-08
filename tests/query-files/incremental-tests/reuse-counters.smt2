@@ -2,7 +2,10 @@
 ; check-sat encodes nothing new, and re-pushing a formula that was seen
 ; before reuses its encoding entirely. --incremental engages the driver
 ; from the first solve, so the counters appear from the start.
-; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
+; --check-sanity requests a model on each SAT result, so the frontend cannot
+; answer the identical second query from its verdict cache: this test is about
+; the incremental driver's counters and must actually reach that driver.
+; RUN: %solver -s --incremental --check-sanity %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 32))
 (push 1)
