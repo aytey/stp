@@ -1,11 +1,17 @@
 # Incremental solving in STP: architecture review and roadmap
 
-Status: 2026-08-07. The architectural comparison originally read STP branch
+Status: architectural review 2026-08-07; closeout update 2026-08-08. The
+architectural comparison originally read STP branch
 `incremental-solving` at `0ff900332698c36f206476abfaf4f79d4678325a`, local
 `master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the following
-reference checkouts. The implementation and closeout status is updated through
-branch `9cb7b34bd0a83713a3a01f8be9e964f59d983df1`, which contains the merge of
-`master` at `34f69be1989910fd053008715de4b65c095fd770`.
+reference checkouts. The implementation and closeout update uses branch-state
+baseline `f1e55c2c76b994e8a4aece59e404eb9494c08346`, which contains the merge of
+`master` at `34f69be1989910fd053008715de4b65c095fd770`. Solver implementation
+changes are covered through `ee8685bbbda44682b490cea67679c99f6f42db45`;
+the intervening commits through that baseline consist of documentation and
+campaign-reporting changes. The frozen closeout candidate is
+`e5a26c30f83b2cd9cc0ccb274b62f210865023cd`, which is the `ee8685bb`
+implementation plus documentation only.
 
 | Solver | Revision read |
 |---|---|
@@ -15,10 +21,11 @@ branch `9cb7b34bd0a83713a3a01f8be9e964f59d983df1`, which contains the merge of
 
 Reference-solver paths and line numbers, and STP passages explicitly labelled
 as the original review, refer to those original revisions; implementation
-status without that qualification refers to `9cb7b34b`. Line numbers may have
-drifted as the branch was closed out. This is a maintainer-facing design
-record. `docs/incremental-solving.rst` remains the user-facing description of
-the implemented feature.
+status without that qualification refers to `ee8685bb`, while campaign and
+tooling status refers to update baseline `f1e55c2c`. Line numbers may have
+drifted as the branch was closed out. This is a maintainer-facing design record.
+`docs/incremental-solving.rst` remains the user-facing description of the
+implemented feature.
 
 ## Executive conclusions
 
@@ -68,11 +75,17 @@ That does **not** make a general scoped-state refactor the immediate next patch.
 The active-read rebuild risk has been fixed, semantic reconstruction has been
 instrumented, the measured CBP whole-prefix re-feed has been replaced by a
 differential-tested rollback trail, retained/extensionality clause accounting
-has been repaired, and current master has been merged (see the implementation
-updates below). The remaining branch-close gate is the owed quiet-box full
-campaign. After that, introduce a versioned assertion journal and independent
-cursors only when profiles or recurring lifetime bugs justify the migration of
-another semantic consumer.
+has been repaired, current master has been merged, and one observed soundness
+bug plus a related stale preparation-privacy proof found during closeout have
+been fixed (see the implementation updates below). The frozen one-run corpus
+reconciliation and its authoritative longer reruns are complete: no answer
+disagreement was observed, while 234 incomplete rows remain explicitly
+inconclusive. That closes the correctness-reconciliation part of Phase 0
+without pretending those incomplete rows are correctness successes. The
+remaining Phase 0 action is the separate three-run timing campaign now in
+progress, including its authoritative longer reruns and final report. Introduce
+a versioned assertion journal and independent cursors only when profiles or
+recurring lifetime bugs justify the migration of another semantic consumer.
 
 The remaining RTOS small-file loss class appears to be engagement/cold-start
 overhead. Scoped semantic state is not presently supported as its remedy.
@@ -137,17 +150,20 @@ then-existing incremental SMT-LIB regression files;
 trail-versus-reset answer comparison both normally and under `--check-sanity`;
 conflict/pop/replacement, multi-level rollback, caller-substitution retraction,
 and cross-level array-fold regressions; and the Industrial specimen's
-164-answer stream. The broader campaign remains a branch-close obligation.
+164-answer stream. The later frozen-candidate corpus reconciliation is recorded
+under “Results and established invariants”; unlike this checkpoint evidence,
+it includes the complete 22,999-file manifest and the selected longer reruns.
 
 The result supports keeping the trail. The next architectural step remains an
 assertion journal with independent consumer cursors, but it is now a
-maintainability/lifetime project that should proceed only after the remaining
-branch-close work and further profiling. It should not be presented as an RTOS
-cold-start optimization.
+maintainability/lifetime project that should proceed only when further profiling
+or recurring lifetime defects justify it. It should not be presented as an
+RTOS cold-start optimization.
 
-## Implementation update: integration, accounting, model repair, and harness
+## Implementation update: integration, accounting, privacy, and campaign tools
 
-The other concrete closeout work is now implemented through `9cb7b34b`:
+The other concrete closeout work is implemented through `ee8685bb`, with
+campaign-reporting support through `f1e55c2c`:
 
 - merge `4b60b401` integrates `master` through `34f69be1`, including the
   backend-neutral SAT literal/factory work and optional-MiniSat build shape;
@@ -165,9 +181,39 @@ The other concrete closeout work is now implemented through `9cb7b34b`:
 - `8e421b89` checks the absence of a spurious extensionality rebuild at every
   live-growth round, rather than only at the first one;
 - `9cb7b34b` extends lazy exact live-cone repair to the union of all ordinary
-  and extensionality roots, with an ordinary shared-cone regression; and
+  and extensionality roots, with an ordinary shared-cone regression;
 - `30680576` repairs the paired campaign harness and adds fake-solver tests for
-  its sequence, timeout, order, resume, provenance, and revalidation behavior.
+  its sequence, timeout, order, resume, provenance, and revalidation behavior;
+- `40acb2c4` adds the paired-campaign aggregator, captured answer streams and
+  timeout prefixes, coverage checks, per-file median classification, and
+  logic/family summaries;
+- `239c4402` makes the main phase's completed selection manifests authoritative,
+  so absent or interrupted longer reruns cannot silently fall back to the
+  shorter main rows;
+- `56de220c` protects every symbol used by a new, replayed, or potentially
+  emitted CBP pinning fact before preparation, and invalidates a prepared cache
+  entry that had eliminated one of those now-live definitions; and
+- `ee8685bb` rechecks every eliminated definition against current level privacy
+  on a prepared-piece cache hit, closing the stale-screening variant exposed by
+  repeated pop and re-push.
+
+The first fix was forced by the initial closeout attempt. Its frozen
+`9cb7b34b` candidate returned
+`unsat;unsat;sat;unsat` on
+`QF_FP/schanda/spark/precise.smt2`, while master and the independent solver
+oracles returned four `unsat` answers. `--check-sanity` confirmed that the
+candidate model violated the asserted result equality. CBP had emitted a real
+pinning fact only after preparation had eliminated the fact's `result`
+definition as private, disconnecting the fact from the floating-point
+operation. Commit `56de220c` orders that lifetime protection before
+preparation. A targeted follow-up audit found that screening a raw node only on
+first sight could leave a prepared cache entry's privacy proof stale after a
+later stack shape recreated the elimination; `ee8685bb` makes cache reuse
+validate the proof against the current stack. The regressions are
+`cbp-fact-private-definition.smt2`, exercised in default, forced-incremental,
+and reset-oracle modes, with its fourth scope covering memo replay, and
+`prepared-piece-stale-privacy.smt2`, which asserts the otherwise answer-silent
+cache invalidation through the profile.
 
 ### Retained total versus lifetime submissions
 
@@ -295,29 +341,47 @@ embedded STP SHA and compilation options, `ldd` output, and hashes of linked
 the run. Non-full results, timeouts, and large timing ratios are selected for a
 longer revalidation phase, which may be explicitly deferred.
 
-The harness is ready; no new whole-corpus result is claimed in this document.
-The full quiet-machine campaign remains outstanding.
+The aggregator added in `40acb2c4` checks schema, phase provenance, solver
+identity, manifests, unique `(file, run)` keys, exact expected coverage and
+answer totals. It preserves every produced answer, timeout prefix, and any
+disagreement ever seen.
+Since `239c4402`, each main shard's completed `.revalidate.manifest` is the
+authoritative selection: all selected main rows are removed even if a longer
+rerun is absent, and each revalidation shard must name its loaded main source.
+This prevents an interrupted rerun from being silently reported with the
+shorter main result. Main and revalidation input globs must also be
+phase-specific; `f1e55c2c` corrected the documented invocation because a broad
+`main-shard-*.csv` glob matches both phases in this campaign layout.
+
+The harness and reporter have now completed the frozen one-run reconciliation
+described below. A distinct three-run campaign is in progress for stable
+performance medians; partial timing rows are not results and are not used in
+this document.
 
 ## Scope and evidence
 
 The original review compared branch `0ff90033` and then-local master from merge
-base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Current branch `9cb7b34b`
+base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Reviewed branch state `f1e55c2c`
 contains master `34f69be1` through merge `4b60b401`; there is no unmerged
-master-side delta in this reviewed snapshot. Historical file/line/count claims
-from the initial audit should not be projected onto the larger current
-implementation.
+master-side delta in this reviewed snapshot. The frozen candidate used for
+closeout is `e5a26c30`, whose last solver change is `ee8685bb`. Historical
+file/line/count claims from the initial audit should not be projected onto the
+larger current implementation.
 
-The recorded performance figures in this document come from `HANDOVER.md` and
-the branch history. Neither the initial architecture review nor this
-documentation update repeated the 22,999-file campaign against the current
-tip. Focused and configured-suite checks at the implementation checkpoints do
-not replace that campaign.
+The recorded historical performance figures in this document come from the
+branch history and local campaign notes unless a passage explicitly identifies
+the frozen closeout campaign. The completed one-run reconciliation is current
+observed-answer and process-status evidence for the frozen candidate, but it is
+not a stable performance measurement. A separately pinned three-run campaign
+over the same manifest and binaries is in progress; no result from that
+unfinished phase is claimed here.
 
-At the `9cb7b34b` closeout tip, the complete configured RelWithDebInfo suites
-passed with CaDiCaL plus floating point (115/115), MiniSat plus floating point
-(114/114), and MiniSat without floating point (86/86). These backend/build
-matrices validate the merged implementation and regressions; they are not a
-substitute for the external 22,999-file paired campaign.
+At implementation closeout through `ee8685bb`, the complete configured
+RelWithDebInfo suites passed with CaDiCaL plus floating point (116/116), MiniSat
+plus floating point (115/115), and MiniSat without floating point (87/87).
+These backend/build matrices validate the merged implementation and the two
+privacy regressions. The frozen external-corpus reconciliation below provides
+the complementary end-to-end evidence.
 
 The original pre-implementation investigation is preserved in commit
 `f5235e54` (`Incremental solving: architecture review and phased plan`). It was
@@ -444,12 +508,17 @@ needed, equality propagation, simplification, and guarded variable elimination.
 The result is cached by the rewritten formula, not merely by the raw assertion.
 
 A definition can be removed only while its variable is private: it must not be
-used by the base, another live level, another conjunct in the same level, or an
-already bit-blasted encoding (`IncrementalSolver.cpp:964-986`). Eliminated
-definitions are replayed into models. Newly seen content is screened against
-eliminated variables; if a later assertion makes a variable shared, the cached
-preparation is invalidated and its equation returns
-(`IncrementalSolver.cpp:894-962`).
+used by the base, another live level, another conjunct in the same level, a CBP
+pinning fact, or an already bit-blasted encoding
+(`IncrementalSolver.cpp:1534-1735`). Eliminated definitions are replayed into
+models. Newly seen content is screened against eliminated variables; if a later
+assertion makes a variable shared, the cached preparation is invalidated and
+its equation returns (`IncrementalSolver.cpp:1451-1602`). Because raw-content
+screening is deliberately memoized, a prepared cache hit also revalidates every
+eliminated variable against current level privacy. CBP-fact symbols are
+protected before preparation, including on memo replay, so the fact cannot be
+appended only after its definition has disappeared
+(`IncrementalSolver.cpp:4394-4783`).
 
 These rules are sound, but they are more dynamic than the strictly
 forward-only policies in the reference solvers. They are also the reason a
@@ -472,10 +541,10 @@ Industrial_Control_C family but made reset-and-re-feed the leading measured
 scoped-state cost. The implementation update above records the subsequent
 engine/caller rollback trail that removed that cost.
 
-At the reviewed revision, the source comments in `IncrementalCBP.h` and the
+At the original reviewed revision, the source comments in `IncrementalCBP.h` and the
 beginning of the CBP field block still described a per-call engine. They
-predated the cross-call persistence added at the branch tip; the documentation
-changes accompanying this review correct them.
+predated the cross-call persistence added at that branch tip; the closeout
+documentation changes corrected them.
 
 ### Arrays, floating point, and extensionality
 
@@ -501,10 +570,11 @@ Whole-array equality remains a whole-query operation. The complete active stack
 is lowered, prepared, transformed, and assumed through one block root
 (`IncrementalSolver.cpp:2508-2728`). The extensionality procedure's graph and
 witness records are solve-local, while deterministic names, the root cache, and
-the session AIG caches let an identical block reuse its encoding. At the reviewed
-revision, an implementation comment incorrectly said block roots were not
-cached even though the code at `IncrementalSolver.cpp:2614-2634` caches them;
-the accompanying comment change corrects it.
+the session AIG caches let an identical block reuse its encoding. At the
+original reviewed revision, an implementation comment incorrectly said block
+roots were not cached even though the code at
+`IncrementalSolver.cpp:2614-2634` caches them; the closeout comment change
+corrected it.
 
 ### Models, assumptions, and API lifetimes
 
@@ -559,20 +629,79 @@ exists.
 
 ## Results and established invariants
 
-The historical campaign recorded in `HANDOVER.md` covered 22,999 files and
-reported 7,520 wins of at least 2x, 258 losses of at least 5x, median runtime
-0.086s versus master's 0.164s, and no disagreement under that harness's
-comparison. It predates the latest tip and the repaired paired harness. In
-particular, it should not be promoted to a current all-answer-sequence claim;
-the quiet-machine rerun described below is still owed.
+### Frozen closeout reconciliation
+
+The completed one-run closeout reconciliation compared master
+`34f69be1989910fd053008715de4b65c095fd770` with candidate
+`e5a26c30f83b2cd9cc0ccb274b62f210865023cd`. Both were frozen Release
+builds using CaDiCaL 3.0.1, floating-point support, shared libraries, and the
+system allocator; each arm was invoked with `--array-equality`. The master and
+candidate executable SHA-256 values were, respectively,
+`6f03a9edbbbfe6db2918ca9a36e6f2fd3903f5061e6a520db0c489f19212517a`
+and `2c9186d98aa55df055d751e3ea3b40d7f3d13f248b19789fea1ab57d2bbdb8ce`;
+their linked `libstp` hashes were
+`0f063a88125c10070b403e2d107e25b9b0cb9177c8aa22b95decff6bc4553a6b`
+and `84a36b4f447ab47ca97f2ea60b03cfe5628a65cef9f722b4d2a9bef7ab17e03f`.
+
+The exact corpus was 22,999 sorted, unique files totalling 20,308,257,767
+bytes. Every file was verified against a content ledger. The corpus-manifest
+SHA-256 was
+`cd1310ebac50f4d35c837df0a01e6f8ffe020c3e6df1a8f8b03d13a9bbf784d7`
+and the content-ledger SHA-256 was
+`7c0fca20fc75e5cd7506b0e225621d17aa20dc98e087b28f159f0dd40f4d98db`.
+Before the full pass, all 36 smoke pairs and all nine selected 120-second smoke
+reruns were `FULL_OK`.
+
+The main reconciliation ran every file once with a 30-second per-arm limit and
+produced 22,481 `FULL_OK` rows and 518
+`PREFIX_ONLY_INCONCLUSIVE` rows. Those 518 files were the authoritative
+selection for a 120-second rerun. The final report verified all 22,999 effective
+`(file, run)` pairs, all 518 selected entries and result rows across the 12
+revalidation shard manifests, exact solver identity, and zero missing or
+unexpected work. It observed no `DISAGREEMENT` row in either phase. After the
+selected main rows were replaced, 22,765 files were `FULL_OK` and 234 remained
+`PREFIX_ONLY_INCONCLUSIVE`.
+
+Those 234 rows are not agreements or correctness successes. They comprise 21
+rows where both processes exited with signal 11, 155 where both timed out, 17
+where master completed and the candidate timed out, and 41 where master timed
+out and the candidate completed. Only the answer prefixes that both processes
+actually produced agreed; incomplete execution leaves any unobserved suffix
+inconclusive. Correspondingly, the effective evidence retained 607,747 master
+answers and 607,180 candidate answers, short of the structural 621,942 answers
+per arm.
+
+The original `QF_FP/schanda/spark/precise.smt2` oracle was clean in the frozen
+reconciliation: both binaries completed with `unsat` in all four scopes. The
+restarted reconciliation therefore found no recurrence of the known
+CBP/private-definition disagreement. Completion of this manifest, its
+authoritative reruns, and the explicit inconclusive inventory closes the Phase
+0 correctness-reconciliation action; it does not prove the unobserved suffixes
+of those 234 rows or complete the separate performance action.
+
+A separate six-shard, three-run timing campaign over the same frozen binaries
+and manifest is in progress. It uses balanced execution order, pinned CPUs, a
+30-second main limit, and selected 120-second reruns. Its incomplete CSVs are
+not performance results. No quantitative conclusion from that phase should be
+drawn until all 68,997 main pairs, authoritative reruns, and the final report
+are complete.
+
+### Historical performance evidence
+
+Historical local campaign notes covered 22,999 files and reported 7,520 wins
+of at least 2x, 258 losses of at least 5x, median runtime 0.086s versus master's
+0.164s, and no disagreement under that harness's comparison. That run predates
+the latest tip and the repaired paired harness. The frozen reconciliation above
+supersedes it as current observed-answer evidence, but the historical timing
+figures remain contextual only until the three-run timing phase finishes.
 
 At an earlier implementation checkpoint, the recorded Industrial_Control_C
 specimen improved from at least 90 seconds to 2.6 seconds, versus master at 1.5
 seconds, with 164/164 answers agreeing. A 31-file family sample agreed fully.
 The same CBP work took three Automotive stragglers from roughly 12--18 seconds
 to roughly 0.8 seconds. The later rollback-versus-reset measurements above are
-more specific to the retained CBP trail; neither set substitutes for a current
-full campaign.
+more specific to the retained CBP trail; neither set substitutes for the
+in-progress, full-manifest three-run timing campaign.
 
 Other measurements materially shaped the design:
 
@@ -593,6 +722,10 @@ The development history established several load-bearing invariants:
 - assumption literals must pass through any SAT-backend variable translation;
 - a definition or CBP-fed assertion must never erase its own constraint;
 - a transformation based on scoped facts must retain an asserted justification;
+- every symbol in a CBP fact that will be appended after preparation must
+  participate in definition-privacy analysis before that preparation;
+- memoized raw-content screening is not a durable privacy proof: a prepared
+  cache hit must revalidate its eliminated definitions against the live stack;
 - a cached encoding is permanent, but the assertion selecting it is scoped;
 - array abstractions may be structurally permanent while their participation in
   model/refinement state is scoped;
@@ -1063,11 +1196,14 @@ Consequently, the target is an assertion journal with versioned scope identity,
 independent stage cursors, and explicit invalidation—not one global “processed
 up to here” index.
 
-## Immediate risks and closeout work
+## Immediate risks and completed closeout work
 
-These items must be closed before a broad semantic-state migration. Items 1--3
-are implemented through `9cb7b34b`, item 4 is completed by the accompanying
-documentation commits, and item 5, the full campaign, remains outstanding.
+These are the prerequisites before a broad semantic-state migration. The
+implementation, documentation, and correctness-reconciliation actions are
+complete through solver tip `ee8685bb`, campaign/documentation tip `f1e55c2c`,
+and the frozen reconciliation. Phase 0 remains open on the separate three-run
+performance campaign, which is in progress and will replace the old timing
+baseline.
 
 ### 1. Active-read state across rebuilds and eager cache hits (complete)
 
@@ -1134,23 +1270,39 @@ before any assertion-journal work.
 The user guide, source comments, and this review now describe third-solve
 automatic engagement, persistent CBP rollback, extensionality block reuse,
 unified live-cone accounting, eager-array model rematerialization, exact
-retained versus lifetime clause counters, and the repaired campaign
-verdict/provenance rules. These are soundness and measurement contracts, not
-implementation trivia, and belong with the branch.
+retained versus lifetime clause counters, preparation-privacy repairs, and the
+repaired campaign verdict/provenance rules. These are soundness and measurement
+contracts, not implementation trivia, and belong with the branch.
 
-### 5. Rerun the full campaign (outstanding)
+### 5. Repair preparation privacy exposed by closeout (complete)
 
-The 22,999-file result predates the latest tip and used the predecessor
-comparison behavior. Before upstreaming, run the repaired paired harness on an
-otherwise idle machine, compare every answer sequence with master, and
-reclassify the performance tail. A timeout with a matching prefix is
-`PREFIX_ONLY_INCONCLUSIVE`, not agreement; only identical streams from two
-successfully completed arms are `FULL_OK`. Preserve the manifests, shard
-identity, arm fingerprints, main CSVs, and longer revalidation results.
-Sequential spot timings on the known thermally sensitive FP families are not
-evidence.
+The first frozen attempt made the CBP/private-definition bug reproducible on
+`precise.smt2` and was stopped rather than allowing one bad row to contaminate
+the closeout baseline. `56de220c` moved CBP-fact symbol protection before
+preparation and invalidated unsafe cached elimination. `ee8685bb` then made
+cached eliminated definitions re-prove level privacy against the current stack.
+The focused regressions, configured suites, frozen `precise.smt2` oracle, and
+restarted corpus reconciliation all cover these repairs.
 
-### 6. Treat the RTOS tail as engagement overhead until measured otherwise
+### 6. Rerun the full reconciliation (complete)
+
+The repaired paired harness completed all 22,999 one-run main pairs and all 518
+authoritatively selected longer reruns with zero observed answer disagreement.
+The frozen inputs, binaries, linked libraries, manifests, content ledger, full
+answer streams, timeout prefixes, and process statuses were preserved. Only
+22,765 effective rows completed on both arms; the 234 incomplete rows remain
+`PREFIX_ONLY_INCONCLUSIVE` and must never be summarized as agreements. The
+detailed provenance and status breakdown are recorded above.
+
+### 7. Complete the three-run performance campaign (in progress)
+
+The separately pinned three-run timing campaign is running over the same
+frozen binaries and manifest. Wait for its 68,997 main pairs, authoritative
+longer reruns, completeness checks, and final report before replacing the
+historical performance figures or reclassifying the tail. This is the final
+Phase 0 action.
+
+### 8. Treat the RTOS tail as engagement overhead until measured otherwise
 
 The remaining recorded loss class is about 1.3 seconds on inputs master solves
 in roughly 0.02 seconds. There is no evidence that semantic stack
@@ -1449,7 +1601,7 @@ specimen is the performance acceptance test, not the soundness test.
 
 ## Phased roadmap
 
-### Phase 0 (four of five complete): close the current branch
+### Phase 0 (six of seven complete): close the current branch
 
 1. **Complete:** resolve active-read state across a lazy-array rebuild and an
    all-cache-hit eager-Ackermann model (`9eb8e407`, `02607540`).
@@ -1460,18 +1612,29 @@ specimen is the performance acceptance test, not the soundness test.
 3. **Complete:** integrate master through `34f69be1` and resolve the backend
    construction/type overlap deliberately (`4b60b401`).
 4. **Complete:** reconcile the user guide, this review, source comments, and
-   campaign-harness contract.
-5. **Outstanding:** run the full quiet-machine paired campaign and preserve the
-   manifests, fingerprints, full answer streams, timeout prefixes, and
-   revalidation results as the new baseline.
+   campaign-harness and reporter contracts (`30680576`, `40acb2c4`,
+   `239c4402`, `f1e55c2c`).
+5. **Complete:** repair the CBP-fact/private-definition ordering bug and stale
+   prepared-cache privacy proof found during closeout
+   (`56de220c`, `ee8685bb`).
+6. **Complete:** run the frozen 22,999-file reconciliation, preserve manifests,
+   fingerprints, all produced answer streams and timeout prefixes, and all 518
+   authoritative longer reruns, and retain the 234 incomplete effective rows
+   as inconclusive rather than upgrading them to agreement.
+7. **In progress:** complete all 68,997 pinned three-run timing pairs, run the
+   authoritative longer reruns, validate the final report, and replace the
+   historical performance distribution and tail classification.
 
-A confirmed correctness issue preempts performance work. The tests and audits
-can be prepared alongside instrumentation, but no broad state migration should
-land on top of an ambiguous rebuild invariant.
+A confirmed correctness issue still preempts performance work. The first
+campaign attempt followed that rule: it stopped at `precise.smt2`, landed the
+two narrow fixes and regressions, froze a new candidate, and restarted from a
+fresh result root.
 
-The implementation and documentation prerequisites are closed. The repaired
-harness is tested, but no current-tip whole-corpus result has yet replaced the
-historical campaign. That campaign remains the final Phase 0 gate.
+The implementation, documentation, and reconciliation prerequisites are now
+closed without converting 234 common-prefix-only rows into full correctness
+results. Phase 0 remains open only on the separate three-run timing campaign;
+it must finish before the historical performance numbers and tail
+classification are replaced.
 
 ### Phase 1 (complete): instrument semantic reconstruction
 
@@ -1552,8 +1715,10 @@ Solver tests should cover:
 - SAT-backend epoch changes, promotion repair, and re-materialized roots.
 
 Every semantic phase should retain batch-versus-incremental answer-sequence
-differential testing. The final gate remains the full campaign, not only unit
-tests and selected performance specimens.
+differential testing. The completed frozen reconciliation is the current
+reconciliation baseline; future semantic phases need an equivalent full-corpus
+gate, not only unit tests and selected performance specimens. The timing part
+of the Phase 0 baseline remains in progress.
 
 ## Approaches not recommended
 
@@ -1582,12 +1747,24 @@ Instrumentation and the narrowly designed CBP first-write undo trail are now
 implemented. They directly removed the measured pop-triggered whole-prefix
 re-feed, and the cross-workload results support retaining the change.
 
+The concrete implementation and correctness-reconciliation work is also
+complete: current master is integrated, retained/extensionality accounting and
+array-model repair are covered, the two preparation-privacy defects found
+during closeout are fixed, and the restarted frozen reconciliation
+observed no answer disagreement. Keep its 234 incomplete rows labelled
+`PREFIX_ONLY_INCONCLUSIVE`; the reconciliation does not establish unobserved
+answers past those common prefixes.
+
+The immediate work is to finish and report the already-running three-run timing
+campaign. Until its main pairs and authoritative longer reruns are complete,
+the one-run reconciliation and partial timing CSVs must not be used to publish
+a new performance distribution or tail classification.
+
 The assertion journal with independent stage cursors remains the right
 architectural foundation after that. It should be introduced incrementally to
 make semantic lifetime explicit, remove repeated whole-stack bookkeeping, and
 reduce the likelihood of further manual cache/refcount/rebuild bugs. It is not
-the next automatic performance patch: integration, accounting, and
-documentation are now closed, so first complete the repaired-harness full
-campaign and then use the profiler to establish another material target or a
-recurring lifetime problem. The journal does not address the likely fixed
-engagement cost in the RTOS tail.
+the next automatic performance patch. Use the completed profiler and final
+timing evidence to establish another material reconstruction target, or proceed
+because further scoped-lifetime defects make the maintainability case concrete.
+The journal does not address the likely fixed engagement cost in the RTOS tail.
