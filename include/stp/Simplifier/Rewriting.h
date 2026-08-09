@@ -49,6 +49,7 @@ class Rewriting
 
   // sharecount is 1 if the node has one reference in the tree.
   void buildShareCount(const ASTNode& n);
+  ASTNode applyRules(ASTNode c);
   ASTNode rewrite(const ASTNode& n);
 
 public:

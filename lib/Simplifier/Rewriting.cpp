@@ -105,38 +105,11 @@ namespace stp
     }
   }
 
-  ASTNode Rewriting::rewrite(const ASTNode& n)
+  // Every sharing-aware rule, in order, applied to one node. Each rule
+  // sees what the rules before it produced. Nothing here descends into
+  // the DAG: the caller decides what to do with a node that changed.
+  ASTNode Rewriting::applyRules(ASTNode c)
   {
-    if (n.Degree() == 0)
-      return n;
-
-    if (fromTo.find(n.GetNodeNum()) != fromTo.end())
-      return fromTo[n.GetNodeNum()];
-
-    ASTNode result =n;
-
-    const ASTChildren children = n.GetChildren();
-    ASTVec newChildren;
-
-    // Copy on write.
-    bool changed =false;
-    auto fill = [&](const ASTNode& find)
-    {
-      newChildren.reserve(children.size());
-      const auto findIt = std::find(children.begin(), children.end(), find);
-      assert(findIt != children.end());
-      newChildren.insert(newChildren.end(), children.begin(), findIt);
-      changed=true;
-    };
-
-
-    for (auto c: children)
-    {
-     const ASTNode begin = c;
-     
-     c = rewrite(c);
-
-     const ASTNode start = c;
 
      if (
         c.GetKind() == EQ 
@@ -730,6 +703,43 @@ namespace stp
           const auto right = nf->CreateTerm(BVMULT, width, c[1][0], c[1][1][1]);
           c = nf->CreateNode(EQ, left,right);
         }
+
+    return c;
+  }
+
+  ASTNode Rewriting::rewrite(const ASTNode& n)
+  {
+    if (n.Degree() == 0)
+      return n;
+
+    if (fromTo.find(n.GetNodeNum()) != fromTo.end())
+      return fromTo[n.GetNodeNum()];
+
+    ASTNode result =n;
+
+    const ASTChildren children = n.GetChildren();
+    ASTVec newChildren;
+
+    // Copy on write.
+    bool changed =false;
+    auto fill = [&](const ASTNode& find)
+    {
+      newChildren.reserve(children.size());
+      const auto findIt = std::find(children.begin(), children.end(), find);
+      assert(findIt != children.end());
+      newChildren.insert(newChildren.end(), children.begin(), findIt);
+      changed=true;
+    };
+
+
+    for (auto c: children)
+    {
+     const ASTNode begin = c;
+     
+     c = rewrite(c);
+
+     const ASTNode start = c;
+     c = applyRules(c);
 
        if (start != c)
        {
