@@ -348,9 +348,12 @@ one or two big searches genuinely profits from it.
 default) retires it once a session has both shed trail reuse -- the
 still-riding-the-trail shape is the many-small-queries workload whose
 accumulated search state a restart would waste on a technique that
-measures neutral there -- and run enough solves, via one bounded rebuild
-onto a fresh solver configured without it (the option, like factor and
-trail reuse, only takes inside the backend's configuration window);
+measures neutral there -- run enough solves, and kept its permanent base
+fixed throughout that window. A base which is still growing gives
+inprocessing new clauses to simplify and is not a recurring-rescan workload.
+Retirement uses one bounded rebuild onto a fresh solver configured without
+it (the option, like factor and trail reuse, only takes inside the backend's
+configuration window);
 ``off`` retires from the first driver solve; ``on`` never retires.
 Backends without the option simply never retire.
 

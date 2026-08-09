@@ -721,9 +721,12 @@ struct IncrementalSolver::Impl
   size_t engagedSolves = 0;
   bool inprobingRetired = false;
   // Few-solve sessions profit from inprobing (they are one big search);
-  // many-solve sessions pay its whole-encoding re-runs at every solve.
-  // The measured corpora split cleanly: the hurt class has 1-2 solves,
-  // the win class 20+.
+  // many-solve sessions over a FIXED base pay its whole-encoding re-runs
+  // at every solve. A growing permanent base gives inprocessing genuinely
+  // new work and can depend on its elimination to prove later queries, so
+  // AUTO also waits for level zero to be stable throughout this window.
+  // The measured fixed-base corpora split cleanly: the hurt class has 1-2
+  // solves, the win class 20+.
   static const size_t inprobingRetireSolves = 8;
   // ... and only when the encoding is big enough for inprobing to cost
   // anything: retirement pays a rebuild, and on a small solver that is
@@ -1933,6 +1936,12 @@ struct IncrementalSolver::Impl
       levelStableSolves[i] = same ? levelStableSolves[i] + 1 : 0;
     }
     lastStackSeen = assertionsSMT2;
+  }
+
+  bool baseStableForInprobingRetirement() const
+  {
+    return !levelStableSolves.empty() &&
+           levelStableSolves[0] >= inprobingRetireSolves;
   }
 
   // Whether the bounded-variable-addition decision has been taken for the
@@ -4183,20 +4192,22 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // profits from it. The option is configuration-window-only, so
     // retirement -- once the session qualifies, or immediately under an
     // explicit 'off' -- means one bounded rebuild onto a fresh solver
-    // configured without it. AUTO additionally requires trail reuse to
-    // have been retired already: a session still riding the trail is the
+    // configured without it. AUTO additionally requires a base which has
+    // stayed fixed throughout the observation window: new permanent clauses
+    // give inprocessing new work, and disabling elimination on that shape
+    // made later VexRiscv proofs time out. Trail reuse must also have been
+    // retired already: a session still riding the trail is the
     // many-small-queries shape whose accumulated search state a rebuild
-    // would throw away for a technique that measured neutral there, while
-    // the sessions inprobing hurts (the floating-point variant-push
-    // families) have always shed the trail first. The capability is
-    // probed without touching the live solver, and a backend that cannot
-    // control it simply never retires.
+    // would throw away for a technique that measured neutral there. The
+    // capability is probed without touching the live solver, and a backend
+    // that cannot control it simply never retires.
     impl->engagedSolves++;
     if (!impl->inprobingRetired && impl->solver->supportsInprobingControl() &&
         (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
          (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
           !impl->trailReuseAllowed &&
           impl->engagedSolves > Impl::inprobingRetireSolves &&
+          impl->baseStableForInprobingRetirement() &&
           impl->solver->nVars() >= Impl::inprobingRetireMinVars)))
     {
       impl->inprobingRetired = true;
@@ -4232,6 +4243,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
             impl->solver->supportsInprobingControl() &&
             impl->engagedSolves > Impl::inprobingRetireSolves &&
+            impl->baseStableForInprobingRetirement() &&
             impl->solver->nVars() >= Impl::inprobingRetireMinVars;
         const bool smallLateFpState =
             impl->lateArrayFpSolvesWithTrail >=
@@ -4262,6 +4274,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
             impl->solver->supportsInprobingControl() &&
             impl->engagedSolves > Impl::inprobingRetireSolves &&
+            impl->baseStableForInprobingRetirement() &&
             impl->solver->nVars() >= Impl::inprobingRetireMinVars)
         {
           impl->inprobingRetired = true;
