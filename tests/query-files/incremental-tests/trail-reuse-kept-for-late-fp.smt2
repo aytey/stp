@@ -1,14 +1,17 @@
 ; REQUIRES: floating-point, cadical
-; An established many-query session keeps its useful trail when floating
-; point arrives late. Retiring at this boundary used to rebuild the array
-; registry and discard the refinement/search state accumulated by the prefix;
-; representative Vector traces became 2x--6x slower. Early-FP sessions still
-; retire the trail (trail-reuse-retired-for-fp.smt2), and the independent size
-; belt may still retire this one after it grows large enough.
+; An established many-query session initially keeps its useful trail when
+; floating point arrives late. Retiring immediately at this boundary used to
+; rebuild the array registry and discard the search state accumulated by the
+; prefix; representative Vector traces became 2x--6x slower. Late FP is not
+; an unconditional exemption, though: if three FP checks leave the solver
+; below the established-state floor, the rebuild is cheap and the
+; phase-sensitive FP tail wins the trade. Early-FP sessions still retire at
+; once (trail-reuse-retired-for-fp.smt2), while growing/refinement-heavy late
+; sessions use their independent boundaries.
 ;
 ; Six distinct array queries establish the many-solve shape. The seventh adds
-; FP while the solver is deliberately well below the size belt: it must not
-; cause a trail rebuild.
+; FP while the solver is deliberately tiny. Its first three checks must not
+; rebuild; the fourth classifies the state as stalled and retires the trail.
 ; RUN: %solver --incremental --incremental-profile --check-sanity %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABVFP)
 (declare-fun A () (Array (_ BitVec 8) (_ BitVec 8)))
@@ -47,6 +50,15 @@
 (push 1)
 (assert (fp.isNaN f))
 ; CHECK: Incremental profile cbp/backend: check=7 .*rebuild-trail=0
+; CHECK: ^sat
+(check-sat)
+; CHECK: Incremental profile cbp/backend: check=8 .*rebuild-trail=0
+; CHECK: ^sat
+(check-sat)
+; CHECK: Incremental profile cbp/backend: check=9 .*rebuild-trail=0
+; CHECK: ^sat
+(check-sat)
+; CHECK: Incremental profile cbp/backend: check=10 .*rebuild-trail=1
 ; CHECK: ^sat
 (check-sat)
 (pop 1)

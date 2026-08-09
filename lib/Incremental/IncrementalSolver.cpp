@@ -668,6 +668,10 @@ struct IncrementalSolver::Impl
   // lemma as dead rebuilds a repeated query forever, while treating all old
   // lemmas as permanently live hides refinement-heavy dead growth.
   std::map<ASTNode, uint64_t> refinementMassOf;
+  // Refinement clauses currently carried by the backend. Unlike the optional
+  // profiling counters this is always maintained: the late-FP trail policy
+  // uses it to avoid throwing away a substantial refined search state.
+  uint64_t currentRefinementClauseMass = 0;
 
   // The actual AIG root encoded under each formula key. Newly submitted
   // clause deltas are a cheap live-mass estimate, but not an exact one: a
@@ -1825,17 +1829,22 @@ struct IncrementalSolver::Impl
   // saved per-solve re-descent dominates (the issue #483 KLEE files, 36%
   // and 19% faster at ~11k variables), while on large instances the kept
   // trail suppresses the fresh restarts the search needs. Floating point is
-  // a useful early-session predictor of that phase-sensitive class, but it
-  // is not a reason to throw away a solver after the session has already
-  // demonstrated the many-query shape: late-arriving FP in the Vector
-  // families made that rebuild lose its array-refinement history and cost
-  // 2x--6x. The size belt still retires an eventually large solver. The
-  // backend accepts the option only in its configuration window, so
-  // retirement starts the solver over without it; the boundaries are
-  // measured, not principled.
+  // a useful early-session predictor of that phase-sensitive class, but a
+  // late transition is ambiguous: some Vector sessions profit 2x--6x from
+  // the retained state while many others develop a slower FP tail. Give the
+  // transition a short observation window. A state which remains below the
+  // ~11k-variable class where reuse first measured useful is cheap to
+  // rebuild; a growing state is kept until trail and inprobing retirement can
+  // share the existing 20k-variable rebuild boundary. Substantial carried
+  // refinement state is protected until the independent size belt. These
+  // are measured policy boundaries; none changes semantics.
   bool trailReuseAllowed;
   static const unsigned long trailReuseVarLimit = 100000;
   static const size_t trailReuseFpRetireSolves = 7;
+  static const size_t trailReuseLateFpProbeSolves = 3;
+  static const unsigned long trailReuseEstablishedVarFloor = 10000;
+  static const uint64_t trailReuseRefinementClauseFloor = 500;
+  size_t lateFpSolvesWithTrail = 0;
   std::vector<int> lastFailedLits;
   size_t lastLevelCount;
 
@@ -2249,6 +2258,8 @@ struct IncrementalSolver::Impl
     if (delta == 0)
       return 0;
     refinementMassOf[owner] = addMass(refinementMassOf[owner], delta);
+    currentRefinementClauseMass =
+        addMass(currentRefinementClauseMass, delta);
     if (profile.enabled)
       profile.refinementClauses =
           addMass(profile.refinementClauses, delta);
@@ -3192,6 +3203,7 @@ struct IncrementalSolver::Impl
     pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
     refinementMassOf.clear();
+    currentRefinementClauseMass = 0;
     aigRootOf.clear();
     pendingLiveCone.currentRoots.clear();
     hasPendingLiveCone = false;
@@ -4183,19 +4195,41 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Inprobing);
     }
 
-    // Trail reuse pays on many-small-query sessions and is phase-sensitive
-    // on floating-point families. Retire for FP only during the initial
-    // short-session window. Once a session has crossed the measured
-    // short-session cutoff, late FP is weaker evidence than the useful
-    // SAT/refinement state already accumulated; keep that state until the
-    // independent size belt says otherwise.
+    // Early FP is still strong evidence to start without trail reuse. For a
+    // late transition, observe up to three FP checks before classifying it:
+    // retire a still-small state, or let a growing state reach the existing
+    // inprobing boundary so both configuration changes cost one rebuild.
+    // Refinement-heavy state gets the old size belt instead; its targeted
+    // losses came specifically from discarding useful refined search state.
     if (impl->trailReuseAllowed)
     {
       bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
-      if (!retire &&
-          impl->engagedSolves < Impl::trailReuseFpRetireSolves)
-        for (size_t i = 0; !retire && i < assertionsSMT2.size(); i++)
-          retire = impl->fragment(assertionsSMT2[i]).fp;
+      bool hasFp = false;
+      for (size_t i = 0; !hasFp && i < assertionsSMT2.size(); i++)
+        hasFp = impl->fragment(assertionsSMT2[i]).fp;
+      if (!retire && hasFp)
+      {
+        const bool earlyFp =
+            impl->engagedSolves < Impl::trailReuseFpRetireSolves;
+        const bool refinementHeavy =
+            impl->currentRefinementClauseMass >=
+            Impl::trailReuseRefinementClauseFloor;
+        const bool canRetireInprobingWithTrail =
+            uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
+            impl->solver->supportsInprobingControl() &&
+            impl->engagedSolves > Impl::inprobingRetireSolves &&
+            impl->solver->nVars() >= Impl::inprobingRetireMinVars;
+        const bool smallLateFpState =
+            impl->lateFpSolvesWithTrail >=
+                Impl::trailReuseLateFpProbeSolves &&
+            impl->solver->nVars() < Impl::trailReuseEstablishedVarFloor;
+
+        retire = earlyFp ||
+                 (!refinementHeavy &&
+                  (canRetireInprobingWithTrail || smallLateFpState));
+        if (!retire)
+          impl->lateFpSolvesWithTrail++;
+      }
       if (retire)
       {
         impl->trailReuseAllowed = false;
