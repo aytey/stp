@@ -53,6 +53,8 @@ THE SOFTWARE.
 #include "stp/Simplifier/Rewriting.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
 #include "stp/Simplifier/Simplifier.h"
+#include "stp/ToSat/BBNodeManagerAIG.h"
+#include "stp/ToSat/BitBlaster.h"
 #include "stp/Simplifier/StrengthReduction.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
@@ -360,6 +362,30 @@ bool simplifyOk(Context& c, unsigned depth)
   return result.GetKind() == AND || result.GetKind() == EQ;
 }
 
+// BitBlaster::BBForm, which blasts a formula's operands by calling itself.
+bool bitBlastOk(Context& c, unsigned depth)
+{
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("b0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string name = "b" + std::to_string(i);
+    const ASTNode leaf = c.hf->CreateNode(
+        EQ, c.mgr.CreateSymbol(name.c_str(), 0, 8), c.mgr.CreateZeroConst(8));
+    f = c.hf->CreateNode(AND, leaf, f);
+  }
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  BBNodeManagerAIG nm;
+  BitBlaster bb(&nm, &simp, c.nf, &c.mgr.UserFlags);
+  bb.BBForm(f);
+
+  // One AIG node per conjunct at the very least.
+  return nm.totalNumberOfNodes() >= depth;
+}
+
 /* Control cases: the same properties on a chain shallow enough for the
    recursive implementations. These pass today, so a deep case failing is
    about stack depth and nothing else. */
@@ -415,6 +441,12 @@ TEST(DeepDag, shallow_simplify)
 {
   Context c;
   EXPECT_TRUE(simplifyOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_bit_blast)
+{
+  Context c;
+  EXPECT_TRUE(bitBlastOk(c, SHALLOW));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
@@ -475,6 +507,11 @@ TEST(DeepDag, deep_strength_reduction)
 TEST(DeepDag, deep_simplify)
 {
   EXPECT_STACK_SAFE(simplifyOk, 20000);
+}
+
+TEST(DeepDag, deep_bit_blast)
+{
+  EXPECT_STACK_SAFE(bitBlastOk, 20000);
 }
 
 } // namespace

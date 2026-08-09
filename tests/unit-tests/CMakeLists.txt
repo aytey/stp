@@ -120,3 +120,8 @@ AddSTPGTest(FdOStream_Test.cpp)
 # Deeply nested input must not put the AST-depth-recursive traversals through
 # the call stack. Each case runs in a forked child on a 1 MiB stack.
 AddSTPGTest(DeepDag_Test.cpp)
+# Instantiates BBNodeManagerAIG, whose inline members call ABC; a shared
+# libstp localises ABC's symbols, so this links its own copy the way
+# FloatBlast_Test does.
+target_link_libraries(DeepDag_TestTests $<TARGET_FILE:libabc-pic>)
+add_dependencies(DeepDag_TestTests libabc-pic)

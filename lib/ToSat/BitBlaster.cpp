@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/constantBitP/NodeToFixedBitsMap.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include <cassert>
+#include <deque>
 #include <cmath>
 
 namespace stp
@@ -1241,6 +1242,78 @@ const BBNode BitBlaster::BBForm(const ASTNode& form)
     return nf->CreateNode(AND, v);
 }
 
+// The kinds BBForm blasts by blasting operands that are themselves
+// formulas. Every other kind either has no operands or hands them to
+// BBTerm, which is its own walk.
+static bool bbFormDescends(const Kind k)
+{
+  switch (k)
+  {
+    case NOT:
+    case ITE:
+    case AND:
+    case OR:
+    case NAND:
+    case NOR:
+    case IFF:
+    case XOR:
+    case IMPLIES:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Blast every formula below `form` before `form` itself, so that the calls
+// BBForm makes on its operands all land on the memo and the recursion never
+// goes more than one deep.
+//
+// The order is the order BBForm would have reached these nodes in: operands
+// left to right, each finished before the next is started, the node itself
+// last. Nothing here is blasted that BBForm would not have blasted -- none
+// of these kinds stops early -- so the same nodes are built, by the same
+// factory calls, in the same sequence. That is load-bearing: the CNF must
+// not depend on the order operands happen to be evaluated in, which is why
+// the ITE case below blasts into named variables.
+void BitBlaster::primeFormMemo(const ASTNode& form, BBNodeSet& support)
+{
+  if (!bbFormDescends(form.GetKind()))
+    return;
+
+  struct Frame
+  {
+    ASTNode n;
+    size_t i = 0;
+  };
+
+  // A deque, so pushing never moves the frame being worked on.
+  std::deque<Frame> stack;
+  stack.push_back(Frame{form, 0});
+
+  while (!stack.empty())
+  {
+    Frame& current = stack.back();
+
+    if (current.i < current.n.Degree())
+    {
+      const ASTNode child = current.n[current.i++];
+
+      if (BBFormMemo.find(child) != BBFormMemo.end())
+        continue; // already blasted; BBForm would have taken it from the memo.
+
+      if (bbFormDescends(child.GetKind()))
+        stack.push_back(Frame{child, 0});
+      else
+        BBForm(child, support); // its operands are terms: BBTerm's business.
+      continue;
+    }
+
+    // Operands are all in the memo, so this returns after one level.
+    BBForm(current.n, support);
+    stack.pop_back();
+  }
+}
+
 // bit blast a formula (boolean term).  Result is one bit wide,
 const BBNode BitBlaster::BBForm(const ASTNode& form,
                                 BBNodeSet& support)
@@ -1250,6 +1323,17 @@ const BBNode BitBlaster::BBForm(const ASTNode& form,
   {
     // already there.  Just return it.
     return it->second;
+  }
+
+  if (!priming)
+  {
+    priming = true;
+    primeFormMemo(form, support);
+    priming = false;
+
+    it = BBFormMemo.find(form);
+    if (it != BBFormMemo.end())
+      return it->second;
   }
 
   const Kind k = form.GetKind();
