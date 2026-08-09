@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 #include "stp/Simplifier/VariablesInExpression.h"
 #include "stp/Util/DagWalk.h"
+#include "stp/STPManager/UserDefinedFlags.h"
 
 namespace stp
 {
@@ -73,7 +74,7 @@ Symbols* VariablesInExpression::getSymbol(const ASTNode& n)
       return it->second;
   }
 
-  if (!priming)
+  if (!priming && (uf == nullptr || uf->prime_memos))
   {
     priming = true;
     primeSymbols(n);

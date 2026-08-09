@@ -167,6 +167,11 @@ void ExtraMain::create_options()
   bool_arg("--split-extracts", bm->UserFlags.enable_split_extracts,
            "Create new variables for some extracts", simp_group);
 
+  bool_arg("--prime-memos", bm->UserFlags.prime_memos,
+           "Fill a pass's memo bottom-up before it runs, so deeply nested "
+           "input does not exhaust the stack. Off is for testing only: it "
+           "restores the recursion these passes used to do",
+           simp_group);
   bool_arg("--ite-context-simplifications", bm->UserFlags.enable_ite_context,
            "Use what is known to be true in an if-then-else node to simplify "
            "the true or false branches",

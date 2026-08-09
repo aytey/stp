@@ -221,3 +221,23 @@ if(TEST_BASELINE_DIFFERENTIAL AND BUILD_EXECUTABLES)
       LABELS "baseline-differential"
     )
 endif()
+
+# -----------------------------------------------------------------------------
+
+# Several passes fill their memo bottom-up before running so that deeply
+# nested input does not exhaust the stack. That is only sound if the priming
+# visits the nodes the pass would have visited anyway, which nothing in the
+# code enforces -- so solve both ways and require the same CNF.
+if(BUILD_EXECUTABLES AND PYTHON_EXECUTABLE)
+    add_test(
+      NAME prime-memos-differential
+      COMMAND ${PYTHON_EXECUTABLE}
+              ${PROJECT_SOURCE_DIR}/tests/prime-memos-differential.py
+              $<TARGET_FILE:stp-bin>
+              ${PROJECT_SOURCE_DIR}/tests/query-files
+    )
+    set_tests_properties(prime-memos-differential PROPERTIES
+      SKIP_RETURN_CODE 77
+      TIMEOUT 1800
+    )
+endif()

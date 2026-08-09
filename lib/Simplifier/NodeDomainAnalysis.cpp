@@ -439,7 +439,7 @@ namespace stp
       }
     }
 
-    if (!priming)
+    if (!priming && bm.UserFlags.prime_memos)
     {
       priming = true;
       primeMaps(n);

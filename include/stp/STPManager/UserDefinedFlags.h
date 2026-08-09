@@ -62,6 +62,13 @@ public:
   bool enable_unconstrained = true;
   bool enable_flatten = false;
   bool enable_ite_context = false;
+
+  // Fill a pass's memo from the bottom up before it runs, so its own
+  // recursion stops at one level (see stp/Util/DagWalk.h). On for real use;
+  // the switch exists so a test can run both ways and check that the CNF
+  // comes out the same, which is what says the priming visited exactly the
+  // nodes the pass would have. See tests/prime-memos-differential.py.
+  bool prime_memos = true;
   bool enable_aig_core_simplify = false;
   bool enable_use_intervals = true;
   bool enable_pure_literals = true;

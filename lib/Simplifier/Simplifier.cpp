@@ -1602,7 +1602,7 @@ ASTNode Simplifier::SimplifyTerm(const ASTNode& actualInputterm)
     return output;
   }
 
-  if (!primingTerms)
+  if (!primingTerms && _bm->UserFlags.prime_memos)
   {
     primingTerms = true;
     primeTerms(inputterm);

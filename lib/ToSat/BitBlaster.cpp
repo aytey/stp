@@ -752,7 +752,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
     return it->second;
   }
 
-  if (!primingTerm)
+  if (!primingTerm && uf->prime_memos)
   {
     primingTerm = true;
     primeTermMemo(term, support);
@@ -1347,7 +1347,7 @@ const BBNode BitBlaster::BBForm(const ASTNode& form,
     return it->second;
   }
 
-  if (!priming)
+  if (!priming && uf->prime_memos)
   {
     priming = true;
     primeFormMemo(form, support);

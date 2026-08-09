@@ -31,6 +31,8 @@ THE SOFTWARE.
 
 namespace stp
 {
+class UserDefinedFlags;
+
 
 class VariablesInExpression
 {
@@ -39,6 +41,11 @@ private:
 
   typedef std::unordered_map<uint64_t, Symbols*> ASTNodeToNodes;
   ASTNodeToNodes symbol_graph;
+
+  // This class has no manager of its own, so whoever owns it lends its
+  // flags; null means the default, which is to prime. Only the priming
+  // switch is read, and only so a test can run both ways.
+  const UserDefinedFlags* uf = nullptr;
 
 public:
   DLL_PUBLIC VariablesInExpression();
@@ -50,6 +57,8 @@ public:
 
   // When solving, we're interested in whether variables appear multiple times.
   typedef std::unordered_set<Symbols*, SymbolPtrHasher> SymbolPtrSet;
+
+  void setFlags(const UserDefinedFlags* flags) { uf = flags; }
 
   Symbols* getSymbol(const ASTNode& n);
 

@@ -84,6 +84,7 @@ public:
     SolverMap = new DenseNodeMap(INITIAL_TABLE_SIZE);
     loopCount = 0;
     substitutionsLastApplied = 0;
+    vars.setFlags(&_bm->UserFlags);
   }
 
   SubstitutionMap(const SubstitutionMap&) = delete;
