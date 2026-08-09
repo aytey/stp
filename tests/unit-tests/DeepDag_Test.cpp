@@ -51,6 +51,7 @@ THE SOFTWARE.
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/Flatten.h"
 #include "stp/Simplifier/Rewriting.h"
+#include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -283,6 +284,38 @@ bool flattenIdentityOk(Context& c, unsigned depth)
   return flattener.topLevel(f) == top;
 }
 
+// SubstitutionMap::replace, which rebuilds a DAG with some nodes swapped
+// out. Reached from every pass that applies a substitution, and the walk
+// is over the whole input.
+bool substitutionOk(Context& c, unsigned depth)
+{
+  const ASTNode top = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(top);
+
+  // The symbol at the far end of the chain maps to a constant, so the walk
+  // has to reach the bottom and every node above it is rebuilt on the way
+  // back up.
+  ASTNodeMap fromTo, cache;
+  fromTo[c.mgr.CreateSymbol("x0", 0, 8)] = c.mgr.CreateBVConst(8, 1);
+
+  const ASTNode result =
+      SubstitutionMap::replace(top, fromTo, cache, c.nf);
+  c.roots.push_back(result);
+  return result != top;
+}
+
+// Releasing a DAG. A node that loses its last reference releases its
+// children, which can lose theirs: the teardown is as deep as the input,
+// and it runs wherever the last handle happens to be dropped.
+bool teardownOk(Context& c, unsigned depth)
+{
+  {
+    const ASTNode top = c.formula(c.chain(BVXOR, depth));
+    (void)top;
+  } // the only handle goes here, and the whole chain follows it.
+  return true;
+}
+
 /* Control cases: the same properties on a chain shallow enough for the
    recursive implementations. These pass today, so a deep case failing is
    about stack depth and nothing else. */
@@ -314,6 +347,18 @@ TEST(DeepDag, shallow_flatten_share_count)
 {
   Context c;
   EXPECT_TRUE(flattenShareCountOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_substitution)
+{
+  Context c;
+  EXPECT_TRUE(substitutionOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_teardown)
+{
+  Context c;
+  EXPECT_TRUE(teardownOk(c, SHALLOW));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
@@ -354,6 +399,16 @@ TEST(DeepDag, deep_flatten_share_count)
 TEST(DeepDag, deep_flatten)
 {
   EXPECT_STACK_SAFE(flattenIdentityOk, 10000);
+}
+
+TEST(DeepDag, DISABLED_deep_substitution)
+{
+  EXPECT_STACK_SAFE(substitutionOk, 20000);
+}
+
+TEST(DeepDag, deep_teardown)
+{
+  EXPECT_STACK_SAFE(teardownOk, 50000);
 }
 
 } // namespace

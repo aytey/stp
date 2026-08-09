@@ -32,10 +32,41 @@ namespace stp
 
 // Call this when deleting a node that has been stored in the
 // the unique table
+//
+// Deleting an interior node releases its children, and a child that loses
+// its last reference is deleted in turn. Left to nest, that is one set of
+// destructor frames per level of the DAG, so releasing a deeply nested
+// formula runs off the stack -- the depth is the input's, not ours. So only
+// the outermost node deletes: anything that dies underneath it is queued on
+// the manager and deleted by the loop below, which keeps the whole teardown
+// at one frame.
 void ASTInterior::CleanUp()
 {
   nodeManager->_interior_unique_table.erase(this);
-  delete this;
+
+  if (nodeManager->_deleting_interiors)
+  {
+    nodeManager->_pending_deletion.push_back(this);
+    return;
+  }
+
+  // Held separately: the first delete below is `this`, and nodeManager is
+  // one of its members.
+  STPMgr* const mgr = nodeManager;
+  mgr->_deleting_interiors = true;
+
+  ASTInterior* node = this;
+  while (true)
+  {
+    delete node; // releases its children; any that die queue up above.
+
+    if (mgr->_pending_deletion.empty())
+      break;
+    node = mgr->_pending_deletion.back();
+    mgr->_pending_deletion.pop_back();
+  }
+
+  mgr->_deleting_interiors = false;
 }
 
 // Returns kinds.  "lispprinter" handles printing of parenthesis
