@@ -26,34 +26,14 @@ THE SOFTWARE.
 #define DAGWALK_H_
 
 #include "stp/AST/ASTNode.h"
+#include <cassert>
+#include <cstdint>
 #include <deque>
+#include <vector>
 
 namespace stp
 {
 
-// Rebuild a DAG bottom up, without putting the walk on the call stack.
-//
-// How deeply a formula nests is the input's choice, and inputs that nest
-// thousands deep exist, so a pass that recurses once per level dies on them.
-// This is the shape most of those passes have: visit a node's children, hand
-// the node and its rebuilt children to `combine`, and use what comes back in
-// place of the node. Frames live on the heap, so depth costs memory rather
-// than stack.
-//
-// `combine(node, children)` returns the replacement for `node`. It is called
-// once per node, after all of that node's children have been combined, and in
-// left-to-right order, so it sees exactly what the equivalent recursive
-// function saw and may call the node factory freely.
-//
-// `cache` maps a node to its replacement. A node reached twice is combined
-// once, and a cache that outlives the call carries answers between calls. It
-// needs find(), end() and insert(pair), which both ASTNodeMap and
-// DenseNodeMap provide. Leaves have nothing to rebuild: they are returned as
-// they are and are not cached.
-//
-// `combine` is a template parameter rather than a std::function so that it
-// inlines: this runs once per node, and an indirect call per node would be a
-// real cost on ordinary shallow input.
 // What primeMemo should do with a node it has reached.
 enum class Walk
 {
@@ -93,34 +73,77 @@ enum class Walk
 // Self-calls on nodes the pass builds itself, rather than on children, are
 // fine and need nothing here: their operands are already primed, so those
 // walks are shallow.
-template <class Classify, class Visit>
-void primeMemo(const ASTNode& top, Classify classify, Visit visit)
+// `operands(n, out)` lets a pass say that the nodes it will recurse into are
+// not n's children. Return false -- what the three-argument form below does
+// for every node -- and the walk uses n's own children, which costs nothing:
+// they are already a contiguous run and are not copied. Return true after
+// filling `out`, and the walk uses that instead.
+//
+// `out` is a buffer the walk lends and takes back, one per nesting level of
+// nodes that answer true, so the pass fills a vector that already has its
+// capacity rather than building one. After the first few nodes it allocates
+// nothing at all, which is the point: an operand list built per node would
+// cost an allocation and a reference count on every node in the DAG, and
+// this runs on shallow input far more often than deep.
+template <class Classify, class Operands, class Visit>
+void primeMemo(const ASTNode& top, Classify classify, Operands operands,
+               Visit visit)
 {
   if (classify(top) != Walk::Descend)
     return; // the caller does it: there is nothing below to get ahead of.
+
+  constexpr uint32_t OWN_CHILDREN = UINT32_MAX;
 
   struct Frame
   {
     ASTNode n;
     size_t i = 0;
+    uint32_t operandSlot = OWN_CHILDREN;
+  };
+
+  // Lent out to the frames whose operands are not their children, and taken
+  // back when they finish: this grows to the deepest nesting of those, not
+  // to the size of the DAG.
+  std::vector<ASTVec> lent;
+  uint32_t lentInUse = 0;
+
+  auto open = [&](const ASTNode& n) {
+    Frame f;
+    f.n = n;
+
+    if (lentInUse == lent.size())
+      lent.emplace_back();
+    ASTVec& buffer = lent[lentInUse];
+    buffer.clear(); // keeps the capacity it already had.
+
+    if (operands(n, buffer))
+      f.operandSlot = lentInUse++;
+
+    return f;
   };
 
   // A deque, so descending never moves the frame being worked on.
   std::deque<Frame> stack;
-  stack.push_back(Frame{top, 0});
+  stack.push_back(open(top));
 
   while (!stack.empty())
   {
     Frame& current = stack.back();
 
-    if (current.i < current.n.Degree())
+    const bool ownChildren = current.operandSlot == OWN_CHILDREN;
+    const size_t degree =
+        ownChildren ? current.n.Degree() : lent[current.operandSlot].size();
+
+    if (current.i < degree)
     {
-      const ASTNode child = current.n[current.i++];
+      const ASTNode child = ownChildren ? current.n[current.i]
+                                        : lent[current.operandSlot][current.i];
+      current.i++;
 
       switch (classify(child))
       {
         case Walk::Descend:
-          stack.push_back(Frame{child, 0});
+          stack.push_back(open(child));
           break;
         case Walk::Visit:
           visit(child);
@@ -131,12 +154,48 @@ void primeMemo(const ASTNode& top, Classify classify, Visit visit)
       continue;
     }
 
-    // Children are all answered, so this returns after one level.
+    // Operands are all answered, so this returns after one level.
     visit(current.n);
+    if (!ownChildren)
+    {
+      assert(current.operandSlot + 1 == lentInUse); // frames finish in order.
+      lentInUse--;
+    }
     stack.pop_back();
   }
 }
 
+// The usual case: a pass recurses into a node's own children.
+template <class Classify, class Visit>
+void primeMemo(const ASTNode& top, Classify classify, Visit visit)
+{
+  primeMemo(top, classify, [](const ASTNode&, ASTVec&) { return false; },
+            visit);
+}
+
+// Rebuild a DAG bottom up, without putting the walk on the call stack.
+//
+// How deeply a formula nests is the input's choice, and inputs that nest
+// thousands deep exist, so a pass that recurses once per level dies on them.
+// This is the shape most of those passes have: visit a node's children, hand
+// the node and its rebuilt children to `combine`, and use what comes back in
+// place of the node. Frames live on the heap, so depth costs memory rather
+// than stack.
+//
+// `combine(node, children)` returns the replacement for `node`. It is called
+// once per node, after all of that node's children have been combined, and in
+// left-to-right order, so it sees exactly what the equivalent recursive
+// function saw and may call the node factory freely.
+//
+// `cache` maps a node to its replacement. A node reached twice is combined
+// once, and a cache that outlives the call carries answers between calls. It
+// needs find(), end() and insert(pair), which both ASTNodeMap and
+// DenseNodeMap provide. Leaves have nothing to rebuild: they are returned as
+// they are and are not cached.
+//
+// `combine` is a template parameter rather than a std::function so that it
+// inlines: this runs once per node, and an indirect call per node would be a
+// real cost on ordinary shallow input.
 template <class Cache, class Combine>
 ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
 {

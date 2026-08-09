@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include <cassert>
 #include <cmath>
 #include <deque>
+#include "stp/Util/DagWalk.h"
 
 namespace stp
 {
@@ -1514,6 +1515,59 @@ ASTNode Simplifier::pullUpBVSX(ASTNode output)
 }
 
 // This function simplifies terms based on their kind
+// Every term below `n` before `n` itself, in the order SimplifyTerm reaches
+// them.
+//
+// The operands hook is what makes this safe. For BVAND, BVOR and BVPLUS the
+// pass does not simplify its children: it flattens them first and simplifies
+// what that produces, so the nodes flattening pulls apart are never
+// simplified at all. Handing the walk the same flattened list keeps it to
+// exactly the nodes the pass would reach -- priming the children instead
+// would simplify those intermediates and build nodes that do not otherwise
+// exist.
+//
+// Operands the pass carries through untouched -- an array-typed one, which
+// falls to its catch-all -- are skipped for the same reason.
+void Simplifier::primeTerms(const ASTNode& n)
+{
+  primeMemo(
+      n,
+      [this](const ASTNode& node) {
+        if (node.isConstant())
+          return Walk::Skip; // SimplifyTerm hands these straight back.
+
+        ASTNode ignored;
+        if (CheckSimplifyMap(node, ignored, false))
+          return Walk::Skip; // it would answer from the map.
+
+        const types type = node.GetType();
+        if (type == BOOLEAN_TYPE)
+          return Walk::Visit; // SimplifyFormula's side, which walks its own.
+        if (type != BITVECTOR_TYPE && type != FLOATINGPOINT_TYPE)
+          return Walk::Skip; // carried through unsimplified.
+
+        if (node.GetKind() == SYMBOL || !is_Term_kind(node.GetKind()))
+          return Walk::Visit;
+
+        return Walk::Descend;
+      },
+      [](const ASTNode& node, ASTVec& out) {
+        const Kind k = node.GetKind();
+        if (k != BVAND && k != BVOR && k != BVPLUS)
+          return false; // its own children, which the walk reads in place.
+
+        const ASTVec flat = FlattenKind(k, node.GetChildren(), 15);
+        out.assign(flat.begin(), flat.end());
+        return true;
+      },
+      [this](const ASTNode& node) {
+        if (node.GetType() == BOOLEAN_TYPE)
+          SimplifyFormula(node, false);
+        else
+          SimplifyTerm(node);
+      });
+}
+
 ASTNode Simplifier::SimplifyTerm(const ASTNode& actualInputterm)
 {
   assert(_bm->UserFlags.optimize_flag);
@@ -1546,6 +1600,16 @@ ASTNode Simplifier::SimplifyTerm(const ASTNode& actualInputterm)
     // cerr << "SimplifierMap:" << inputterm << " output: " <<
     // output << endl;
     return output;
+  }
+
+  if (!primingTerms)
+  {
+    primingTerms = true;
+    primeTerms(inputterm);
+    primingTerms = false;
+
+    if (CheckSimplifyMap(inputterm, output, false))
+      return output;
   }
   //########################################
   //########################################

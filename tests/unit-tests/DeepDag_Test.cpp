@@ -501,7 +501,12 @@ bool commonSubSumOk(Context& c, unsigned depth)
 // transforms the condition, and then only the branch that survives it,
 // telling the extensionality context which branch it dropped. Priming would
 // transform the dropped branch and leave that bookkeeping describing
-// something that did not happen. It needs a state machine.
+// something that did not happen.
+//
+// Nor does the operands hook rescue it, as SimplifyTerm's flattening was
+// rescued: which branch survives is not known until the condition has been
+// transformed, so the hook would have to run the pass to answer. This one
+// needs a state machine.
 bool arrayTransformerOk(Context& c, unsigned depth)
 {
   const ASTNode f = c.formula(c.chain(BVXOR, depth));
@@ -677,7 +682,7 @@ TEST(DeepDag, deep_bit_blast_term)
 }
 
 TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }
-TEST(DeepDag, DISABLED_deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
+TEST(DeepDag, deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
 TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }

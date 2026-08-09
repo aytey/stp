@@ -156,6 +156,12 @@ public:
 
   ASTNode SimplifyTerm(const ASTNode& inputterm);
 
+  // SimplifyTerm reaches a term's operands by calling itself, so a deeply
+  // nested input exhausts the stack. Fill the map from the bottom up first.
+  // See DeepDag_Test.cpp.
+  void primeTerms(const ASTNode& n);
+  bool primingTerms = false;
+
   ASTNode SimplifyFormula(const ASTNode& a, bool pushNeg);
 
   ASTNode CreateSimplifiedEQ(const ASTNode& t1, const ASTNode& t2);
