@@ -416,6 +416,13 @@ bool bitBlastOk(Context& c, unsigned depth)
 // fail on a wall of the frames named in its comment, and is enabled by the
 // commit that converts that pass.
 // Simplifier::SimplifyTerm -- dies in simplify_term_switch.
+//
+// Priming will not do: for BVAND, BVOR and BVPLUS it simplifies a FLATTENED
+// operand list, so the intermediate nodes that flattening pulls apart are
+// never simplified at all. Filling the map from the bottom would simplify
+// them, building nodes that do not otherwise exist. It needs either a
+// primeMemo that takes the pass's own notion of a node's operands, or a
+// state machine.
 bool simplifyTermOk(Context& c, unsigned depth)
 {
   const ASTNode t = c.chain(BVXOR, depth);
@@ -489,6 +496,12 @@ bool commonSubSumOk(Context& c, unsigned depth)
 }
 
 // ArrayTransformer::TransformTerm.
+//
+// Priming will not do here either, for a different reason: its ITE arm
+// transforms the condition, and then only the branch that survives it,
+// telling the extensionality context which branch it dropped. Priming would
+// transform the dropped branch and leave that bookkeeping describing
+// something that did not happen. It needs a state machine.
 bool arrayTransformerOk(Context& c, unsigned depth)
 {
   const ASTNode f = c.formula(c.chain(BVXOR, depth));
@@ -510,7 +523,11 @@ bool printerLispOk(Context& c, unsigned depth)
   return os.str().size() > 0;
 }
 
-// The SMT-LIB2 printer, behind --print-back-SMTLIB2.
+// The SMT-LIB2 printer, behind --print-back-SMTLIB2. The same shape as the
+// LISP printer, which is done, but about thirty arms each interleaving
+// their own text with their operands, so it is a long mechanical
+// conversion rather than a subtle one. Its output is exactly checkable,
+// which is what makes it low risk.
 bool printerSMTLIB2Ok(Context& c, unsigned depth)
 {
   const ASTNode f = c.formula(c.chain(BVXOR, depth));
