@@ -537,7 +537,26 @@ void PropagateEqualities::countToDo(ASTNode n)
   }
 }
 
+// The AND arm below is the only place this reaches another node, so the
+// spine of a conjunction is walked here rather than through the stack: a
+// formula nested as deeply as the input would otherwise take it with them.
+// Children are pushed in reverse, so they are still visited left to right.
+// See DeepDag_Test.cpp.
 void PropagateEqualities::buildCandidateList(const ASTNode& a)
+{
+  std::vector<ASTNode> toVisit;
+  toVisit.push_back(a);
+
+  while (!toVisit.empty())
+  {
+    const ASTNode current = toVisit.back();
+    toVisit.pop_back();
+    buildCandidateListNode(current, toVisit);
+  }
+}
+
+void PropagateEqualities::buildCandidateListNode(const ASTNode& a,
+                                                 std::vector<ASTNode>& toVisit)
 {
 
   if (!alreadyVisited.insert(a.GetNodeNum()).second)
@@ -641,8 +660,8 @@ void PropagateEqualities::buildCandidateList(const ASTNode& a)
   }
   else if (AND == k)
   {
-    for (const auto& it : a)
-      buildCandidateList(it);
+    for (size_t i = a.Degree(); i > 0; i--)
+      toVisit.push_back(a[i - 1]);
   }
 }
 
