@@ -46,6 +46,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include <list>
+#include <vector>
 
 namespace stp
 {
@@ -72,16 +73,36 @@ namespace stp
   }
 
   // counter is 1 if the node has one reference in the tree.
+  //
+  // The walk is iterative because the input decides how deep it goes, and
+  // deep inputs exist: a call per level of the DAG exhausts the stack. The
+  // stack holds pointers into each node's own child storage, which the node
+  // above keeps alive for the whole walk, so nothing is reference counted
+  // on the way down.
   void Rewriting::buildShareCount(const ASTNode& n)
   {
-    if (n.Degree() == 0)
-      return;
+    std::vector<const ASTNode*> toVisit;
+    toVisit.push_back(&n);
 
-    if (shareCount[n.GetNodeNum()]++ > 0) // 0 first time, 1 second time.
-      return;
-  
-    for (const auto& c: n.GetChildren())
-        buildShareCount(c);
+    while (!toVisit.empty())
+    {
+      const ASTNode& current = *toVisit.back();
+      toVisit.pop_back();
+
+      if (current.Degree() == 0)
+        continue;
+
+      if (shareCount[current.GetNodeNum()]++ > 0) // 0 first time, 1 second.
+        continue;
+
+      // Pushed in reverse so children are still visited left to right. The
+      // counts do not depend on the order -- every occurrence is counted
+      // once wherever it is reached from -- but keeping it makes the two
+      // implementations comparable node for node.
+      const ASTChildren children = current.GetChildren();
+      for (size_t i = children.size(); i > 0; i--)
+        toVisit.push_back(&children[i - 1]);
+    }
   }
 
   ASTNode Rewriting::rewrite(const ASTNode& n)

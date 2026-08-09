@@ -247,6 +247,26 @@ bool rewritingRuleFiresOk(Context& c, unsigned depth)
   return r.topLevel(f) != top;
 }
 
+// Flatten::buildShareCount on its own. A chain of same-kind flattenable
+// nodes is the one shape flatten() does not recurse on: it appends the
+// grandchildren to its own worklist and keeps looping, so the only
+// depth-recursive walk this input reaches is the share count built ahead
+// of it.
+bool flattenShareCountOk(Context& c, unsigned depth)
+{
+  const ASTNode top = c.formula(c.chain(BVPLUS, depth));
+  c.roots.push_back(top);
+
+  Flatten flattener(&c.mgr, c.nf);
+  ASTNode f = top;
+  const ASTNode result = flattener.topLevel(f);
+  c.roots.push_back(result);
+
+  // The whole chain collapses into one BVPLUS over every symbol in it.
+  const ASTNode plus = Context::childOfKind(result, BVPLUS);
+  return plus.GetKind() == BVPLUS && plus.Degree() == depth;
+}
+
 // Flatten carries its own copy of both traversals: an identical
 // buildShareCount, and flatten() with the same recursive shape as
 // rewrite(). Flattening is off by default since #786, so it is not on the
@@ -290,6 +310,12 @@ TEST(DeepDag, shallow_flatten)
   EXPECT_TRUE(flattenIdentityOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_flatten_share_count)
+{
+  Context c;
+  EXPECT_TRUE(flattenShareCountOk(c, SHALLOW));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
@@ -318,6 +344,11 @@ TEST(DeepDag, DISABLED_deep_rewriting_rewrite)
 TEST(DeepDag, DISABLED_deep_rewriting_rule_fires)
 {
   EXPECT_STACK_SAFE(rewritingRuleFiresOk, 10000);
+}
+
+TEST(DeepDag, deep_flatten_share_count)
+{
+  EXPECT_STACK_SAFE(flattenShareCountOk, 100000);
 }
 
 TEST(DeepDag, DISABLED_deep_flatten)

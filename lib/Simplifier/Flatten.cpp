@@ -23,6 +23,7 @@ THE SOFTWARE.
 
 #include "stp/Simplifier/Flatten.h"
 #include <list>
+#include <vector>
 
 namespace stp
 {
@@ -54,16 +55,32 @@ namespace stp
   }
 
   // counter is 1 if the node has one reference in the tree.
+  //
+  // Iterative for the same reason as Rewriting::buildShareCount, which this
+  // mirrors: the input decides the depth, so a call per level of the DAG
+  // exhausts the stack. The stack holds pointers into each node's own child
+  // storage, which the node above keeps alive for the whole walk.
   void Flatten::buildShareCount(const ASTNode& n)
   {
-    if (n.Degree() == 0)
-      return;
+    std::vector<const ASTNode*> toVisit;
+    toVisit.push_back(&n);
 
-    if (shareCount[n.GetNodeNum()]++ > 0) // 0 first time, 1 second time.
-      return;
-  
-    for (const auto& c: n.GetChildren())
-        buildShareCount(c);
+    while (!toVisit.empty())
+    {
+      const ASTNode& current = *toVisit.back();
+      toVisit.pop_back();
+
+      if (current.Degree() == 0)
+        continue;
+
+      if (shareCount[current.GetNodeNum()]++ > 0) // 0 first time, 1 second.
+        continue;
+
+      // Reverse, so children are still visited left to right.
+      const ASTChildren children = current.GetChildren();
+      for (size_t i = children.size(); i > 0; i--)
+        toVisit.push_back(&children[i - 1]);
+    }
   }
 
   ASTNode Flatten::flatten(const ASTNode& n, bool top)
