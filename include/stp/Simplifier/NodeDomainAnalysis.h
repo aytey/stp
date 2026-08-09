@@ -142,6 +142,12 @@ public:
 
   DomainInfo buildMap(const ASTNode& n);
 
+  // buildMap reaches a node's children by calling itself, so a deeply nested
+  // input exhausts the stack. Fill the maps from the bottom up first, and
+  // those calls answer from the map instead. See DeepDag_Test.cpp.
+  void primeMaps(const ASTNode& n);
+  bool priming = false;
+
   void topLevel(const ASTNode& top)
   {
     bm.GetRunTimes()->start(RunTimes::NodeDomainAnalysis);

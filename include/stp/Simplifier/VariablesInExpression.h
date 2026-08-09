@@ -53,6 +53,12 @@ public:
 
   Symbols* getSymbol(const ASTNode& n);
 
+  // getSymbol reaches a node's children by calling itself, so a deeply
+  // nested input exhausts the stack. Fill symbol_graph from the bottom up
+  // first, and those calls answer from it instead. See DeepDag_Test.cpp.
+  void primeSymbols(const ASTNode& n);
+  bool priming = false;
+
   // this map is useful while traversing terms and uniquely
   // identifying variables in the those terms. Prevents double
   // counting.

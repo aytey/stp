@@ -25,6 +25,7 @@ THE SOFTWARE.
 
 #include "stp/Simplifier/NodeDomainAnalysis.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
+#include "stp/Util/DagWalk.h"
 
 namespace stp
 {
@@ -410,9 +411,40 @@ namespace stp
     assert(intersects(interval, set));
   }
 
+  // Every node below `n` before `n` itself, in the order buildMap would have
+  // reached them: children left to right, the node last. It looks at every
+  // child of every node it visits and has no early exit, so nothing is
+  // computed here that it would not have computed anyway.
+  void NodeDomainAnalysis::primeMaps(const ASTNode& n)
+  {
+    primeMemo(
+        n,
+        [this](const ASTNode& node) {
+          if (toFixedBits.find(node) != toFixedBits.end())
+            return Walk::Skip; // buildMap would answer from the map.
+          return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
+        },
+        [this](const ASTNode& node) { buildMap(node); });
+  }
+
   NodeDomainAnalysis::DomainInfo NodeDomainAnalysis::buildMap(const ASTNode& n)
   {
     {
+      auto it = toFixedBits.find(n);
+      if (it != toFixedBits.end())
+      {
+        auto it0 = toIntervals.find(n);
+        auto it1 = toValueSets.find(n);
+        return {it->second, it0->second, it1->second};
+      }
+    }
+
+    if (!priming)
+    {
+      priming = true;
+      primeMaps(n);
+      priming = false;
+
       auto it = toFixedBits.find(n);
       if (it != toFixedBits.end())
       {
