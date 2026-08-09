@@ -331,17 +331,17 @@ TEST(DeepDag, deep_dependencies_build)
   EXPECT_STACK_SAFE(dependenciesChainOk, 50);
 }
 
-TEST(DeepDag, DISABLED_deep_rewriting_share_count)
+TEST(DeepDag, deep_rewriting_share_count)
 {
   EXPECT_STACK_SAFE(rewritingIdentityOk, 200000);
 }
 
-TEST(DeepDag, DISABLED_deep_rewriting_rewrite)
+TEST(DeepDag, deep_rewriting_rewrite)
 {
   EXPECT_STACK_SAFE(rewritingIdentityOk, 10000);
 }
 
-TEST(DeepDag, DISABLED_deep_rewriting_rule_fires)
+TEST(DeepDag, deep_rewriting_rule_fires)
 {
   EXPECT_STACK_SAFE(rewritingRuleFiresOk, 10000);
 }
