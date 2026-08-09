@@ -242,7 +242,16 @@ private:
 
   ASTNode SimplifyNotFormula(const ASTNode& a, bool pushNeg);
 
-  ASTNode SimplifyAndOrFormula(const ASTNode& a, bool pushNeg);
+  // SimplifyFormula's head: the answers it gives without dispatching at all,
+  // plus the PullUpITE'd node the dispatch would run on. True when `out` is
+  // the answer.
+  bool formulaShortcut(const ASTNode& b, bool pushNeg, ASTNode& a,
+                       ASTNode& out);
+
+  // SimplifyFormula's tail for every kind except AND and OR: dispatch, then
+  // record the answer against both the node passed in and the PullUpITE'd
+  // one.
+  ASTNode simplifyNonAndOr(const ASTNode& b, const ASTNode& a, bool pushNeg);
 
   ASTNode SimplifyXorFormula(const ASTNode& a, bool pushNeg);
 

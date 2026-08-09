@@ -336,15 +336,12 @@ bool strengthReductionOk(Context& c, unsigned depth)
   return result == top;
 }
 
-// Simplifier::SimplifyFormula, which recurses mutually with
-// SimplifyAndOrFormula and SimplifyTerm. Not converted: unlike the walks
-// above it is recursion scattered through several large functions, and its
-// memo is keyed on the node together with pushNeg. This pins the defect
-// until it is.
+// Simplifier::SimplifyFormula. The AND/OR spine it nests through is walked
+// on the heap; the other boolean kinds still recurse into each other.
 bool simplifyOk(Context& c, unsigned depth)
 {
-  // A chain of ANDs: SimplifyFormula hands each one to
-  // SimplifyAndOrFormula, which recurses back for every operand.
+  // A chain of ANDs: each operand of each one is simplified by coming back
+  // through SimplifyFormula.
   ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("s0", 0, 8),
                                c.mgr.CreateZeroConst(8));
   for (unsigned i = 1; i < depth; i++)
@@ -475,9 +472,7 @@ TEST(DeepDag, deep_strength_reduction)
   EXPECT_STACK_SAFE(strengthReductionOk, 20000);
 }
 
-// Simplifier::SimplifyFormula is still recursive: enabled by the commit that
-// converts it.
-TEST(DeepDag, DISABLED_deep_simplify)
+TEST(DeepDag, deep_simplify)
 {
   EXPECT_STACK_SAFE(simplifyOk, 20000);
 }

@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FloatBlaster.h"
 #include <cassert>
 #include <cmath>
+#include <deque>
 
 namespace stp
 {
@@ -262,29 +263,39 @@ ASTNode Simplifier::SimplifyTerm_TopLevel(const ASTNode& b)
   return out;
 }
 
-ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
+bool Simplifier::formulaShortcut(const ASTNode& b, bool pushNeg, ASTNode& a,
+                                 ASTNode& out)
 {
   assert(_bm->UserFlags.optimize_flag);
   assert(BOOLEAN_TYPE == b.GetType());
 
   if (b.isConstant())
   {
-    return pushNeg ? nf->CreateNode(NOT, b) : b;
+    out = pushNeg ? nf->CreateNode(NOT, b) : b;
+    return true;
   }
 
-  ASTNode output;
-  if (CheckSimplifyMap(b, output, pushNeg))
-    return output;
+  if (CheckSimplifyMap(b, out, pushNeg))
+    return true;
 
   // pullUpITE can change the Kind of the node.
-  ASTNode a = PullUpITE(b);
+  a = PullUpITE(b);
+  return false;
+}
+
+// Everything SimplifyFormula does once the AND/OR case has been taken out.
+// Those kinds recurse back here through their own children, which on a deeply
+// nested formula is a call per level of the input; the driver below walks
+// them with its frames on the heap instead. The rest are left alone: they
+// nest through each other rather than through a spine, and nothing has been
+// seen to reach a depth that matters. See DeepDag_Test.cpp.
+ASTNode Simplifier::simplifyNonAndOr(const ASTNode& b, const ASTNode& a,
+                                     bool pushNeg)
+{
+  ASTNode output;
 
   switch (a.GetKind())
   {
-    case AND:
-    case OR:
-      output = SimplifyAndOrFormula(a, pushNeg);
-      break;
     case NOT:
       output = SimplifyNotFormula(a, pushNeg);
       break;
@@ -926,54 +937,176 @@ ASTNode Simplifier::CreateSimplifiedFormulaITE(const ASTNode& in0,
   return result;
 }
 
-ASTNode Simplifier::SimplifyAndOrFormula(const ASTNode& a, bool pushNeg)
+// AND and OR are where a formula nests: each operand is simplified by coming
+// back through SimplifyFormula, so a conjunction nested as deeply as the
+// input runs the stack out. The frames live on the heap instead. Every other
+// kind is handed to simplifyNonAndOr and still recurses; a child of one of
+// those that is itself an AND re-enters here with a fresh stack, which costs
+// a couple of frames per level of that kind of nesting rather than per level
+// of the formula.
+ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
 {
-  ASTNode output;
+  ASTNode a, out;
+  if (formulaShortcut(b, pushNeg, a, out))
+    return out;
 
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  const Kind k = a.GetKind();
-  const bool isAnd = (k == AND);
-
-  // Under pushNeg we are simplifying NOT(a): De Morgan flips the connective,
-  // and a child that simplifies to the annihilator collapses the whole node.
-  const ASTNode annihilator =
-      isAnd ? (pushNeg ? ASTTrue : ASTFalse) : (pushNeg ? ASTFalse : ASTTrue);
-  const Kind outKind = (isAnd == !pushNeg) ? AND : OR;
-
-  // Recursively simplify each child; short-circuit as soon as one is the
-  // annihilator. We do NOT pre-flatten nested same-kind operands: simplifying
-  // such a child yields an outKind node, which the splice below flattens
-  // anyway, so a separate FlattenKind pass would be redundant work.
-  ASTVec outvec;
-  outvec.reserve(a.Degree());
-  for (const ASTNode& child : a.GetChildren())
   {
-    const ASTNode aaa = SimplifyFormula(child, pushNeg);
-    if (aaa == annihilator)
-    {
-      UpdateSimplifyMap(a, annihilator, pushNeg);
-      return annihilator;
-    }
-    // A child that simplified to the output connective (typically via De
-    // Morgan) would otherwise leave a nested same-kind node, which the factory
-    // does not flatten. Splice its already-simplified operands in so the
-    // result stays flat -- without this SimplifyFormula is not idempotent.
-    if (aaa.GetKind() == outKind)
-      outvec.insert(outvec.end(), aaa.begin(), aaa.end());
-    else
-      outvec.push_back(aaa);
+    const Kind k = a.GetKind();
+    if (k != AND && k != OR)
+      return simplifyNonAndOr(b, a, pushNeg);
   }
 
-  // Hand the simplified children to the node factory. CreateSimpleAndOr
-  // sorts them, drops identities, removes duplicates, detects complements
-  // and unwraps singletons -- so none of that is repeated here.
-  output = nf->CreateNode(outKind, outvec);
+  // What one AND/OR node is part-way through. `b` and `a` are the node as it
+  // arrived and after PullUpITE: both are recorded against the answer, as
+  // SimplifyFormula did.
+  struct Frame
+  {
+    ASTNode b;
+    ASTNode a;
+    ASTNode annihilator;
+    Kind outKind;
+    ASTVec outvec;
+    size_t i = 0;
+    bool waiting = false;
+  };
 
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
+  // A deque, so descending never moves the frames above it.
+  std::deque<Frame> stack;
+  ASTNode result;
+
+  // Start work on the AND/OR node `bb`, whose PullUpITE'd form is `aa`.
+  // Mirrors the head of SimplifyAndOrFormula.
+  auto open = [&](const ASTNode& bb, const ASTNode& aa) -> bool {
+    ASTNode cached;
+    if (CheckSimplifyMap(aa, cached, pushNeg))
+    {
+      // SimplifyFormula records the answer against what it was given too.
+      UpdateSimplifyMap(bb, cached, pushNeg);
+      if (aa != bb)
+        UpdateSimplifyMap(aa, cached, pushNeg);
+      result = cached;
+      return false;
+    }
+
+    Frame f;
+    f.b = bb;
+    f.a = aa;
+
+    const bool isAnd = (aa.GetKind() == AND);
+    // Under pushNeg we are simplifying NOT(a): De Morgan flips the
+    // connective, and a child that simplifies to the annihilator collapses
+    // the whole node.
+    f.annihilator =
+        isAnd ? (pushNeg ? ASTTrue : ASTFalse) : (pushNeg ? ASTFalse : ASTTrue);
+    f.outKind = (isAnd == !pushNeg) ? AND : OR;
+    f.outvec.reserve(aa.Degree());
+
+    stack.push_back(std::move(f));
+    return true;
+  };
+
+  // The answer for a finished node, against both of its names.
+  auto close = [&](Frame& f, const ASTNode& value) {
+    UpdateSimplifyMap(f.a, value, pushNeg);
+    UpdateSimplifyMap(f.b, value, pushNeg);
+    if (f.a != f.b)
+      UpdateSimplifyMap(f.a, value, pushNeg);
+    result = value;
+    stack.pop_back();
+  };
+
+  if (!open(b, a))
+    return result;
+
+  while (true)
+  {
+    Frame& current = stack.back();
+
+    if (current.waiting)
+    {
+      current.waiting = false;
+      const ASTNode aaa = result;
+
+      if (aaa == current.annihilator)
+      {
+        close(current, current.annihilator);
+        if (stack.empty())
+          return result;
+        continue;
+      }
+      // A child that simplified to the output connective (typically via De
+      // Morgan) would otherwise leave a nested same-kind node, which the
+      // factory does not flatten. Splice its already-simplified operands in
+      // so the result stays flat -- without this SimplifyFormula is not
+      // idempotent.
+      if (aaa.GetKind() == current.outKind)
+        current.outvec.insert(current.outvec.end(), aaa.begin(), aaa.end());
+      else
+        current.outvec.push_back(aaa);
+      current.i++;
+    }
+
+    bool descended = false;
+    bool collapsed = false;
+
+    while (current.i < current.a.Degree())
+    {
+      const ASTNode child = current.a[current.i];
+
+      ASTNode childA, childOut;
+      if (!formulaShortcut(child, pushNeg, childA, childOut))
+      {
+        const Kind ck = childA.GetKind();
+        if (ck == AND || ck == OR)
+        {
+          current.waiting = true;
+          if (open(child, childA))
+          {
+            descended = true;
+            break;
+          }
+          // Already known: `result` holds it, so fall through and take
+          // delivery on the next turn of the outer loop.
+          descended = true;
+          break;
+        }
+        childOut = simplifyNonAndOr(child, childA, pushNeg);
+      }
+
+      if (childOut == current.annihilator)
+      {
+        close(current, current.annihilator);
+        collapsed = true;
+        break;
+      }
+      if (childOut.GetKind() == current.outKind)
+        current.outvec.insert(current.outvec.end(), childOut.begin(),
+                              childOut.end());
+      else
+        current.outvec.push_back(childOut);
+      current.i++;
+    }
+
+    if (collapsed)
+    {
+      if (stack.empty())
+        return result;
+      continue;
+    }
+    if (descended)
+      continue;
+
+    // Hand the simplified children to the node factory. CreateSimpleAndOr
+    // sorts them, drops identities, removes duplicates, detects complements
+    // and unwraps singletons -- so none of that is repeated here.
+    const ASTNode output = nf->CreateNode(current.outKind, current.outvec);
+    close(current, output);
+
+    if (stack.empty())
+      return result;
+  }
 }
+
 
 ASTNode Simplifier::SimplifyNotFormula(const ASTNode& a, bool pushNeg)
 {
