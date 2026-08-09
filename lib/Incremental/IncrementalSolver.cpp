@@ -167,14 +167,15 @@ typedef std::unordered_map<ASTNode, int, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
     NodeToLitMap;
 
-// What the driver knows about a conjunct's content: whether it contains
-// array operations (which decide the refinement machinery), whether it
-// touches the floating-point theory (which decides totalisation and
-// lowering), and whether it carries an opaque whole-array equality (which
-// routes the entire check-sat through the extensionality block). All
-// node-local, permanent properties.
+// What the driver knows about a conjunct's content: whether its source DAG
+// contains array operations, whether its prepared form contains them (which
+// decides the refinement machinery), whether it touches floating point
+// (which decides totalisation and lowering), and whether it carries an opaque
+// whole-array equality (which routes the entire check-sat through the
+// extensionality block). All node-local, permanent properties.
 struct Fragment
 {
+  bool sourceArrays;
   bool arrays;
   bool fp;
   bool arrayEq;
@@ -1829,22 +1830,24 @@ struct IncrementalSolver::Impl
   // saved per-solve re-descent dominates (the issue #483 KLEE files, 36%
   // and 19% faster at ~11k variables), while on large instances the kept
   // trail suppresses the fresh restarts the search needs. Floating point is
-  // a useful early-session predictor of that phase-sensitive class, but a
-  // late transition is ambiguous: some Vector sessions profit 2x--6x from
-  // the retained state while many others develop a slower FP tail. Give the
-  // transition a short observation window. A state which remains below the
+  // a useful early-session predictor of that phase-sensitive class. A late
+  // transition is more specific: source array+FP Vector sessions benefit
+  // from a short observation window and eventual retirement, while the
+  // corresponding array-free BVFP sessions recover several solves by
+  // keeping their established trail. A state which remains below the
   // ~11k-variable class where reuse first measured useful is cheap to
-  // rebuild; a growing state is kept until trail and inprobing retirement can
-  // share the existing 20k-variable rebuild boundary. Substantial carried
-  // refinement state is protected until the independent size belt. These
-  // are measured policy boundaries; none changes semantics.
+  // rebuild; a growing array state is kept until trail and inprobing
+  // retirement can share the existing 20k-variable rebuild boundary.
+  // Substantial carried refinement state is protected until the independent
+  // size belt. These are measured policy boundaries; none changes semantics.
   bool trailReuseAllowed;
   static const unsigned long trailReuseVarLimit = 100000;
   static const size_t trailReuseFpRetireSolves = 7;
-  static const size_t trailReuseLateFpProbeSolves = 3;
+  static const size_t trailReuseLateArrayFpProbeSolves = 3;
   static const unsigned long trailReuseEstablishedVarFloor = 10000;
   static const uint64_t trailReuseRefinementClauseFloor = 500;
-  size_t lateFpSolvesWithTrail = 0;
+  bool sourceArraysSeen = false;
+  size_t lateArrayFpSolvesWithTrail = 0;
   std::vector<int> lastFailedLits;
   size_t lastLevelCount;
 
@@ -1920,6 +1923,13 @@ struct IncrementalSolver::Impl
     {
       const bool same = i < lastStackSeen.size() &&
                         assertionsSMT2[i] == lastStackSeen[i];
+      // This is a session classification, so a source array level remains
+      // evidence after it is popped. Inspect only new/replaced levels: an
+      // unchanged level was already screened on the call where it arrived.
+      // fragment() examines the raw node separately from the FP-prepared
+      // form, preventing totalisation's internal arrays from setting this.
+      if (!sourceArraysSeen && !same)
+        sourceArraysSeen = fragment(assertionsSMT2[i]).sourceArrays;
       levelStableSolves[i] = same ? levelStableSolves[i] + 1 : 0;
     }
     lastStackSeen = assertionsSMT2;
@@ -2819,6 +2829,7 @@ struct IncrementalSolver::Impl
         bm->has_floating_point_theory && containsFloatingPointTheory(n, bm);
     f.arrayEq =
         bm->UserFlags.enable_array_equality && containsArrayEquality(n);
+    f.sourceArrays = containsArrayOps(n, bm);
 
     // Arrayness must be judged on the form that will be encoded: totalising
     // a partial floating-point operation (fp.to_ubv of a NaN, say) can
@@ -2831,7 +2842,7 @@ struct IncrementalSolver::Impl
     ASTNode basis = n;
     if (f.fp)
       basis = fpContext()->prepare(n);
-    f.arrays = containsArrayOps(basis, bm);
+    f.arrays = basis == n ? f.sourceArrays : containsArrayOps(basis, bm);
 
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
   }
@@ -4195,12 +4206,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Inprobing);
     }
 
-    // Early FP is still strong evidence to start without trail reuse. For a
-    // late transition, observe up to three FP checks before classifying it:
-    // retire a still-small state, or let a growing state reach the existing
+    // Early FP is still strong evidence to start without trail reuse. The
+    // ambiguous late-transition policy is specific to source array+FP
+    // sessions: observe up to three FP checks before classifying one, then
+    // retire a still-small state or let a growing state reach the existing
     // inprobing boundary so both configuration changes cost one rebuild.
-    // Refinement-heavy state gets the old size belt instead; its targeted
-    // losses came specifically from discarding useful refined search state.
+    // Array-free QF_BVFP retains its established trail; applying the array
+    // policy there lost five measured solves. Arrays introduced internally by
+    // FP totalisation do not change that classification. Refinement-heavy
+    // array state gets the old size belt instead.
     if (impl->trailReuseAllowed)
     {
       bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
@@ -4220,15 +4234,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             impl->engagedSolves > Impl::inprobingRetireSolves &&
             impl->solver->nVars() >= Impl::inprobingRetireMinVars;
         const bool smallLateFpState =
-            impl->lateFpSolvesWithTrail >=
-                Impl::trailReuseLateFpProbeSolves &&
+            impl->lateArrayFpSolvesWithTrail >=
+                Impl::trailReuseLateArrayFpProbeSolves &&
             impl->solver->nVars() < Impl::trailReuseEstablishedVarFloor;
 
         retire = earlyFp ||
-                 (!refinementHeavy &&
+                 (impl->sourceArraysSeen && !refinementHeavy &&
                   (canRetireInprobingWithTrail || smallLateFpState));
-        if (!retire)
-          impl->lateFpSolvesWithTrail++;
+        if (!retire && impl->sourceArraysSeen)
+          impl->lateArrayFpSolvesWithTrail++;
       }
       if (retire)
       {
