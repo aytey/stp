@@ -51,6 +51,8 @@ THE SOFTWARE.
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/Flatten.h"
 #include "stp/Simplifier/Rewriting.h"
+#include "stp/Simplifier/NodeDomainAnalysis.h"
+#include "stp/Simplifier/StrengthReduction.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
 #include <cstdlib>
@@ -316,6 +318,23 @@ bool teardownOk(Context& c, unsigned depth)
   return true;
 }
 
+// StrengthReduction::visit, which rebuilds the DAG applying whatever the
+// domain analyses prove about each node.
+bool strengthReductionOk(Context& c, unsigned depth)
+{
+  const ASTNode top = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(top);
+
+  StrengthReduction sr(c.nf, &c.mgr.UserFlags);
+  NodeDomainAnalysis nda(&c.mgr);
+  const ASTNode result = sr.topLevel(top, nda);
+  c.roots.push_back(result);
+
+  // Nothing about a chain of unconstrained symbols is reducible, so the
+  // pass has to hand back what it was given.
+  return result == top;
+}
+
 /* Control cases: the same properties on a chain shallow enough for the
    recursive implementations. These pass today, so a deep case failing is
    about stack depth and nothing else. */
@@ -359,6 +378,12 @@ TEST(DeepDag, shallow_teardown)
 {
   Context c;
   EXPECT_TRUE(teardownOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_strength_reduction)
+{
+  Context c;
+  EXPECT_TRUE(strengthReductionOk(c, SHALLOW));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
@@ -409,6 +434,11 @@ TEST(DeepDag, deep_substitution)
 TEST(DeepDag, deep_teardown)
 {
   EXPECT_STACK_SAFE(teardownOk, 50000);
+}
+
+TEST(DeepDag, deep_strength_reduction)
+{
+  EXPECT_STACK_SAFE(strengthReductionOk, 20000);
 }
 
 } // namespace
