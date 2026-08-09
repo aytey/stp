@@ -241,3 +241,19 @@ if(BUILD_EXECUTABLES AND PYTHON_EXECUTABLE)
       TIMEOUT 1800
     )
 endif()
+
+# -----------------------------------------------------------------------------
+
+# A pass that calls itself once per level of the input runs out of stack on
+# input deep enough. Ten did. This lists the ones that remain and fails when
+# a new one appears without a reason beside it.
+if(PYTHON_EXECUTABLE)
+    add_test(
+      NAME ast-recursion-allowlist
+      COMMAND ${PYTHON_EXECUTABLE}
+              ${PROJECT_SOURCE_DIR}/scripts/check-ast-recursion.py
+              ${PROJECT_SOURCE_DIR}/scripts/ast-recursion-allowlist.txt
+              ${PROJECT_SOURCE_DIR}/lib ${PROJECT_SOURCE_DIR}/include
+    )
+    set_tests_properties(ast-recursion-allowlist PROPERTIES TIMEOUT 300)
+endif()
