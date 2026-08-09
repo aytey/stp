@@ -117,3 +117,6 @@ AddSTPGTest(ValueSet_Exhaustive_Test.cpp)
 AddSTPGTest(SearchBias_Test.cpp)
 AddSTPGTest(Bva_Test.cpp)
 AddSTPGTest(FdOStream_Test.cpp)
+# Deeply nested input must not put the AST-depth-recursive traversals through
+# the call stack. Each case runs in a forked child on a 1 MiB stack.
+AddSTPGTest(DeepDag_Test.cpp)
