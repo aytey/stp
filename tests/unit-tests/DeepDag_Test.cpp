@@ -52,7 +52,13 @@ THE SOFTWARE.
 #include "stp/Simplifier/Flatten.h"
 #include "stp/Simplifier/Rewriting.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
+#include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/Printer/printers.h"
+#include "stp/Simplifier/CommonSubSum.h"
+#include "stp/Simplifier/PropagateEqualities.h"
 #include "stp/Simplifier/Simplifier.h"
+#include "stp/Simplifier/UseITEContext.h"
+#include "stp/Simplifier/VariablesInExpression.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
 #include "stp/Simplifier/StrengthReduction.h"
@@ -60,6 +66,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/constantBitP/Dependencies.h"
 #include <cstdlib>
 #include <gtest/gtest.h>
+#include <sstream>
 #include <string>
 
 #ifndef _WIN32
@@ -405,6 +412,114 @@ bool bitBlastOk(Context& c, unsigned depth)
   return nm.totalNumberOfNodes() >= depth;
 }
 
+// The passes below are still recursive. Each case here was confirmed to
+// fail on a wall of the frames named in its comment, and is enabled by the
+// commit that converts that pass.
+// Simplifier::SimplifyTerm -- dies in simplify_term_switch.
+bool simplifyTermOk(Context& c, unsigned depth)
+{
+  const ASTNode t = c.chain(BVXOR, depth);
+  c.roots.push_back(t);
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  return simp.SimplifyTerm(t).GetValueWidth() == 8;
+}
+
+// UseITEContext::visit. Carries a context set down, so neither the walker
+// nor priming fits: the same node under two contexts has two answers.
+bool useITEContextOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  UseITEContext u(&c.mgr);
+  return u.topLevel(f).GetKind() != UNDEFINED;
+}
+
+// NodeDomainAnalysis::buildMap.
+bool nodeDomainOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  NodeDomainAnalysis nda(&c.mgr);
+  nda.buildMap(f);
+  return true;
+}
+
+// VariablesInExpression::getSymbol.
+bool varsInExpressionOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  VariablesInExpression vie;
+  bool destruct = false;
+  ASTNodeSet* v = vie.SetofVarsSeenInTerm(f, destruct);
+  const bool ok = v != nullptr;
+  if (destruct) delete v;
+  return ok;
+}
+
+// PropagateEqualities::buildCandidateList -- a void pre-order walk with a
+// visited set, so a worklist is enough.
+bool propagateEqualitiesOk(Context& c, unsigned depth)
+{
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("q0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string nm = "q" + std::to_string(i);
+    f = c.hf->CreateNode(AND, c.hf->CreateNode(EQ, c.mgr.CreateSymbol(nm.c_str(), 0, 8),
+                                               c.mgr.CreateZeroConst(8)), f);
+  }
+  c.roots.push_back(f);
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  PropagateEqualities pe(&simp, c.nf, &c.mgr);
+  return pe.topLevel(f).GetKind() != UNDEFINED;
+}
+
+// CommonSubSum::topLevel. Already stack-safe; here to keep it that way.
+bool commonSubSumOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVPLUS, depth));
+  c.roots.push_back(f);
+  CommonSubSum css(&c.mgr, c.nf);
+  ASTNode g = f;
+  return css.topLevel(g).GetKind() != UNDEFINED;
+}
+
+// ArrayTransformer::TransformTerm.
+bool arrayTransformerOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer at(&c.mgr, &simp);
+  return at.TransformFormula_TopLevel(f).GetKind() != UNDEFINED;
+}
+
+// The LISP printer, which is what operator<< on a node uses -- so a deep
+// node cannot even be printed, including from an error path.
+bool printerLispOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  std::ostringstream os;
+  os << f;
+  return os.str().size() > 0;
+}
+
+// The SMT-LIB2 printer, behind --print-back-SMTLIB2.
+bool printerSMTLIB2Ok(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+  std::ostringstream os;
+  printer::SMTLIB2_Print1(os, f, 0, false);
+  return os.str().size() > 0;
+}
+
 /* Control cases: the same properties on a chain shallow enough for the
    recursive implementations. These pass today, so a deep case failing is
    about stack depth and nothing else. */
@@ -543,5 +658,15 @@ TEST(DeepDag, deep_bit_blast_term)
 {
   EXPECT_STACK_SAFE(bitBlastTermOk, 20000);
 }
+
+TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }
+TEST(DeepDag, DISABLED_deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
+TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
+TEST(DeepDag, DISABLED_deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
+TEST(DeepDag, DISABLED_deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }
+TEST(DeepDag, DISABLED_deep_propagate_equalities) { EXPECT_STACK_SAFE(propagateEqualitiesOk, 20000); }
+TEST(DeepDag, DISABLED_deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }
+TEST(DeepDag, DISABLED_deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
+TEST(DeepDag, DISABLED_deep_printer_smtlib2)    { EXPECT_STACK_SAFE(printerSMTLIB2Ok, 20000); }
 
 } // namespace
