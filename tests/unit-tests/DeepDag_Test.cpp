@@ -401,7 +401,7 @@ TEST(DeepDag, deep_flatten)
   EXPECT_STACK_SAFE(flattenIdentityOk, 10000);
 }
 
-TEST(DeepDag, DISABLED_deep_substitution)
+TEST(DeepDag, deep_substitution)
 {
   EXPECT_STACK_SAFE(substitutionOk, 20000);
 }
