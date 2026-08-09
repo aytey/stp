@@ -52,6 +52,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/Flatten.h"
 #include "stp/Simplifier/Rewriting.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
+#include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/StrengthReduction.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
@@ -335,6 +336,33 @@ bool strengthReductionOk(Context& c, unsigned depth)
   return result == top;
 }
 
+// Simplifier::SimplifyFormula, which recurses mutually with
+// SimplifyAndOrFormula and SimplifyTerm. Not converted: unlike the walks
+// above it is recursion scattered through several large functions, and its
+// memo is keyed on the node together with pushNeg. This pins the defect
+// until it is.
+bool simplifyOk(Context& c, unsigned depth)
+{
+  // A chain of ANDs: SimplifyFormula hands each one to
+  // SimplifyAndOrFormula, which recurses back for every operand.
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("s0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string name = "s" + std::to_string(i);
+    const ASTNode leaf = c.hf->CreateNode(
+        EQ, c.mgr.CreateSymbol(name.c_str(), 0, 8), c.mgr.CreateZeroConst(8));
+    f = c.hf->CreateNode(AND, leaf, f);
+  }
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode result = simp.SimplifyFormula_TopLevel(f, false);
+  c.roots.push_back(result);
+  return result.GetKind() == AND || result.GetKind() == EQ;
+}
+
 /* Control cases: the same properties on a chain shallow enough for the
    recursive implementations. These pass today, so a deep case failing is
    about stack depth and nothing else. */
@@ -384,6 +412,12 @@ TEST(DeepDag, shallow_strength_reduction)
 {
   Context c;
   EXPECT_TRUE(strengthReductionOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_simplify)
+{
+  Context c;
+  EXPECT_TRUE(simplifyOk(c, SHALLOW));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
@@ -439,6 +473,13 @@ TEST(DeepDag, deep_teardown)
 TEST(DeepDag, deep_strength_reduction)
 {
   EXPECT_STACK_SAFE(strengthReductionOk, 20000);
+}
+
+// Simplifier::SimplifyFormula is still recursive: enabled by the commit that
+// converts it.
+TEST(DeepDag, DISABLED_deep_simplify)
+{
+  EXPECT_STACK_SAFE(simplifyOk, 20000);
 }
 
 } // namespace
