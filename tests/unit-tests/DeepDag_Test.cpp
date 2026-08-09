@@ -351,7 +351,7 @@ TEST(DeepDag, deep_flatten_share_count)
   EXPECT_STACK_SAFE(flattenShareCountOk, 100000);
 }
 
-TEST(DeepDag, DISABLED_deep_flatten)
+TEST(DeepDag, deep_flatten)
 {
   EXPECT_STACK_SAFE(flattenIdentityOk, 10000);
 }
