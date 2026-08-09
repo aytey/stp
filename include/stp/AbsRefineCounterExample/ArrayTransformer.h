@@ -98,6 +98,8 @@ private:
    ****************************************************************/
 
   ASTNode TransformTerm(const ASTNode& inputterm);
+  ASTNode finishTransformTerm(const ASTNode& term, const ASTNode& result);
+  bool transformTermSpecial(const ASTNode& term, ASTNode& out);
   void assertTransformPostConditions(const ASTNode& term, ASTNodeSet& visited);
 
   ASTNode TransformArrayRead(const ASTNode& term);

@@ -35,6 +35,7 @@ THE SOFTWARE.
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <deque>
 
 namespace stp
 {
@@ -315,7 +316,37 @@ ASTNode ArrayTransformer::TransformFormula(const ASTNode& simpleForm)
   return result;
 }
 
-ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
+// The tail every arm of TransformTerm shares.
+ASTNode ArrayTransformer::finishTransformTerm(const ASTNode& term,
+                                              const ASTNode& result)
+{
+  if (term.Degree() > 0)
+    (*TransformMap)[term] = result;
+  if (term.GetValueWidth() != result.GetValueWidth())
+    FatalError("TransformTerm: "
+               "result and input terms are of different length",
+               result);
+  if (term.GetIndexWidth() != result.GetIndexWidth())
+  {
+    std::cerr << "TransformTerm: input term is : " << term << std::endl;
+    FatalError("TransformTerm: "
+               "result & input terms have different index length",
+               result);
+  }
+  return result;
+}
+
+// Everything TransformTerm does except the last arm of its switch, the one
+// that transforms a term's children and rebuilds it. True when `out` is the
+// answer.
+//
+// The kinds here reach other nodes in ways of their own: READ hands over to
+// TransformArrayRead, and ITE transforms its condition and then only the
+// branch that survives it, telling the extensionality context which branch
+// it dropped. Their nesting is not the input's nesting, and they are left
+// recursive; it is the last arm, which walks the term's own children, that
+// a deeply nested input runs down.
+bool ArrayTransformer::transformTermSpecial(const ASTNode& term, ASTNode& out)
 {
   assert(TransformMap != NULL);
 
@@ -325,7 +356,10 @@ ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
                k);
   ASTNodeMap::const_iterator iter;
   if ((iter = TransformMap->find(term)) != TransformMap->end())
-    return iter->second;
+  {
+    out = iter->second;
+    return true;
+  }
 
   ASTNode result;
   switch (k)
@@ -375,43 +409,93 @@ ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
       break;
     }
     default:
-    {
-      const ASTChildren c = term.GetChildren();
-      auto it = c.begin();
-      auto itend = c.end();
-      const unsigned width = term.GetValueWidth();
-      const unsigned indexwidth = term.GetIndexWidth();
-      ASTVec o;
-      o.reserve(c.size());
-      for (; it != itend; it++)
-      {
-        o.push_back(TransformTerm(*it));
-      }
-
-      if (c != o)
-      {
-        result = nf->CreateArrayTerm(k, indexwidth, width, o);
-      }
-      else
-        result = term;
-    }
-    break;
+      return false; // the walk below.
   }
 
-  if (term.Degree() > 0)
-    (*TransformMap)[term] = result;
-  if (term.GetValueWidth() != result.GetValueWidth())
-    FatalError("TransformTerm: "
-               "result and input terms are of different length",
-               result);
-  if (term.GetIndexWidth() != result.GetIndexWidth())
+  out = finishTransformTerm(term, result);
+  return true;
+}
+
+// Transforming a term transforms its children, so a term nested as deeply as
+// the input takes the stack with it. The frames live on the heap instead.
+// See DeepDag_Test.cpp.
+ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
+{
+  ASTNode result;
+  if (transformTermSpecial(term, result))
+    return result;
+
+  // One term's progress through its children.
+  struct Frame
   {
-    std::cerr << "TransformTerm: input term is : " << term << std::endl;
-    FatalError("TransformTerm: "
-               "result & input terms have different index length",
-               result);
+    ASTNode term;
+    ASTVec o;
+    size_t i = 0;
+    bool waiting = false;
+  };
+
+  // A deque, so descending never moves the frame being worked on.
+  std::deque<Frame> stack;
+
+  auto open = [](const ASTNode& n) {
+    Frame f;
+    f.term = n;
+    f.o.reserve(n.Degree());
+    return f;
+  };
+
+  stack.push_back(open(term));
+
+  while (true)
+  {
+    Frame& current = stack.back();
+
+    if (current.waiting)
+    {
+      current.waiting = false;
+      current.o.push_back(result);
+      current.i++;
+    }
+
+    bool descended = false;
+    while (current.i < current.term.Degree())
+    {
+      const ASTNode child = current.term[current.i];
+
+      ASTNode childResult;
+      if (transformTermSpecial(child, childResult))
+      {
+        current.o.push_back(childResult);
+        current.i++;
+        continue;
+      }
+
+      // Nothing above may be read after this push.
+      current.waiting = true;
+      stack.push_back(open(child));
+      descended = true;
+      break;
+    }
+
+    if (descended)
+      continue;
+
+    Frame& done = stack.back();
+    const ASTChildren c = done.term.GetChildren();
+
+    ASTNode built;
+    if (c != done.o)
+      built = nf->CreateArrayTerm(done.term.GetKind(), done.term.GetIndexWidth(),
+                                  done.term.GetValueWidth(), done.o);
+    else
+      built = done.term;
+
+    result = finishTransformTerm(done.term, built);
+    stack.pop_back();
+
+    if (stack.empty())
+      return result;
   }
-  return result;
 }
 
 /* This function transforms Array Reads, Read over Writes, Read over

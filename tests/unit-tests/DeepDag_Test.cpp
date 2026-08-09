@@ -687,7 +687,7 @@ TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContex
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
 TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }
 TEST(DeepDag, deep_propagate_equalities) { EXPECT_STACK_SAFE(propagateEqualitiesOk, 20000); }
-TEST(DeepDag, DISABLED_deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }
+TEST(DeepDag, deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }
 TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
 TEST(DeepDag, DISABLED_deep_printer_smtlib2)    { EXPECT_STACK_SAFE(printerSMTLIB2Ok, 20000); }
 
