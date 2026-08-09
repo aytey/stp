@@ -54,6 +54,89 @@ namespace stp
 // `combine` is a template parameter rather than a std::function so that it
 // inlines: this runs once per node, and an indirect call per node would be a
 // real cost on ordinary shallow input.
+// What primeMemo should do with a node it has reached.
+enum class Walk
+{
+  Descend, // walk this node's children, then hand it to visit
+  Visit,   // hand it to visit without walking its children
+  Skip     // ignore it: already done, or the pass never looks at it
+};
+
+// Fill a memoised pass's table from the bottom up, so that the pass itself
+// stops recursing.
+//
+// The alternative to rewriting a pass as a state machine. A pass that
+// answers from a memo at its first line, and reaches other nodes only by
+// calling itself on their children, will find every child already answered
+// if the table is filled bottom up first -- so its recursion never goes more
+// than one level, whatever the input nests to, and not one line of it has to
+// change. That is worth having for the passes that are too large to restate:
+// BitBlaster::BBTerm dispatches on kind over 450 lines and calls itself from
+// 24 of them.
+//
+// It is only sound where the pass would have visited these nodes anyway, in
+// this order. Three things to check before using it:
+//
+//   * the memo is keyed on the node alone -- not on the node plus a flag,
+//     the way the Simplifier keys on pushNeg as well;
+//   * the pass has no early exit that skips children, or priming does work
+//     it would not have done, building nodes that do not otherwise exist and
+//     shifting every node number after them;
+//   * `classify` returns Descend for exactly the nodes whose children the
+//     pass looks at, and Skip for the ones it never passes down -- a
+//     constant index operand, say, that its kind ignores.
+//
+// Get those right and the pass sees the same nodes built by the same factory
+// calls in the same sequence. Check it with the generated CNF, which is
+// sensitive to all three.
+//
+// Self-calls on nodes the pass builds itself, rather than on children, are
+// fine and need nothing here: their operands are already primed, so those
+// walks are shallow.
+template <class Classify, class Visit>
+void primeMemo(const ASTNode& top, Classify classify, Visit visit)
+{
+  if (classify(top) != Walk::Descend)
+    return; // the caller does it: there is nothing below to get ahead of.
+
+  struct Frame
+  {
+    ASTNode n;
+    size_t i = 0;
+  };
+
+  // A deque, so descending never moves the frame being worked on.
+  std::deque<Frame> stack;
+  stack.push_back(Frame{top, 0});
+
+  while (!stack.empty())
+  {
+    Frame& current = stack.back();
+
+    if (current.i < current.n.Degree())
+    {
+      const ASTNode child = current.n[current.i++];
+
+      switch (classify(child))
+      {
+        case Walk::Descend:
+          stack.push_back(Frame{child, 0});
+          break;
+        case Walk::Visit:
+          visit(child);
+          break;
+        case Walk::Skip:
+          break;
+      }
+      continue;
+    }
+
+    // Children are all answered, so this returns after one level.
+    visit(current.n);
+    stack.pop_back();
+  }
+}
+
 template <class Cache, class Combine>
 ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
 {

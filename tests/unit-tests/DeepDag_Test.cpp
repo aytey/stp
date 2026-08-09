@@ -362,6 +362,25 @@ bool simplifyOk(Context& c, unsigned depth)
   return result.GetKind() == AND || result.GetKind() == EQ;
 }
 
+// BitBlaster::BBTerm, which reaches its operands by calling itself from 24
+// places across its kind switch. Not restated: its memo is filled from the
+// bottom first instead.
+bool bitBlastTermOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(c.chain(BVXOR, depth));
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  BBNodeManagerAIG nm;
+  BitBlaster bb(&nm, &simp, c.nf, &c.mgr.UserFlags);
+  bb.BBForm(f);
+
+  // Every xor in the chain is 8 bits of AIG, so this cannot pass without
+  // the whole chain having been blasted.
+  return nm.totalNumberOfNodes() >= depth;
+}
+
 // BitBlaster::BBForm, which blasts a formula's operands by calling itself.
 bool bitBlastOk(Context& c, unsigned depth)
 {
@@ -449,6 +468,12 @@ TEST(DeepDag, shallow_bit_blast)
   EXPECT_TRUE(bitBlastOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_bit_blast_term)
+{
+  Context c;
+  EXPECT_TRUE(bitBlastTermOk(c, SHALLOW));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
@@ -512,6 +537,11 @@ TEST(DeepDag, deep_simplify)
 TEST(DeepDag, deep_bit_blast)
 {
   EXPECT_STACK_SAFE(bitBlastOk, 20000);
+}
+
+TEST(DeepDag, deep_bit_blast_term)
+{
+  EXPECT_STACK_SAFE(bitBlastTermOk, 20000);
 }
 
 } // namespace

@@ -285,6 +285,10 @@ class BitBlaster
   void primeFormMemo(const ASTNode& form, BBNodeSet& support);
   bool priming = false;
 
+  // The same for BBTerm, which reaches its operands the same way.
+  void primeTermMemo(const ASTNode& term, BBNodeSet& support);
+  bool primingTerm = false;
+
   bool isConstant(const BBNodeVec& v);
   ASTNode getConstant(const BBNodeVec& v, const ASTNode& n);
 

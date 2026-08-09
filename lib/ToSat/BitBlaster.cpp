@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/constantBitP/FixedBits.h"
 #include "stp/Simplifier/constantBitP/NodeToFixedBitsMap.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
+#include "stp/Util/DagWalk.h"
 #include <cassert>
 #include <deque>
 #include <cmath>
@@ -751,6 +752,20 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
     return it->second;
   }
 
+  if (!primingTerm)
+  {
+    primingTerm = true;
+    primeTermMemo(term, support);
+    primingTerm = false;
+
+    it = BBTermMemo.find(term);
+    if (it != BBTermMemo.end())
+    {
+      updateTerm(term, it->second, support);
+      return it->second;
+    }
+  }
+
   if (uf != NULL && uf->optimize_flag && uf->simplify_during_BB_flag)
   {
     auto it = simplify_during_bb(term, support);
@@ -1277,41 +1292,48 @@ static bool bbFormDescends(const Kind k)
 // the ITE case below blasts into named variables.
 void BitBlaster::primeFormMemo(const ASTNode& form, BBNodeSet& support)
 {
-  if (!bbFormDescends(form.GetKind()))
-    return;
+  primeMemo(
+      form,
+      [this](const ASTNode& n) {
+        if (BBFormMemo.find(n) != BBFormMemo.end())
+          return Walk::Skip; // BBForm would take it from the memo.
+        // Anything else is a formula whose operands are terms, so it is
+        // blasted where it stands: BBTerm's walk, not this one.
+        return bbFormDescends(n.GetKind()) ? Walk::Descend : Walk::Visit;
+      },
+      [this, &support](const ASTNode& n) { BBForm(n, support); });
+}
 
-  struct Frame
-  {
-    ASTNode n;
-    size_t i = 0;
-  };
-
-  // A deque, so pushing never moves the frame being worked on.
-  std::deque<Frame> stack;
-  stack.push_back(Frame{form, 0});
-
-  while (!stack.empty())
-  {
-    Frame& current = stack.back();
-
-    if (current.i < current.n.Degree())
-    {
-      const ASTNode child = current.n[current.i++];
-
-      if (BBFormMemo.find(child) != BBFormMemo.end())
-        continue; // already blasted; BBForm would have taken it from the memo.
-
-      if (bbFormDescends(child.GetKind()))
-        stack.push_back(Frame{child, 0});
-      else
-        BBForm(child, support); // its operands are terms: BBTerm's business.
-      continue;
-    }
-
-    // Operands are all in the memo, so this returns after one level.
-    BBForm(current.n, support);
-    stack.pop_back();
-  }
+// The same for terms. BBTerm reaches its operands by calling itself from 24
+// places across a 450-line switch, so priming is what makes it stack-safe
+// without restating any of it.
+//
+// A constant operand is skipped: the kinds that carry one -- BVEXTRACT's
+// indices, BVSX's width -- never blast it, and blasting it here would put a
+// node in the memo that the pass never asked for. Every other operand is
+// blasted where BBTerm would have blasted it, which for a leaf is at the
+// point its parent reaches it, and for a boolean operand is through BBForm.
+void BitBlaster::primeTermMemo(const ASTNode& term, BBNodeSet& support)
+{
+  primeMemo(
+      term,
+      [this](const ASTNode& n) {
+        if (n.isConstant())
+          return Walk::Skip;
+        if (BBTermMemo.find(n) != BBTermMemo.end())
+          return Walk::Skip;
+        // A boolean operand (an ITE's condition) is BBForm's, and BBForm
+        // primes its own side.
+        if (n.GetType() == BOOLEAN_TYPE)
+          return Walk::Visit;
+        return n.Degree() == 0 ? Walk::Visit : Walk::Descend;
+      },
+      [this, &support](const ASTNode& n) {
+        if (n.GetType() == BOOLEAN_TYPE)
+          BBForm(n, support);
+        else
+          BBTerm(n, support);
+      });
 }
 
 // bit blast a formula (boolean term).  Result is one bit wide,
