@@ -39,10 +39,16 @@ overload looks the same as a recursive walk from here -- which is why each
 allowlist line carries a status and a reason rather than just a name. It is a
 tripwire for review, not a proof.
 
-It under-reports too, and in a way worth knowing about. A function only
-counts if an ASTNode appears in its signature, which keeps the output down to
-something reviewable but misses a walk over a structure *built* from the
-input: VariablesInExpression's Symbols tree and RemoveUnconstrained's
+It under-reports too, in two ways worth knowing about.
+
+It only sees a function that calls *itself*. Two functions that call each
+other once per level are just as unbounded and are invisible here:
+TermToConstTermUsingModel recurses through its own _inner overload and does
+not appear below, though it is where a deep array read now lands.
+
+And a function only counts if an ASTNode appears in its signature, which
+keeps the output down to something reviewable but misses a walk over a
+structure *built* from the input: VariablesInExpression's Symbols tree and RemoveUnconstrained's
 MutableASTNode graph are both as deep as the formula they came from, and
 neither mentions an ASTNode on the way down. Both were found by running a
 pass at depth, not by reading it, and MutableASTNode::propagateUpDirty still

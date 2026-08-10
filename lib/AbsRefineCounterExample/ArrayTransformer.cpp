@@ -171,151 +171,6 @@ void ArrayTransformer::assertTransformPostConditions(const ASTNode& term,
   }
 }
 
-/********************************************************
- * TransformFormula()
- *
- * Get rid of ARRAY read/writes
- ********************************************************/
-ASTNode ArrayTransformer::TransformFormula(const ASTNode& simpleForm)
-{
-  assert(TransformMap != NULL);
-
-  const Kind k = simpleForm.GetKind();
-  if (!(is_Form_kind(k) && BOOLEAN_TYPE == simpleForm.GetType()))
-  {
-    // FIXME: "You have inputted a NON-formula"?
-    FatalError("TransformFormula:"
-               "You have input a NON-formula",
-               simpleForm);
-  }
-
-  ASTNodeMap::const_iterator iter;
-  if ((iter = TransformMap->find(simpleForm)) != TransformMap->end())
-    return iter->second;
-
-  ASTNode result;
-
-  switch (k)
-  {
-    case TRUE:
-    case FALSE:
-    {
-      result = simpleForm;
-      break;
-    }
-    case NOT:
-    {
-      ASTVec c;
-      c.push_back(TransformFormula(simpleForm[0]));
-      result = nf->CreateNode(NOT, c);
-      break;
-    }
-    case BOOLEXTRACT:
-    {
-      ASTVec c;
-      c.push_back(TransformTerm(simpleForm[0]));
-      c.push_back(simpleForm[1]);
-      result = nf->CreateNode(BOOLEXTRACT, c);
-      break;
-    }
-    case BVLT:
-    case BVLE:
-    case BVGT:
-    case BVGE:
-    case BVSLT:
-    case BVSLE:
-    case BVSGT:
-    case BVSGE:
-    case BVUADDO:
-    case BVSADDO:
-    case BVUMULO:
-    case BVSMULO:
-    case BVUSUBO:
-    case BVSSUBO:
-    {
-      ASTVec c;
-      c.push_back(TransformTerm(simpleForm[0]));
-      c.push_back(TransformTerm(simpleForm[1]));
-      result = nf->CreateNode(k, c);
-      break;
-    }
-    case EQ:
-    {
-      ASTNode term1 = TransformTerm(simpleForm[0]);
-      ASTNode term2 = TransformTerm(simpleForm[1]);
-      if (bm->UserFlags.optimize_flag)
-        result = simp->CreateSimplifiedEQ(term1, term2);
-      else
-        result = nf->CreateNode(EQ, term1, term2);
-      break;
-    }
-    case AND: // These could shortcut. Not sure if the extra effort is
-              // justified.
-    case OR:
-    case NAND:
-    case NOR:
-    case IFF:
-    case XOR:
-    case ITE:
-    case IMPLIES:
-    {
-      ASTVec vec;
-      vec.reserve(simpleForm.Degree());
-
-      for (auto it = simpleForm.begin(),
-                                  itend = simpleForm.end();
-           it != itend; it++)
-      {
-        vec.push_back(TransformFormula(*it));
-      }
-
-      result = nf->CreateNode(k, vec);
-      break;
-    }
-    case FP_LEQ:
-    case FP_LT:
-    case FP_GEQ:
-    case FP_GT:
-    case FP_EQ:
-    case FP_ISNORMAL:
-    case FP_ISSUBNORMAL:
-    case FP_ISZERO:
-    case FP_ISINFINITE:
-    case FP_ISNAN:
-    case FP_ISNEGATIVE:
-    case FP_ISPOSITIVE:
-    case FP_SMT_EQ:
-    {
-      ASTVec vec;
-      vec.reserve(simpleForm.Degree());
-
-      for (auto it = simpleForm.begin(), itend = simpleForm.end(); it != itend;
-           it++)
-      {
-        vec.push_back(TransformTerm(*it));
-      }
-
-      result = nf->CreateNode(k, vec);
-      break;
-    }
-    default:
-    {
-      if (k == SYMBOL && BOOLEAN_TYPE == simpleForm.GetType())
-        result = simpleForm;
-      else
-      {
-        FatalError("TransformFormula: Illegal kind: ", ASTUndefined, k);
-      }
-      break;
-    }
-  }
-
-  assert(!result.IsNull());
-  if (simpleForm.Degree() > 0)
-    (*TransformMap)[simpleForm] = result;
-  return result;
-}
-
 // The tail every arm of TransformTerm shares.
 ASTNode ArrayTransformer::finishTransformTerm(const ASTNode& term,
                                               const ASTNode& result)
@@ -336,496 +191,769 @@ ASTNode ArrayTransformer::finishTransformTerm(const ASTNode& term,
   return result;
 }
 
-// Everything TransformTerm does except the last arm of its switch, the one
-// that transforms a term's children and rebuilds it. True when `out` is the
-// answer.
+// The formula kinds TransformFormula has an arm for. Anything else boolean
+// that is not TRUE, FALSE or a symbol reaches its default and dies there, so
+// the test happens here, in the same place: after the memo lookup and before
+// any operand is touched.
+static bool transformableFormula(const Kind k)
+{
+  switch (k)
+  {
+    case NOT:
+    case BOOLEXTRACT:
+    case BVLT:
+    case BVLE:
+    case BVGT:
+    case BVGE:
+    case BVSLT:
+    case BVSLE:
+    case BVSGT:
+    case BVSGE:
+    case BVUADDO:
+    case BVSADDO:
+    case BVUMULO:
+    case BVSMULO:
+    case BVUSUBO:
+    case BVSSUBO:
+    case EQ:
+    case AND:
+    case OR:
+    case NAND:
+    case NOR:
+    case IFF:
+    case XOR:
+    case ITE:
+    case IMPLIES:
+    case FP_LEQ:
+    case FP_LT:
+    case FP_GEQ:
+    case FP_GT:
+    case FP_EQ:
+    case FP_ISNORMAL:
+    case FP_ISSUBNORMAL:
+    case FP_ISZERO:
+    case FP_ISINFINITE:
+    case FP_ISNAN:
+    case FP_ISNEGATIVE:
+    case FP_ISPOSITIVE:
+    case FP_SMT_EQ:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// What a formula's operand is transformed as. The connectives take formulas,
+// the comparisons and the floating-point predicates take terms, and
+// BOOLEXTRACT is the one kind that carries an operand through untouched --
+// its bit index.
+enum FormulaOperand
+{
+  OperandFormula,
+  OperandTerm,
+  OperandAsIs
+};
+
+static FormulaOperand formulaOperand(const Kind k, const size_t i)
+{
+  switch (k)
+  {
+    case NOT:
+    case AND:
+    case OR:
+    case NAND:
+    case NOR:
+    case IFF:
+    case XOR:
+    case ITE:
+    case IMPLIES:
+      return OperandFormula;
+    case BOOLEXTRACT:
+      return i == 0 ? OperandTerm : OperandAsIs;
+    default:
+      return OperandTerm;
+  }
+}
+
+// Where one node's transform has got to.
 //
-// The kinds here reach other nodes in ways of their own: READ hands over to
-// TransformArrayRead, and ITE transforms its condition and then only the
-// branch that survives it, telling the extensionality context which branch
-// it dropped. Their nesting is not the input's nesting, and they are left
-// recursive; it is the last arm, which walks the term's own children, that
-// a deeply nested input runs down.
-bool ArrayTransformer::transformTermSpecial(const ASTNode& term, ASTNode& out)
+// The three functions this replaces called each other once per level of the
+// input -- a formula's operands through TransformTerm, a term's condition
+// back through TransformFormula, a read's index and the array under it
+// through both -- so they are one walk with its frames on the heap rather
+// than three sets of call frames. See DeepDag_Test.cpp.
+//
+// `job` says which of the three a frame is running and `phase` where in it,
+// because most of them suspend at more than one point. Everything else here
+// was a local of the function it came from, kept because it has to survive
+// the suspension.
+struct ArrayTransformer::Frame
+{
+  enum Job
+  {
+    Formula,
+    Term,
+    Read
+  };
+
+  enum Phase
+  {
+    Start,
+    Operands,       // a formula's operands, or a term's own children
+    TermIteCond,    // ITE term: waiting for the condition
+    TermIteOnly,    // ... for the one branch the condition left
+    TermIteThen,    // ... for the then-branch, both surviving
+    TermIteElse,    // ... for the else-branch
+    TermRead,       // READ term: waiting for the array-read transform
+    ReadIndex,      // array read: waiting for the read index
+    ReadWriteIndex, // read over write: waiting for the write index
+    ReadWriteVal,   // ... for the written value
+    ReadPushedIn,   // ... for the read pushed under the write
+    ReadIteCond,    // read over ITE: waiting for the condition
+    ReadIteOnly,    // ... for the one branch the condition left
+    ReadIteThen,    // ... for the then-read, both surviving
+    ReadIteElse     // ... for the else-read
+  };
+
+  Job job;
+  Phase phase = Start;
+  ASTNode n;
+
+  ASTVec parts;        // operands transformed so far
+  size_t i = 0;        // the operand being worked on
+  bool waiting = false; // an operand is being transformed below
+
+  // Locals that outlive one of their function's suspension points.
+  ASTNode readIndex;
+  ASTNode writeIndex;
+  ASTNode writeVal;
+  ASTNode cond;
+  ASTNode thn;
+  ASTNode els;
+
+  Frame(Job j, const ASTNode& node) : job(j), n(node)
+  {
+    parts.reserve(node.Degree());
+  }
+};
+
+// TransformFormula, TransformTerm and TransformArrayRead, walked together
+// with their frames on the heap. Everything the three did is here in the
+// order they did it: the same memo reads and writes, the same node-factory
+// calls, and the same decisions about which operand is transformed at all --
+// which matters most in the two places that transform only the branch of an
+// if-then-else that its condition leaves alive, and tell the extensionality
+// context about the one they dropped.
+ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 {
   assert(TransformMap != NULL);
 
-  const Kind k = term.GetKind();
-  if (!is_Term_kind(k))
-    FatalError("TransformTerm: Illegal kind: You have input a nonterm:", term,
-               k);
-  ASTNodeMap::const_iterator iter;
-  if ((iter = TransformMap->find(term)) != TransformMap->end())
-  {
-    out = iter->second;
-    return true;
-  }
-
   ASTNode result;
-  switch (k)
-  {
-    case SYMBOL:
-    case BVCONST:
-    {
-      result = term;
-      break;
-    }
-    case WRITE:
-      FatalError("TransformTerm: this kind is not supported", term);
-      break;
-    case READ:
-      result = TransformArrayRead(term);
-      break;
-    case ITE:
-    {
-      ASTNode cond = term[0];
-      ASTNode thn = term[1];
-      ASTNode els = term[2];
-      cond = TransformFormula(cond);
-      if (ASTTrue == cond)
-      {
-        ExtensionalityContext* ext = bm->getExtensionalityIfAny();
-        if (ext != NULL && ext->activeInSolve())
-          ext->noteEliminatedReadSubtree(els);
-        result = TransformTerm(thn);
-      }
-      else if (ASTFalse == cond)
-      {
-        ExtensionalityContext* ext = bm->getExtensionalityIfAny();
-        if (ext != NULL && ext->activeInSolve())
-          ext->noteEliminatedReadSubtree(thn);
-        result = TransformTerm(els);
-      }
-      else
-      {
-        thn = TransformTerm(thn);
-        els = TransformTerm(els);
-        if (bm->UserFlags.optimize_flag)
-          result = simp->CreateSimplifiedTermITE(cond, thn, els);
-        else
-          result = nf->CreateTerm(ITE, thn.GetValueWidth(), cond, thn, els);
-      }
-      assert(result.GetIndexWidth() == term.GetIndexWidth());
-      break;
-    }
-    default:
-      return false; // the walk below.
-  }
 
-  out = finishTransformTerm(term, result);
-  return true;
-}
-
-// Transforming a term transforms its children, so a term nested as deeply as
-// the input takes the stack with it. The frames live on the heap instead.
-// See DeepDag_Test.cpp.
-ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
-{
-  ASTNode result;
-  if (transformTermSpecial(term, result))
-    return result;
-
-  // One term's progress through its children.
-  struct Frame
-  {
-    ASTNode term;
-    ASTVec o;
-    size_t i = 0;
-    bool waiting = false;
-  };
-
-  // A deque, so descending never moves the frame being worked on.
+  // A deque, so descending never moves the frames above it: the reference
+  // each step holds stays valid across a push.
   std::deque<Frame> stack;
 
-  auto open = [](const ASTNode& n) {
-    Frame f;
-    f.term = n;
-    f.o.reserve(n.Degree());
-    return f;
-  };
-
-  stack.push_back(open(term));
-
-  while (true)
-  {
-    Frame& current = stack.back();
-
-    if (current.waiting)
+  // Ask for the transform of `n`. Either the answer needs no frame -- it
+  // lands in `result`, exactly as the recursive version returned it without
+  // descending -- or a frame is pushed and the walk goes below it.
+  auto want = [&](const Frame::Job job, const ASTNode& n) -> bool {
+    if (job == Frame::Read)
     {
-      current.waiting = false;
-      current.o.push_back(result);
-      current.i++;
+      if (READ != n.GetKind())
+      {
+        result = n;
+        return false;
+      }
+
+      const ASTNodeMap::const_iterator it = TransformMap->find(n);
+      if (it != TransformMap->end())
+      {
+        result = it->second;
+        return false;
+      }
+
+      stack.push_back(Frame(Frame::Read, n));
+      return true;
     }
 
-    bool descended = false;
-    while (current.i < current.term.Degree())
-    {
-      const ASTNode child = current.term[current.i];
+    const Kind k = n.GetKind();
 
-      ASTNode childResult;
-      if (transformTermSpecial(child, childResult))
+    if (job == Frame::Formula)
+    {
+      if (!(is_Form_kind(k) && BOOLEAN_TYPE == n.GetType()))
       {
-        current.o.push_back(childResult);
-        current.i++;
+        // FIXME: "You have inputted a NON-formula"?
+        FatalError("TransformFormula:"
+                   "You have input a NON-formula",
+                   n);
+      }
+
+      const ASTNodeMap::const_iterator it = TransformMap->find(n);
+      if (it != TransformMap->end())
+      {
+        result = it->second;
+        return false;
+      }
+
+      // TRUE, FALSE and a boolean symbol transform to themselves, and are
+      // not recorded: the map was only ever written for a node with
+      // children.
+      if (k == TRUE || k == FALSE || k == SYMBOL)
+      {
+        result = n;
+        return false;
+      }
+
+      if (!transformableFormula(k))
+        FatalError("TransformFormula: Illegal kind: ", ASTUndefined, k);
+
+      stack.push_back(Frame(Frame::Formula, n));
+      return true;
+    }
+
+    if (!is_Term_kind(k))
+      FatalError("TransformTerm: Illegal kind: You have input a nonterm:", n,
+                 k);
+
+    const ASTNodeMap::const_iterator it = TransformMap->find(n);
+    if (it != TransformMap->end())
+    {
+      result = it->second;
+      return false;
+    }
+
+    if (k == SYMBOL || k == BVCONST)
+    {
+      result = finishTransformTerm(n, n);
+      return false;
+    }
+
+    if (k == WRITE)
+      FatalError("TransformTerm: this kind is not supported", n);
+
+    stack.push_back(Frame(Frame::Term, n));
+    return true;
+  };
+
+  // One step of TransformFormula: collect the operands, then rebuild.
+  auto stepFormula = [&](Frame& f) -> bool {
+    if (f.waiting)
+    {
+      f.waiting = false;
+      f.parts.push_back(result);
+    }
+
+    const Kind k = f.n.GetKind();
+
+    while (f.i < f.n.Degree())
+    {
+      const size_t i = f.i++;
+      const FormulaOperand op = formulaOperand(k, i);
+
+      if (op == OperandAsIs)
+      {
+        f.parts.push_back(f.n[i]);
         continue;
       }
 
       // Nothing above may be read after this push.
-      current.waiting = true;
-      stack.push_back(open(child));
-      descended = true;
-      break;
+      if (want(op == OperandFormula ? Frame::Formula : Frame::Term, f.n[i]))
+      {
+        f.waiting = true;
+        return true;
+      }
+      f.parts.push_back(result);
     }
 
-    if (descended)
-      continue;
-
-    Frame& done = stack.back();
-    const ASTChildren c = done.term.GetChildren();
-
-    ASTNode built;
-    if (c != done.o)
-      built = nf->CreateArrayTerm(done.term.GetKind(), done.term.GetIndexWidth(),
-                                  done.term.GetValueWidth(), done.o);
+    if (k == EQ && bm->UserFlags.optimize_flag)
+      result = simp->CreateSimplifiedEQ(f.parts[0], f.parts[1]);
     else
-      built = done.term;
+      result = nf->CreateNode(k, f.parts);
 
-    result = finishTransformTerm(done.term, built);
-    stack.pop_back();
+    assert(!result.IsNull());
+    if (f.n.Degree() > 0)
+      (*TransformMap)[f.n] = result;
+    return false;
+  };
 
-    if (stack.empty())
-      return result;
-  }
-}
+  // One step of TransformTerm. READ hands over to the array-read job, ITE
+  // transforms its condition and then only the branch that survives it, and
+  // everything else transforms its own children and rebuilds.
+  auto stepTerm = [&](Frame& f) -> bool {
+    const Kind k = f.n.GetKind();
 
-/* This function transforms Array Reads, Read over Writes, Read over
- * ITEs into flattened form.
- *
- * Transform1: Suppose there are two array reads in the input
- * Read(A,i) and Read(A,j) over the same array. Then Read(A,i) is
- * replaced with a symbolic constant, say v1, and Read(A,j) is
- * replaced with the following ITE:
- *
- * ITE(i=j,v1,v2)
- *
- */
-ASTNode ArrayTransformer::TransformArrayRead(const ASTNode& term)
-{
-  assert(TransformMap != NULL);
-
-  const unsigned int width = term.GetValueWidth();
-
-  if (READ != term.GetKind())
-    return term;
-
-  ASTNodeMap::const_iterator iter;
-  if ((iter = TransformMap->find(term)) != TransformMap->end())
-    return iter->second;
-
-  //'term' is of the form READ(arrName, readIndex)
-  const ASTNode& arrName = term[0];
-  const ASTNode& readIndex = TransformTerm(term[1]);
-
-  ASTNode result;
-
-  // With array equality active, every read takes the direct
-  // read-abstraction path: mint or reuse the fresh variable for the
-  // (array, index) pair, whatever the array
-  // term is: variable, write, or if-then-else. Neither its write chain
-  // nor its if-then-else structure is expanded here. The lemmas-on-
-  // demand consistency checker owns read-over-write and read-over-
-  // if-then-else reasoning for these arrays (rules D/U and T-down/T-up),
-  // and it needs the structure and the abstraction variables intact.
-  {
-    ExtensionalityContext* ext = bm->getExtensionalityIfAny();
-    if (ext != NULL && ext->activeInSolve())
+    if (k == READ)
     {
-      if (!ext->arrayGraphFrozen())
-        FatalError("array-equality: the array transform ran before the "
-                   "complete array graph was frozen",
-                   term);
-      if (!ext->ownsArray(arrName))
-        FatalError("array-equality: a transformed read is absent from the "
-                   "complete owned array graph",
-                   term);
-      if (bm->UserFlags.ackermannisation)
-        FatalError("array-equality: eager Ackermannization reached the "
-                   "whole-graph read transform");
-
-      ArrType::const_iterator it;
-      if ((it = arrayToIndexToRead.find(arrName)) != arrayToIndexToRead.end())
+      if (f.phase == Frame::Start)
       {
-        std::map<ASTNode, ArrayRead>::const_iterator it2;
-        if ((it2 = it->second.find(readIndex)) != it->second.end())
-        {
-          if (it2->second.ite != it2->second.symbol)
-            FatalError("array-equality: a whole-graph read reused a legacy "
-                       "nested-ITE transformer row",
-                       term);
-          result = it2->second.ite;
-          ext->noteAbstractedRead(term, readIndex, it2->second.symbol);
-          (*TransformMap)[term] = result;
-          return result;
-        }
+        f.phase = Frame::TermRead;
+        if (want(Frame::Read, f.n))
+          return true;
       }
-
-      ASTNode CurrentSymbol = bm->CreateFreshVariable(
-          term.GetIndexWidth(), term.GetValueWidth(), "ext_read");
-
-      // Same reason as the read-refinement path below: this variable stands
-      // in for the read from here on and is a leaf, so the element format
-      // has to travel with it or the element reaches the blaster as a
-      // formatless bitvector. Setting a zero width (a non-float array) is a
-      // no-op.
-      CurrentSymbol.SetExpWidth(term.GetExpWidth());
-      CurrentSymbol.SetSigWidth(term.GetSigWidth());
-
-      result = CurrentSymbol;
-      arrayToIndexToRead[arrName].insert(
-          make_pair(readIndex, ArrayRead(result, CurrentSymbol)));
-      ext->noteAbstractedRead(term, readIndex, CurrentSymbol);
-      (*TransformMap)[term] = result;
-      return result;
+      result = finishTransformTerm(f.n, result);
+      return false;
     }
-  }
 
-  switch (arrName.GetKind())
-  {
-    case SYMBOL:
+    if (k == ITE)
     {
-      /* input is of the form: READ(A, readIndex)
-       *
-       * output is of the from: A1, if this is the first READ over A
-       *
-       *                        ITE(previous_readIndex=readIndex,A1,A2)
-       *
-       *                        .....
-       */
-
+      if (f.phase == Frame::Start)
       {
-        ArrType::const_iterator it;
-        if ((it = arrayToIndexToRead.find(arrName)) != arrayToIndexToRead.end())
+        f.phase = Frame::TermIteCond;
+        if (want(Frame::Formula, f.n[0]))
+          return true;
+      }
+
+      if (f.phase == Frame::TermIteCond)
+      {
+        f.cond = result;
+        ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+
+        if (ASTTrue == f.cond || ASTFalse == f.cond)
         {
-          std::map<ASTNode, ArrayRead>::const_iterator it2;
-          if ((it2 = it->second.find(readIndex)) != it->second.end())
-          {
-            result = it2->second.ite;
-            break;
-          }
+          const bool takeThen = (ASTTrue == f.cond);
+          if (ext != NULL && ext->activeInSolve())
+            ext->noteEliminatedReadSubtree(takeThen ? f.n[2] : f.n[1]);
+
+          f.phase = Frame::TermIteOnly;
+          if (want(Frame::Term, takeThen ? f.n[1] : f.n[2]))
+            return true;
+        }
+        else
+        {
+          f.phase = Frame::TermIteThen;
+          if (want(Frame::Term, f.n[1]))
+            return true;
         }
       }
 
-      // Make up a new abstract variable. Build symbolic name
-      // corresponding to array read. The symbolic name has 2
-      // components: stringname, and a count
-
-      ASTNode CurrentSymbol =
-          bm->CreateFreshVariable(term.GetIndexWidth(), term.GetValueWidth(),
-                                  "array_" + std::string(arrName.GetName()));
-
-      // Reading an array of floats yields a float. The read node derived its
-      // format from the array, but this fresh variable stands in for the read
-      // from here on and is a leaf, so it has to carry the format itself --
-      // otherwise the element arrives at the blaster as a formatless
-      // bitvector.
-      CurrentSymbol.SetExpWidth(term.GetExpWidth());
-      CurrentSymbol.SetSigWidth(term.GetSigWidth());
-
-      result = CurrentSymbol;
-
-      if (!bm->UserFlags.ackermannisation)
+      if (f.phase == Frame::TermIteOnly)
       {
-        // result is a variable here; it is an ite in the
-        // else-branch
+        assert(result.GetIndexWidth() == f.n.GetIndexWidth());
+        result = finishTransformTerm(f.n, result);
+        return false;
       }
-      else
+
+      if (f.phase == Frame::TermIteThen)
       {
-        // Full Array transform if we're not doing read refinement.
+        f.thn = result;
+        f.phase = Frame::TermIteElse;
+        if (want(Frame::Term, f.n[2]))
+          return true;
+      }
 
-        // list of array-read indices corresponding to arrName, seen while
-        // traversing the AST tree. we need this list to construct the ITEs
-        vector<std::pair<ASTNode, ASTNode>> p = ack_pair[arrName];
+      const ASTNode els = result;
+      if (bm->UserFlags.optimize_flag)
+        result = simp->CreateSimplifiedTermITE(f.cond, f.thn, els);
+      else
+        result = nf->CreateTerm(ITE, f.thn.GetValueWidth(), f.cond, f.thn, els);
 
-        vector<std::pair<ASTNode, ASTNode>>::const_reverse_iterator it2 =
-            p.rbegin();
-        vector<std::pair<ASTNode, ASTNode>>::const_reverse_iterator it2end =
-            p.rend();
-        for (; it2 != it2end; it2++)
+      assert(result.GetIndexWidth() == f.n.GetIndexWidth());
+      result = finishTransformTerm(f.n, result);
+      return false;
+    }
+
+    if (f.waiting)
+    {
+      f.waiting = false;
+      f.parts.push_back(result);
+    }
+
+    while (f.i < f.n.Degree())
+    {
+      const ASTNode child = f.n[f.i++];
+
+      // Nothing above may be read after this push.
+      if (want(Frame::Term, child))
+      {
+        f.waiting = true;
+        return true;
+      }
+      f.parts.push_back(result);
+    }
+
+    const ASTChildren c = f.n.GetChildren();
+    if (c != f.parts)
+      result = nf->CreateArrayTerm(k, f.n.GetIndexWidth(), f.n.GetValueWidth(),
+                                   f.parts);
+    else
+      result = f.n;
+
+    result = finishTransformTerm(f.n, result);
+    return false;
+  };
+
+  /* One step of TransformArrayRead, which transforms Array Reads, Read over
+   * Writes, Read over ITEs into flattened form.
+   *
+   * Transform1: Suppose there are two array reads in the input
+   * Read(A,i) and Read(A,j) over the same array. Then Read(A,i) is
+   * replaced with a symbolic constant, say v1, and Read(A,j) is
+   * replaced with the following ITE:
+   *
+   * ITE(i=j,v1,v2)
+   *
+   */
+  auto stepRead = [&](Frame& f) -> bool {
+    const ASTNode& term = f.n;
+    const unsigned int width = term.GetValueWidth();
+
+    //'term' is of the form READ(arrName, readIndex)
+    const ASTNode& arrName = term[0];
+
+    // The tail every path below this point shares.
+    auto finishRead = [&](const ASTNode& value) {
+      assert(BVTypeCheck(value));
+      assert(!value.IsNull());
+      (*TransformMap)[term] = value;
+      result = value;
+      return false;
+    };
+
+    if (f.phase == Frame::Start)
+    {
+      f.phase = Frame::ReadIndex;
+      if (want(Frame::Term, term[1]))
+        return true;
+    }
+
+    if (f.phase == Frame::ReadIndex)
+    {
+      f.readIndex = result;
+
+      // With array equality active, every read takes the direct
+      // read-abstraction path: mint or reuse the fresh variable for the
+      // (array, index) pair, whatever the array
+      // term is: variable, write, or if-then-else. Neither its write chain
+      // nor its if-then-else structure is expanded here. The lemmas-on-
+      // demand consistency checker owns read-over-write and read-over-
+      // if-then-else reasoning for these arrays (rules D/U and T-down/T-up),
+      // and it needs the structure and the abstraction variables intact.
+      {
+        ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+        if (ext != NULL && ext->activeInSolve())
         {
-          ASTNode cond = simp->CreateSimplifiedEQ(readIndex, it2->first);
-          if (ASTFalse == cond)
-            continue;
+          if (!ext->arrayGraphFrozen())
+            FatalError("array-equality: the array transform ran before the "
+                       "complete array graph was frozen",
+                       term);
+          if (!ext->ownsArray(arrName))
+            FatalError("array-equality: a transformed read is absent from the "
+                       "complete owned array graph",
+                       term);
+          if (bm->UserFlags.ackermannisation)
+            FatalError("array-equality: eager Ackermannization reached the "
+                       "whole-graph read transform");
 
-          if (ASTTrue == cond)
+          ArrType::const_iterator it;
+          if ((it = arrayToIndexToRead.find(arrName)) !=
+              arrayToIndexToRead.end())
           {
-            result = it2->second;
+            std::map<ASTNode, ArrayRead>::const_iterator it2;
+            if ((it2 = it->second.find(f.readIndex)) != it->second.end())
+            {
+              if (it2->second.ite != it2->second.symbol)
+                FatalError("array-equality: a whole-graph read reused a legacy "
+                           "nested-ITE transformer row",
+                           term);
+              result = it2->second.ite;
+              ext->noteAbstractedRead(term, f.readIndex, it2->second.symbol);
+              (*TransformMap)[term] = result;
+              return false;
+            }
+          }
+
+          ASTNode CurrentSymbol = bm->CreateFreshVariable(
+              term.GetIndexWidth(), term.GetValueWidth(), "ext_read");
+
+          // Same reason as the read-refinement path below: this variable
+          // stands in for the read from here on and is a leaf, so the element
+          // format has to travel with it or the element reaches the blaster
+          // as a formatless bitvector. Setting a zero width (a non-float
+          // array) is a no-op.
+          CurrentSymbol.SetExpWidth(term.GetExpWidth());
+          CurrentSymbol.SetSigWidth(term.GetSigWidth());
+
+          result = CurrentSymbol;
+          arrayToIndexToRead[arrName].insert(
+              make_pair(f.readIndex, ArrayRead(result, CurrentSymbol)));
+          ext->noteAbstractedRead(term, f.readIndex, CurrentSymbol);
+          (*TransformMap)[term] = result;
+          return false;
+        }
+      }
+
+      switch (arrName.GetKind())
+      {
+        case SYMBOL:
+        {
+          /* input is of the form: READ(A, readIndex)
+           *
+           * output is of the from: A1, if this is the first READ over A
+           *
+           *                        ITE(previous_readIndex=readIndex,A1,A2)
+           *
+           *                        .....
+           */
+
+          {
+            ArrType::const_iterator it;
+            if ((it = arrayToIndexToRead.find(arrName)) !=
+                arrayToIndexToRead.end())
+            {
+              std::map<ASTNode, ArrayRead>::const_iterator it2;
+              if ((it2 = it->second.find(f.readIndex)) != it->second.end())
+                return finishRead(it2->second.ite);
+            }
+          }
+
+          // Make up a new abstract variable. Build symbolic name
+          // corresponding to array read. The symbolic name has 2
+          // components: stringname, and a count
+
+          ASTNode CurrentSymbol = bm->CreateFreshVariable(
+              term.GetIndexWidth(), term.GetValueWidth(),
+              "array_" + std::string(arrName.GetName()));
+
+          // Reading an array of floats yields a float. The read node derived
+          // its format from the array, but this fresh variable stands in for
+          // the read from here on and is a leaf, so it has to carry the
+          // format itself -- otherwise the element arrives at the blaster as
+          // a formatless bitvector.
+          CurrentSymbol.SetExpWidth(term.GetExpWidth());
+          CurrentSymbol.SetSigWidth(term.GetSigWidth());
+
+          ASTNode symbolResult = CurrentSymbol;
+
+          if (!bm->UserFlags.ackermannisation)
+          {
+            // result is a variable here; it is an ite in the
+            // else-branch
           }
           else
-            result = simp->CreateSimplifiedTermITE(cond, it2->second, result);
+          {
+            // Full Array transform if we're not doing read refinement.
+
+            // list of array-read indices corresponding to arrName, seen while
+            // traversing the AST tree. we need this list to construct the ITEs
+            vector<std::pair<ASTNode, ASTNode>> p = ack_pair[arrName];
+
+            vector<std::pair<ASTNode, ASTNode>>::const_reverse_iterator it2 =
+                p.rbegin();
+            vector<std::pair<ASTNode, ASTNode>>::const_reverse_iterator it2end =
+                p.rend();
+            for (; it2 != it2end; it2++)
+            {
+              ASTNode cond =
+                  simp->CreateSimplifiedEQ(f.readIndex, it2->first);
+              if (ASTFalse == cond)
+                continue;
+
+              if (ASTTrue == cond)
+              {
+                symbolResult = it2->second;
+              }
+              else
+                symbolResult = simp->CreateSimplifiedTermITE(cond, it2->second,
+                                                             symbolResult);
+            }
+
+            ack_pair[arrName].push_back(
+                make_pair(f.readIndex, CurrentSymbol));
+          }
+
+          assert(arrName.GetType() == ARRAY_TYPE);
+          arrayToIndexToRead[arrName].insert(
+              make_pair(f.readIndex, ArrayRead(symbolResult, CurrentSymbol)));
+          return finishRead(symbolResult);
         }
+        case WRITE:
+        {
+          /* The input to this case is: READ((WRITE A i val) j)
+           *
+           * The output of this case is: ITE( (= i j) val (READ A j))
+           */
 
-        ack_pair[arrName].push_back(make_pair(readIndex, CurrentSymbol));
+          /* 1. arrName or term[0] is infact a WRITE(A,i,val) expression
+           *
+           * 2. term[1] is the read-index j
+           *
+           * 3. arrName[0] is the new arrName i.e. A. A can be either a
+           SYMBOL or a nested WRITE. no other possibility
+           *
+           * 4. arrName[1] is the WRITE index i.e. i
+           *
+           * 5. arrName[2] is the WRITE value i.e. val (val can inturn
+           *    be an array read)
+           */
+          f.phase = Frame::ReadWriteIndex;
+          if (want(Frame::Term, arrName[1]))
+            return true;
+          break;
+        }
+        case ITE:
+        {
+          /* READ((ITE cond thn els) j)
+           *
+           * is transformed into
+           *
+           * (ITE cond (READ thn j) (READ els j))
+           */
+
+          // pull out the ite from the read // pushes the read through.
+
+          //(ITE cond thn els)
+          f.phase = Frame::ReadIteCond;
+          if (want(Frame::Formula, arrName[0]))
+            return true;
+          break;
+        }
+        default:
+          FatalError("TransformArray: "
+                     "The READ is NOT over SYMBOL/WRITE/ITE",
+                     term);
+          break;
       }
-
-      assert(arrName.GetType() == ARRAY_TYPE);
-      arrayToIndexToRead[arrName].insert(
-          make_pair(readIndex, ArrayRead(result, CurrentSymbol)));
-      break;
     }
-    case WRITE:
+
+    if (f.phase == Frame::ReadWriteIndex)
     {
-      /* The input to this case is: READ((WRITE A i val) j)
-       *
-       * The output of this case is: ITE( (= i j) val (READ A j))
-       */
+      // Both operands are transformed before the condition is built, as
+      // they were: the factory sees them in that order.
+      f.writeIndex = result;
+      f.phase = Frame::ReadWriteVal;
+      if (want(Frame::Term, arrName[2]))
+        return true;
+    }
 
-      /* 1. arrName or term[0] is infact a WRITE(A,i,val) expression
-       *
-       * 2. term[1] is the read-index j
-       *
-       * 3. arrName[0] is the new arrName i.e. A. A can be either a
-       SYMBOL or a nested WRITE. no other possibility
-       *
-       * 4. arrName[1] is the WRITE index i.e. i
-       *
-       * 5. arrName[2] is the WRITE value i.e. val (val can inturn
-       *    be an array read)
-       */
-
-      ASTNode writeIndex = TransformTerm(arrName[1]);
-      ASTNode writeVal = TransformTerm(arrName[2]);
+    if (f.phase == Frame::ReadWriteVal)
+    {
+      f.writeVal = result;
 
       if (ARRAY_TYPE != arrName[0].GetType())
         FatalError("TransformArray: "
                    "An array write is being attempted on a non-array:",
                    term);
 
-      // if ((SYMBOL == arrName[0].GetKind()
-      //|| WRITE == arrName[0].GetKind()))
-      {
-        ASTNode cond = simp->CreateSimplifiedEQ(writeIndex, readIndex);
-        assert(BVTypeCheck(cond));
+      f.cond = simp->CreateSimplifiedEQ(f.writeIndex, f.readIndex);
+      assert(BVTypeCheck(f.cond));
 
-        // If the condition is true, it saves iteratively transforming through
-        // all the (possibly nested) arrays.
-        if (ASTTrue == cond)
-        {
-          result = writeVal;
-        }
-        else
-        {
-          ASTNode readTerm = nf->CreateTerm(READ, width, arrName[0], readIndex);
-          assert(BVTypeCheck(readTerm));
+      // If the condition is true, it saves iteratively transforming through
+      // all the (possibly nested) arrays.
+      if (ASTTrue == f.cond)
+        return finishRead(f.writeVal);
 
-          // The simplifying node factory may have produced
-          // something that's not a READ.
-          ASTNode readPushedIn = TransformTerm(readTerm);
-          assert(BVTypeCheck(readPushedIn));
+      ASTNode readTerm =
+          nf->CreateTerm(READ, width, arrName[0], f.readIndex);
+      assert(BVTypeCheck(readTerm));
 
-          result = simp->CreateSimplifiedTermITE(cond, writeVal, readPushedIn);
-        }
-      }
-
-// Trevor: I've removed this code because I don't see the advantage in working
-// inside out. i.e. transforming read(write(ite(p,A,B),i,j),k), into
-// read(ite(p,write(A,i,j),write(B,i,j),k). That is bringing up the ite.
-// Without this code it will become: ite(i=k, j, read(ite(p,A,B),k))
-
-#if 0
-          else if (ITE == arrName[0].GetKind())
-            {
-              // pull out the ite from the write // pushes the write
-              // through.
-              ASTNode writeTrue =
-                nf->CreateNode(WRITE, (arrName[0][1]), writeIndex, writeVal);
-              writeTrue.SetIndexWidth(writeIndex.GetValueWidth());
-              writeTrue.SetValueWidth(writeVal.GetValueWidth());
-              assert(ARRAY_TYPE == writeTrue.GetType());
-
-              ASTNode writeFalse = 
-                nf->CreateNode(WRITE, (arrName[0][2]), writeIndex, writeVal);
-              writeFalse.SetIndexWidth(writeIndex.GetValueWidth());
-              writeFalse.SetValueWidth(writeVal.GetValueWidth());
-              assert(ARRAY_TYPE == writeFalse.GetType());
-
-              result =  (writeTrue == writeFalse) ?
-                writeTrue : simp->CreateSimplifiedTermITE(TransformFormula(arrName[0][0]),
-                                              writeTrue, writeFalse);
-              result.SetIndexWidth(writeIndex.GetValueWidth());
-              result.SetValueWidth(writeVal.GetValueWidth());
-              assert(ARRAY_TYPE == result.GetType());
-
-              result = 
-                nf->CreateTerm(READ, writeVal.GetValueWidth(),
-                               result, readIndex);
-              BVTypeCheck(result);
-              result = TransformArrayRead(result);
-            }
-          else
-            FatalError("TransformArray: Write over bad type.");
-#endif
-      break;
+      // The simplifying node factory may have produced
+      // something that's not a READ.
+      f.phase = Frame::ReadPushedIn;
+      if (want(Frame::Term, readTerm))
+        return true;
     }
-    case ITE:
+
+    if (f.phase == Frame::ReadPushedIn)
     {
-      /* READ((ITE cond thn els) j)
-       *
-       * is transformed into
-       *
-       * (ITE cond (READ thn j) (READ els j))
-       */
+      const ASTNode readPushedIn = result;
+      assert(BVTypeCheck(const_cast<ASTNode&>(readPushedIn)));
+      return finishRead(
+          simp->CreateSimplifiedTermITE(f.cond, f.writeVal, readPushedIn));
+    }
 
-      // pull out the ite from the read // pushes the read through.
-
-      //(ITE cond thn els)
-
-      ASTNode cond = arrName[0];
-      cond = TransformFormula(cond);
+    if (f.phase == Frame::ReadIteCond)
+    {
+      f.cond = result;
 
       const ASTNode& thn = arrName[1];
       const ASTNode& els = arrName[2];
 
       //(READ thn j)
-      ASTNode thnRead = nf->CreateTerm(READ, width, thn, readIndex);
+      ASTNode thnRead = nf->CreateTerm(READ, width, thn, f.readIndex);
       assert(BVTypeCheck(thnRead));
 
       //(READ els j)
-      ASTNode elsRead = nf->CreateTerm(READ, width, els, readIndex);
+      ASTNode elsRead = nf->CreateTerm(READ, width, els, f.readIndex);
       assert(BVTypeCheck(elsRead));
 
       /* We try to call TransformTerm only if necessary, because it
        * introduces a new symbol for each read. The amount of work we
        * need to do later is based on the square of the number of symbols.
        */
-      if (ASTTrue == cond)
+      if (ASTTrue == f.cond || ASTFalse == f.cond)
       {
-        result = TransformTerm(thnRead);
-      }
-      else if (ASTFalse == cond)
-      {
-        result = TransformTerm(elsRead);
+        f.phase = Frame::ReadIteOnly;
+        if (want(Frame::Term, (ASTTrue == f.cond) ? thnRead : elsRead))
+          return true;
       }
       else
       {
-        thnRead = TransformTerm(thnRead);
-        elsRead = TransformTerm(elsRead);
-
-        //(ITE cond (READ thn j) (READ els j))
-        result = simp->CreateSimplifiedTermITE(cond, thnRead, elsRead);
+        f.els = elsRead; // built now, transformed after the then-read.
+        f.phase = Frame::ReadIteThen;
+        if (want(Frame::Term, thnRead))
+          return true;
       }
-      break;
     }
-    default:
-      FatalError("TransformArray: "
-                 "The READ is NOT over SYMBOL/WRITE/ITE",
-                 term);
-      break;
-  }
 
-  assert(BVTypeCheck(result));
-  assert(!result.IsNull());
-  (*TransformMap)[term] = result;
-  return result;
+    if (f.phase == Frame::ReadIteOnly)
+      return finishRead(result);
+
+    if (f.phase == Frame::ReadIteThen)
+    {
+      f.thn = result;
+      f.phase = Frame::ReadIteElse;
+      if (want(Frame::Term, f.els))
+        return true;
+    }
+
+    //(ITE cond (READ thn j) (READ els j))
+    return finishRead(simp->CreateSimplifiedTermITE(f.cond, f.thn, result));
+  };
+
+  if (!want(asFormula ? Frame::Formula : Frame::Term, top))
+    return result;
+
+  while (true)
+  {
+    Frame& current = stack.back();
+
+    bool descended = false;
+    switch (current.job)
+    {
+      case Frame::Formula:
+        descended = stepFormula(current);
+        break;
+      case Frame::Term:
+        descended = stepTerm(current);
+        break;
+      case Frame::Read:
+        descended = stepRead(current);
+        break;
+    }
+
+    if (descended)
+      continue;
+
+    stack.pop_back();
+    if (stack.empty())
+      return result;
+  }
+}
+
+/********************************************************
+ * TransformFormula()
+ *
+ * Get rid of ARRAY read/writes
+ ********************************************************/
+ASTNode ArrayTransformer::TransformFormula(const ASTNode& simpleForm)
+{
+  return transform(true, simpleForm);
+}
+
+ASTNode ArrayTransformer::TransformTerm(const ASTNode& term)
+{
+  return transform(false, term);
 }
 
 // Since these arrayreads are being nuked and recorded in the

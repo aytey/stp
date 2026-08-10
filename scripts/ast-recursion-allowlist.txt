@@ -21,7 +21,7 @@
 #              and the line says what breaks it.
 #   unaudited  predates this check. Nobody has looked.
 #
-# Being on this list is NOT a claim that a function is safe: 54 of the 76
+# Being on this list is NOT a claim that a function is safe: 54 of the 74
 # are "unaudited", and at least one of those turned out to crash on a valid
 # query. Read the status, not the presence of the name.
 #
@@ -30,9 +30,7 @@
 
 AIGSimplifyPropositionalCore::convert: unaudited: predates this check
 AIGSimplifyPropositionalCore::theoryToFresh: unaudited: predates this check
-AbsRefine_CounterExample::ComputeFormulaUsingModel: unaudited: predates this check
-ArrayTransformer::TransformArrayRead: by-choice: input-depth recursive: it transforms a READ's index by calling TransformTerm, and nested selects crash between 10,000 and 20,000 deep at the ordinary 8 MiB; conversion pending
-ArrayTransformer::TransformFormula: by-choice: input-depth recursive on its AND/OR/NOT operands; survives in practice only because the simplifier flattens a conjunction first; conversion pending
+AbsRefine_CounterExample::ComputeFormulaUsingModel: by-choice: input-depth recursive, on by default; a 30,000-deep alternation of NOT and AND crashes here once the passes ahead of it stop crashing. So does TermToConstTermUsingModel beside it, which this check cannot see: it recurses through its _inner overload rather than into itself
 ArrayTransformer::assertTransformPostConditions: unaudited: predates this check
 BVTypeCheckRecursive: unaudited: predates this check
 BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (primeMemos)
@@ -90,7 +88,7 @@ UseITEContext::visit: by-choice: input-depth recursive, opt-in (--ite-context-si
 VariablesInExpression::SetofVarsSeenInTerm: unaudited: predates this check
 VariablesInExpression::VarSeenInTerm: safe: overload forwarding; the Symbols walk it calls is iterative
 VariablesInExpression::getSymbol: bounded: graph primed before it runs (primeSymbols)
-WorkList::addToWorklist: unaudited: predates this check
+WorkList::addToWorklist: by-choice: input-depth recursive, on by default; it seeds constant-bit propagation by walking the DAG, and a 200,000-deep chain under an if-then-else condition crashes here
 buildListOfSymbols: unaudited: predates this check
 collectArrayIndexSorts: unaudited: predates this check
 collectDag: unaudited: predates this check
