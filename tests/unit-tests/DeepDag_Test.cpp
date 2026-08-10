@@ -56,6 +56,7 @@ THE SOFTWARE.
 #include "stp/Printer/printers.h"
 #include "stp/Simplifier/CommonSubSum.h"
 #include "stp/Simplifier/PropagateEqualities.h"
+#include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/UseITEContext.h"
 #include "stp/Simplifier/VariablesInExpression.h"
@@ -486,6 +487,37 @@ bool propagateEqualitiesOk(Context& c, unsigned depth)
   return pe.topLevel(f).GetKind() != UNDEFINED;
 }
 
+// MutableASTNode::build, the up-and-down graph unconstrained-variable
+// elimination runs on. Not an AST walk by signature -- it hands back a
+// MutableASTNode, so the recursion checker's ASTNode test never saw it --
+// but it descends the input DAG all the same, and this is the shape that
+// found it: a formula that alternates NOT and AND has no flat spine for the
+// simplifier to collapse, so it reaches RemoveUnconstrained as deep as it
+// was written.
+bool removeUnconstrainedOk(Context& c, unsigned depth)
+{
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("u0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string nm = "u" + std::to_string(i);
+    f = c.hf->CreateNode(
+        NOT, c.hf->CreateNode(
+                 AND, c.hf->CreateNode(EQ, c.mgr.CreateSymbol(nm.c_str(), 0, 8),
+                                       c.mgr.CreateZeroConst(8)),
+                 f));
+  }
+  c.roots.push_back(f);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  RemoveUnconstrained ru(c.mgr);
+  const ASTNode result = ru.topLevel(f, &simp);
+  c.roots.push_back(result);
+  return result.GetKind() != UNDEFINED;
+}
+
 // CommonSubSum::topLevel. Already stack-safe; here to keep it that way.
 bool commonSubSumOk(Context& c, unsigned depth)
 {
@@ -683,6 +715,7 @@ TEST(DeepDag, deep_bit_blast_term)
 }
 
 TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }
+TEST(DeepDag, deep_remove_unconstrained) { EXPECT_STACK_SAFE(removeUnconstrainedOk, 20000); }
 TEST(DeepDag, deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }

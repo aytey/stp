@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/AST/AST.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/Simplifier.h"
+#include <deque>
 
 namespace stp
 {
@@ -88,35 +89,91 @@ private:
    * node of a sub-tree will be created after its children.
    */
 
+  // The walk keeps its frames on the heap. How deeply a formula nests is the
+  // input's choice, and deeply nested ones exist, so a call per level of the
+  // DAG exhausts the stack: unconstrained-variable elimination builds this
+  // graph for every query, and a 30,000-deep alternation of NOT and AND died
+  // here. See DeepDag_Test.cpp.
+  //
+  // A node is answered from `visited` or it is built, and building always
+  // records it -- so a frame that has just descended finds its child there on
+  // the way round, and no frame has to remember what it was waiting for.
+  struct Frame
+  {
+    ASTNode n;
+    size_t i = 0;
+    vector<MutableASTNode*> tempChildren;
+
+    Frame(const ASTNode& node) : n(node)
+    {
+      tempChildren.reserve(node.Degree());
+    }
+  };
+
 public:
   static MutableASTNode* build(const ASTNode& n,
                                std::unordered_map<uint64_t, MutableASTNode*>& visited)
   {
+    MutableASTNode* result = NULL;
+
+    // What the recursive version answered without a call.
+    auto known = [&visited, &result](const ASTNode& node) {
+      const auto it = visited.find(node.GetNodeNum());
+      if (it == visited.end())
+        return false;
+      result = it->second;
+      return true;
+    };
+
+    if (known(n))
+      return result;
+
+    // A deque, so descending never moves the frames above it: `current`
+    // stays valid across a push.
+    std::deque<Frame> stack;
+    stack.emplace_back(n);
+
+    while (true)
     {
-      const auto it = visited.find(n.GetNodeNum());
-      if (it != visited.end())
-        return it->second;
+      Frame& current = stack.back();
+
+      bool descended = false;
+      while (current.i < current.n.Degree())
+      {
+        if (known(current.n[current.i]))
+        {
+          current.tempChildren.push_back(result);
+          current.i++;
+          continue;
+        }
+
+        // Nothing above may be read after this push.
+        stack.emplace_back(current.n[current.i]);
+        descended = true;
+        break;
+      }
+
+      if (descended)
+        continue;
+
+      // Same order as the recursion: every child built, then the node, then
+      // the parent links, then the entry that makes it answerable.
+      MutableASTNode* mut = createNode(current.n);
+
+      for (size_t i = 0; i < current.tempChildren.size(); i++)
+      {
+        current.tempChildren[i]->parents.insert(mut);
+      }
+
+      mut->children.insert(mut->children.end(), current.tempChildren.begin(),
+                           current.tempChildren.end());
+      visited.insert(std::make_pair(current.n.GetNodeNum(), mut));
+
+      result = mut;
+      stack.pop_back();
+      if (stack.empty())
+        return result;
     }
-
-    vector<MutableASTNode*> tempChildren;
-    tempChildren.reserve(n.Degree());
-
-    for (size_t i = 0; i < n.Degree(); i++)
-    {
-      tempChildren.push_back(build(n[i], visited));
-    }
-
-    MutableASTNode* mut = createNode(n);
-
-    for (size_t i = 0; i < n.Degree(); i++)
-    {
-      tempChildren[i]->parents.insert(mut);
-    }
-
-    mut->children.insert(mut->children.end(), tempChildren.begin(),
-                         tempChildren.end());
-    visited.insert(std::make_pair(n.GetNodeNum(), mut));
-    return mut;
   }
 
 private:
