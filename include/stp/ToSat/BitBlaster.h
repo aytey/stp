@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/constantBitP/MultiplicationStats.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
+#include "stp/Util/DagWalk.h"
 #include <cassert>
 #include <cmath>
 #include <list>
@@ -291,6 +292,13 @@ class BitBlaster
   // be formulas. See DeepDag_Test.cpp.
   void primeMemos(const ASTNode& n, BBNodeSet& support);
   bool priming = false;
+
+  // Debug-only: how deeply the blaster nests once primeMemos has run. Empty
+  // and free in a build with NDEBUG. The claim is a real one here -- both
+  // memos are primed by one walk, so the calls it makes on its operands
+  // answer from one of them, and the deepest the whole query corpus reaches
+  // is 11. See stp/Util/DagWalk.h.
+  PrimeAudit memoAudit{"BitBlaster", 32};
 
   bool isConstant(const BBNodeVec& v);
   ASTNode getConstant(const BBNodeVec& v, const ASTNode& n);

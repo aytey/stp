@@ -744,6 +744,11 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
 {
   ASTNode term = _term; // mutable local copy.
 
+  // Debug-only, and the whole of what holds primeMemos to the blaster: every
+  // node reached from here is one the walk has to have offered, and every
+  // operand the walk primed is one that has to be reached from here.
+  PrimeAudit::Running running(memoAudit, term);
+
   auto it = BBTermMemo.find(term);
   if (it != BBTermMemo.end())
   {
@@ -1331,6 +1336,10 @@ void BitBlaster::primeMemos(const ASTNode& n, BBNodeSet& support)
 const BBNode BitBlaster::BBForm(const ASTNode& form,
                                 BBNodeSet& support)
 {
+  // The other half of the audit above: the two memos are primed by one walk,
+  // so the walk is held to both functions at once.
+  PrimeAudit::Running running(memoAudit, form);
+
   auto it = BBFormMemo.find(form);
   if (it != BBFormMemo.end())
   {

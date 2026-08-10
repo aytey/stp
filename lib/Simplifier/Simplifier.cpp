@@ -1518,6 +1518,10 @@ ASTNode Simplifier::SimplifyTerm(const ASTNode& actualInputterm)
 {
   assert(_bm->UserFlags.optimize_flag);
 
+  // Debug-only, and what holds priming to its purpose: if the calls this
+  // makes on its operands stop answering from the map, the nesting says so.
+  PrimeAudit::Running running(termAudit, actualInputterm);
+
   if (actualInputterm.isConstant())
     return actualInputterm;
 

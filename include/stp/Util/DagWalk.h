@@ -29,6 +29,8 @@ THE SOFTWARE.
 #include <cassert>
 #include <cstdint>
 #include <deque>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace stp
@@ -41,6 +43,126 @@ enum class Walk
   Visit,   // hand it to visit without walking its children
   Skip     // ignore it: already done, or the pass never looks at it
 };
+
+// Whether a pass whose memo is primed still nests with its input.
+//
+// That is the whole of what priming buys: the pass's calls on its operands
+// answer from the memo, so its own recursion is a couple of levels whatever
+// the input nests to. It buys it only where the walk reaches the nodes the
+// pass reaches, and nothing in the type system says a pass qualifies -- the
+// preconditions live in a comment on primeMemo below and in whoever reads it.
+//
+// So the pass reports the nodes it runs, and the depth they reach is held
+// against what the pass claims. A classify() or an operands() that stops
+// short of a subtree does not stop the pass going there: it goes down its own
+// call stack for it, one frame per level, which is the crash priming exists
+// to prevent -- and which nothing in the output can show, because the answer
+// is the same. This is the check for that, and it runs on every query an
+// assertions build sees rather than on the ones somebody remembers to
+// measure.
+//
+// The depth a pass is allowed is its own claim, made where it declares its
+// audit. It is not one or two: a pass legitimately re-enters on nodes it has
+// just built -- a rewritten node, a pulled-up if-then-else -- and those calls
+// nest as deeply as the rewriting does, which is a property of the rules and
+// not of the input. What it may not do is nest in proportion to the input,
+// and the gap between those two is wide enough to sit a limit in.
+//
+// What this does not check is the other half: priming that reaches more than
+// the pass would have, which costs nodes that do not otherwise exist rather
+// than stack. That one is invisible from inside a primed run -- priming *is*
+// the pass running, so every node primed has, by then, been reached -- and it
+// belongs to tests/prime-memos-differential.py, which solves each query both
+// ways and compares the CNF. Its weakness is known and written down there.
+#ifndef NDEBUG
+class PrimeAudit
+{
+  const char* pass;
+  size_t limit;
+
+  size_t running = 0; // how deep the pass's own calls are nested
+  size_t deepest = 0;
+
+public:
+  // `pass_` names the pass in a report, `limit_` is how deeply it says it
+  // nests once its memo is primed.
+  PrimeAudit(const char* pass_, const size_t limit_)
+      : pass(pass_), limit(limit_)
+  {
+  }
+
+  // The pass is running `n`, from whatever it was running before. One of
+  // these at the head of the pass's own entry point is the whole instrument.
+  class Running
+  {
+    PrimeAudit& audit;
+
+  public:
+    Running(PrimeAudit& audit_, const ASTNode&) : audit(audit_)
+    {
+      audit.running++;
+      if (audit.running > audit.deepest)
+        audit.deepest = audit.running;
+    }
+
+    Running(const Running&) = delete;
+    Running& operator=(const Running&) = delete;
+
+    ~Running()
+    {
+      audit.running--;
+      if (audit.running == 0)
+        audit.finished();
+    }
+  };
+
+  // Empty while the pass is within its claim. Public so that a test can drive
+  // the audit directly rather than by breaking a pass.
+  std::string disagreement() const
+  {
+    std::ostringstream out;
+
+    if (deepest > limit)
+      out << pass << " nested " << deepest << " deep, over its claim of "
+          << limit << ": priming is not answering the calls it makes on its "
+          << "operands, so the input's depth is back on the stack\n";
+
+    return out.str();
+  }
+
+  size_t depth() const { return deepest; }
+
+  void clear() { deepest = 0; }
+
+private:
+  void finished()
+  {
+    const std::string bad = disagreement();
+    if (!bad.empty())
+    {
+      std::cerr << "primeMemo preconditions violated (stp/Util/DagWalk.h):\n"
+                << bad;
+      assert(false && "a primed pass nests with its input after all");
+    }
+    clear();
+  }
+};
+#else
+// Release: the same shape, doing nothing, so the passes read the same in
+// both builds.
+class PrimeAudit
+{
+public:
+  PrimeAudit(const char*, size_t) {}
+  void clear() {}
+
+  class Running
+  {
+  public:
+    Running(PrimeAudit&, const ASTNode&) {}
+  };
+};
+#endif
 
 // Fill a memoised pass's table from the bottom up, so that the pass itself
 // stops recursing.
@@ -70,9 +192,14 @@ enum class Walk
 // calls in the same sequence. Check it with the generated CNF, which is
 // sensitive to all three.
 //
-// Self-calls on nodes the pass builds itself, rather than on children, are
-// fine and need nothing here: their operands are already primed, so those
-// walks are shallow.
+// Self-calls on nodes the pass builds itself, rather than on children, get
+// nothing from this: those nodes do not exist when the walk runs. Usually
+// that costs nothing, because their operands are primed and the walk is one
+// level -- but it is an assumption about the pass's own rewriting and not
+// something priming secures, and it does not always hold. The simplifier's
+// float arm builds a term thousands of levels deep and walks down it: see the
+// note on Simplifier::termAudit, and the depth check below, which is what
+// found it.
 // `operands(n, out)` lets a pass say that the nodes it will recurse into are
 // not n's children. Return false -- what the three-argument form below does
 // for every node -- and the walk uses n's own children, which costs nothing:
