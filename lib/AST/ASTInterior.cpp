@@ -53,7 +53,18 @@ void ASTInterior::CleanUp()
   // Held separately: the first delete below is `this`, and nodeManager is
   // one of its members.
   STPMgr* const mgr = nodeManager;
-  mgr->_deleting_interiors = true;
+
+  // Lowered by the guard rather than by the line after the loop. A destructor
+  // that threw would otherwise leave the flag raised for the rest of the
+  // process, and every node released after that would queue on a drain that
+  // never runs again -- a leak of the whole DAG rather than a crash, which is
+  // the harder of the two to notice.
+  struct Draining
+  {
+    STPMgr* mgr;
+    Draining(STPMgr* m) : mgr(m) { mgr->_deleting_interiors = true; }
+    ~Draining() { mgr->_deleting_interiors = false; }
+  } draining(mgr);
 
   ASTInterior* node = this;
   while (true)
@@ -65,8 +76,6 @@ void ASTInterior::CleanUp()
     node = mgr->_pending_deletion.back();
     mgr->_pending_deletion.pop_back();
   }
-
-  mgr->_deleting_interiors = false;
 }
 
 // Returns kinds.  "lispprinter" handles printing of parenthesis

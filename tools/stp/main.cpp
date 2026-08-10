@@ -178,7 +178,8 @@ void ExtraMain::create_options()
   bool_arg("--prime-memos", bm->UserFlags.prime_memos,
            "Fill a pass's memo bottom-up before it runs, so deeply nested "
            "input does not exhaust the stack. Off is for testing only: it "
-           "restores the recursion these passes used to do",
+           "restores the recursion these passes used to do, and with it the "
+           "crash on deeply nested input that priming exists to prevent",
            simp_group);
   bool_arg("--ite-context-simplifications", bm->UserFlags.enable_ite_context,
            "Use what is known to be true in an if-then-else node to simplify "
