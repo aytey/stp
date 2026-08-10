@@ -913,6 +913,26 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
   // others choose per operand: NAND and NOR push it into both, IMPLIES and
   // IFF into one, and a NOT counts the run of NOTs above it and starts again
   // from the parity of that count.
+  //
+  // Each arm of the switch below is one of the functions this replaced, and
+  // each phase is a point where that function called SimplifyFormula and has
+  // to be able to stop:
+  //
+  //     AND, OR              SimplifyAndOrFormula
+  //     NOT                  SimplifyNotFormula
+  //     XOR                  SimplifyXorFormula
+  //     NAND, NOR, IMPLIES   SimplifyNandFormula, SimplifyNorFormula,
+  //                          SimplifyImpliesFormula
+  //     IFF                  SimplifyIffFormula
+  //     ITE                  SimplifyIteFormula
+  //     default              SimplifyAtomicFormula, which is still a function
+  //                          of its own: its operands are terms, so it is
+  //                          where the formula walk stops
+  //
+  // An arm reads the same way as the function did if `finish` is read as its
+  // `return`, and `want` as the call it made just above one. Nothing else of
+  // those functions moved: the head each shared is formulaShortcut plus the
+  // map test in Frame::Start, and the tail each shared is `finish`.
   struct Frame
   {
     enum Phase
