@@ -115,13 +115,14 @@ void capStack()
 // `check` returning false -- the pass ran but got the wrong answer -- is
 // reported as an exit code distinct from a crash.
 //
-// The manager is deliberately not destroyed. Releasing a deep DAG is
-// itself depth-recursive (~ASTInterior -> CleanUp -> ~ASTInterior, one
+// The manager is deliberately not destroyed. Releasing a deep DAG used to
+// be depth-recursive itself (~ASTInterior -> CleanUp -> ~ASTInterior, one
 // level per node), so tearing these chains down would overflow the stack
 // after the traversal under test had already returned, and every case here
-// would report the destructor's limit instead of the pass's. That is a
-// real defect, but a separate one; the child exits immediately, so leaving
-// the DAG alive costs nothing.
+// would report the destructor's limit instead of the pass's. CleanUp drains
+// a queue now and deep_teardown below covers it, but keeping the roots alive
+// still isolates each case from the others: the child exits immediately, so
+// leaving the DAG alive costs nothing.
 #define EXPECT_STACK_SAFE(check, depth)                                     \
   EXPECT_EXIT(                                                              \
       {                                                                     \
@@ -623,7 +624,7 @@ TEST(DeepDag, shallow_bit_blast_term)
    from outside to run only the first. */
 TEST(DeepDag, deep_dependencies_build)
 {
-  EXPECT_STACK_SAFE(dependenciesChainOk, 50);
+  EXPECT_STACK_SAFE(dependenciesChainOk, 50000);
 }
 
 TEST(DeepDag, deep_rewriting_share_count)
