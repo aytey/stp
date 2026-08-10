@@ -193,12 +193,12 @@ class Cpp_interface
   // rather than print a model of an assertion set that no longer exists.
   bool model_valid;
 
-  // The incremental driver engages from the SECOND real solve of a session
-  // (unless --incremental asked for it from the start, captured here at
-  // startup). The first solve carries the largest all-new formula -- for
-  // single-check-sat files that use push, the only formula -- and the batch
-  // pipeline's whole-formula simplification earns its keep there; the
-  // driver's encoding reuse can only pay off once a second solve exists.
+  // The incremental driver engages from the THIRD real solve of a session by
+  // default (unless --incremental asked for it from the start, captured here
+  // at startup). The first solves carry the largest all-new formulas, and the
+  // batch pipeline's whole-formula simplification earns its keep there. A
+  // diagnostic threshold can move or disable automatic engagement while
+  // preserving the explicit override.
   bool incremental_from_start;
   size_t solves_run;
 

@@ -29,7 +29,11 @@ the classic single-shot pipeline. Two refinements to know about:
   sessions can reuse it after engagement. ``check-sat`` calls made before the
   first explicit/internal scope still count toward this threshold.
   ``--incremental`` on the command line engages the driver from the first
-  solve instead.
+  solve instead. ``--incremental-auto-engage-at=N`` is a diagnostic override
+  for automatic sessions: ``1`` engages on the first real solve, positive
+  values name the solve ordinal, and ``0`` prevents automatic driver
+  engagement while leaving the frontend verdict cache active. Its default is
+  ``3``; explicit ``--incremental`` takes precedence.
 - Independent of the driver, the frontend keeps a per-level verdict
   cache with sound monotonicity shortcuts: pushing under a known-unsat
   level inherits unsat, a sat answer marks the levels beneath it sat, and

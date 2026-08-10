@@ -433,6 +433,14 @@ void ExtraMain::create_options()
                "SMT-LIB2 only.")
       ->group(misc_group);
 
+  int64_arg("--incremental-auto-engage-at",
+            bm->UserFlags.incremental_auto_engage_at,
+            "real-solve ordinal at which an automatically incremental "
+            "SMT-LIB session engages the persistent driver; 1 engages on "
+            "the first solve, 3 is the default, and 0 never engages "
+            "automatically (explicit --incremental still engages at 1)",
+            misc_group);
+
   app.add_flag("--incremental-profile", bm->UserFlags.incremental_profile,
                "print fine-grained per-check and cumulative timings and "
                "work counters for the incremental driver (use with "
@@ -666,6 +674,14 @@ int ExtraMain::parse_options(int argc, char** argv)
   if (bm->UserFlags.timeout_max_time < -1)
   {
     cerr << "ERROR: --max-time must be -1 (no limit) or greater" << endl;
+    std::exit(-1);
+  }
+
+  if (bm->UserFlags.incremental_auto_engage_at < 0)
+  {
+    cerr << "ERROR: --incremental-auto-engage-at must be 0 (never) or "
+            "greater"
+         << endl;
     std::exit(-1);
   }
 
