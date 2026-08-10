@@ -7,6 +7,7 @@
 ; from the first scoped block was made permanent: the raw base and its new
 ; conjunct are encoded normally, and a later pushed contradiction is seen.
 ; RUN: %solver --incremental --incremental-profile --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental --incremental-profile %s 2>&1 | %OutputCheck --check-prefix=LAZY %s
 (set-option :produce-models true)
 (set-logic QF_BV)
 (declare-fun p00 () Bool)
@@ -84,9 +85,15 @@
 (assert (and (not p00) (not p01) (not p02) (not p03) (not p04) (not p05) (not p06) (not p07) (not p08) (not p09) (not p10) (not p11) (not p12) (not p13) (not p14) (not p15) (not p16) (not p17) (not p18) (not p19) (not p20) (not p21) (not p22) (not p23) (not p24) (not p25) (not p26) (not p27) (not p28) (not p29) (not p30) (not p31) (not p32) (not p33) (not p34) (not p35) (not p36) (not p37) (not p38) (not p39) (not p40) (not p41) (not p42) (not p43) (not p44) (not p45) (not p46) (not p47) (not p48) (not p49) (not p50) (not p51) (not p52) (not p53) (not p54) (not p55) (not p56) (not p57) (not p58) (not p59) (not p60) (not p61) (not p62) (not p63) (not p64) (not p65) (not p66) (not p67) (not p68)))
 ; CHECK: Incremental profile cbp/backend: check=1 .*extensionality=0 first-stack-preprocesses=1 first-stack-eliminations=[1-9][0-9]* first-stack-rejected=0
 ; CHECK: ^sat
+; LAZY: Incremental: first scoped BV round, block of 2 levels encoded
+; LAZY: Incremental profile cbp/backend: check=1 .*sat-calls=1 refinement-sat-calls=0 refinement-rounds=0 .*extensionality=0 first-stack-preprocesses=1 first-stack-eliminations=[1-9][0-9]* first-stack-rejected=0
+; LAZY: ^sat
 (check-sat)
 ; CHECK: \|p00\| +false
 ; CHECK: \|p69\| +true
+; LAZY: Incremental: model materialized on demand
+; LAZY: \|p00\| +false
+; LAZY: \|p69\| +true
 (get-value (p00 p69))
 (pop 1)
 
@@ -95,14 +102,20 @@
 (assert (not p00))
 ; CHECK: Incremental profile cbp/backend: check=2 .*extensionality=0 first-stack-preprocesses=0 first-stack-eliminations=0 first-stack-rejected=0
 ; CHECK: ^sat
+; LAZY: Incremental profile cbp/backend: check=2 .*sat-calls=1 refinement-sat-calls=0 refinement-rounds=0 .*extensionality=0 first-stack-preprocesses=0 first-stack-eliminations=0 first-stack-rejected=0
+; LAZY: ^sat
 (check-sat)
 ; CHECK: \|p00\| +false
+; LAZY: Incremental: model materialized on demand
+; LAZY: \|p00\| +false
 (get-value (p00))
 
 (push 1)
 (assert (and (not p01) (not p02) (not p03) (not p04) (not p05) (not p06) (not p07) (not p08) (not p09) (not p10) (not p11) (not p12) (not p13) (not p14) (not p15) (not p16) (not p17) (not p18) (not p19) (not p20) (not p21) (not p22) (not p23) (not p24) (not p25) (not p26) (not p27) (not p28) (not p29) (not p30) (not p31) (not p32) (not p33) (not p34) (not p35) (not p36) (not p37) (not p38) (not p39) (not p40) (not p41) (not p42) (not p43) (not p44) (not p45) (not p46) (not p47) (not p48) (not p49) (not p50) (not p51) (not p52) (not p53) (not p54) (not p55) (not p56) (not p57) (not p58) (not p59) (not p60) (not p61) (not p62) (not p63) (not p64) (not p65) (not p66) (not p67) (not p68) (not p69)))
 ; CHECK: Incremental profile cbp/backend: check=3 .*extensionality=0 first-stack-preprocesses=0 first-stack-eliminations=0 first-stack-rejected=0
 ; CHECK: ^unsat
+; LAZY: Incremental profile cbp/backend: check=3 .*sat-calls=1 refinement-sat-calls=0 refinement-rounds=0 .*extensionality=0 first-stack-preprocesses=0 first-stack-eliminations=0 first-stack-rejected=0
+; LAZY: ^unsat
 (check-sat)
 (pop 1)
 (exit)

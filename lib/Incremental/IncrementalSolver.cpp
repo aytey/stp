@@ -3025,6 +3025,10 @@ struct IncrementalSolver::Impl
                                         bool firstForcedIncrementalSolve,
                                         bool requireScopedCollapse = false,
                                         bool* scopedAccepted = NULL);
+  SOLVER_RETURN_TYPE
+  solvePlainExactStack(const ASTVec& assertionsSMT2,
+                       const SATSolver::vec_literals& assumptions,
+                       const ASTNode& inputToSat, Aig_Obj_t* blockRegular);
   ToSATBase* ensureAdapter();
 
   // The session-long floating-point encoding context. Its totalisation
@@ -3996,6 +4000,97 @@ ToSATBase* IncrementalSolver::Impl::ensureAdapter()
   return adapter.get();
 }
 
+// A plain-BV exact block is already fully encoded and has no theory model to
+// refine. Solve it like the ordinary array-free driver: construct a model only
+// when a caller can observe one, and defer that construction until its first
+// reader unless --check-sanity needs it immediately. In particular, do not
+// create the refinement adapter or force construct_counterexample_flag merely
+// because cross-level preprocessing chose the exact-block representation.
+SOLVER_RETURN_TYPE IncrementalSolver::Impl::solvePlainExactStack(
+    const ASTVec& assertionsSMT2,
+    const SATSolver::vec_literals& assumptions, const ASTNode& inputToSat,
+    Aig_Obj_t* blockRegular)
+{
+  UserDefinedFlags& uf = bm->UserFlags;
+
+  bool construct = uf.check_counterexample_flag ||
+                   uf.print_counterexample_flag || uf.produce_models ||
+                   uf.construct_counterexample_flag;
+#ifndef NDEBUG
+  construct = true;
+#endif
+  uf.construct_counterexample_flag = construct;
+
+  bm->GetRunTimes()->start(RunTimes::Solving);
+  if (profile.enabled)
+    profile.satCalls++;
+  bool sat;
+  {
+    ScopedProfileTimer satTimer(profile.enabled, profile.satNs);
+    ScopedProfileTimer initialSatTimer(profile.enabled, profile.initialSatNs);
+    sat = solver->solveWithAssumptions(assumptions, bm->soft_timeout_expired);
+  }
+  bm->GetRunTimes()->stop(RunTimes::Solving);
+
+  const uint64_t cheapLiveMass =
+      addMass(baseLiveMass, clauseMassOf[inputToSat]);
+  std::vector<Aig_Obj_t*> currentRoots(1, blockRegular);
+  stageLiveConeMass(currentRoots, cheapLiveMass, permanentUnitMass);
+
+  if (uf.stats_flag)
+    solver->printStats();
+
+  if (bm->soft_timeout_expired)
+    return SOLVER_TIMEOUT;
+
+  if (!sat)
+  {
+    // The complete stack rode one assumption, so its core is deliberately
+    // coarse even though this solve did not need the refinement adapter.
+    recordUnsat(assumptions, assertionsSMT2.size(), true);
+    return SOLVER_UNSATISFIABLE;
+  }
+
+  if (!construct)
+    return SOLVER_SATISFIABLE;
+
+  if (!uf.check_counterexample_flag)
+  {
+    modelPending = true;
+    return SOLVER_SATISFIABLE;
+  }
+
+  bm->GetRunTimes()->start(RunTimes::CounterExampleGeneration);
+  ce->ClearCounterExampleMap();
+  ce->ClearComputeFormulaMap();
+  seedEliminatedIntoModelChannel();
+
+  ToSATBase::ASTNodeToSATVar symbolMap;
+  buildSymbolMap(symbolMap);
+  ce->ConstructCounterExample(*solver, symbolMap);
+  bm->GetRunTimes()->stop(RunTimes::CounterExampleGeneration);
+
+  // Check the raw assertions, rather than only the simplified block: scoped
+  // eliminations are replayed through the model channel above, so this also
+  // guards the exact preprocessing/model-reconstruction boundary.
+  bm->ValidFlag = false;
+  ASTVec conjuncts;
+  for (const ASTNode& levelConjunction : assertionsSMT2)
+  {
+    conjuncts.clear();
+    splitConjuncts(levelConjunction, bm->ASTTrue, conjuncts);
+    for (const ASTNode& c : conjuncts)
+    {
+      if (ce->GetCounterExample(c) != bm->ASTTrue)
+        FatalError("IncrementalSolver: the model does not satisfy an "
+                   "asserted formula",
+                   c);
+    }
+  }
+
+  return SOLVER_SATISFIABLE;
+}
+
 // Encode the complete active stack as one assumption-scoped block. Whole-array
 // equality always needs this route: extensionality owns the complete array
 // graph, so every active read must be lowered and checked together. Explicit
@@ -4043,8 +4138,15 @@ IncrementalSolver::Impl::exactStackCheckSat(
   else
     activeConjunction = assertionsSMT2[0];
 
-  ExtensionalityContext* ext = bm->getExtensionality();
-  ext->beginSolve();
+  // Plain-BV exact blocks have no extensionality state at all. Avoid creating
+  // a context for them; besides the allocation, an empty context makes this
+  // representation look needlessly like a theory-refinement solve.
+  ExtensionalityContext* ext = NULL;
+  if (arrayEqualityRound)
+  {
+    ext = bm->getExtensionality();
+    ext->beginSolve();
+  }
 
   ASTNodeMap arrayEqualityRewrites;
   ASTNode prepared = activeConjunction;
@@ -4211,13 +4313,6 @@ IncrementalSolver::Impl::exactStackCheckSat(
               << solver->nVars() << " variables" << std::endl;
   }
 
-  uf.construct_counterexample_flag = true;
-
-  if (fpCtx)
-    ce->setFpEncodingContext(fpCtx.get());
-
-  seedEliminatedIntoModelChannel();
-
   if (uf.timeout_max_conflicts >= 0)
     solver->setMaxConflicts(uf.timeout_max_conflicts);
   if (uf.timeout_max_time >= 0)
@@ -4233,6 +4328,18 @@ IncrementalSolver::Impl::exactStackCheckSat(
     profile.activeKeys = 1;
     profile.assumptions = assumptions.size();
   }
+
+  if (!arrayEqualityRound)
+    return solvePlainExactStack(assertionsSMT2, assumptions, inputToSat,
+                                blockRegular);
+
+  // Array equality needs a candidate model on every refinement round.
+  uf.construct_counterexample_flag = true;
+
+  if (fpCtx)
+    ce->setFpEncodingContext(fpCtx.get());
+
+  seedEliminatedIntoModelChannel();
 
   IncrementalToSAT* tosat = static_cast<IncrementalToSAT*>(ensureAdapter());
   tosat->setAssumptions(&assumptions);

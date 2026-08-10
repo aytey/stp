@@ -230,12 +230,16 @@ fact may safely collapse a shallow root without leaking through a later pop.
 A rejected trial commits neither clauses nor model definitions and execution
 continues through the ordinary per-level driver. The next changed check also
 uses that ordinary path and materializes the raw base normally; the provisional
-block remains retracted. ``check-sat-assuming`` retains its individual roots
-for unsat-assumption reporting, arrays and floating point retain their own
-routes, and an explicitly aggressive ``--incremental-reencode-limit`` below
-the default one million disables the provisional block so relief ownership is
-available from the outset (zero, which disables relief, still permits it).
-Automatic third-solve engagement again does not need this first-check escape.
+block remains retracted. Once an array-free block is encoded, it is solved
+directly under that assumption: no refinement adapter or eager counterexample
+is needed, and a requested model is materialized by its first reader just as it
+is on the ordinary plain-BV path. Array-equality blocks retain the candidate-
+model/refinement route. ``check-sat-assuming`` retains its individual roots for
+unsat-assumption reporting, arrays and floating point retain their own routes,
+and an explicitly aggressive ``--incremental-reencode-limit`` below the default
+one million disables the provisional block so relief ownership is available
+from the outset (zero, which disables relief, still permits it). Automatic
+third-solve engagement again does not need this first-check escape.
 
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
