@@ -206,6 +206,20 @@ future reuse is lost. Automatic sessions do not take this path: their first two
 solves use the batch pipeline and CBP starts normally when the driver engages
 on the third. Set the limit to 0 to disable the deferral.
 
+Explicit first engagement also recovers one cheap, high-yield part of batch
+preprocessing for a base-only, array/FP-free formula: before emitting any
+permanent clauses, it runs pure-literal elimination over the complete base.
+The selected Boolean values are model witnesses rather than logical
+consequences. They replay into a model while unused; if later content mentions
+one of those symbols, the driver restores the original base conjuncts as
+permanent units and lets the new constraints choose the value. Shared witness
+conjuncts are restored only once per backend epoch. This deliberately does not
+repeat after the first solve and does not rewrite pushed levels: it targets the
+large first-check Boolean-clause families without reviving recurring global
+base preprocessing, which previously forfeited persistent roots and regressed
+changing-stack sessions. Automatic third-solve engagement has already run two
+whole-formula batch passes and therefore does not take this special path.
+
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
 costs one assumption however many assertions it carries, which keeps the
@@ -482,7 +496,9 @@ rollbacks, discarded levels and state entries, fresh and re-fed levels, their
 bounded DAG-node mass, reset-oracle/fallback rebuilds, rewrite replay, and
 adoption attempts. ``ext-preprocesses`` and ``ext-eliminations`` identify
 exact-stack blocks which took the scoped batch-prefix pass and the model
-definitions it produced. The profile also covers semantic construction,
+definitions it produced; ``base-preprocesses`` and ``base-eliminations``
+identify the explicitly forced, base-only pure-literal pass and its model
+witnesses. The profile also covers semantic construction,
 preparation, actual bit-blast/CNF encoding, active-read seeding, backend
 rebuilds, initial and refinement SAT calls, and rolling session totals.
 Durations accumulate at nanosecond precision and are emitted as whole
@@ -620,10 +636,12 @@ Limitations
 - Forcing the driver from the first solve (``--incremental``) on a large
   all-new formula deliberately trades the batch pipeline's global
   simplification for encoding reuse that cannot pay off yet. The large-CBP
-  bootstrap deferral removes one measured prepass cost, but cannot reproduce
-  simplifications in which a deeper scope collapses the encoding of a
-  shallower scope; the default engagement policy exists precisely because of
-  that structural difference.
+  bootstrap deferral removes one measured prepass cost, and the base-only
+  pure-literal pass recovers Boolean-clause collapses, but neither can reproduce
+  the rest of whole-formula batch simplification -- especially simplifications
+  in which a deeper scope collapses the encoding of a shallower scope. The
+  default engagement policy exists precisely because of that structural
+  difference.
 
 Maintainer architecture review
 ------------------------------

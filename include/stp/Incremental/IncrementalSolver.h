@@ -90,7 +90,8 @@ public:
   // policies which automatic (third-solve) engagement does not need: an
   // oversized, initially empty cross-level propagation engine may be left
   // unbuilt until the next solve, and an exact-stack array block receives the
-  // batch pipeline's cheap size-reducing prefix.
+  // batch pipeline's cheap size-reducing prefix. A base-only BV formula also
+  // receives a one-time pure-literal pass before any permanent clause exists.
   //
   // The driver holds no per-level state: the assumption set is recomputed
   // from `assertionsSMT2` on every call (against permanent encoding caches),

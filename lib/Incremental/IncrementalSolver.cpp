@@ -328,6 +328,8 @@ struct IncrementalSolver::Impl
     uint64_t refinementRounds = 0;
     uint64_t extPreprocesses = 0;
     uint64_t extEliminations = 0;
+    uint64_t basePreprocesses = 0;
+    uint64_t baseEliminations = 0;
     uint64_t rebuilds = 0;
     uint64_t rebuildRelief = 0;
     uint64_t rebuildPromotion = 0;
@@ -407,6 +409,8 @@ struct IncrementalSolver::Impl
     uint64_t refinementRounds = 0;
     uint64_t extPreprocesses = 0;
     uint64_t extEliminations = 0;
+    uint64_t basePreprocesses = 0;
+    uint64_t baseEliminations = 0;
     uint64_t rebuilds = 0;
     uint64_t rebuildRelief = 0;
     uint64_t rebuildPromotion = 0;
@@ -485,6 +489,8 @@ struct IncrementalSolver::Impl
       refinementRounds += p.refinementRounds;
       extPreprocesses += p.extPreprocesses;
       extEliminations += p.extEliminations;
+      basePreprocesses += p.basePreprocesses;
+      baseEliminations += p.baseEliminations;
       rebuilds += p.rebuilds;
       rebuildRelief += p.rebuildRelief;
       rebuildPromotion += p.rebuildPromotion;
@@ -718,6 +724,12 @@ struct IncrementalSolver::Impl
     ASTVec originals;
   };
   std::map<ASTNode, BaseElimination> baseEliminatedDefs;
+
+  // Witness originals can be shared by several eliminated variables. The
+  // first later mention recursively restores all of them, so remember which
+  // roots this backend epoch has already asserted rather than submitting the
+  // same permanent unit once per variable.
+  ASTNodeSet restoredBaseRoots;
 
   // The re-simplified base conjuncts a rebuild produced, awaiting
   // encoding: the rebuild itself must not add clauses, because the fresh
@@ -1614,6 +1626,8 @@ struct IncrementalSolver::Impl
         for (const ASTNode& r : restore)
         {
           screenNewContent(r);
+          if (!restoredBaseRoots.insert(r).second)
+            continue;
           const int lit = rootLit(r);
           SATSolver::vec_literals unit;
           unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
@@ -2228,6 +2242,8 @@ struct IncrementalSolver::Impl
         << " refinement-rounds=" << profile.refinementRounds
         << " ext-preprocesses=" << profile.extPreprocesses
         << " ext-eliminations=" << profile.extEliminations
+        << " base-preprocesses=" << profile.basePreprocesses
+        << " base-eliminations=" << profile.baseEliminations
         << " rebuilds=" << profile.rebuilds
         << " rebuild-relief=" << profile.rebuildRelief
         << " rebuild-promotion=" << profile.rebuildPromotion
@@ -2313,6 +2329,8 @@ struct IncrementalSolver::Impl
         << " refinement-rounds=" << sessionProfile.refinementRounds
         << " ext-preprocesses=" << sessionProfile.extPreprocesses
         << " ext-eliminations=" << sessionProfile.extEliminations
+        << " base-preprocesses=" << sessionProfile.basePreprocesses
+        << " base-eliminations=" << sessionProfile.baseEliminations
         << " rebuilds=" << sessionProfile.rebuilds
         << " rebuild-relief=" << sessionProfile.rebuildRelief
         << " rebuild-promotion=" << sessionProfile.rebuildPromotion
@@ -3359,8 +3377,93 @@ struct IncrementalSolver::Impl
     // mention, and a re-push of such a level after the rebuild has to
     // re-assert the equation -- the memo would skip it.
     screenedContent.clear();
+    restoredBaseRoots.clear();
 
     resimplifyBaseAtRebuild(assertionsSMT2);
+  }
+
+  // A forced base-only first solve has no earlier batch round to simplify its
+  // complete permanent formula. Pure Boolean literals are a particularly
+  // cheap part of that missing work, and the Goel hardware family consists of
+  // thousands of clauses which this pass reduces to TRUE. This is deliberately
+  // narrower than the rejected recurring base-preprocessing prototype: it
+  // runs once, only before any driver clause exists, and only for array/FP-free
+  // base content. A later assertion which mentions a chosen literal restores
+  // every original base conjunct that used it through screenNewContent().
+  bool preprocessForcedFirstBase(const ASTVec& rawBase, ASTVec& toEncode)
+  {
+    toEncode = rawBase;
+    if (rawBase.empty() || !bm->UserFlags.optimize_flag ||
+        !bm->UserFlags.enable_pure_literals)
+      return false;
+
+    for (const ASTNode& c : rawBase)
+    {
+      const Fragment& f = fragment(c);
+      if (f.arrays || f.arrayEq || f.fp)
+        return false;
+    }
+
+    ASTVec ordered = rawBase;
+    std::sort(ordered.begin(), ordered.end());
+    ASTNode out = ordered.size() == 1
+                      ? ordered[0]
+                      : bm->defaultNodeFactory->CreateNode(AND, ordered);
+
+    SubstitutionMap passSm(bm);
+    Simplifier pass(bm, &passSm);
+    FindPureLiterals pure;
+    if (!pure.topLevel(out, &pass, bm))
+      return false;
+    out = pass.applySubstitutionMapAtTopLevel(out);
+
+    DenseNodeMap* defs = pass.Return_SolverMap();
+    ASTNodeSet eliminated;
+    for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
+         ++it)
+    {
+      if (it->first.GetKind() != SYMBOL ||
+          it->first.GetType() != BOOLEAN_TYPE)
+        continue;
+      BaseElimination be;
+      be.def = it->second;
+      be.witness = true;
+      baseEliminatedDefs[it->first] = be;
+      eliminated.insert(it->first);
+    }
+    if (eliminated.empty())
+      return false;
+
+    // The raw base was screened before these eliminations existed. Any
+    // original saved as a witness must be eligible for a fresh recursive
+    // screen when one eliminated variable brings it back, so its other
+    // eliminated variables are restored at the same time.
+    for (const ASTNode& c : ordered)
+    {
+      bool saved = false;
+      for (const ASTNode& s : symbolsOf(c))
+      {
+        if (eliminated.find(s) == eliminated.end())
+          continue;
+        baseEliminatedDefs[s].originals.push_back(c);
+        saved = true;
+      }
+      if (saved)
+        screenedContent.erase(c);
+    }
+
+    toEncode.clear();
+    splitConjuncts(out, bm->ASTTrue, toEncode);
+    if (profile.enabled)
+    {
+      profile.basePreprocesses++;
+      profile.baseEliminations += eliminated.size();
+    }
+    if (bm->UserFlags.stats_flag)
+      std::cerr << "Incremental: first base pure-literal pass, "
+                << ordered.size() << " conjuncts -> " << toEncode.size()
+                << ", " << eliminated.size() << " eliminated" << std::endl;
+    return true;
   }
 
   // The rebuild boundary is the one place a GLOBAL pass over the base is
@@ -3402,6 +3505,11 @@ struct IncrementalSolver::Impl
       if (f.arrays || f.arrayEq)
         return;
     }
+
+    // This pass re-derives the complete raw base. Discard witness/model
+    // choices made by an earlier backend epoch; anything still eliminable is
+    // recorded again below, while anything retained now gets real SAT bits.
+    baseEliminatedDefs.clear();
 
     ASTNode conj = base.size() == 1
                        ? base[0]
@@ -4718,6 +4826,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     impl->baseSymbols.insert(syms.begin(), syms.end());
     if (uf.optimize_flag)
       impl->harvestSigma0(c);
+  }
+
+  if (firstForcedIncrementalSolve && assertionsSMT2.size() == 1 &&
+      !newLevel0.empty())
+  {
+    ASTVec reducedBase;
+    if (impl->preprocessForcedFirstBase(newLevel0, reducedBase))
+      newLevel0.swap(reducedBase);
   }
 
   for (const ASTNode& c : newLevel0)
