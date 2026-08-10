@@ -284,53 +284,6 @@ bool Simplifier::formulaShortcut(const ASTNode& b, bool pushNeg, ASTNode& a,
   return false;
 }
 
-// Everything SimplifyFormula does once the AND/OR case has been taken out.
-// Those kinds recurse back here through their own children, which on a deeply
-// nested formula is a call per level of the input; the driver below walks
-// them with its frames on the heap instead. The rest are left alone: they
-// nest through each other rather than through a spine, and nothing has been
-// seen to reach a depth that matters. See DeepDag_Test.cpp.
-ASTNode Simplifier::simplifyNonAndOr(const ASTNode& b, const ASTNode& a,
-                                     bool pushNeg)
-{
-  ASTNode output;
-
-  switch (a.GetKind())
-  {
-    case NOT:
-      output = SimplifyNotFormula(a, pushNeg);
-      break;
-    case XOR:
-      output = SimplifyXorFormula(a, pushNeg);
-      break;
-    case NAND:
-      output = SimplifyNandFormula(a, pushNeg);
-      break;
-    case NOR:
-      output = SimplifyNorFormula(a, pushNeg);
-      break;
-    case IFF:
-      output = SimplifyIffFormula(a, pushNeg);
-      break;
-    case IMPLIES:
-      output = SimplifyImpliesFormula(a, pushNeg);
-      break;
-    case ITE:
-      output = SimplifyIteFormula(a, pushNeg);
-      break;
-    default:
-      // kind can be EQ,NEQ,BVLT,BVLE,... or a propositional variable
-      output = SimplifyAtomicFormula(a, pushNeg);
-      break;
-  }
-
-  UpdateSimplifyMap(b, output, pushNeg);
-  if (a != b) // PullUpITE often returns its input unchanged.
-    UpdateSimplifyMap(a, output, pushNeg);
-
-  return output;
-}
-
 ASTNode Simplifier::SimplifyAtomicFormula(const ASTNode& a, bool pushNeg)
 {
   ASTNode output;
@@ -938,477 +891,395 @@ ASTNode Simplifier::CreateSimplifiedFormulaITE(const ASTNode& in0,
   return result;
 }
 
-// AND and OR are where a formula nests: each operand is simplified by coming
-// back through SimplifyFormula, so a conjunction nested as deeply as the
-// input runs the stack out. The frames live on the heap instead. Every other
-// kind is handed to simplifyNonAndOr and still recurses; a child of one of
-// those that is itself an AND re-enters here with a fresh stack, which costs
-// a couple of frames per level of that kind of nesting rather than per level
-// of the formula.
+// Every connective is where a formula nests: each operand is simplified by
+// coming back through here, so a formula nested as deeply as the input runs
+// the stack out. The frames live on the heap instead.
+//
+// The AND/OR spine was walked this way already, on the argument that the
+// other kinds "nest through each other rather than through a spine, and
+// nothing has been seen to reach a depth that matters". Something has:
+// `scripts/deep-inputs/gen.py fp-add 8000` is a valid query whose lowering
+// nests NOT and if-then-else that deeply, and it died in exactly those two
+// arms -- below the ~9,300 of the deepest input we have. So all of them are
+// one walk now. See DeepDag_Test.cpp.
 ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
 {
-  ASTNode a, out;
-  if (formulaShortcut(b, pushNeg, a, out))
-    return out;
-
-  {
-    const Kind k = a.GetKind();
-    if (k != AND && k != OR)
-      return simplifyNonAndOr(b, a, pushNeg);
-  }
-
-  // What one AND/OR node is part-way through. `b` and `a` are the node as it
-  // arrived and after PullUpITE: both are recorded against the answer, as
-  // SimplifyFormula did.
+  // What one node is part-way through. `b` is the node as it arrived and `a`
+  // as PullUpITE left it; both are recorded against the answer, as
+  // SimplifyFormula and simplifyNonAndOr each did.
+  //
+  // `pushNeg` is per frame, where the AND/OR-only driver took one for the
+  // whole walk. That arm does hand its own negation to every operand, but the
+  // others choose per operand: NAND and NOR push it into both, IMPLIES and
+  // IFF into one, and a NOT counts the run of NOTs above it and starts again
+  // from the parity of that count.
   struct Frame
   {
+    enum Phase
+    {
+      Start,
+      AndOrOperand, // AND/OR: the operand at `i`
+      NotBody,      // NOT: whatever is under the run of NOTs
+      XorOperand,   // XOR: the operand at `i`
+      BinaryLeft,   // NAND, NOR, IMPLIES: the first operand
+      BinaryRight,  // ... and the second
+      IffRight,     // IFF: the second operand, which it simplifies first
+      IffLeft,      // ... then the first
+      IffFold,      // ... then one of the two again, negated
+      IteCond,      // ITE: the condition
+      IteThen,      // ... the then-branch
+      IteElse,      // ... the else-branch
+      IteFold       // ... ITE(c, false, true): the condition again, negated
+    };
+
     ASTNode b;
     ASTNode a;
-    ASTNode annihilator;
-    Kind outKind;
+    bool pushNeg = false;
+    Phase phase = Start;
+
+    // AND, OR and XOR collect their operands.
     ASTVec outvec;
     size_t i = 0;
-    bool waiting = false;
+    ASTNode annihilator;
+    Kind outKind = UNDEFINED;
+
+    // The operands an arm has to keep across a suspension: what a NOT has
+    // under it, the two sides of a binary connective, the three of an
+    // if-then-else.
+    ASTNode t0, t1, t2;
+
+    // The parity a NOT starts again from.
+    bool pn = false;
   };
 
   // A deque, so descending never moves the frames above it.
   std::deque<Frame> stack;
   ASTNode result;
 
-  // Start work on the AND/OR node `bb`, whose PullUpITE'd form is `aa`.
-  // Mirrors the head of SimplifyAndOrFormula.
-  auto open = [&](const ASTNode& bb, const ASTNode& aa) -> bool {
-    ASTNode cached;
-    if (CheckSimplifyMap(aa, cached, pushNeg))
-    {
-      // SimplifyFormula records the answer against what it was given too.
-      UpdateSimplifyMap(bb, cached, pushNeg);
-      if (aa != bb)
-        UpdateSimplifyMap(aa, cached, pushNeg);
-      result = cached;
-      return false;
-    }
-
-    Frame f;
-    f.b = bb;
-    f.a = aa;
-
-    const bool isAnd = (aa.GetKind() == AND);
-    // Under pushNeg we are simplifying NOT(a): De Morgan flips the
-    // connective, and a child that simplifies to the annihilator collapses
-    // the whole node.
-    f.annihilator =
-        isAnd ? (pushNeg ? ASTTrue : ASTFalse) : (pushNeg ? ASTFalse : ASTTrue);
-    f.outKind = (isAnd == !pushNeg) ? AND : OR;
-    f.outvec.reserve(aa.Degree());
-
-    stack.push_back(std::move(f));
+  // Ask for the simplification of `n` under `neg`, and suspend this frame:
+  // it picks up at `resume` with the answer in `result`.
+  auto want = [&](Frame& f, const Frame::Phase resume, const ASTNode& n,
+                  const bool neg) -> bool {
+    f.phase = resume;
+    Frame below;
+    below.b = n;
+    below.pushNeg = neg;
+    stack.push_back(std::move(below));
     return true;
   };
 
-  // The answer for a finished node, against both of its names.
-  auto close = [&](Frame& f, const ASTNode& value) {
-    UpdateSimplifyMap(f.a, value, pushNeg);
-    UpdateSimplifyMap(f.b, value, pushNeg);
-    if (f.a != f.b)
-      UpdateSimplifyMap(f.a, value, pushNeg);
-    result = value;
-    stack.pop_back();
+  auto step = [&](Frame& f) -> bool {
+    // What simplifyNonAndOr did once an arm had answered: record it against
+    // the node as it arrived, and against the PullUpITE'd one if that is a
+    // different node.
+    auto finishOuter = [&](const ASTNode& output) {
+      UpdateSimplifyMap(f.b, output, f.pushNeg);
+      if (f.a != f.b)
+        UpdateSimplifyMap(f.a, output, f.pushNeg);
+      result = output;
+      return false;
+    };
+
+    // The whole tail: the arm's own memoise, then that pair. Every arm ended
+    // this way, and the AND/OR driver made all three writes itself.
+    auto finish = [&](const ASTNode& output) {
+      UpdateSimplifyMap(f.a, output, f.pushNeg);
+      return finishOuter(output);
+    };
+
+    if (f.phase == Frame::Start)
+    {
+      ASTNode out;
+      if (formulaShortcut(f.b, f.pushNeg, f.a, out))
+      {
+        result = out;
+        return false;
+      }
+
+      // Every arm began by asking the map about the node PullUpITE produced,
+      // which is not the node formulaShortcut just asked about.
+      ASTNode cached;
+      if (CheckSimplifyMap(f.a, cached, f.pushNeg))
+        return finishOuter(cached);
+    }
+
+    const Kind k = f.a.GetKind();
+    switch (k)
+    {
+      case AND:
+      case OR:
+      {
+        if (f.phase == Frame::Start)
+        {
+          const bool isAnd = (k == AND);
+          // Under pushNeg we are simplifying NOT(a): De Morgan flips the
+          // connective, and a child that simplifies to the annihilator
+          // collapses the whole node.
+          f.annihilator = isAnd ? (f.pushNeg ? ASTTrue : ASTFalse)
+                                : (f.pushNeg ? ASTFalse : ASTTrue);
+          f.outKind = (isAnd == !f.pushNeg) ? AND : OR;
+          f.outvec.reserve(f.a.Degree());
+        }
+        else
+        {
+          const ASTNode child = result;
+
+          if (child == f.annihilator)
+            return finish(f.annihilator);
+
+          // A child that simplified to the output connective (typically via
+          // De Morgan) would otherwise leave a nested same-kind node, which
+          // the factory does not flatten. Splice its already-simplified
+          // operands in so the result stays flat -- without this
+          // SimplifyFormula is not idempotent.
+          if (child.GetKind() == f.outKind)
+            f.outvec.insert(f.outvec.end(), child.begin(), child.end());
+          else
+            f.outvec.push_back(child);
+          f.i++;
+        }
+
+        if (f.i < f.a.Degree())
+          return want(f, Frame::AndOrOperand, f.a[f.i], f.pushNeg);
+
+        // Hand the simplified children to the node factory. CreateSimpleAndOr
+        // sorts them, drops identities, removes duplicates, detects
+        // complements and unwraps singletons -- so none of that is repeated
+        // here.
+        return finish(nf->CreateNode(f.outKind, f.outvec));
+      }
+
+      case NOT:
+      {
+        if (f.phase == Frame::NotBody)
+        {
+          UpdateSimplifyMap(f.t0, result, f.pn);
+          return finish(result);
+        }
+
+        if (!(f.a.Degree() == 1 && NOT == f.a.GetKind()))
+          FatalError("SimplifyNotFormula: input vector with more than 1 node",
+                     ASTUndefined);
+
+        // if pushNeg is set then there is NOT on top
+        unsigned int NotCount = f.pushNeg ? 1 : 0;
+        ASTNode o = f.a;
+        // count the number of NOTs in 'a'
+        while (NOT == o.GetKind())
+        {
+          o = o[0];
+          NotCount++;
+        }
+
+        // pushnegation if there are odd number of NOTs
+        f.pn = (NotCount % 2 == 0) ? false : true;
+        f.t0 = o;
+
+        ASTNode cached;
+        if (CheckSimplifyMap(o, cached, f.pn))
+          return finishOuter(cached);
+
+        if (ASTTrue == o || ASTFalse == o)
+        {
+          const ASTNode output = (ASTTrue == o) ? (f.pn ? ASTFalse : ASTTrue)
+                                                : (f.pn ? ASTTrue : ASTFalse);
+          UpdateSimplifyMap(o, output, f.pn);
+          return finish(output);
+        }
+
+        return want(f, Frame::NotBody, o, f.pn);
+      }
+
+      case XOR:
+      {
+        assert(f.a.Degree() > 0);
+
+        if (f.a.Degree() == 1)
+          return finish(f.a[0]);
+
+        if (f.phase == Frame::XorOperand)
+        {
+          f.outvec.push_back(result);
+          f.i++;
+        }
+
+        if (f.i < f.a.Degree())
+          return want(f, Frame::XorOperand, f.a[f.i], false);
+
+        ASTVec newC = f.outvec;
+        if (f.pushNeg)
+          newC[0] = nf->CreateNode(NOT, newC[0]);
+
+        if (f.a.Degree() == 2)
+        {
+          ASTNode output = nf->CreateNode(XOR, newC[0], newC[1]);
+          if (newC[0] == newC[1])
+            output = ASTFalse;
+          else if ((newC[0] == ASTTrue && newC[1] == ASTFalse) ||
+                   (newC[0] == ASTFalse && newC[1] == ASTTrue))
+            output = ASTTrue;
+          return finish(output);
+        }
+
+        return finish(nf->CreateNode(XOR, newC));
+      }
+
+      case NAND:
+      case NOR:
+      case IMPLIES:
+      {
+        if (f.phase == Frame::Start)
+        {
+          if (k == IMPLIES && !(f.a.Degree() == 2))
+            FatalError("SimplifyImpliesFormula: vector with wrong num of nodes",
+                       ASTUndefined);
+
+          // NAND and NOR are a negated AND/OR, so the negation they carry
+          // goes into both operands and cancels with the caller's. IMPLIES
+          // negates only its consequent, and only when it is itself negated.
+          return want(f, Frame::BinaryLeft, f.a[0],
+                      (k == IMPLIES) ? false : !f.pushNeg);
+        }
+
+        if (f.phase == Frame::BinaryLeft)
+        {
+          f.t0 = result;
+          return want(f, Frame::BinaryRight, f.a[1],
+                      (k == IMPLIES) ? f.pushNeg : !f.pushNeg);
+        }
+
+        f.t1 = result;
+
+        if (k == NAND)
+          return finish(nf->CreateNode(f.pushNeg ? AND : OR, f.t0, f.t1));
+        if (k == NOR)
+          return finish(nf->CreateNode(f.pushNeg ? OR : AND, f.t0, f.t1));
+
+        if (f.pushNeg)
+          return finish(nf->CreateNode(AND, f.t0, f.t1));
+        if (ASTFalse == f.t0)
+          return finish(ASTTrue);
+        if (ASTTrue == f.t0)
+          return finish(f.t1);
+        if (f.t0 == f.t1)
+          return finish(ASTTrue);
+        if (NOT == f.t0.GetKind())
+          return finish(nf->CreateNode(OR, f.t0[0], f.t1));
+        return finish(nf->CreateNode(OR, nf->CreateNode(NOT, f.t0), f.t1));
+      }
+
+      case IFF:
+      {
+        if (f.phase == Frame::Start)
+        {
+          if (!(f.a.Degree() == 2))
+            FatalError("SimplifyIffFormula: vector with wrong num of nodes",
+                       ASTUndefined);
+
+          // The second operand first, as it was.
+          return want(f, Frame::IffRight, f.a[1], false);
+        }
+
+        if (f.phase == Frame::IffRight)
+        {
+          f.t1 = result;
+          return want(f, Frame::IffLeft, f.a[0], f.pushNeg);
+        }
+
+        if (f.phase == Frame::IffLeft)
+        {
+          f.t0 = result;
+
+          if (ASTTrue == f.t0)
+            return finish(f.t1);
+          if (ASTFalse == f.t0)
+            return want(f, Frame::IffFold, f.t1, true);
+          if (ASTTrue == f.t1)
+            return finish(f.t0);
+          if (ASTFalse == f.t1)
+            return want(f, Frame::IffFold, f.t0, true);
+          if (f.t0 == f.t1)
+            return finish(ASTTrue);
+          if ((NOT == f.t0.GetKind() && f.t0[0] == f.t1) ||
+              (NOT == f.t1.GetKind() && f.t0 == f.t1[0]))
+            return finish(ASTFalse);
+          return finish(nf->CreateNode(XOR, nf->CreateNode(NOT, f.t0), f.t1));
+        }
+
+        return finish(result); // Frame::IffFold
+      }
+
+      case ITE:
+      {
+        if (f.phase == Frame::Start)
+        {
+          if (!(f.a.Degree() == 3))
+            FatalError("SimplifyIteFormula: vector with wrong num of nodes",
+                       ASTUndefined);
+
+          return want(f, Frame::IteCond, f.a[0], false);
+        }
+
+        if (f.phase == Frame::IteCond)
+        {
+          f.t0 = result;
+          return want(f, Frame::IteThen, f.a[1], f.pushNeg);
+        }
+
+        if (f.phase == Frame::IteThen)
+        {
+          f.t1 = result;
+          return want(f, Frame::IteElse, f.a[2], f.pushNeg);
+        }
+
+        if (f.phase == Frame::IteElse)
+        {
+          f.t2 = result;
+
+          // Every structural fold here -- constant condition, equal branches,
+          // a constant branch collapsing to AND/OR -- is done by the
+          // simplifying node factory when the ITE node is (re)created, so we
+          // just hand it the simplified children. The one exception is
+          // ITE(c, false, true): the factory would only give a shallow
+          // NOT(c), whereas pushing the negation into c exposes more
+          // simplifications.
+          if (ASTTrue == f.t0)
+            return finish(f.t1);
+          if (ASTFalse == f.t0)
+            return finish(f.t2);
+          if (ASTFalse == f.t1 && ASTTrue == f.t2)
+            return want(f, Frame::IteFold, f.t0, true);
+          return finish(nf->CreateNode(ITE, f.t0, f.t1, f.t2));
+        }
+
+        return finish(result); // Frame::IteFold
+      }
+
+      default:
+        // kind can be EQ,NEQ,BVLT,BVLE,... or a propositional variable. Its
+        // operands are terms, so this is where the formula walk stops.
+        return finish(SimplifyAtomicFormula(f.a, f.pushNeg));
+    }
   };
 
-  if (!open(b, a))
-    return result;
+  {
+    Frame top;
+    top.b = b;
+    top.pushNeg = pushNeg;
+    stack.push_back(std::move(top));
+  }
 
   while (true)
   {
-    Frame& current = stack.back();
-
-    if (current.waiting)
-    {
-      current.waiting = false;
-      const ASTNode aaa = result;
-
-      if (aaa == current.annihilator)
-      {
-        close(current, current.annihilator);
-        if (stack.empty())
-          return result;
-        continue;
-      }
-      // A child that simplified to the output connective (typically via De
-      // Morgan) would otherwise leave a nested same-kind node, which the
-      // factory does not flatten. Splice its already-simplified operands in
-      // so the result stays flat -- without this SimplifyFormula is not
-      // idempotent.
-      if (aaa.GetKind() == current.outKind)
-        current.outvec.insert(current.outvec.end(), aaa.begin(), aaa.end());
-      else
-        current.outvec.push_back(aaa);
-      current.i++;
-    }
-
-    bool descended = false;
-    bool collapsed = false;
-
-    while (current.i < current.a.Degree())
-    {
-      const ASTNode child = current.a[current.i];
-
-      ASTNode childA, childOut;
-      if (!formulaShortcut(child, pushNeg, childA, childOut))
-      {
-        const Kind ck = childA.GetKind();
-        if (ck == AND || ck == OR)
-        {
-          current.waiting = true;
-          if (open(child, childA))
-          {
-            descended = true;
-            break;
-          }
-          // Already known: `result` holds it, so fall through and take
-          // delivery on the next turn of the outer loop.
-          descended = true;
-          break;
-        }
-        childOut = simplifyNonAndOr(child, childA, pushNeg);
-      }
-
-      if (childOut == current.annihilator)
-      {
-        close(current, current.annihilator);
-        collapsed = true;
-        break;
-      }
-      if (childOut.GetKind() == current.outKind)
-        current.outvec.insert(current.outvec.end(), childOut.begin(),
-                              childOut.end());
-      else
-        current.outvec.push_back(childOut);
-      current.i++;
-    }
-
-    if (collapsed)
-    {
-      if (stack.empty())
-        return result;
-      continue;
-    }
-    if (descended)
+    if (step(stack.back()))
       continue;
 
-    // Hand the simplified children to the node factory. CreateSimpleAndOr
-    // sorts them, drops identities, removes duplicates, detects complements
-    // and unwraps singletons -- so none of that is repeated here.
-    const ASTNode output = nf->CreateNode(current.outKind, current.outvec);
-    close(current, output);
-
+    stack.pop_back();
     if (stack.empty())
       return result;
   }
 }
 
-
-ASTNode Simplifier::SimplifyNotFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  if (!(a.Degree() == 1 && NOT == a.GetKind()))
-    FatalError("SimplifyNotFormula: input vector with more than 1 node",
-               ASTUndefined);
-
-  // if pushNeg is set then there is NOT on top
-  unsigned int NotCount = pushNeg ? 1 : 0;
-  ASTNode o = a;
-  // count the number of NOTs in 'a'
-  while (NOT == o.GetKind())
-  {
-    o = o[0];
-    NotCount++;
-  }
-
-  // pushnegation if there are odd number of NOTs
-  bool pn = (NotCount % 2 == 0) ? false : true;
-
-  if (CheckSimplifyMap(o, output, pn))
-  {
-    return output;
-  }
-
-  if (ASTTrue == o)
-  {
-    output = pn ? ASTFalse : ASTTrue;
-  }
-  else if (ASTFalse == o)
-  {
-    output = pn ? ASTTrue : ASTFalse;
-  }
-  else
-  {
-    output = SimplifyFormula(o, pn);
-  }
-  // memoize
-  UpdateSimplifyMap(o, output, pn);
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyXorFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  assert(a.GetChildren().size() > 0);
-
-  if (a.GetChildren().size() == 1)
-  {
-    output = a[0];
-  }
-  else if (a.GetChildren().size() == 2)
-  {
-    ASTNode a0 = SimplifyFormula(a[0], false);
-    ASTNode a1 = SimplifyFormula(a[1], false);
-    if (pushNeg)
-      a0 = nf->CreateNode(NOT, a0);
-    output = nf->CreateNode(XOR, a0, a1);
-
-    if (a0 == a1)
-      output = ASTFalse;
-    else if ((a0 == ASTTrue && a1 == ASTFalse) ||
-             (a0 == ASTFalse && a1 == ASTTrue))
-      output = ASTTrue;
-  }
-  else
-  {
-    ASTVec newC;
-    for (size_t i = 0; i < a.GetChildren().size(); i++)
-    {
-      newC.push_back(SimplifyFormula(a[i], false));
-    }
-    if (pushNeg)
-      newC[0] = nf->CreateNode(NOT, newC[0]);
-
-    output = nf->CreateNode(XOR, newC);
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyNandFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output, a0, a1;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  // the two NOTs cancel out
-  if (pushNeg)
-  {
-    a0 = SimplifyFormula(a[0], false);
-    a1 = SimplifyFormula(a[1], false);
-    output = nf->CreateNode(AND, a0, a1);
-  }
-  else
-  {
-    // push the NOT implicit in the NAND
-    a0 = SimplifyFormula(a[0], true);
-    a1 = SimplifyFormula(a[1], true);
-    output = nf->CreateNode(OR, a0, a1);
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyNorFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output, a0, a1;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  // the two NOTs cancel out
-  if (pushNeg)
-  {
-    a0 = SimplifyFormula(a[0], false);
-    a1 = SimplifyFormula(a[1], false);
-    output = nf->CreateNode(OR, a0, a1);
-  }
-  else
-  {
-    // push the NOT implicit in the NAND
-    a0 = SimplifyFormula(a[0], true);
-    a1 = SimplifyFormula(a[1], true);
-    output = nf->CreateNode(AND, a0, a1);
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyImpliesFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  if (!(a.Degree() == 2 && IMPLIES == a.GetKind()))
-    FatalError("SimplifyImpliesFormula: vector with wrong num of nodes",
-               ASTUndefined);
-
-  ASTNode c0, c1;
-  if (pushNeg)
-  {
-    c0 = SimplifyFormula(a[0], false);
-    c1 = SimplifyFormula(a[1], true);
-    output = nf->CreateNode(AND, c0, c1);
-  }
-  else
-  {
-    c0 = SimplifyFormula(a[0], false);
-    c1 = SimplifyFormula(a[1], false);
-    if (ASTFalse == c0)
-    {
-      output = ASTTrue;
-    }
-    else if (ASTTrue == c0)
-    {
-      output = c1;
-    }
-    else if (c0 == c1)
-    {
-      output = ASTTrue;
-    }
-    else
-    {
-      if (NOT == c0.GetKind())
-      {
-        output = nf->CreateNode(OR, c0[0], c1);
-      }
-      else
-      {
-        output = nf->CreateNode(OR, nf->CreateNode(NOT, c0), c1);
-      }
-    }
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyIffFormula(const ASTNode& a, bool pushNeg)
-{
-  ASTNode output;
-  if (CheckSimplifyMap(a, output, pushNeg))
-    return output;
-
-  if (!(a.Degree() == 2 && IFF == a.GetKind()))
-    FatalError("SimplifyIffFormula: vector with wrong num of nodes",
-               ASTUndefined);
-
-  ASTNode c0 = a[0];
-  ASTNode c1 = SimplifyFormula(a[1], false);
-
-  if (pushNeg)
-    c0 = SimplifyFormula(c0, true);
-  else
-    c0 = SimplifyFormula(c0, false);
-
-  if (ASTTrue == c0)
-  {
-    output = c1;
-  }
-  else if (ASTFalse == c0)
-  {
-    output = SimplifyFormula(c1, true);
-  }
-  else if (ASTTrue == c1)
-  {
-    output = c0;
-  }
-  else if (ASTFalse == c1)
-  {
-    output = SimplifyFormula(c0, true);
-  }
-  else if (c0 == c1)
-  {
-    output = ASTTrue;
-  }
-  else if ((NOT == c0.GetKind() && c0[0] == c1) ||
-           (NOT == c1.GetKind() && c0 == c1[0]))
-  {
-    output = ASTFalse;
-  }
-  else
-  {
-    output = nf->CreateNode(XOR, nf->CreateNode(NOT, c0), c1);
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
-
-ASTNode Simplifier::SimplifyIteFormula(const ASTNode& b, bool pushNeg)
-{
-  //    if (!optimize_flag)
-  //       return b;
-
-  ASTNode output;
-  if (CheckSimplifyMap(b, output, pushNeg))
-    return output;
-
-  if (!(b.Degree() == 3 && ITE == b.GetKind()))
-    FatalError("SimplifyIteFormula: vector with wrong num of nodes",
-               ASTUndefined);
-
-  ASTNode a = b;
-  ASTNode t0 = SimplifyFormula(a[0], false);
-  ASTNode t1, t2;
-  if (pushNeg)
-  {
-    t1 = SimplifyFormula(a[1], true);
-    t2 = SimplifyFormula(a[2], true);
-  }
-  else
-  {
-    t1 = SimplifyFormula(a[1], false);
-    t2 = SimplifyFormula(a[2], false);
-  }
-
-  // Every structural fold below - constant condition, equal branches, a
-  // constant branch collapsing to AND/OR - is done by the simplifying node
-  // factory when the ITE node is (re)created, so we just hand it the
-  // simplified children. The one exception is ITE(c, false, true): the factory
-  // would only give a shallow NOT(c), whereas pushing the negation into c
-  // exposes more simplifications.
-  if (ASTTrue == t0)
-  {
-    output = t1;
-  }
-  else if (ASTFalse == t0)
-  {
-    output = t2;
-  }
-  else if (ASTFalse == t1 && ASTTrue == t2)
-  {
-    output = SimplifyFormula(t0, true);
-  }
-  else
-  {
-    output = nf->CreateNode(ITE, t0, t1, t2);
-  }
-
-  // memoize
-  UpdateSimplifyMap(a, output, pushNeg);
-  return output;
-}
 
 ASTNode Simplifier::makeTower(const Kind k, const stp::ASTVec& children)
 {

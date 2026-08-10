@@ -11,10 +11,11 @@ touching the pass it names.
 
 What each shape reaches, as measured on 2026-08-10 at the ordinary 8 MiB:
 
-    fp-add     the simplifier's formula recursion (SimplifyFormula ->
-               simplifyNonAndOr -> SimplifyIteFormula) between 7,000 and
-               8,000; with --disable-simplifications it gets past that and
-               dies in FpTotalise::visit between 20,000 and 40,000
+    fp-add     FpTotalise::visit, between 20,000 and 30,000, with the
+               simplifier on or off. Until the simplifier's formula arms
+               were converted it died earlier and elsewhere: between 7,000
+               and 8,000, in SimplifyFormula -> simplifyNonAndOr ->
+               SimplifyIteFormula
     store      numberOfReadsLessThan, which STP.cpp asks on every array
                solve, between 100,000 and 200,000
     and-nest   nothing: the simplifying factory flattens a conjunction as it

@@ -406,6 +406,33 @@ bool simplifyOk(Context& c, unsigned depth)
   return result.GetKind() == AND || result.GetKind() == EQ;
 }
 
+// The formula arms that are not AND or OR. Those two were walked on the heap
+// first, on the argument that the rest "nest through each other rather than
+// through a spine, and nothing has been seen to reach a depth that matters".
+// A float chain's lowering nests NOT and if-then-else exactly that way:
+// scripts/deep-inputs/gen.py fp-add 8000 is a valid query that died in these
+// two arms, at a depth below the deepest input we have.
+bool simplifyFormulaSpineOk(Context& c, unsigned depth)
+{
+  const ASTNode p = c.mgr.CreateSymbol("p", 0, 0);
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("s0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string name = "s" + std::to_string(i);
+    const ASTNode leaf = c.hf->CreateNode(
+        EQ, c.mgr.CreateSymbol(name.c_str(), 0, 8), c.mgr.CreateZeroConst(8));
+    f = c.hf->CreateNode(NOT, c.hf->CreateNode(ITE, p, leaf, f));
+  }
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode result = simp.SimplifyFormula_TopLevel(f, false);
+  c.roots.push_back(result);
+  return result.GetKind() != UNDEFINED;
+}
+
 // BitBlaster::BBTerm, which reaches its operands by calling itself from 24
 // places across its kind switch. Not restated: its memo is filled from the
 // bottom first instead.
@@ -1036,6 +1063,11 @@ TEST(DeepDag, deep_strength_reduction)
 TEST(DeepDag, deep_simplify)
 {
   EXPECT_STACK_SAFE(simplifyOk, 20000);
+}
+
+TEST(DeepDag, deep_simplify_formula_spine)
+{
+  EXPECT_STACK_SAFE(simplifyFormulaSpineOk, 20000);
 }
 
 TEST(DeepDag, deep_bit_blast)

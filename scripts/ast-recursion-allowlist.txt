@@ -39,11 +39,11 @@
 # runs is per-node.
 #
 # Of the 21 on-path, four carry a measured depth and the rest say they do
-# not. Nearest to real input by a wide margin is the formula recursion on the
-# Simplifier::SimplifyTerm line: a chain of fp.add 8,000 deep is a valid
-# query that dies in it today, against the ~9,300 of the deepest input we
-# have. Everything else measured needs 40,000 or more. That is the order to
-# work in, and it is not the order the names suggest.
+# not. That is the order to work in, and it is not the order the names
+# suggest: the one that turned out to be nearest to real input was reached
+# through a pass already marked "partial", and the two with the most alarming
+# names need ten times the depth of anything we have. Nearest now is
+# FpTotalise::visit, at 30,000 against the ~9,300 of the deepest input.
 #
 # The parsing is crude, so some of these are not walks at all -- an overload
 # forwarding to another overload reads the same from outside. Those say so.
@@ -71,7 +71,7 @@ FloatBlast::lower: on-path: as FloatBlast::asPacked -- same pass, same unmeasure
 FloatBlaster::canonicalBits: safe: overload forwarding, not a walk
 FloatBlaster::operandFormat: safe: overload forwarding; the walk it calls looks at one node's children
 FpTotalise::collectRoundingModeTerms: on-path: collects the rounding-mode terms a totalised float expression constrains, one frame per level, over the same expression FpTotalise::visit walks
-FpTotalise::visit: on-path: totalises float operations before lowering, one frame per level, with a persistent cache. Measured on a chain of fp.add: 20,000 solves, 40,000 dies here. With the simplifier on, that query dies earlier still -- between 7,000 and 8,000, in the formula recursion named on Simplifier::SimplifyTerm below, which is the nearest wall to real input this list has
+FpTotalise::visit: on-path: totalises float operations before lowering, one frame per level, with a persistent cache. The front wall on a float chain now that the simplifier's formula arms are converted: `scripts/deep-inputs/gen.py fp-add` solves at 20,000 and dies here at 30,000, with the simplifier on or off -- it used to die at 8,000 in the simplifier instead. Nearest to real input of anything left on this list, and so the next one to do
 GDL_Print: off-path: the GDL printer, behind --print-back-GDL (UserFlags.print_STPinput_back_GDL_flag)
 GDL_Print1: off-path: the same printer, same flag
 HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
@@ -94,7 +94,7 @@ STPMgr::VarSeenInTerm: on-path: walks a term for a variable, one frame per level
 STPMgr::arrayBaseSymbol: on-path: iterative down a write chain, and recursive only into the two branches of an array if-then-else, so its depth is how deeply those nest. Depth not measured
 Simplifier::CombineLikeTerms: safe: overload forwarding, not a walk
 Simplifier::SimplifyArrayTerm: on-path: descends an array term's base array and both branches of an array if-then-else, one frame per level. Not measured: a 200,000-deep store chain dies in numberOfReadsLessThan before reaching it
-Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses. Measured: a chain of fp.add 8,000 deep dies there, 7,000 solves. The frames are SimplifyFormula -> simplifyNonAndOr -> SimplifyIteFormula or SimplifyNotFormula -> SimplifyFormula, which is mutual and so invisible to this check -- the AND/OR driver was converted, these arms were not. At ~8,000 this is the nearest thing on the list to the ~9,300 of the deepest input we have, and the next conversion to do
+Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses. The formula walk that hands it over no longer does: every connective is one heap-framed walk as of the commit that added deep_simplify_formula_spine, so what is left here is the term side alone
 Simplifier::checkIfInSimplifyMap: off-path: a debug check whose one caller is commented out
 SimplifyingNodeFactory::CreateSimpleAndOr: safe: overload forwarding -- the binary form puts its two operands in a vector and calls the vector form
 SplitExtracts::buildMap: on-path: enable_split_extracts defaults true, and this walks the input for extracts over symbols one frame per level, guarded by a visited set. Depth not measured

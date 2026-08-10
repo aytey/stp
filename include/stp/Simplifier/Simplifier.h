@@ -246,30 +246,11 @@ private:
   ASTNode CreateSimplifiedINEQ(const Kind k, const ASTNode& a0,
                                const ASTNode& a1, bool pushNeg);
 
-  ASTNode SimplifyNotFormula(const ASTNode& a, bool pushNeg);
-
   // SimplifyFormula's head: the answers it gives without dispatching at all,
   // plus the PullUpITE'd node the dispatch would run on. True when `out` is
   // the answer.
   bool formulaShortcut(const ASTNode& b, bool pushNeg, ASTNode& a,
                        ASTNode& out);
-
-  // SimplifyFormula's tail for every kind except AND and OR: dispatch, then
-  // record the answer against both the node passed in and the PullUpITE'd
-  // one.
-  ASTNode simplifyNonAndOr(const ASTNode& b, const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyXorFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyNandFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyNorFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyImpliesFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyIffFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode SimplifyIteFormula(const ASTNode& a, bool pushNeg);
 
   ASTNode CombineLikeTerms(const ASTNode& a);
   ASTNode CombineLikeTerms(const ASTVec& a);
