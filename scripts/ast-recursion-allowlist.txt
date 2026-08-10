@@ -28,7 +28,7 @@
 #   unaudited  predates this check. Nobody has looked.
 #
 # Being on this list is NOT a claim that a function is safe. Nothing is
-# "unaudited" any more, but 21 are "on-path", which means someone looked and
+# "unaudited" any more, but 18 are "on-path", which means someone looked and
 # found a recursion a solve can reach and did not convert it. Read the
 # status, not the presence of the name.
 #
@@ -65,7 +65,6 @@ Cpp_interface::newNode: safe: overload forwarding, not a walk
 Dot_Print1: off-path: the dot printer, behind --print-back-DOT (UserFlags.print_STPinput_back_dot_flag)
 ExtensionalityContext::lowerArrayEqualities: safe: overload forwarding, not a walk
 FindPureLiterals::build: on-path: enable_pure_literals defaults true, and this walks the formula for each literal's polarity one frame per level, memoised on nodeToPolarity. Depth not measured
-FlattenKindNoDuplicates: on-path: FlattenKind(AND/OR/BVAND/BVOR) reaches it from the simplifier, the BV solver, PropagateEqualities, MergeSame and UseITEContext, and it walks a nested same-kind chain one frame per level. Measured to die between 100,000 and 150,000 at 8 MiB, and at 20,000 at 1 MiB. No parsed query gets there: the simplifying factory flattens an AND as it builds it, so the nested node never exists -- a 200,000-deep nested AND answers sat. A pass building with the hashing factory would reach it
 FloatBlast::asPacked: on-path: float lowering, one frame per level of a float expression, cached per node. Not measured, and not measurable from a query yet: FpTotalise::visit walks the same expression first and dies before it
 FloatBlast::asUnpacked: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
 FloatBlast::comparisonLeaf: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason

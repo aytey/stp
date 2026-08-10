@@ -656,6 +656,37 @@ bool workListOk(Context& c, unsigned depth)
   return wl.size() > 0;
 }
 
+// FlattenKind, which every pass that wants an n-ary view of a nested
+// same-kind chain goes through: the simplifier, the BV solver,
+// PropagateEqualities, MergeSame and UseITEContext. Its two forms differ in
+// whether they dedup or take a depth limit, and a chain of the kind being
+// flattened reaches each of them one level at a time.
+//
+// The deduplicating form is the one AND, OR, BVAND and BVOR take, and it
+// ignores the depth limit entirely.
+bool flattenKindNoDuplicatesOk(Context& c, unsigned depth)
+{
+  const ASTNode top = c.chain(BVAND, depth);
+  c.roots.push_back(top);
+
+  // The chain is left-nested, so flattening the top node yields every symbol
+  // in it -- which is also how we know the walk reached the bottom.
+  const ASTVec flat = FlattenKind(BVAND, top.GetChildren(), 15);
+  return flat.size() == depth;
+}
+
+// The depth-limited form, which the arithmetic kinds take -- with no limit at
+// all from two of the simplifier's arms, which is where its own recursion is
+// as deep as the chain.
+bool flattenKindDepthOk(Context& c, unsigned depth)
+{
+  const ASTNode top = c.chain(BVPLUS, depth);
+  c.roots.push_back(top);
+
+  const ASTVec flat = FlattenKind(BVPLUS, top.GetChildren());
+  return flat.size() == depth;
+}
+
 // CommonSubSum::topLevel. Already stack-safe; here to keep it that way.
 bool commonSubSumOk(Context& c, unsigned depth)
 {
@@ -1007,6 +1038,18 @@ TEST(DeepDag, shallow_teardown)
   EXPECT_TRUE(teardownOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_flatten_kind_no_duplicates)
+{
+  Context c;
+  EXPECT_TRUE(flattenKindNoDuplicatesOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_flatten_kind_depth)
+{
+  Context c;
+  EXPECT_TRUE(flattenKindDepthOk(c, SHALLOW));
+}
+
 TEST(DeepDag, shallow_strength_reduction)
 {
   Context c;
@@ -1085,6 +1128,16 @@ TEST(DeepDag, deep_substitution)
 TEST(DeepDag, deep_teardown)
 {
   EXPECT_STACK_SAFE(teardownOk, 50000);
+}
+
+TEST(DeepDag, deep_flatten_kind_no_duplicates)
+{
+  EXPECT_STACK_SAFE(flattenKindNoDuplicatesOk, 20000);
+}
+
+TEST(DeepDag, deep_flatten_kind_depth)
+{
+  EXPECT_STACK_SAFE(flattenKindDepthOk, 20000);
 }
 
 TEST(DeepDag, deep_strength_reduction)

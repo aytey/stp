@@ -389,44 +389,91 @@ ASTVec toASTVec(const ASTChildren& c)
   return ASTVec(c.begin(), c.end());
 }
 
+// Where the walk of one node's children has got to. `depth` is how much
+// further the depth-limited form below may descend; the deduplicating one
+// ignores it, as it always has.
+//
+// The frames are on the heap. A nested same-kind chain is as deep as the
+// input nests, and a call per level exhausts the stack: measured to die
+// between 100,000 and 150,000 at 8 MiB. Reached from the simplifier, the BV
+// solver, PropagateEqualities, MergeSame and UseITEContext -- and while no
+// parsed query gets there today, because the simplifying factory flattens a
+// conjunction as it builds one, that is a property of the factory rather
+// than of these functions. A pass building through the hashing factory
+// reaches it. See DeepDag_Test.cpp.
+namespace
+{
+struct FlattenFrame
+{
+  ASTChildren children;
+  size_t i;
+  int depth;
+
+  FlattenFrame(const ASTChildren& c, int d) : children(c), i(0), depth(d) {}
+};
+}
+
 void FlattenKindNoDuplicates(const Kind k, const ASTChildren& children,
                              ASTVec& flat_children,
                              ASTNodeSet& alreadyFlattened)
 {
-  const auto ch_end = children.end();
-  for (auto it = children.begin(); it != ch_end; it++)
+  // Children left to right, and a same-kind one expanded where it is reached,
+  // so flat_children comes out in the order the recursion built it. The
+  // frames hold spans into each node's own child storage, which the node
+  // above keeps alive for the whole walk.
+  std::vector<FlattenFrame> stack;
+  stack.push_back(FlattenFrame(children, 0));
+
+  while (!stack.empty())
   {
-    const Kind ck = it->GetKind();
-    if (k == ck)
+    FlattenFrame& f = stack.back();
+    if (f.i == f.children.size())
     {
-      if (alreadyFlattened.find(*it) == alreadyFlattened.end())
-      {
-        alreadyFlattened.insert(*it);
-        FlattenKindNoDuplicates(k, it->GetChildren(), flat_children,
-                                alreadyFlattened);
-      }
+      stack.pop_back();
+      continue;
     }
-    else
+
+    // The child is stored in the node that lists it, so this reference
+    // survives the push below even though `f` does not.
+    const ASTNode& child = f.children[f.i++];
+
+    if (k != child.GetKind())
     {
-      flat_children.push_back(*it);
+      flat_children.push_back(child);
+      continue;
     }
+
+    // A same-kind child seen before contributes nothing a second time: its
+    // operands are already in flat_children.
+    if (!alreadyFlattened.insert(child).second)
+      continue;
+
+    // Nothing above may be read after this.
+    stack.push_back(FlattenFrame(child.GetChildren(), 0));
   }
 }
 
 void FlattenKind(const Kind k, const ASTChildren& children, ASTVec& flat_children, int depth)
 {
-  auto ch_end = children.end();
-  for (auto it = children.begin(); it != ch_end; it++)
+  std::vector<FlattenFrame> stack;
+  stack.push_back(FlattenFrame(children, depth));
+
+  while (!stack.empty())
   {
-    const Kind ck = it->GetKind();
-    if (k == ck && depth >= 0 )
+    FlattenFrame& f = stack.back();
+    if (f.i == f.children.size())
     {
-      FlattenKind(k, it->GetChildren(), flat_children, depth-1);
+      stack.pop_back();
+      continue;
     }
+
+    const ASTNode& child = f.children[f.i++];
+    const int below = f.depth - 1; // read before the push, which moves `f`.
+
+    if (k == child.GetKind() && f.depth >= 0)
+      stack.push_back(FlattenFrame(child.GetChildren(), below));
     else
-    {
-      flat_children.push_back(*it);
-    }
+      flat_children.push_back(child);
   }
 }
 
