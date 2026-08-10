@@ -809,6 +809,9 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
   const bool use_incremental =
       b->UserFlags.incremental_solving &&
       (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 1);
+  const bool firstForcedIncrementalSolve =
+      use_incremental && stp_i->incrementalFromStart &&
+      stp_i->incrementalSolvesRun == 0;
   stp_i->incrementalSolvesRun++;
   if (use_incremental)
   {
@@ -829,7 +832,7 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
 
     stp::IncrementalSolver* inc = stp_i->getIncrementalSolver();
     if (inc->canHandle(levels))
-      return inc->checkSat(levels);
+      return inc->checkSat(levels, false, firstForcedIncrementalSolve);
   }
 
   const stp::ASTVec v = b->GetAsserts();

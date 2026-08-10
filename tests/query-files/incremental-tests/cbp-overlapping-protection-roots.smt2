@@ -6,6 +6,7 @@
 ; at much larger scale in CPAchecker QF_BV queries.
 ; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-profile --check-sanity %s 2>&1 | %OutputCheck --check-prefix=PROFILE %s
+; RUN: %solver --incremental --incremental-profile --incremental-cbp-bootstrap-limit 1 --check-sanity %s 2>&1 | %OutputCheck --check-prefix=DEFER %s
 (set-logic QF_BV)
 (declare-fun x00 () (_ BitVec 16))
 (declare-fun x01 () (_ BitVec 16))
@@ -64,10 +65,14 @@
 ; CHECK-NEXT: ^sat
 ; PROFILE: Incremental profile cbp/backend: check=1 .*cbp-adoptions=1 .*cbp-deferred-restored=[1-9][0-9]+
 ; PROFILE: ^sat
+; DEFER: Incremental profile cbp/backend: check=1 .*cbp-fed-levels=0 .*cbp-bootstrap-deferred=1
+; DEFER: ^sat
 (check-sat)
 (assert (distinct s15 #x0000))
 ; CHECK-NEXT: ^unsat
 ; PROFILE: ^unsat
+; DEFER: Incremental profile cbp/backend: check=2 .*cbp-fed-levels=[1-9][0-9]* .*cbp-bootstrap-deferred=0
+; DEFER: ^unsat
 (check-sat)
 (pop 1)
 (pop 1)

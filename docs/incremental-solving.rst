@@ -197,6 +197,15 @@ entry.
 behavior as a diagnostic oracle. It is intended for differential validation,
 not normal solving.
 
+When ``--incremental`` explicitly engages the driver on the first real solve,
+there is not yet a CBP prefix to reuse. If the sum of the assertion-level DAGs
+exceeds ``--incremental-cbp-bootstrap-limit`` (100,000 nodes by default), that
+first solve skips only this cross-level prepass. A later real solve builds CBP
+from the complete then-live stack in the normal way, so no persistent fact or
+future reuse is lost. Automatic sessions do not take this path: their first two
+solves use the batch pipeline and CBP starts normally when the driver engages
+on the third. Set the limit to 0 to disable the deferral.
+
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
 costs one assumption however many assertions it carries, which keeps the
@@ -590,8 +599,11 @@ Limitations
   shared subcircuits), not at the record level.
 - Forcing the driver from the first solve (``--incremental``) on a large
   all-new formula deliberately trades the batch pipeline's global
-  simplification for encoding reuse that cannot pay off yet; the default
-  engagement policy exists precisely because of this.
+  simplification for encoding reuse that cannot pay off yet. The large-CBP
+  bootstrap deferral removes one measured prepass cost, but cannot reproduce
+  simplifications in which a deeper scope collapses the encoding of a
+  shallower scope; the default engagement policy exists precisely because of
+  that structural difference.
 
 Maintainer architecture review
 ------------------------------

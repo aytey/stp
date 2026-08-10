@@ -102,6 +102,12 @@ public:
   // implementation did. This is intentionally off in normal solving.
   bool incremental_cbp_reset = false;
 
+  // Explicit --incremental starts before there is any persistent state to
+  // reuse. On a very large first stack, building the cross-level CBP engine
+  // can cost more than the only solve; defer that bootstrap until a later
+  // real check. 0 disables the deferral.
+  int64_t incremental_cbp_bootstrap_limit = 100000;
+
   // The persistent encoding grows monotonically; when the solver's variable
   // count passes this limit AND most encodings belong to popped,
   // never-returning content, the solver is rebuilt from the live stack

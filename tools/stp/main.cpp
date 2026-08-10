@@ -444,6 +444,13 @@ void ExtraMain::create_options()
                "on stack divergence (diagnostic oracle)")
       ->group(misc_group);
 
+  int64_arg("--incremental-cbp-bootstrap-limit",
+            bm->UserFlags.incremental_cbp_bootstrap_limit,
+            "on an explicitly forced first incremental solve, defer the "
+            "cross-level CBP bootstrap when the assertion stack exceeds "
+            "this many DAG nodes. 0 disables the deferral.",
+            misc_group);
+
   int64_arg("--incremental-reencode-limit",
             bm->UserFlags.incremental_reencode_limit,
             "rebuild the incremental solver from the live assertion stack "

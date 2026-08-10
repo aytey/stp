@@ -713,6 +713,8 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
         bm.UserFlags.incremental_solving &&
         (incremental_from_start || solves_run > 1) &&
         GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
+    const bool firstForcedIncrementalSolve =
+        use_incremental && incremental_from_start && solves_run == 0;
     solves_run++;
 
     SOLVER_RETURN_TYPE last_result;
@@ -721,7 +723,8 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
       // The incremental driver keeps its SAT solver and encoding across
       // check-sats; resetSolver() above cleared only batch-pipeline tables.
       IncrementalSolver* inc = GlobalSTP->getIncrementalSolver();
-      last_result = inc->checkSat(assertionsSMT2, fromCheckSatAssuming);
+      last_result = inc->checkSat(assertionsSMT2, fromCheckSatAssuming,
+                                  firstForcedIncrementalSolve);
 
       // Core-aware caching: when the refutation's failed assumptions all
       // lie at or below some level D beneath the top, the stack truncated

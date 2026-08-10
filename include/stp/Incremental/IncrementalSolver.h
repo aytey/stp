@@ -85,6 +85,10 @@ public:
   // assumed one root literal each instead of grouped under an activation
   // literal -- check-sat-assuming passes its assumptions as that level and
   // wants per-assumption failure granularity for get-unsat-assumptions.
+  // `deferLargeBootstrapCbp` is set only by a frontend explicitly forced
+  // incremental from its first real solve. It may leave an oversized,
+  // initially empty cross-level propagation engine unbuilt until the next
+  // solve; all constraints are still prepared and encoded normally.
   //
   // The driver holds no per-level state: the assumption set is recomputed
   // from `assertionsSMT2` on every call (against permanent encoding caches),
@@ -93,7 +97,8 @@ public:
   // clauses, which is sound because the base level only ever grows; it is
   // destroyed only by reset/reset-assertions, which destroy this object.
   SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2,
-                              bool assumeLastLevelPerConjunct = false);
+                              bool assumeLastLevelPerConjunct = false,
+                              bool deferLargeBootstrapCbp = false);
 
   // The unsat story of the most recent checkSat, valid until the next one.
   // hasAssumptionGranularity: the last level was assumed per conjunct and
@@ -140,7 +145,8 @@ private:
   // nodes deep enough (tens of thousands of levels from flat input) to
   // exhaust a default-sized stack.
   SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
-                                            bool assumeLastLevelPerConjunct);
+                                            bool assumeLastLevelPerConjunct,
+                                            bool deferLargeBootstrapCbp);
 
   // Run `body` on the large-stack worker with the thread-local solver
   // state carried across (CONSTANTBV boot, the node uid counter);

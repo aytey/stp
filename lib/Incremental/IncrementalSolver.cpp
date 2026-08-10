@@ -313,6 +313,7 @@ struct IncrementalSolver::Impl
     uint64_t cbpFreshNodes = 0;
     uint64_t cbpRefedNodes = 0;
     uint64_t cbpFeedRejected = 0;
+    uint64_t cbpBootstrapDeferred = 0;
     uint64_t cbpAdoptAttempts = 0;
     uint64_t cbpAdoptions = 0;
     uint64_t cbpReplayAttempts = 0;
@@ -377,6 +378,7 @@ struct IncrementalSolver::Impl
     uint64_t cbpFreshNodes = 0;
     uint64_t cbpRefedNodes = 0;
     uint64_t cbpFeedRejected = 0;
+    uint64_t cbpBootstrapDeferred = 0;
     uint64_t cbpAdoptAttempts = 0;
     uint64_t cbpAdoptions = 0;
     uint64_t cbpReplayAttempts = 0;
@@ -452,6 +454,7 @@ struct IncrementalSolver::Impl
       cbpFreshNodes += p.cbpFreshNodes;
       cbpRefedNodes += p.cbpRefedNodes;
       cbpFeedRejected += p.cbpFeedRejected;
+      cbpBootstrapDeferred += p.cbpBootstrapDeferred;
       cbpAdoptAttempts += p.cbpAdoptAttempts;
       cbpAdoptions += p.cbpAdoptions;
       cbpReplayAttempts += p.cbpReplayAttempts;
@@ -825,6 +828,24 @@ struct IncrementalSolver::Impl
     const size_t s = dagSizeUpTo(n, cap);
     memo[n] = s;
     return s;
+  }
+
+  // CBP's cost follows the sum of the level DAGs it feeds (a shared node in
+  // two levels is deliberately visited twice by the scoped engine). Bound
+  // the estimate itself by the policy limit: as soon as the next level
+  // crosses it, finishing that walk cannot change the decision.
+  bool cbpStackExceeds(const ASTVec& levels, size_t limit)
+  {
+    size_t total = 0;
+    for (const ASTNode& level : levels)
+    {
+      const size_t remaining = limit - total;
+      const size_t nodes = dagSizeUpTo(level, remaining);
+      if (nodes > remaining)
+        return true;
+      total += nodes;
+    }
+    return false;
   }
 
   // ── Session-persistent constant-bit propagation over the live prefix ──
@@ -2166,6 +2187,7 @@ struct IncrementalSolver::Impl
         << " cbp-fresh-nodes=" << profile.cbpFreshNodes
         << " cbp-refed-nodes=" << profile.cbpRefedNodes
         << " cbp-feed-rejected=" << profile.cbpFeedRejected
+        << " cbp-bootstrap-deferred=" << profile.cbpBootstrapDeferred
         << " cbp-adopt-attempts=" << profile.cbpAdoptAttempts
         << " cbp-adoptions=" << profile.cbpAdoptions
         << " cbp-replay-attempts=" << profile.cbpReplayAttempts
@@ -2237,6 +2259,8 @@ struct IncrementalSolver::Impl
         << " cbp-fresh-nodes=" << sessionProfile.cbpFreshNodes
         << " cbp-refed-nodes=" << sessionProfile.cbpRefedNodes
         << " cbp-feed-rejected=" << sessionProfile.cbpFeedRejected
+        << " cbp-bootstrap-deferred="
+        << sessionProfile.cbpBootstrapDeferred
         << " cbp-adopt-attempts=" << sessionProfile.cbpAdoptAttempts
         << " cbp-adoptions=" << sessionProfile.cbpAdoptions
         << " cbp-replay-attempts=" << sessionProfile.cbpReplayAttempts
@@ -4158,13 +4182,15 @@ void IncrementalSolver::runOnDriverStack(const std::function<void()>& body)
 }
 
 SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
-                                               bool assumeLastLevelPerConjunct)
+                                               bool assumeLastLevelPerConjunct,
+                                               bool deferLargeBootstrapCbp)
 {
   impl->beginProfile(assertionsSMT2.size());
   SOLVER_RETURN_TYPE result = SOLVER_ERROR;
   runOnDriverStack([&]() {
-    result =
-        checkSatOnCurrentStack(assertionsSMT2, assumeLastLevelPerConjunct);
+    result = checkSatOnCurrentStack(assertionsSMT2,
+                                    assumeLastLevelPerConjunct,
+                                    deferLargeBootstrapCbp);
   });
   impl->finishProfile();
   return result;
@@ -4200,7 +4226,8 @@ void IncrementalSolver::materializeOnCurrentStack()
 
 SOLVER_RETURN_TYPE
 IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
-                                          bool assumeLastLevelPerConjunct)
+                                          bool assumeLastLevelPerConjunct,
+                                          bool deferLargeBootstrapCbp)
 {
   STPMgr* bm = impl->bm;
   UserDefinedFlags& uf = bm->UserFlags;
@@ -4398,10 +4425,45 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // longest common prefix; the diagnostic reset mode rebuilds that prefix
   // instead. The rewrite/fact memo has its own matching-prefix watermark
   // (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
+  bool cbpBootstrapDeferred = false;
   {
     ScopedProfileTimer cbpTimer(impl->profile.enabled, impl->profile.cbpNs);
     ScopedProfileTimer syncTimer(impl->profile.enabled,
                                  impl->profile.cbpSyncNs);
+
+    // A forced first solve has no CBP prefix to reuse yet. Building a large
+    // engine for that one solve was the dominant remaining cost on the
+    // CPAchecker QF_BV first-check family, usually with no adoption at all.
+    // Leave the engine genuinely empty for this call; if another real solve
+    // follows, its ordinary prefix feed builds the complete current state.
+    // Automatic sessions never request this -- their first two solves remain
+    // on the whole-formula batch pipeline and the driver engages normally on
+    // the third.
+    const int64_t configuredBootstrapLimit =
+        uf.incremental_cbp_bootstrap_limit;
+    if (deferLargeBootstrapCbp && configuredBootstrapLimit > 0 &&
+        uf.optimize_flag && uf.bitConstantProp_flag &&
+        assertionsSMT2.size() > 1 && impl->cbpFedLevels.empty() &&
+        impl->cbpMemo.empty())
+    {
+      const uint64_t configured =
+          static_cast<uint64_t>(configuredBootstrapLimit);
+      const size_t limit =
+          configured > std::numeric_limits<size_t>::max()
+              ? std::numeric_limits<size_t>::max()
+              : static_cast<size_t>(configured);
+      cbpBootstrapDeferred = impl->cbpStackExceeds(assertionsSMT2, limit);
+      if (cbpBootstrapDeferred)
+      {
+        if (impl->profile.enabled)
+          impl->profile.cbpBootstrapDeferred++;
+        if (uf.stats_flag)
+          std::cerr << "Incremental: deferred large first-solve cbp "
+                       "bootstrap"
+                    << std::endl;
+      }
+    }
+
     size_t lcp = 0;
     while (lcp < impl->cbpFedLevels.size() && lcp < assertionsSMT2.size() &&
            impl->cbpFedLevels[lcp] == assertionsSMT2[lcp])
@@ -4488,7 +4550,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
-  impl->callCbpOff = impl->cbpSessionRetired;
+  impl->callCbpOff = impl->cbpSessionRetired || cbpBootstrapDeferred;
   impl->callCbpConflict = false;
 
   // Base level: every conjunct becomes a permanent unit clause, once. The
