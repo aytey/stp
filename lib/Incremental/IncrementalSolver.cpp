@@ -624,6 +624,49 @@ struct IncrementalSolver::Impl
   // Per-node symbol sets, memoised; the keys hold their nodes.
   std::map<ASTNode, ASTNodeSet> symbolsOfCache;
 
+  // Allocation-free scratch marks for symbol DAG walks. Node ids are
+  // process-thread-wide rather than manager-local, so use lazily allocated
+  // pages relative to this manager's first node: interleaved C API contexts
+  // then cost a few empty page pointers, not a dense array spanning every
+  // other context's nodes.
+  static const size_t symbolVisitPageBits = 16;
+  static const size_t symbolVisitPageSize = size_t(1) << symbolVisitPageBits;
+  static const size_t symbolVisitPageMask = symbolVisitPageSize - 1;
+  std::vector<std::unique_ptr<uint8_t[]>> symbolVisitPages;
+  uint8_t symbolVisitEpoch = 0;
+
+  void beginSymbolVisit()
+  {
+    symbolVisitEpoch++;
+    if (symbolVisitEpoch != 0)
+      return;
+    for (std::unique_ptr<uint8_t[]>& page : symbolVisitPages)
+      if (page)
+        std::fill(page.get(), page.get() + symbolVisitPageSize, uint8_t(0));
+    symbolVisitEpoch = 1;
+  }
+
+  bool firstSymbolVisit(const ASTNode& n)
+  {
+    const uint64_t base = bm->ASTFalse.GetNodeNum();
+    const uint64_t node = n.GetNodeNum();
+    assert(node >= base);
+    const uint64_t relative = node - base;
+    const uint64_t page64 = relative >> symbolVisitPageBits;
+    assert(page64 <= std::numeric_limits<size_t>::max());
+    const size_t pageIndex = static_cast<size_t>(page64);
+    if (pageIndex >= symbolVisitPages.size())
+      symbolVisitPages.resize(pageIndex + 1);
+    std::unique_ptr<uint8_t[]>& page = symbolVisitPages[pageIndex];
+    if (!page)
+      page.reset(new uint8_t[symbolVisitPageSize]());
+    uint8_t& mark = page[static_cast<size_t>(relative) & symbolVisitPageMask];
+    if (mark == symbolVisitEpoch)
+      return false;
+    mark = symbolVisitEpoch;
+    return true;
+  }
+
   // The eliminated definitions of the levels the CURRENT solve used,
   // seeded into the model channel alongside sigma0's.
   std::vector<std::pair<ASTNode, ASTNode>> activeEliminatedDefs;
@@ -1437,21 +1480,48 @@ struct IncrementalSolver::Impl
     std::map<ASTNode, ASTNodeSet>::iterator hit = symbolsOfCache.find(n);
     if (hit != symbolsOfCache.end())
       return hit->second;
+
+    beginSymbolVisit();
+
     ASTNodeSet& out = symbolsOfCache[n];
-    ASTNodeSet visited;
     std::vector<ASTNode> pending(1, n);
     while (!pending.empty())
     {
       const ASTNode cur = pending.back();
       pending.pop_back();
-      if (!visited.insert(cur).second)
+      if (!firstSymbolVisit(cur))
         continue;
+
       if (cur.GetKind() == SYMBOL)
         out.insert(cur);
       for (unsigned i = 0; i < cur.Degree(); i++)
         pending.push_back(cur[i]);
     }
     return out;
+  }
+
+  // Add the union of symbols reachable from several roots in ONE DAG walk.
+  // Calling symbolsOf() for each root separately is intentionally useful when
+  // callers need each individual set, but is catastrophic for a large family
+  // of overlapping roots: CBP can expose thousands of eligible fixed domains
+  // over the same define-fun spine.  Protection only needs their union.
+  void addSymbolsOf(const ASTVec& roots, ASTNodeSet& out)
+  {
+    if (roots.empty())
+      return;
+    beginSymbolVisit();
+    ASTVec pending = roots;
+    while (!pending.empty())
+    {
+      const ASTNode cur = pending.back();
+      pending.pop_back();
+      if (!firstSymbolVisit(cur))
+        continue;
+      if (cur.GetKind() == SYMBOL)
+        out.insert(cur);
+      for (unsigned i = 0; i < cur.Degree(); i++)
+        pending.push_back(cur[i]);
+    }
   }
 
   // Screen a piece of raw content that has never been seen: any symbol it
@@ -4661,13 +4731,16 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // domain up front, so a fact discovered by a later piece cannot make
         // an earlier piece's definition elimination unsound.  This is a
         // conservative superset: cbpAdopt emits only reachable domains.
+        ASTVec eligibleDomains;
+        eligibleDomains.reserve(impl->callCbpSubst.size());
         for (ASTNodeMap::const_iterator it = impl->callCbpSubst.begin();
              it != impl->callCbpSubst.end(); ++it)
         {
           if (impl->callCbpFedConjuncts.find(it->first) ==
               impl->callCbpFedConjuncts.end())
-            protectSymbols(it->first);
+            eligibleDomains.push_back(it->first);
         }
+        impl->addSymbolsOf(eligibleDomains, cbpProtectedSymbols);
       }
       size_t cbpMemoIdx = 0;
       std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
