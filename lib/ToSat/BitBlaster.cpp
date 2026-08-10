@@ -752,11 +752,11 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
     return it->second;
   }
 
-  if (!primingTerm && uf->prime_memos)
+  if (!priming && uf != NULL && uf->prime_memos)
   {
-    primingTerm = true;
-    primeTermMemo(term, support);
-    primingTerm = false;
+    priming = true;
+    primeMemos(term, support);
+    priming = false;
 
     it = BBTermMemo.find(term);
     if (it != BBTermMemo.end())
@@ -1257,82 +1257,73 @@ const BBNode BitBlaster::BBForm(const ASTNode& form)
     return nf->CreateNode(AND, v);
 }
 
-// The kinds BBForm blasts by blasting operands that are themselves
-// formulas. Every other kind either has no operands or hands them to
-// BBTerm, which is its own walk.
-static bool bbFormDescends(const Kind k)
+// The operands of a node, in the order the blaster reaches them, where that
+// is not left to right. Only the mirrored floating-point comparisons: to
+// blast fp.lt(a,b) BBcompareFP treats it as fp.gt(b,a) and blasts b first.
+// A walk that primed them left to right would build the same nodes in the
+// other order, and the CNF with them.
+static bool bbOperands(const ASTNode& n, ASTVec& out)
 {
-  switch (k)
-  {
-    case NOT:
-    case ITE:
-    case AND:
-    case OR:
-    case NAND:
-    case NOR:
-    case IFF:
-    case XOR:
-    case IMPLIES:
-      return true;
-    default:
-      return false;
-  }
+  const Kind k = n.GetKind();
+  if (k != FP_LT && k != FP_LEQ)
+    return false; // its own children, which the walk reads in place.
+
+  out.push_back(n[1]);
+  out.push_back(n[0]);
+  return true;
 }
 
-// Blast every formula below `form` before `form` itself, so that the calls
-// BBForm makes on its operands all land on the memo and the recursion never
-// goes more than one deep.
+// Blast everything below `n` before `n` itself, so that the calls the
+// blaster makes on its operands all land on a memo and its recursion never
+// goes more than one deep. BBForm reaches its operands by calling itself for
+// the connectives; BBTerm reaches its own from 24 places across a 450-line
+// switch. Neither is restated: filling their memos from the bottom is what
+// makes them stack-safe.
 //
-// The order is the order BBForm would have reached these nodes in: operands
-// left to right, each finished before the next is started, the node itself
-// last. Nothing here is blasted that BBForm would not have blasted -- none
-// of these kinds stops early -- so the same nodes are built, by the same
-// factory calls, in the same sequence. That is load-bearing: the CNF must
-// not depend on the order operands happen to be evaluated in, which is why
-// the ITE case below blasts into named variables.
-void BitBlaster::primeFormMemo(const ASTNode& form, BBNodeSet& support)
+// One walk over both memos rather than one each. The two sides reach each
+// other freely -- an ITE's condition is a formula inside a term, an
+// equality's operands are terms inside a formula -- so a walk that stopped
+// at the type boundary and left the far side to "the other walk" only works
+// if the other walk is running. It is not: it is guarded against re-entering
+// while this one is in progress. That is how a term below a formula below a
+// term used to go down the stack, and a walk that crosses the boundary
+// itself has no such hole. See DeepDag_Test.cpp.
+//
+// It is sound because of what the blaster does not do. No arm of either
+// function stops before an operand, so every node primed is one that would
+// have been blasted anyway; the order is the order they would have been
+// blasted in, operands first and each finished before the next starts. That
+// is load-bearing -- the CNF must not depend on the order operands happen to
+// be evaluated in, which is why BBForm blasts an ITE's arms into named
+// variables -- and it is what `bbOperands` above exists for.
+void BitBlaster::primeMemos(const ASTNode& n, BBNodeSet& support)
 {
   primeMemo(
-      form,
-      [this](const ASTNode& n) {
-        if (BBFormMemo.find(n) != BBFormMemo.end())
-          return Walk::Skip; // BBForm would take it from the memo.
-        // Anything else is a formula whose operands are terms, so it is
-        // blasted where it stands: BBTerm's walk, not this one.
-        return bbFormDescends(n.GetKind()) ? Walk::Descend : Walk::Visit;
-      },
-      [this, &support](const ASTNode& n) { BBForm(n, support); });
-}
-
-// The same for terms. BBTerm reaches its operands by calling itself from 24
-// places across a 450-line switch, so priming is what makes it stack-safe
-// without restating any of it.
-//
-// A constant operand is skipped: the kinds that carry one -- BVEXTRACT's
-// indices, BVSX's width -- never blast it, and blasting it here would put a
-// node in the memo that the pass never asked for. Every other operand is
-// blasted where BBTerm would have blasted it, which for a leaf is at the
-// point its parent reaches it, and for a boolean operand is through BBForm.
-void BitBlaster::primeTermMemo(const ASTNode& term, BBNodeSet& support)
-{
-  primeMemo(
-      term,
-      [this](const ASTNode& n) {
-        if (n.isConstant())
+      n,
+      [this](const ASTNode& node) {
+        if (node.GetType() == BOOLEAN_TYPE)
+        {
+          // Ahead of the constant test below, because BBForm memoises TRUE
+          // and FALSE: the walk hands them over rather than skipping them.
+          if (BBFormMemo.find(node) != BBFormMemo.end())
+            return Walk::Skip; // BBForm would take it from the memo.
+          return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
+        }
+        // A constant operand is skipped: the kinds that carry one --
+        // BVEXTRACT's indices, BVSX's width -- never blast it, and blasting
+        // it here would put a node in the memo the pass never asked for.
+        if (node.isConstant())
           return Walk::Skip;
-        if (BBTermMemo.find(n) != BBTermMemo.end())
+        if (BBTermMemo.find(node) != BBTermMemo.end())
           return Walk::Skip;
-        // A boolean operand (an ITE's condition) is BBForm's, and BBForm
-        // primes its own side.
-        if (n.GetType() == BOOLEAN_TYPE)
-          return Walk::Visit;
-        return n.Degree() == 0 ? Walk::Visit : Walk::Descend;
+        return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
       },
-      [this, &support](const ASTNode& n) {
-        if (n.GetType() == BOOLEAN_TYPE)
-          BBForm(n, support);
+      bbOperands,
+      [this, &support](const ASTNode& node) {
+        if (node.GetType() == BOOLEAN_TYPE)
+          BBForm(node, support);
         else
-          BBTerm(n, support);
+          BBTerm(node, support);
       });
 }
 
@@ -1347,10 +1338,10 @@ const BBNode BitBlaster::BBForm(const ASTNode& form,
     return it->second;
   }
 
-  if (!priming && uf->prime_memos)
+  if (!priming && uf != NULL && uf->prime_memos)
   {
     priming = true;
-    primeFormMemo(form, support);
+    primeMemos(form, support);
     priming = false;
 
     it = BBFormMemo.find(form);

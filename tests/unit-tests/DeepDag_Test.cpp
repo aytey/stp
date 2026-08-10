@@ -390,6 +390,39 @@ bool bitBlastTermOk(Context& c, unsigned depth)
   return nm.totalNumberOfNodes() >= depth;
 }
 
+// A deep term that is only reachable through a formula that is only
+// reachable through a term: the chain is an equality's operand, the equality
+// is an ITE's condition, and the ITE is a term. Priming each memo on its own
+// left this to the recursion -- the walk over terms handed the condition to
+// BBForm and stopped, and the walk over formulas was suppressed while the
+// first was running, so nothing primed the chain and BBTerm descended it a
+// frame at a time.
+ASTNode termUnderFormulaUnderTerm(Context& c, unsigned depth)
+{
+  const ASTNode chain = c.chain(BVXOR, depth);
+  const ASTNode cond = c.hf->CreateNode(EQ, chain, c.mgr.CreateZeroConst(8));
+  const ASTNode y0 = c.mgr.CreateSymbol("y0", 0, 8);
+  const ASTNode y1 = c.mgr.CreateSymbol("y1", 0, 8);
+  const ASTNode ite = c.hf->CreateTerm(ITE, 8, cond, y0, y1);
+  return c.hf->CreateTerm(BVMULT, 8, ite, y0);
+}
+
+bool bitBlastNestedOk(Context& c, unsigned depth)
+{
+  const ASTNode f = c.formula(termUnderFormulaUnderTerm(c, depth));
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  BBNodeManagerAIG nm;
+  BitBlaster bb(&nm, &simp, c.nf, &c.mgr.UserFlags);
+  bb.BBForm(f);
+
+  // The chain is under the condition, so it cannot have been blasted
+  // without the walk having crossed into it.
+  return nm.totalNumberOfNodes() >= depth;
+}
+
 // BitBlaster::BBForm, which blasts a formula's operands by calling itself.
 bool bitBlastOk(Context& c, unsigned depth)
 {
@@ -644,6 +677,12 @@ TEST(DeepDag, shallow_bit_blast_term)
   EXPECT_TRUE(bitBlastTermOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_bit_blast_nested)
+{
+  Context c;
+  EXPECT_TRUE(bitBlastNestedOk(c, SHALLOW));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
@@ -712,6 +751,11 @@ TEST(DeepDag, deep_bit_blast)
 TEST(DeepDag, deep_bit_blast_term)
 {
   EXPECT_STACK_SAFE(bitBlastTermOk, 20000);
+}
+
+TEST(DeepDag, deep_bit_blast_nested)
+{
+  EXPECT_STACK_SAFE(bitBlastNestedOk, 20000);
 }
 
 TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }

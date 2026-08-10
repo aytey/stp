@@ -283,16 +283,14 @@ class BitBlaster
 
   const BBNode BBForm(const ASTNode& form, BBNodeSet& support);
 
-  // BBForm blasts a formula's operands by calling itself, so a formula
-  // nested as deeply as the input takes the stack with it. This fills the
-  // memo from the bottom up first, so those calls return at the memo and
-  // the walking is done with frames on the heap. See DeepDag_Test.cpp.
-  void primeFormMemo(const ASTNode& form, BBNodeSet& support);
+  // BBForm and BBTerm both blast a node's operands by calling themselves, so
+  // input nested deeply enough takes the stack with it. This fills both
+  // memos from the bottom up first, so those calls return at a memo and the
+  // walking is done with frames on the heap. One walk over both, because the
+  // two reach each other: a formula's operands can be terms and a term's can
+  // be formulas. See DeepDag_Test.cpp.
+  void primeMemos(const ASTNode& n, BBNodeSet& support);
   bool priming = false;
-
-  // The same for BBTerm, which reaches its operands the same way.
-  void primeTermMemo(const ASTNode& term, BBNodeSet& support);
-  bool primingTerm = false;
 
   bool isConstant(const BBNodeVec& v);
   ASTNode getConstant(const BBNodeVec& v, const ASTNode& n);
