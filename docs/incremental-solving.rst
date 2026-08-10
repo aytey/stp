@@ -220,6 +220,23 @@ base preprocessing, which previously forfeited persistent roots and regressed
 changing-stack sessions. Automatic third-solve engagement has already run two
 whole-formula batch passes and therefore does not take this special path.
 
+A multi-level, plain-BV first stack gets a separate guarded opportunity to
+recover cross-level batch simplification. The complete active stack is run
+through the same constant-bit/equality/unconstrained/pure-literal prefix used
+by exact-stack array-equality rounds. The result is adopted only if the input
+has at least 128 DAG nodes and the trial at least halves it; then the reduced
+formula rides as one assumption-scoped block, including the base, so a deeper
+fact may safely collapse a shallow root without leaking through a later pop.
+A rejected trial commits neither clauses nor model definitions and execution
+continues through the ordinary per-level driver. The next changed check also
+uses that ordinary path and materializes the raw base normally; the provisional
+block remains retracted. ``check-sat-assuming`` retains its individual roots
+for unsat-assumption reporting, arrays and floating point retain their own
+routes, and an explicitly aggressive ``--incremental-reencode-limit`` below
+the default one million disables the provisional block so relief ownership is
+available from the outset (zero, which disables relief, still permits it).
+Automatic third-solve engagement again does not need this first-check escape.
+
 A pushed level holding many conjuncts is assumed through one *activation
 literal* -- a fresh variable implying each conjunct's root -- so a level
 costs one assumption however many assertions it carries, which keeps the
@@ -498,7 +515,9 @@ adoption attempts. ``ext-preprocesses`` and ``ext-eliminations`` identify
 exact-stack blocks which took the scoped batch-prefix pass and the model
 definitions it produced; ``base-preprocesses`` and ``base-eliminations``
 identify the explicitly forced, base-only pure-literal pass and its model
-witnesses. The profile also covers semantic construction,
+witnesses. ``first-stack-preprocesses`` and ``first-stack-eliminations``
+identify an adopted multi-level BV block, while ``first-stack-rejected``
+records a trial which fell back without committing it. The profile also covers semantic construction,
 preparation, actual bit-blast/CNF encoding, active-read seeding, backend
 rebuilds, initial and refinement SAT calls, and rolling session totals.
 Durations accumulate at nanosecond precision and are emitted as whole
@@ -637,11 +656,12 @@ Limitations
   all-new formula deliberately trades the batch pipeline's global
   simplification for encoding reuse that cannot pay off yet. The large-CBP
   bootstrap deferral removes one measured prepass cost, and the base-only
-  pure-literal pass recovers Boolean-clause collapses, but neither can reproduce
-  the rest of whole-formula batch simplification -- especially simplifications
-  in which a deeper scope collapses the encoding of a shallower scope. The
-  default engagement policy exists precisely because of that structural
-  difference.
+  pure-literal pass recovers Boolean-clause collapses. The guarded plain-BV
+  exact-stack path additionally recovers large cross-level collapses, but only
+  when the complete trial at least halves: arrays, FP, modest rewrites and
+  subsequent changing stacks still cannot reproduce the whole batch pipeline
+  without forfeiting the persistent per-level roots. The default engagement
+  policy remains the general answer to that structural difference.
 
 Maintainer architecture review
 ------------------------------

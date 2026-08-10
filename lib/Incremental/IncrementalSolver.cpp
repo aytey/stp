@@ -328,6 +328,9 @@ struct IncrementalSolver::Impl
     uint64_t refinementRounds = 0;
     uint64_t extPreprocesses = 0;
     uint64_t extEliminations = 0;
+    uint64_t firstStackPreprocesses = 0;
+    uint64_t firstStackEliminations = 0;
+    uint64_t firstStackRejected = 0;
     uint64_t basePreprocesses = 0;
     uint64_t baseEliminations = 0;
     uint64_t rebuilds = 0;
@@ -409,6 +412,9 @@ struct IncrementalSolver::Impl
     uint64_t refinementRounds = 0;
     uint64_t extPreprocesses = 0;
     uint64_t extEliminations = 0;
+    uint64_t firstStackPreprocesses = 0;
+    uint64_t firstStackEliminations = 0;
+    uint64_t firstStackRejected = 0;
     uint64_t basePreprocesses = 0;
     uint64_t baseEliminations = 0;
     uint64_t rebuilds = 0;
@@ -489,6 +495,9 @@ struct IncrementalSolver::Impl
       refinementRounds += p.refinementRounds;
       extPreprocesses += p.extPreprocesses;
       extEliminations += p.extEliminations;
+      firstStackPreprocesses += p.firstStackPreprocesses;
+      firstStackEliminations += p.firstStackEliminations;
+      firstStackRejected += p.firstStackRejected;
       basePreprocesses += p.basePreprocesses;
       baseEliminations += p.baseEliminations;
       rebuilds += p.rebuilds;
@@ -585,14 +594,16 @@ struct IncrementalSolver::Impl
   // freed spine under fresh numbers and the whole chain diverges.
   // (The per-conjunct caches never had the problem: their keys hold their
   // nodes by construction.)
-  ASTNodeSet extKeepAlive;
+  ASTNodeSet exactStackKeepAlive;
 
   // The exact-stack block cache needs one stable encoding policy per raw
-  // active conjunction. The first stack is kept raw; a genuinely new stack
-  // after the first solve receives scoped preprocessing. Re-visiting either
-  // stack must make the same choice so its transformed root, refinement
-  // lemmas and learned clauses remain reusable.
-  std::map<ASTNode, bool> extScopedPreprocessOf;
+  // active conjunction. Array-equality rounds revisit this map: automatic
+  // engagement keeps its first stack raw and preprocesses genuinely new
+  // stacks. Explicit first engagement preprocesses immediately. The
+  // first-check BV escape below only lands here after its preprocessing trial
+  // has collapsed enough to be accepted. Re-visiting any stored stack must
+  // keep the same transformed root, refinement lemmas and learned clauses.
+  std::map<ASTNode, bool> exactScopedPreprocessOf;
 
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
@@ -825,6 +836,13 @@ struct IncrementalSolver::Impl
   // of seven conjuncts), while the plain simplifier has always handled
   // them.
   static const size_t bigFormulaCap = 20000;
+
+  // A tiny exact-stack block cannot create the clause cliffs this first-solve
+  // escape targets, while changing its assumption/search shape costs visible
+  // milliseconds across the corpus's smallest queries. Keep those on the
+  // ordinary per-level path even if a toy formula happens to halve.
+  static const size_t firstStackCollapseMinNodes = 128;
+  static const int64_t firstStackMinReencodeLimit = 1000000;
 
   // DAG node count up to `cap`; used to pick the preparation granularity.
   size_t dagSizeUpTo(const ASTNode& n, size_t cap)
@@ -2249,7 +2267,10 @@ struct IncrementalSolver::Impl
         << " rebuild-promotion=" << profile.rebuildPromotion
         << " rebuild-inprobing=" << profile.rebuildInprobing
         << " rebuild-trail=" << profile.rebuildTrail
-        << " extensionality=" << (profile.extensionality ? 1 : 0) << '\n';
+        << " extensionality=" << (profile.extensionality ? 1 : 0)
+        << " first-stack-preprocesses=" << profile.firstStackPreprocesses
+        << " first-stack-eliminations=" << profile.firstStackEliminations
+        << " first-stack-rejected=" << profile.firstStackRejected << '\n';
     out << "Incremental profile total: checks=" << sessionProfile.checks
         << " total-us=" << profileMicros(sessionProfile.totalNs)
         << " maintenance-us=" << profileMicros(sessionProfile.maintenanceNs)
@@ -2335,7 +2356,13 @@ struct IncrementalSolver::Impl
         << " rebuild-relief=" << sessionProfile.rebuildRelief
         << " rebuild-promotion=" << sessionProfile.rebuildPromotion
         << " rebuild-inprobing=" << sessionProfile.rebuildInprobing
-        << " rebuild-trail=" << sessionProfile.rebuildTrail << '\n';
+        << " rebuild-trail=" << sessionProfile.rebuildTrail
+        << " first-stack-preprocesses="
+        << sessionProfile.firstStackPreprocesses
+        << " first-stack-eliminations="
+        << sessionProfile.firstStackEliminations
+        << " first-stack-rejected=" << sessionProfile.firstStackRejected
+        << '\n';
     std::cerr << out.str();
   }
 
@@ -2994,8 +3021,10 @@ struct IncrementalSolver::Impl
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
   }
 
-  SOLVER_RETURN_TYPE extCheckSat(const ASTVec& assertionsSMT2,
-                                 bool firstForcedIncrementalSolve);
+  SOLVER_RETURN_TYPE exactStackCheckSat(const ASTVec& assertionsSMT2,
+                                        bool firstForcedIncrementalSolve,
+                                        bool requireScopedCollapse = false,
+                                        bool* scopedAccepted = NULL);
   ToSATBase* ensureAdapter();
 
   // The session-long floating-point encoding context. Its totalisation
@@ -3623,10 +3652,34 @@ struct IncrementalSolver::Impl
   // per-level encodings, a fact from a deeper level cannot leak into a root
   // which survives its pop. Reproduce the high-yield, model-replay-capable
   // prefix of the batch size-reducing pipeline before array transformation.
-  ASTNode preprocessExactStackBlock(const ASTNode& input)
+  ASTNode preprocessExactStackBlock(const ASTNode& input,
+                                    bool requireCollapse = false,
+                                    bool* accepted = NULL,
+                                    size_t* eliminatedCount = NULL)
   {
+    if (accepted != NULL)
+      *accepted = true;
+    if (eliminatedCount != NULL)
+      *eliminatedCount = 0;
     if (!bm->UserFlags.optimize_flag || input.isConstant())
+    {
+      if (accepted != NULL && requireCollapse)
+        *accepted = false;
       return input;
+    }
+
+    size_t before = 0;
+    if (requireCollapse)
+    {
+      if (dagSizeUpTo(input, firstStackCollapseMinNodes - 1) <
+          firstStackCollapseMinNodes)
+      {
+        if (accepted != NULL)
+          *accepted = false;
+        return input;
+      }
+      before = dagSizeUpTo(input, std::numeric_limits<size_t>::max());
+    }
 
     SubstitutionMap scopedMap(bm);
     Simplifier scoped(bm, &scopedMap);
@@ -3665,6 +3718,18 @@ struct IncrementalSolver::Impl
     if (scoped.hasUnappliedSubstitutions())
       out = scoped.applySubstitutionMapAtTopLevel(out);
 
+    // Plain-BV first engagement uses this path only as a high-yield escape
+    // from cross-level collapse cliffs. A modest rewrite can make the SAT
+    // search shape worse while forfeiting the ordinary per-level roots, so
+    // keep the raw exact-stack block unless the scoped trial at least halves
+    // the DAG. No definitions have entered the model channel yet.
+    if (requireCollapse && dagSizeUpTo(out, before / 2) > before / 2)
+    {
+      if (accepted != NULL)
+        *accepted = false;
+      return input;
+    }
+
     const ASTNodeSet retainedSymbols = symbolsOf(out);
     for (DenseNodeMap::const_iterator it = scoped.Return_SolverMap()->begin();
          it != scoped.Return_SolverMap()->end(); ++it)
@@ -3673,10 +3738,10 @@ struct IncrementalSolver::Impl
           retainedSymbols.find(it->first) != retainedSymbols.end())
         continue;
       recordActiveElimination(it->first, it->second);
-      if (profile.enabled && it->first.GetKind() == SYMBOL)
-        profile.extEliminations++;
+      if (eliminatedCount != NULL && it->first.GetKind() == SYMBOL)
+        (*eliminatedCount)++;
     }
-    bm->ASTNodeStats("Incremental ext after scoped preprocessing: ", out);
+    bm->ASTNodeStats("Incremental exact stack after preprocessing: ", out);
     return out;
   }
 
@@ -3931,33 +3996,40 @@ ToSATBase* IncrementalSolver::Impl::ensureAdapter()
   return adapter.get();
 }
 
-// A check-sat whose active stack carries whole-array equality. The
-// extensionality procedure reasons about the COMPLETE array graph of the
-// solve -- every transformed read must be owned by it -- so the whole
-// active set is lowered, prepared and encoded as ONE per-round block,
-// assumed as a single root literal on the persistent solver, mirroring the
-// batch choreography (TopLevelSTP/TopLevelSTPAux) step for step. The
-// block's registry rows and witness records are solve-local by the procedure's
-// design (beginSolve wipes them), so nothing here touches the driver's
-// persistent lazy registry. Generated names are deterministic, however, and
-// the structural block root is cached: an identical active stack recreates the
-// same names and root, while the solve-local records are rebuilt for checking.
-// The bit-blaster also shares every unchanged subcircuit, and learned clauses
-// over those survive.
+// Encode the complete active stack as one assumption-scoped block. Whole-array
+// equality always needs this route: extensionality owns the complete array
+// graph, so every active read must be lowered and checked together. Explicit
+// first engagement can also use it for a plain-BV stack, but only after the
+// whole-stack preprocessing trial has at least halved the DAG; that narrowly
+// recovers cases where a deep fact collapses a huge shallow root before the
+// ordinary per-level driver would encode it. Generated names and the block
+// root are deterministic, so retained clauses remain reusable. A rejected BV
+// trial returns before any clause or model definition is committed and the
+// caller continues through the ordinary path.
 SOLVER_RETURN_TYPE
-IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
-                                     bool firstForcedIncrementalSolve)
+IncrementalSolver::Impl::exactStackCheckSat(
+    const ASTVec& assertionsSMT2, bool firstForcedIncrementalSolve,
+    bool requireScopedCollapse, bool* scopedAccepted)
 {
-  profile.extensionality = true;
-  ScopedProfileTimer extensionalityTimer(profile.enabled,
-                                         profile.extensionalityNs);
   UserDefinedFlags& uf = bm->UserFlags;
+
+  bool arrayEqualityRound = false;
+  bool activeHasFp = false;
+  for (const ASTNode& levelConjunction : assertionsSMT2)
+  {
+    const Fragment& f = fragment(levelConjunction);
+    arrayEqualityRound = arrayEqualityRound || f.arrayEq;
+    activeHasFp = activeHasFp || f.fp;
+  }
+  profile.extensionality = arrayEqualityRound;
+  ScopedProfileTimer extensionalityTimer(
+      profile.enabled && arrayEqualityRound, profile.extensionalityNs);
 
   // Eager Ackermannization expands reads into if-then-else chains,
   // destroying the array structure the lazy procedure works on -- the same
   // per-solve override, warning included, the batch pipeline applies.
   const bool savedAck = uf.ackermannisation;
-  if (uf.ackermannisation)
+  if (arrayEqualityRound && uf.ackermannisation)
   {
     std::cerr << "Warning: --ackermanize is disabled for queries with "
                  "array equality."
@@ -3971,16 +4043,6 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
   else
     activeConjunction = assertionsSMT2[0];
 
-  bool activeHasFp = false;
-  for (const ASTNode& levelConjunction : assertionsSMT2)
-  {
-    if (fragment(levelConjunction).fp)
-    {
-      activeHasFp = true;
-      break;
-    }
-  }
-
   ExtensionalityContext* ext = bm->getExtensionality();
   ext->beginSolve();
 
@@ -3992,10 +4054,13 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
     fpContext()->copyArrayEqualityRewrites(arrayEqualityRewrites);
   }
 
-  ASTNode semantic = ext->lowerArrayEqualities(prepared, arrayEqualityRewrites);
+  ASTNode semantic = prepared;
+  if (arrayEqualityRound)
+    semantic =
+        ext->lowerArrayEqualities(prepared, arrayEqualityRewrites);
   ASTNode inputToSat = semantic;
 
-  const bool extActive = ext->active();
+  const bool extActive = arrayEqualityRound && ext->active();
   // Releases the record-table seal on every exit from this function.
   ExtensionalityContext::SolveScope extScope(ext);
 
@@ -4010,17 +4075,44 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
   // active conjunction above, so a repeated or re-pushed stack never flips
   // encoding strategy underneath the block cache.
   const bool scopedPreprocess =
-      extScopedPreprocessOf
+      exactScopedPreprocessOf
           .insert(std::make_pair(activeConjunction,
                                  engagedSolves > 1 ||
                                      firstForcedIncrementalSolve))
           .first->second;
   if (scopedPreprocess)
   {
+    bool accepted = true;
+    size_t eliminated = 0;
+    inputToSat = preprocessExactStackBlock(
+        inputToSat, requireScopedCollapse, &accepted, &eliminated);
+    if (!accepted)
+    {
+      if (profile.enabled)
+        profile.firstStackRejected++;
+      exactScopedPreprocessOf.erase(activeConjunction);
+      uf.ackermannisation = savedAck;
+      if (scopedAccepted != NULL)
+        *scopedAccepted = false;
+      return SOLVER_UNDECIDED;
+    }
     if (profile.enabled)
-      profile.extPreprocesses++;
-    inputToSat = preprocessExactStackBlock(inputToSat);
+    {
+      if (requireScopedCollapse)
+      {
+        profile.firstStackPreprocesses++;
+        profile.firstStackEliminations += eliminated;
+      }
+      else
+      {
+        profile.extPreprocesses++;
+        profile.extEliminations += eliminated;
+      }
+    }
   }
+
+  if (scopedAccepted != NULL)
+    *scopedAccepted = true;
 
   if (activeHasFp)
     inputToSat = fpContext()->lowerPrepared(inputToSat);
@@ -4029,10 +4121,10 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
   if (extPrepared)
     inputToSat = ext->prepare(inputToSat);
 
-  extKeepAlive.insert(activeConjunction);
-  extKeepAlive.insert(prepared);
-  extKeepAlive.insert(semantic);
-  extKeepAlive.insert(inputToSat);
+  exactStackKeepAlive.insert(activeConjunction);
+  exactStackKeepAlive.insert(prepared);
+  exactStackKeepAlive.insert(semantic);
+  exactStackKeepAlive.insert(inputToSat);
 
   if (uf.enable_array_equality && containsArrayEquality(inputToSat))
     FatalError("IncrementalSolver: an opaque array equality reached the "
@@ -4111,7 +4203,9 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
 
   if (uf.stats_flag)
   {
-    std::cerr << "Incremental: array-equality round, block of "
+    std::cerr << "Incremental: "
+              << (arrayEqualityRound ? "array-equality" : "first scoped BV")
+              << " round, block of "
               << assertionsSMT2.size() << " levels "
               << (blockReused ? "reused" : "encoded") << ", solver has "
               << solver->nVars() << " variables" << std::endl;
@@ -4622,8 +4716,46 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   for (const ASTNode& levelConjunction : assertionsSMT2)
   {
     if (impl->fragment(levelConjunction).arrayEq)
-      return impl->extCheckSat(assertionsSMT2,
-                               firstForcedIncrementalSolve);
+      return impl->exactStackCheckSat(assertionsSMT2,
+                                      firstForcedIncrementalSolve);
+  }
+
+  // Explicit first engagement has no earlier batch solve to collapse facts
+  // across level boundaries. Try the same exact-stack preprocessing used by
+  // array-equality blocks for a plain-BV stack, but adopt it only when the
+  // complete DAG at least halves. This catches the CPAchecker shape where a
+  // deep unit makes a huge shallow disjunction trivial; modest rewrites fall
+  // through to the ordinary per-level driver, preserving its reusable roots
+  // and search shape. check-sat-assuming stays per-conjunct so its failed
+  // assumptions remain reportable. An explicitly aggressive relief threshold
+  // also keeps ordinary ownership from the outset; a provisional block would
+  // otherwise hide the live-root accounting that configuration asks to use.
+  const bool provisionalBlockAllowed =
+      uf.incremental_reencode_limit == 0 ||
+      uf.incremental_reencode_limit >= Impl::firstStackMinReencodeLimit;
+  if (firstForcedIncrementalSolve && !assumeLastLevelPerConjunct &&
+      provisionalBlockAllowed && assertionsSMT2.size() > 1)
+  {
+    bool plainBv = true;
+    for (const ASTNode& levelConjunction : assertionsSMT2)
+    {
+      const Fragment& f = impl->fragment(levelConjunction);
+      if (f.arrays || f.arrayEq || f.fp)
+      {
+        plainBv = false;
+        break;
+      }
+    }
+    if (plainBv)
+    {
+      bool accepted = false;
+      const SOLVER_RETURN_TYPE result =
+          impl->exactStackCheckSat(assertionsSMT2,
+                                   firstForcedIncrementalSolve, true,
+                                   &accepted);
+      if (accepted)
+        return result;
+    }
   }
 
   // No active equality this round, so no stale equality state may survive
