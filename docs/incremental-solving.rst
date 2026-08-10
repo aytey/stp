@@ -23,17 +23,18 @@ normally ``(push ...)``, while ``check-sat-assuming`` creates a temporary scope
 itself. Ordinary sessions that create neither are entirely untouched and take
 the classic single-shot pipeline. Two refinements to know about:
 
-- The incremental driver engages from the *third* real solve of a
-  session. The first two solves use the batch pipeline: two-check sessions
-  cannot repay the cost of constructing a persistent encoding, while longer
-  sessions can reuse it after engagement. ``check-sat`` calls made before the
-  first explicit/internal scope still count toward this threshold.
-  ``--incremental`` on the command line engages the driver from the first
-  solve instead. ``--incremental-auto-engage-at=N`` is a diagnostic override
-  for automatic sessions: ``1`` engages on the first real solve, positive
-  values name the solve ordinal, and ``0`` prevents automatic driver
-  engagement while leaving the frontend verdict cache active. Its default is
-  ``3``; explicit ``--incremental`` takes precedence.
+- Automatic engagement is theory-specific. Pure ``QF_BV`` and ``QF_ABV``
+  sessions engage the incremental driver from their *32nd* real solve; a
+  targeted sweep found that their early checks benefit more from the batch
+  pipeline's whole-formula simplification. Floating-point and other or
+  unknown logics retain engagement from the *third* real solve. ``check-sat``
+  calls made before the first explicit/internal scope still count toward the
+  threshold. ``--incremental`` engages the driver from the first solve.
+  ``--incremental-auto-engage-at=N`` is a diagnostic override: ``-1`` selects
+  the theory policy, ``1`` engages on the first real solve, positive values
+  name the solve ordinal, and ``0`` prevents automatic driver engagement
+  while leaving the frontend verdict cache active. Explicit ``--incremental``
+  takes precedence.
 - Independent of the driver, the frontend keeps a per-level verdict
   cache with sound monotonicity shortcuts: pushing under a known-unsat
   level inherits unsat, a sat answer marks the levels beneath it sat, and
@@ -50,7 +51,9 @@ exists.
 
 The C API takes the same route: a session becomes incremental at its
 first ``vc_push`` (or from the first query with ``vc_setFlags(vc, 'i')``),
-and from the third solve on, ``vc_query`` runs on the persistent driver.
+and from the third solve on, ``vc_query`` runs on the persistent driver. The
+native API has no SMT-LIB2 ``set-logic`` declaration, so it retains that
+theory-neutral threshold.
 ``vc_query`` decides *asserts AND NOT query*, and the negated query is
 appended as one more retractable level -- an assumption for exactly that
 call, retracted by construction. The API's historical model contract is

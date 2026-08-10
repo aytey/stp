@@ -436,9 +436,10 @@ void ExtraMain::create_options()
   int64_arg("--incremental-auto-engage-at",
             bm->UserFlags.incremental_auto_engage_at,
             "real-solve ordinal at which an automatically incremental "
-            "SMT-LIB session engages the persistent driver; 1 engages on "
-            "the first solve, 3 is the default, and 0 never engages "
-            "automatically (explicit --incremental still engages at 1)",
+            "SMT-LIB session engages the persistent driver; -1 uses the "
+            "theory default (QF_BV/QF_ABV: 32, others: 3), 1 engages on "
+            "the first solve, and 0 never engages automatically (explicit "
+            "--incremental still engages at 1)",
             misc_group);
 
   app.add_flag("--incremental-profile", bm->UserFlags.incremental_profile,
@@ -677,10 +678,10 @@ int ExtraMain::parse_options(int argc, char** argv)
     std::exit(-1);
   }
 
-  if (bm->UserFlags.incremental_auto_engage_at < 0)
+  if (bm->UserFlags.incremental_auto_engage_at < -1)
   {
-    cerr << "ERROR: --incremental-auto-engage-at must be 0 (never) or "
-            "greater"
+    cerr << "ERROR: --incremental-auto-engage-at must be -1 (theory "
+            "default), 0 (never), or greater"
          << endl;
     std::exit(-1);
   }

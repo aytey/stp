@@ -193,13 +193,13 @@ class Cpp_interface
   // rather than print a model of an assertion set that no longer exists.
   bool model_valid;
 
-  // The incremental driver engages from the THIRD real solve of a session by
-  // default (unless --incremental asked for it from the start, captured here
-  // at startup). The first solves carry the largest all-new formulas, and the
-  // batch pipeline's whole-formula simplification earns its keep there. A
-  // diagnostic threshold can move or disable automatic engagement while
-  // preserving the explicit override.
+  // Unless --incremental or an explicit threshold overrides it, pure
+  // QF_BV/QF_ABV sessions delay the persistent driver until solve 32; other
+  // and unknown logics retain solve 3. The first solves carry the largest
+  // all-new formulas, and the batch pipeline's whole-formula simplification
+  // earns its keep there.
   bool incremental_from_start;
+  bool delayed_bv_auto_engagement;
   size_t solves_run;
 
   // The most recent check-sat-assuming: its assumption terms, its verdict,
@@ -313,6 +313,10 @@ public:
   DLL_PUBLIC bool isSymbolAlreadyDeclared(char* name);
   DLL_PUBLIC void setPrintSuccess(bool ps);
   DLL_PUBLIC bool isSymbolAlreadyDeclared(std::string name);
+
+  // Retain the SMT-LIB2 set-logic classification needed by automatic
+  // incremental engagement. reset clears it; reset-assertions retains it.
+  DLL_PUBLIC void setLogic(const std::string& logic);
 
   // Create the node, then "new" it.
   DLL_PUBLIC ASTNode* newNode(const Kind k, const ASTNode& n0,

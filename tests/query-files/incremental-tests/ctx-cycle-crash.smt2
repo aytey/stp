@@ -13,8 +13,8 @@
 ; (SoSy-Lab, CPAchecker, CC-BY-SA 4.0); found by a campaign run, where
 ; it crashed identically on every repeat.
 ; RUN: %solver --incremental %s 2>&1 | %OutputCheck %s
-; (--incremental keeps this a DRIVER test: the session has two
-; check-sats, and auto-engagement starts at the third solve.)
+; (--incremental keeps this a DRIVER test: the default automatic policy
+; leaves this two-check session on the batch path.)
 (push 1)
 (declare-fun __ADDRESS_OF_d1@ () (_ BitVec 32))
 (declare-fun d1$a@2 () (_ BitVec 32))

@@ -66,6 +66,7 @@ void Cpp_interface::init()
   produce_models = false;
   model_valid = false;
   incremental_from_start = bm.UserFlags.incremental_solving;
+  delayed_bv_auto_engagement = false;
   solves_run = 0;
 }
 
@@ -147,6 +148,15 @@ const ASTVec Cpp_interface::getAssertVector(void)
 UserDefinedFlags& Cpp_interface::getUserFlags()
 {
   return bm.UserFlags;
+}
+
+void Cpp_interface::setLogic(const std::string& logic)
+{
+  // This policy is intentionally limited to the two fragments measured in
+  // the threshold sweep. QF_AUFBV, the FP logics, legacy parsers, and native
+  // API clients retain the established solve-3 policy until separately
+  // measured. An explicit --incremental-auto-engage-at still wins below.
+  delayed_bv_auto_engagement = logic == "QF_BV" || logic == "QF_ABV";
 }
 
 void Cpp_interface::AddAssert(const ASTNode& assert)
@@ -699,17 +709,16 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   {
     resetSolver();
 
-    // See incremental_from_start: by default the first TWO solves of the
-    // session get the batch pipeline's full simplification unless the user
-    // forced the driver on; from the third real solve on, everything goes
-    // incremental where it can. Two thresholds were measured: engaging at
-    // the second solve made two-check sessions the campaign's whole loss
-    // tail (newton_1_5 34x, sine_2 9.7x) -- the driver's persistent encoding
-    // is dearer than one batch solve, and a session's FINAL solve can never
-    // repay it. The diagnostic threshold makes later engagement (or no
-    // automatic engagement) measurable without rebuilding; explicit
-    // --incremental deliberately overrides it.
-    const int64_t engageAt = bm.UserFlags.incremental_auto_engage_at;
+    // See incremental_from_start: pure QF_BV/QF_ABV retains the batch
+    // pipeline through solve 31. A targeted 107-session sweep found solve 32
+    // to be the best finite compromise: later/never engagement made common
+    // batch-friendly cases faster but lost incremental-friendly long
+    // sessions. FP and unmeasured/unknown logics retain solve 3. A
+    // nonnegative diagnostic threshold overrides this theory policy, while
+    // explicit --incremental deliberately overrides both.
+    int64_t engageAt = bm.UserFlags.incremental_auto_engage_at;
+    if (engageAt < 0)
+      engageAt = delayed_bv_auto_engagement ? 32 : 3;
     const bool automaticEngagementReady =
         engageAt > 0 &&
         solves_run >= static_cast<size_t>(engageAt - 1);

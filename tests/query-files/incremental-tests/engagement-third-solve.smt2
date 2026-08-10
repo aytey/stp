@@ -1,13 +1,7 @@
-; Auto-engagement starts at the THIRD real solve. A pushed session's
-; first two check-sats keep the batch pipeline's whole-formula
-; simplification (no driver stats lines before the second answer); the
-; third goes through the driver and reports its encode line. Two-check
-; sessions -- where the driver's persistent encoding could never be
-; repaid, and which dominated the campaign's loss tail -- are batch
-; throughout by construction (engagement-two-checks.smt2 pins that
-; side; --incremental still forces the driver from the first solve, as
-; every forced-driver test in this directory exercises).
-; RUN: %solver -s %s 2>&1 | %OutputCheck %s
+; An explicit engagement threshold starts at the named real solve. This
+; keeps the small check-3 boundary test independent of the theory-specific
+; default (pure QF_BV/QF_ABV now uses 32).
+; RUN: %solver -s --incremental-auto-engage-at 3 %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (assert (bvult x #x80))

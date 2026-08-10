@@ -4899,9 +4899,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // CPAchecker QF_BV first-check family, usually with no adoption at all.
     // Leave the engine genuinely empty for this call; if another real solve
     // follows, its ordinary prefix feed builds the complete current state.
-    // Automatic sessions never request this -- their first two solves remain
-    // on the whole-formula batch pipeline and the driver engages normally on
-    // the third.
+    // Automatic sessions never request this flag: it specifically identifies
+    // a first solve forced through the driver by explicit --incremental.
     const int64_t configuredBootstrapLimit =
         uf.incremental_cbp_bootstrap_limit;
     if (firstForcedIncrementalSolve && configuredBootstrapLimit > 0 &&

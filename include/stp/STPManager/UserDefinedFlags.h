@@ -93,12 +93,12 @@ public:
   bool incremental_solving = false;
 
   // The real-solve ordinal at which an automatically incremental SMT-LIB
-  // session starts using the persistent driver. 3 preserves the measured
-  // default: the first two real solves use the batch pipeline. 1 engages on
-  // the first solve, while 0 disables automatic driver engagement without
+  // session starts using the persistent driver. -1 selects the measured
+  // per-logic policy (QF_BV/QF_ABV: 32; other/unknown logics: 3), 1 engages
+  // on the first solve, and 0 disables automatic driver engagement without
   // disabling the frontend's per-level verdict cache. Explicit --incremental
   // always engages from the first solve and ignores this threshold.
-  int64_t incremental_auto_engage_at = 3;
+  int64_t incremental_auto_engage_at = -1;
 
   // Emit fine-grained per-check and cumulative measurements for the
   // incremental driver. Kept separate from the general -s diagnostics so
