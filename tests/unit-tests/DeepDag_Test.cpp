@@ -53,6 +53,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/Rewriting.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/Printer/printers.h"
 #include "stp/Simplifier/CommonSubSum.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -699,6 +700,43 @@ bool transformFormulaSpineOk(Context& c, unsigned depth)
   return result.GetKind() != UNDEFINED;
 }
 
+// Counterexample evaluation. TermToConstTermUsingModel and
+// ComputeFormulaUsingModel evaluate the ORIGINAL formula against the model a
+// sat answer produced, and reach each other once per level of it, so a term
+// nested deeply enough takes the stack with them. Two frames per level: a
+// chain of 30,000 selects dies here at the ordinary 8 MiB, and it is the
+// last thing on that input's path that does.
+//
+// Neither generic tool fits. The term side has no memo to prime -- only
+// CounterExampleMap, written for array reads and float encodings -- and a
+// memo could not be keyed on the node alone anyway, since the answer depends
+// on ArrayReadFlag and on whether the walk is already inside an encoded
+// evaluation. And both sides evaluate an if-then-else's condition and then
+// only the branch it leaves alive, where a dropped branch is not merely
+// wasted work: it can be genuinely unevaluable against the model, and both
+// call FatalError when it is. So priming would turn a working query into an
+// abort. This one needs a state machine over both functions.
+//
+// No solve is needed to reach it: with an empty model every symbol takes its
+// default and the walk still descends the whole term.
+bool counterExampleEvalOk(Context& c, unsigned depth)
+{
+  const ASTNode a = c.mgr.CreateSymbol("A", 8, 8);
+  ASTNode t = c.mgr.CreateSymbol("i", 0, 8);
+  for (unsigned i = 0; i < depth; i++)
+    t = c.hf->CreateTerm(READ, 8, a, t);
+
+  const ASTNode f = c.formula(t);
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer at(&c.mgr, &simp);
+  AbsRefine_CounterExample ce(&c.mgr, &simp, &at);
+
+  return ce.ComputeFormulaUsingModel(f).isConstant();
+}
+
 // The LISP printer, which is what operator<< on a node uses -- so a deep
 // node cannot even be printed, including from an error path.
 bool printerLispOk(Context& c, unsigned depth)
@@ -888,6 +926,7 @@ TEST(DeepDag, deep_array_read_chain)   { EXPECT_STACK_SAFE(arrayReadChainOk, 200
 TEST(DeepDag, deep_array_write_chain)  { EXPECT_STACK_SAFE(arrayWriteChainOk, 20000); }
 TEST(DeepDag, deep_transform_formula_spine) { EXPECT_STACK_SAFE(transformFormulaSpineOk, 20000); }
 TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
+TEST(DeepDag, DISABLED_deep_counterexample_eval) { EXPECT_STACK_SAFE(counterExampleEvalOk, 20000); }
 TEST(DeepDag, DISABLED_deep_printer_smtlib2)    { EXPECT_STACK_SAFE(printerSMTLIB2Ok, 20000); }
 
 } // namespace

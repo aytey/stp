@@ -30,7 +30,7 @@
 
 AIGSimplifyPropositionalCore::convert: unaudited: predates this check
 AIGSimplifyPropositionalCore::theoryToFresh: unaudited: predates this check
-AbsRefine_CounterExample::ComputeFormulaUsingModel: by-choice: input-depth recursive, on by default; a 30,000-deep alternation of NOT and AND crashes here once the passes ahead of it stop crashing. So does TermToConstTermUsingModel beside it, which this check cannot see: it recurses through its _inner overload rather than into itself
+AbsRefine_CounterExample::ComputeFormulaUsingModel: by-choice: input-depth recursive with TermToConstTermUsingModel beside it, on by default, two frames per level; a 30,000-deep chain of selects crashes here and it is the last thing on that input's path that does. Neither priming nor the operands hook fits (the term side has no memo, and both evaluate only the if-then-else branch their condition leaves alive, where a dropped branch can be unevaluable and both call FatalError); DeepDag_Test.cpp has a disabled case. The term side is invisible to this check: it recurses through its own _inner overload rather than into itself
 ArrayTransformer::assertTransformPostConditions: unaudited: predates this check
 BVTypeCheckRecursive: unaudited: predates this check
 BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (primeMemos)
