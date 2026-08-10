@@ -120,6 +120,11 @@ public:
 private:
   ASTNode visit(const ASTNode& n);
 
+  // The pass proper, for one node whose children visit() has already
+  // answered. Split out so that visit() can fill those answers from the
+  // bottom up rather than by calling itself once per level.
+  ASTNode totalise(const ASTNode& n);
+
   // The canonical form of an index over a float-indexed array whose index
   // format is (exp_width, sig_width): constants re-intern through the
   // canonicalising constant funnel, source FP expressions become an explicit

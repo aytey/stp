@@ -38,12 +38,14 @@
 # nothing but a disabled tool's assertions, while the type check every solve
 # runs is per-node.
 #
-# Of the 21 on-path, four carry a measured depth and the rest say they do
-# not. That is the order to work in, and it is not the order the names
-# suggest: the one that turned out to be nearest to real input was reached
-# through a pass already marked "partial", and the two with the most alarming
-# names need ten times the depth of anything we have. Nearest now is
-# FpTotalise::visit, at 30,000 against the ~9,300 of the deepest input.
+# The on-path ones carry a measured depth where anyone has measured one, and
+# say so where nobody has. That is the order to work in, and it has not once
+# been the order the names suggest: the first wall found on the near side of
+# real input was reached through a pass already marked "partial", and the two
+# with the most alarming names need ten times the depth of anything we have.
+# Each conversion has revealed the next one behind it -- the simplifier's
+# formula arms hid FpTotalise, which hid SplitExtracts::buildMap, which is
+# where `gen.py fp-add` stops today, at 60,000.
 #
 # The parsing is crude, so some of these are not walks at all -- an overload
 # forwarding to another overload reads the same from outside. Those say so.
@@ -70,8 +72,6 @@ FloatBlast::comparisonLeaf: on-path: as FloatBlast::asPacked -- same pass, same 
 FloatBlast::lower: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
 FloatBlaster::canonicalBits: safe: overload forwarding, not a walk
 FloatBlaster::operandFormat: safe: overload forwarding; the walk it calls looks at one node's children
-FpTotalise::collectRoundingModeTerms: on-path: collects the rounding-mode terms a totalised float expression constrains, one frame per level, over the same expression FpTotalise::visit walks
-FpTotalise::visit: on-path: totalises float operations before lowering, one frame per level, with a persistent cache. The front wall on a float chain now that the simplifier's formula arms are converted: `scripts/deep-inputs/gen.py fp-add` solves at 20,000 and dies here at 30,000, with the simplifier on or off -- it used to die at 8,000 in the simplifier instead. Nearest to real input of anything left on this list, and so the next one to do
 GDL_Print: off-path: the GDL printer, behind --print-back-GDL (UserFlags.print_STPinput_back_GDL_flag)
 GDL_Print1: off-path: the same printer, same flag
 HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
@@ -97,7 +97,7 @@ Simplifier::SimplifyArrayTerm: on-path: descends an array term's base array and 
 Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses. The formula walk that hands it over no longer does: every connective is one heap-framed walk as of the commit that added deep_simplify_formula_spine, so what is left here is the term side alone
 Simplifier::checkIfInSimplifyMap: off-path: a debug check whose one caller is commented out
 SimplifyingNodeFactory::CreateSimpleAndOr: safe: overload forwarding -- the binary form puts its two operands in a vector and calls the vector form
-SplitExtracts::buildMap: on-path: enable_split_extracts defaults true, and this walks the input for extracts over symbols one frame per level, guarded by a visited set. Depth not measured
+SplitExtracts::buildMap: on-path: enable_split_extracts defaults true, and this walks the input for extracts over symbols one frame per level, guarded by a visited set. Measured once FpTotalise stopped dying in front of it: `scripts/deep-inputs/gen.py fp-add` solves at 30,000 and dies here at 60,000. Nearest to real input of anything left
 StrengthReduction::replace: on-path: rebuilds children one frame per level, cache-guarded, on the substitutions the analysis found. The enabled deep_strength_reduction case runs the pass at 20,000
 SubstitutionMap::applySubstitutionMapUntilArrays: safe: overload forwarding, not a walk
 SubstitutionMap::loops_helper: safe: recurses over the variables of the substitution dependency graph, so its depth is how long a chain of substitutions is, not how deeply the input nests

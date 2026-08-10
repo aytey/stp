@@ -54,6 +54,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/NodeDomainAnalysis.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
+#include "stp/FloatBlaster/FpTotalise.h"
 #include "stp/Printer/printers.h"
 #include "stp/Simplifier/CommonSubSum.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -905,6 +906,37 @@ bool sourceSortStoreChainOk(Context& c, unsigned depth)
   return a.GetSourceSort().kind() == SourceSort::Kind::Array;
 }
 
+// FpTotalise, which replaces every partial floating-point operation with its
+// total form before the blaster sees it. How deeply a float expression nests
+// is the input's choice, and both of this pass's walks -- the totalising one
+// and the rounding-mode collector that runs over its output -- went down it a
+// frame at a time. `scripts/deep-inputs/gen.py fp-add 30000` is the query
+// that found it, once the simplifier stopped dying in front of it.
+//
+// The chain is fp.add over one float symbol, which is what that query is.
+// Constructing it needs the format on the leaf: a symbol's is declared, and
+// every operation above derives its own from it.
+bool fpTotaliseChainOk(Context& c, unsigned depth)
+{
+  const unsigned eb = 8, sb = 24;
+  const ASTNode x = c.mgr.CreateSymbol("x", 0, eb + sb);
+  x.SetExpWidth(eb);
+  x.SetSigWidth(sb);
+  const ASTNode rm = c.mgr.CreateBVConst(5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+
+  ASTNode t = x;
+  for (unsigned i = 0; i < depth; i++)
+    t = c.hf->CreateTerm(FP_ADD, eb + sb, rm, t, x);
+
+  const ASTNode f = c.hf->CreateNode(FP_ISNAN, t);
+  c.roots.push_back(f);
+
+  FpTotalise fpt(&c.mgr);
+  const ASTNode result = fpt.topLevel(f);
+  c.roots.push_back(result);
+  return result.GetKind() != UNDEFINED;
+}
+
 // The LISP printer, which is what operator<< on a node uses -- so a deep
 // node cannot even be printed, including from an error path.
 bool printerLispOk(Context& c, unsigned depth)
@@ -1098,6 +1130,7 @@ TEST(DeepDag, deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 2
 TEST(DeepDag, deep_array_read_chain)   { EXPECT_STACK_SAFE(arrayReadChainOk, 20000); }
 TEST(DeepDag, deep_array_write_chain)  { EXPECT_STACK_SAFE(arrayWriteChainOk, 20000); }
 TEST(DeepDag, deep_transform_formula_spine) { EXPECT_STACK_SAFE(transformFormulaSpineOk, 20000); }
+TEST(DeepDag, deep_fp_totalise)        { EXPECT_STACK_SAFE(fpTotaliseChainOk, 20000); }
 TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
 TEST(DeepDag, deep_counterexample_eval) { EXPECT_STACK_SAFE(counterExampleEvalOk, 20000); }
 TEST(DeepDag, deep_counterexample_formula) { EXPECT_STACK_SAFE(counterExampleFormulaOk, 20000); }

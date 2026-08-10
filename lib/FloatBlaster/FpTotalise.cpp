@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FpTotalise.h"
 
 #include "stp/FloatBlaster/FloatBlaster.h"
+#include "stp/Util/DagWalk.h"
 
 #include <string>
 
@@ -152,27 +153,44 @@ ASTNode FpTotalise::canonicalSourceBits(const ASTNode& value)
   return nf->CreateTerm(FP_TO_IEEE_BV, sort.packedWidth(), value);
 }
 
+// A stack rather than a call per level: how deeply a float expression nests
+// is the input's choice, and this walks the whole of one. See
+// DeepDag_Test.cpp.
+//
+// Children go on in reverse so they come off in order, and `seen` is tested
+// as a node comes off rather than as it goes on -- which is where the
+// recursion tested it, and what keeps this the same pre-order walk collecting
+// the same constraints in the same sequence.
 void FpTotalise::collectRoundingModeTerms(const ASTNode& n, ASTNodeSet& seen,
                                           ASTVec& constraints)
 {
-  if (!seen.insert(n).second)
-    return;
+  std::vector<ASTNode> todo;
+  todo.push_back(n);
 
-  // Leaves are visited now, where they were skipped before: a declared
-  // RoundingMode symbol is a leaf, and it is exactly as much in need of
-  // pinning as a read is.
-  if (n.GetKind() == SYMBOL)
+  while (!todo.empty())
   {
-    if (bm->isRoundingModeSymbol(n))
-      constraints.push_back(bm->roundingModeValidConstraint(n));
-    return;
+    const ASTNode m = todo.back();
+    todo.pop_back();
+
+    if (!seen.insert(m).second)
+      continue;
+
+    // Leaves are visited now, where they were skipped before: a declared
+    // RoundingMode symbol is a leaf, and it is exactly as much in need of
+    // pinning as a read is.
+    if (m.GetKind() == SYMBOL)
+    {
+      if (bm->isRoundingModeSymbol(m))
+        constraints.push_back(bm->roundingModeValidConstraint(m));
+      continue;
+    }
+
+    if (m.GetKind() == READ && bm->arrayHasRmElement(m[0]))
+      constraints.push_back(bm->roundingModeValidConstraint(m));
+
+    for (size_t i = m.Degree(); i > 0; i--)
+      todo.push_back(m[i - 1]);
   }
-
-  if (n.GetKind() == READ && bm->arrayHasRmElement(n[0]))
-    constraints.push_back(bm->roundingModeValidConstraint(n));
-
-  for (size_t i = 0; i < n.Degree(); i++)
-    collectRoundingModeTerms(n[i], seen, constraints);
 }
 
 ASTNode FpTotalise::rebuild(const ASTNode& n, const ASTVec& children)
@@ -281,7 +299,62 @@ ASTNode FpTotalise::zeroChoice(const char* tag, const ASTNode& left,
       nf->CreateTerm(ITE, 1, right_positive, bit[2], bit[3]));
 }
 
+// The pass is a call per level of a float expression, and how deeply one
+// nests is the input's choice: `scripts/deep-inputs/gen.py fp-add 30000` is a
+// valid query that died here, and was the nearest wall left once the
+// simplifier's formula arms were converted. So the answers underneath are
+// filled from the bottom up first, and the pass then finds every child it
+// asks for already answered and stops one level down. See DagWalk.h, and
+// DeepDag_Test.cpp for the depth.
+//
+// Sound because the pass has no exit that skips a child: it answers from a
+// cache, or from having no children, or it visits all of them. So priming
+// reaches exactly the nodes the recursion reached, in the same post-order.
+// That matters more here than it usually would, because this pass mints fresh
+// variables -- see unspecified() and zeroChoice() -- and visiting in a
+// different order would number them differently and move every clause after
+// them. The CNF comparison is what checks it.
 ASTNode FpTotalise::visit(const ASTNode& n)
+{
+  if (n.Degree() == 0)
+    return n;
+
+  const ASTNodeMap::const_iterator persistent = persistent_cache.find(n);
+  if (persistent != persistent_cache.end())
+    return persistent->second;
+  const ASTNodeMap::const_iterator current = traversal_cache.find(n);
+  if (current != traversal_cache.end())
+    return current->second;
+
+  // Nothing below `m` needs filling: it is answered already, or it has no
+  // children to be answered from.
+  auto settled = [this](const ASTNode& m) {
+    return m.Degree() == 0 || persistent_cache.count(m) != 0 ||
+           traversal_cache.count(m) != 0;
+  };
+
+  bool fill = false;
+  for (size_t i = 0; i < n.Degree() && !fill; i++)
+    fill = !settled(n[i]);
+
+  if (!fill)
+    return totalise(n);
+
+  // The walk finishes with the node it started from, so the last answer it
+  // records is that one.
+  ASTNode answer;
+  primeMemo(
+      n,
+      [&](const ASTNode& child) {
+        return settled(child) ? Walk::Skip : Walk::Descend;
+      },
+      [&](const ASTNode& m) { answer = totalise(m); });
+  return answer;
+}
+
+// One node, with its children already totalised -- which is what the walk
+// below arranges, and what its own calls on those children then find.
+ASTNode FpTotalise::totalise(const ASTNode& n)
 {
   if (n.Degree() == 0)
     return n;

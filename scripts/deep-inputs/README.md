@@ -11,11 +11,10 @@ touching the pass it names.
 
 What each shape reaches, as measured on 2026-08-10 at the ordinary 8 MiB:
 
-    fp-add     FpTotalise::visit, between 20,000 and 30,000, with the
-               simplifier on or off. Until the simplifier's formula arms
-               were converted it died earlier and elsewhere: between 7,000
-               and 8,000, in SimplifyFormula -> simplifyNonAndOr ->
-               SimplifyIteFormula
+    fp-add     SplitExtracts::buildMap, between 30,000 and 60,000. This
+               shape has moved three times as the passes in front of it were
+               converted: 7,000-8,000 in the simplifier's formula arms, then
+               20,000-30,000 in FpTotalise::visit, now here
     store      numberOfReadsLessThan, which STP.cpp asks on every array
                solve, between 100,000 and 200,000
     and-nest   nothing: the simplifying factory flattens a conjunction as it
