@@ -79,7 +79,6 @@ public:
   bool enable_common_subsum = false;
 
   int64_t AIG_rewrites_iterations = 0; // Number of iterations of AIG rewrites.
-  int64_t bitblast_simplification = 0;
   int64_t size_reducing_fixed_point = 0;
   
 
@@ -253,7 +252,6 @@ public:
     enable_common_subsum = false;
     enable_ite_context = false;
 
-    bitblast_simplification = 0;
     simple_cnf=true;
   }
 
