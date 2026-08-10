@@ -28,6 +28,7 @@ THE SOFTWARE.
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/Simplifier/FindPureLiterals.h"
 #include "stp/Simplifier/PropagateEqualities.h"
 #include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
@@ -325,6 +326,8 @@ struct IncrementalSolver::Impl
     uint64_t satCalls = 0;
     uint64_t refinementSatCalls = 0;
     uint64_t refinementRounds = 0;
+    uint64_t extPreprocesses = 0;
+    uint64_t extEliminations = 0;
     uint64_t rebuilds = 0;
     uint64_t rebuildRelief = 0;
     uint64_t rebuildPromotion = 0;
@@ -402,6 +405,8 @@ struct IncrementalSolver::Impl
     uint64_t satCalls = 0;
     uint64_t refinementSatCalls = 0;
     uint64_t refinementRounds = 0;
+    uint64_t extPreprocesses = 0;
+    uint64_t extEliminations = 0;
     uint64_t rebuilds = 0;
     uint64_t rebuildRelief = 0;
     uint64_t rebuildPromotion = 0;
@@ -478,6 +483,8 @@ struct IncrementalSolver::Impl
       satCalls += p.satCalls;
       refinementSatCalls += p.refinementSatCalls;
       refinementRounds += p.refinementRounds;
+      extPreprocesses += p.extPreprocesses;
+      extEliminations += p.extEliminations;
       rebuilds += p.rebuilds;
       rebuildRelief += p.rebuildRelief;
       rebuildPromotion += p.rebuildPromotion;
@@ -573,6 +580,13 @@ struct IncrementalSolver::Impl
   // (The per-conjunct caches never had the problem: their keys hold their
   // nodes by construction.)
   ASTNodeSet extKeepAlive;
+
+  // The exact-stack block cache needs one stable encoding policy per raw
+  // active conjunction. The first stack is kept raw; a genuinely new stack
+  // after the first solve receives scoped preprocessing. Re-visiting either
+  // stack must make the same choice so its transformed root, refinement
+  // lemmas and learned clauses remain reusable.
+  std::map<ASTNode, bool> extScopedPreprocessOf;
 
   // Base-level conjuncts already asserted as permanent units.
   ASTNodeSet level0Asserted;
@@ -673,6 +687,14 @@ struct IncrementalSolver::Impl
   // The eliminated definitions of the levels the CURRENT solve used,
   // seeded into the model channel alongside sigma0's.
   std::vector<std::pair<ASTNode, ASTNode>> activeEliminatedDefs;
+  ASTNodeSet activeEliminatedVars;
+
+  void recordActiveElimination(const ASTNode& key, const ASTNode& value)
+  {
+    activeEliminatedDefs.push_back(std::make_pair(key, value));
+    if (key.GetKind() == SYMBOL)
+      activeEliminatedVars.insert(key);
+  }
   // Keys this driver has seeded into the batch Simplifier's SolverMap
   // (the model-evaluation channel), so the next solve can withdraw them.
   ASTNodeSet seededModelKeys;
@@ -2204,6 +2226,8 @@ struct IncrementalSolver::Impl
         << " sat-calls=" << profile.satCalls
         << " refinement-sat-calls=" << profile.refinementSatCalls
         << " refinement-rounds=" << profile.refinementRounds
+        << " ext-preprocesses=" << profile.extPreprocesses
+        << " ext-eliminations=" << profile.extEliminations
         << " rebuilds=" << profile.rebuilds
         << " rebuild-relief=" << profile.rebuildRelief
         << " rebuild-promotion=" << profile.rebuildPromotion
@@ -2287,6 +2311,8 @@ struct IncrementalSolver::Impl
         << " sat-calls=" << sessionProfile.satCalls
         << " refinement-sat-calls=" << sessionProfile.refinementSatCalls
         << " refinement-rounds=" << sessionProfile.refinementRounds
+        << " ext-preprocesses=" << sessionProfile.extPreprocesses
+        << " ext-eliminations=" << sessionProfile.extEliminations
         << " rebuilds=" << sessionProfile.rebuilds
         << " rebuild-relief=" << sessionProfile.rebuildRelief
         << " rebuild-promotion=" << sessionProfile.rebuildPromotion
@@ -3482,6 +3508,69 @@ struct IncrementalSolver::Impl
                 << ", " << eliminated << " eliminated" << std::endl;
   }
 
+  // The exact-stack path encodes the COMPLETE active stack as one
+  // assumption-guarded block. Whole-formula simplification is therefore
+  // scoped to exactly the same lifetime as the block: unlike ordinary
+  // per-level encodings, a fact from a deeper level cannot leak into a root
+  // which survives its pop. Reproduce the high-yield, model-replay-capable
+  // prefix of the batch size-reducing pipeline before array transformation.
+  ASTNode preprocessExactStackBlock(const ASTNode& input)
+  {
+    if (!bm->UserFlags.optimize_flag || input.isConstant())
+      return input;
+
+    SubstitutionMap scopedMap(bm);
+    Simplifier scoped(bm, &scopedMap);
+    ASTNode out = input;
+
+    if (bm->UserFlags.bitConstantProp_flag)
+    {
+      simplifier::constantBitP::ConstantBitPropagation cb(
+          bm, &scoped, bm->defaultNodeFactory, out);
+      out = cb.topLevelBothWays(out);
+      if (cb.isUnsatisfiable())
+        out = bm->ASTFalse;
+    }
+
+    if (!out.isConstant() && bm->UserFlags.propagate_equalities)
+    {
+      PropagateEqualities pe(&scoped, bm->defaultNodeFactory, bm);
+      out = pe.topLevel(out);
+    }
+    if (scoped.hasUnappliedSubstitutions())
+      out = scoped.applySubstitutionMapAtTopLevel(out);
+
+    if (!out.isConstant() && bm->UserFlags.enable_unconstrained)
+    {
+      RemoveUnconstrained remove(*bm);
+      out = remove.topLevel(out, &scoped);
+    }
+
+    if (!out.isConstant() && bm->UserFlags.enable_pure_literals)
+    {
+      FindPureLiterals pure;
+      if (pure.topLevel(out, &scoped, bm))
+        out = scoped.applySubstitutionMapAtTopLevel(out);
+    }
+
+    if (scoped.hasUnappliedSubstitutions())
+      out = scoped.applySubstitutionMapAtTopLevel(out);
+
+    const ASTNodeSet retainedSymbols = symbolsOf(out);
+    for (DenseNodeMap::const_iterator it = scoped.Return_SolverMap()->begin();
+         it != scoped.Return_SolverMap()->end(); ++it)
+    {
+      if (it->first.GetKind() == SYMBOL &&
+          retainedSymbols.find(it->first) != retainedSymbols.end())
+        continue;
+      recordActiveElimination(it->first, it->second);
+      if (profile.enabled && it->first.GetKind() == SYMBOL)
+        profile.extEliminations++;
+    }
+    bm->ASTNodeStats("Incremental ext after scoped preprocessing: ", out);
+    return out;
+  }
+
   // The batch pipeline's bounded-variable-addition policy, applied to the
   // persistent solver (see TopLevelSTPAux): an explicit ON always asks,
   // AUTO asks only for array problems, and the answer must land inside the
@@ -3595,14 +3684,13 @@ struct IncrementalSolver::Impl
     }
     // The elimination replay: definitions the current solve's prepared
     // levels eliminated get their model values by evaluation, exactly as
-    // sigma0-eliminated variables always have.
+    // sigma0-eliminated variables always have. These are seeded even if an
+    // older block bit-blasted the same symbol: buildSymbolMap deliberately
+    // omits active eliminations below, so the scoped definition wins.
     for (const std::pair<ASTNode, ASTNode>& d : activeEliminatedDefs)
     {
-      if (bbMgr.symbolToBBNode.find(d.first) == bbMgr.symbolToBBNode.end())
-      {
-        (*channel)[d.first] = d.second;
-        seededModelKeys.insert(d.first);
-      }
+      (*channel)[d.first] = d.second;
+      seededModelKeys.insert(d.first);
     }
     // Base variables the rebuild-boundary pass eliminated: seeded
     // unconditionally -- their pre-rebuild bits survive in the blast
@@ -3631,6 +3719,9 @@ struct IncrementalSolver::Impl
              bbMgr.symbolToBBNode.begin();
          it != bbMgr.symbolToBBNode.end(); ++it)
     {
+      if (activeEliminatedVars.find(it->first) !=
+          activeEliminatedVars.end())
+        continue;
       const vector<BBNodeAIG>& bits = it->second;
       vector<unsigned> vars(bits.size(), ~((unsigned)0));
       bool anyLive = false;
@@ -3800,6 +3891,25 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
 
   if (extActive)
     inputToSat = ext->conjoinRecordConstraints(inputToSat);
+
+  // The raw exact-stack encoding is an important first-round search
+  // strategy for write-heavy array graphs (the RTC canary is about 10x
+  // faster that way). Once the persistent solver already contains a round,
+  // however, rebuilding the current stack without batch's cheap global
+  // reductions is the dominant loss on the large changing-stack family.
+  // Defer this scoped pass until the second engaged solve: that retains the
+  // first-round strategy and pays whole-stack work only in sessions which
+  // have demonstrated reuse.
+  const bool scopedPreprocess =
+      extScopedPreprocessOf
+          .insert(std::make_pair(activeConjunction, engagedSolves > 1))
+          .first->second;
+  if (scopedPreprocess)
+  {
+    if (profile.enabled)
+      profile.extPreprocesses++;
+    inputToSat = preprocessExactStackBlock(inputToSat);
+  }
 
   if (activeHasFp)
     inputToSat = fpContext()->lowerPrepared(inputToSat);
@@ -4245,6 +4355,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   impl->assumedLitLevels.clear();
   impl->lastLevelLitConjuncts.clear();
   impl->lastFailedLits.clear();
+  impl->activeEliminatedDefs.clear();
+  impl->activeEliminatedVars.clear();
 
   {
     ScopedProfileTimer maintenanceTimer(impl->profile.enabled,
@@ -4677,7 +4789,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // Accumulate the facts of shallower live levels for the deeper levels'
   // privacy checks.
   ASTNodeSet activeCbpFactSymbols;
-  impl->activeEliminatedDefs.clear();
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
     const bool individually =
@@ -4930,7 +5041,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // context entry is withheld.
         for (const std::pair<ASTNode, ASTNode>& d : pp.eliminatedDefs)
         {
-          impl->activeEliminatedDefs.push_back(d);
+          impl->recordActiveElimination(d.first, d.second);
           if (ctx.find(d.first) != ctx.end())
             continue;
           ASTNode expanded = d.second;

@@ -287,6 +287,21 @@ nodes and re-mints their numbers, and the deterministic names are keyed
 on node numbers -- so the driver pins each round's node spine, and in
 general any cache in STP that keys on nodes must *hold* them.
 
+The first distinct exact-stack block keeps its raw word-level shape. This is
+an intentional search strategy: on write-heavy array graphs it can be much
+faster than the smaller formula produced by global simplification. Once a
+session changes to a new stack, that new block receives the high-yield prefix
+of the batch size-reducing pipeline (constant-bit propagation, equality
+propagation, unconstrained elimination and pure literals) before array
+transformation. This is safe here because the result and every definition it
+eliminates have exactly the assumption lifetime of the complete-stack block;
+ordinary per-level roots still never see facts from deeper scopes. The choice
+is cached per raw active conjunction, so repeating or re-pushing a stack
+recreates the same transformed root and reuses its encoding and lemmas instead
+of alternating between raw and simplified forms. If a scoped elimination
+reuses a symbol whose bits were created by an older block, model construction
+withdraws those inactive SAT bits and evaluates the current definition.
+
 The deterministic block node participates in the same live-cone accounting as
 ordinary formula roots. Extensionality still differs semantically -- its block
 represents the complete active array graph -- but it does not have a separate
@@ -463,12 +478,15 @@ by additive session totals), while SMT-LIB answers remain on stdout.
 The profile reports stack and cache work, including CBP divergences,
 rollbacks, discarded levels and state entries, fresh and re-fed levels, their
 bounded DAG-node mass, reset-oracle/fallback rebuilds, rewrite replay, and
-adoption attempts. It also covers semantic construction, preparation, actual
-bit-blast/CNF encoding, active-read seeding, backend rebuilds, initial and
-refinement SAT calls, and rolling session totals. Durations accumulate at
-nanosecond precision and are emitted as whole microseconds, so repeated short
-operations are retained in the cumulative values. It is deliberately separate
-from ``-s``: verbose diagnostics from individual passes would otherwise
+adoption attempts. ``ext-preprocesses`` and ``ext-eliminations`` identify
+exact-stack blocks which took the scoped batch-prefix pass and the model
+definitions it produced. The profile also covers semantic construction,
+preparation, actual bit-blast/CNF encoding, active-read seeding, backend
+rebuilds, initial and refinement SAT calls, and rolling session totals.
+Durations accumulate at nanosecond precision and are emitted as whole
+microseconds, so repeated short operations are retained in the cumulative
+values. It is deliberately separate from ``-s``: verbose diagnostics from
+individual passes would otherwise
 distort the phases being measured. Deterministic work counters are suitable
 for regression tests; elapsed values are measurements, not test expectations.
 
