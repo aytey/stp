@@ -27,15 +27,23 @@
 #              so these can be ordered by how close that is to real input.
 #   unaudited  predates this check. Nobody has looked.
 #
-# Being on this list is NOT a claim that a function is safe: 24 of the 72
-# are still "unaudited", and at least one of those turned out to crash on a
-# valid query. Read the status, not the presence of the name.
+# Being on this list is NOT a claim that a function is safe. Nothing is
+# "unaudited" any more, but 21 are "on-path", which means someone looked and
+# found a recursion a solve can reach and did not convert it. Read the
+# status, not the presence of the name.
 #
-# The audit that filled in the rest asked reachability first, on the evidence
-# that "recursive" and "reachable" are not the same question:
-# BVTypeCheckRecursive sat here for weeks looking like the next thing to
-# convert, and turned out to be reached by nothing but a disabled tool's
-# assertions, while the type check every solve runs is per-node.
+# The audit asked reachability before depth, on the evidence that "recursive"
+# and "reachable" are not the same question: BVTypeCheckRecursive sat here
+# looking like the next thing to convert, and turned out to be reached by
+# nothing but a disabled tool's assertions, while the type check every solve
+# runs is per-node.
+#
+# Of the 21 on-path, four carry a measured depth and the rest say they do
+# not. Nearest to real input by a wide margin is the formula recursion on the
+# Simplifier::SimplifyTerm line: a chain of fp.add 8,000 deep is a valid
+# query that dies in it today, against the ~9,300 of the deepest input we
+# have. Everything else measured needs 40,000 or more. That is the order to
+# work in, and it is not the order the names suggest.
 #
 # The parsing is crude, so some of these are not walks at all -- an overload
 # forwarding to another overload reads the same from outside. Those say so.
@@ -48,22 +56,22 @@ BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (p
 BitBlaster::BBTerm: bounded: both memos primed by one walk before either runs (primeMemos)
 BitBlaster::buildAdditionNetworkResult: safe: two overloads sharing a name. The one that looks recursive loops over the bit width calling the other, so it is bounded by the word size and not by the input
 BitBlaster::updateTerm: safe: recurses to a fixed point on one node, not down the DAG
-CommonSubSum::rebuild: unaudited: predates this check
+CommonSubSum::rebuild: off-path: behind --enable-common-subsum (UserFlags.enable_common_subsum, default false). DeepDag's deep_common_sub_sum runs the pass at 20,000 and passes
 ConstantBitPropagation::checkAtFixedPoint: off-path: its one caller is an assert in BitBlaster, so it is gone under NDEBUG; in an assertions build it does walk the input
 Cpp_interface::LookupOrCreateSymbol: safe: overload forwarding, not a walk
 Cpp_interface::newNode: safe: overload forwarding, not a walk
 Dot_Print1: off-path: the dot printer, behind --print-back-DOT (UserFlags.print_STPinput_back_dot_flag)
 ExtensionalityContext::lowerArrayEqualities: safe: overload forwarding, not a walk
-FindPureLiterals::build: unaudited: predates this check
+FindPureLiterals::build: on-path: enable_pure_literals defaults true, and this walks the formula for each literal's polarity one frame per level, memoised on nodeToPolarity. Depth not measured
 FlattenKindNoDuplicates: on-path: FlattenKind(AND/OR/BVAND/BVOR) reaches it from the simplifier, the BV solver, PropagateEqualities, MergeSame and UseITEContext, and it walks a nested same-kind chain one frame per level. Measured to die between 100,000 and 150,000 at 8 MiB, and at 20,000 at 1 MiB. No parsed query gets there: the simplifying factory flattens an AND as it builds it, so the nested node never exists -- a 200,000-deep nested AND answers sat. A pass building with the hashing factory would reach it
-FloatBlast::asPacked: unaudited: predates this check
-FloatBlast::asUnpacked: unaudited: predates this check
-FloatBlast::comparisonLeaf: unaudited: predates this check
-FloatBlast::lower: unaudited: predates this check
+FloatBlast::asPacked: on-path: float lowering, one frame per level of a float expression, cached per node. Not measured, and not measurable from a query yet: FpTotalise::visit walks the same expression first and dies before it
+FloatBlast::asUnpacked: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
+FloatBlast::comparisonLeaf: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
+FloatBlast::lower: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
 FloatBlaster::canonicalBits: safe: overload forwarding, not a walk
 FloatBlaster::operandFormat: safe: overload forwarding; the walk it calls looks at one node's children
-FpTotalise::collectRoundingModeTerms: unaudited: predates this check
-FpTotalise::visit: unaudited: predates this check
+FpTotalise::collectRoundingModeTerms: on-path: collects the rounding-mode terms a totalised float expression constrains, one frame per level, over the same expression FpTotalise::visit walks
+FpTotalise::visit: on-path: totalises float operations before lowering, one frame per level, with a persistent cache. Measured on a chain of fp.add: 20,000 solves, 40,000 dies here. With the simplifier on, that query dies earlier still -- between 7,000 and 8,000, in the formula recursion named on Simplifier::SimplifyTerm below, which is the nearest wall to real input this list has
 GDL_Print: off-path: the GDL printer, behind --print-back-GDL (UserFlags.print_STPinput_back_GDL_flag)
 GDL_Print1: off-path: the same printer, same flag
 HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
@@ -85,30 +93,30 @@ STPMgr::LookupOrCreateSymbol: safe: overload forwarding, not a walk
 STPMgr::VarSeenInTerm: on-path: walks a term for a variable, one frame per level, with a per-(term, var) memo. One caller: the boolean-symbol arm of model evaluation, asking whether a symbol occurs in the value the model recorded for it. Depth not measured; a recorded model value is a constant in every corpus query
 STPMgr::arrayBaseSymbol: on-path: iterative down a write chain, and recursive only into the two branches of an array if-then-else, so its depth is how deeply those nest. Depth not measured
 Simplifier::CombineLikeTerms: safe: overload forwarding, not a walk
-Simplifier::SimplifyArrayTerm: unaudited: predates this check
-Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses
+Simplifier::SimplifyArrayTerm: on-path: descends an array term's base array and both branches of an array if-then-else, one frame per level. Not measured: a 200,000-deep store chain dies in numberOfReadsLessThan before reaching it
+Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses. Measured: a chain of fp.add 8,000 deep dies there, 7,000 solves. The frames are SimplifyFormula -> simplifyNonAndOr -> SimplifyIteFormula or SimplifyNotFormula -> SimplifyFormula, which is mutual and so invisible to this check -- the AND/OR driver was converted, these arms were not. At ~8,000 this is the nearest thing on the list to the ~9,300 of the deepest input we have, and the next conversion to do
 Simplifier::checkIfInSimplifyMap: off-path: a debug check whose one caller is commented out
-SimplifyingNodeFactory::CreateSimpleAndOr: unaudited: predates this check
-SplitExtracts::buildMap: unaudited: predates this check
-StrengthReduction::replace: unaudited: predates this check
+SimplifyingNodeFactory::CreateSimpleAndOr: safe: overload forwarding -- the binary form puts its two operands in a vector and calls the vector form
+SplitExtracts::buildMap: on-path: enable_split_extracts defaults true, and this walks the input for extracts over symbols one frame per level, guarded by a visited set. Depth not measured
+StrengthReduction::replace: on-path: rebuilds children one frame per level, cache-guarded, on the substitutions the analysis found. The enabled deep_strength_reduction case runs the pass at 20,000
 SubstitutionMap::applySubstitutionMapUntilArrays: safe: overload forwarding, not a walk
-SubstitutionMap::loops_helper: unaudited: predates this check
+SubstitutionMap::loops_helper: safe: recurses over the variables of the substitution dependency graph, so its depth is how long a chain of substitutions is, not how deeply the input nests
 SubstitutionMap::replace: safe: overload forwarding; the walk it calls is iterative
-UnsignedIntervalAnalysis::visit: unaudited: predates this check
+UnsignedIntervalAnalysis::visit: off-path: the only thing that instantiates it is tools/propagator_bench, which needs BUILD_EXTRA_TOOLS and CryptoMiniSat, and the analysis reports its propagator as not implemented
 UseITEContext::visit: by-choice: input-depth recursive, opt-in (--ite-context-simplifications); DeepDag_Test.cpp has a disabled case
-VariablesInExpression::SetofVarsSeenInTerm: unaudited: predates this check
+VariablesInExpression::SetofVarsSeenInTerm: safe: overload forwarding; the Symbols walk it calls is the iterative one VarSeenInTerm uses
 VariablesInExpression::VarSeenInTerm: safe: overload forwarding; the Symbols walk it calls is iterative
 VariablesInExpression::getSymbol: bounded: graph primed before it runs (primeSymbols)
-buildListOfSymbols: unaudited: predates this check
-collectArrayIndexSorts: unaudited: predates this check
-collectDag: unaudited: predates this check
-collectRoundingModeUses: unaudited: predates this check
-evaluateMemoised: unaudited: predates this check
+buildListOfSymbols: off-path: collects the symbols a print-back has to declare; its callers are print_STPInput_Back and the SMT-LIB1 and SMT-LIB2 print-backs
+collectArrayIndexSorts: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2, same as SMTLIB_Print1
+collectDag: on-path: array equality walks the graph it owns one frame per level, guarded by a visited set. Depth not measured
+collectRoundingModeUses: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2
+evaluateMemoised: on-path: folds a constant expression child-first, memoised, reached from the node-taking NonMemberBVConstEvaluator. Its depth is the constant expression's, which the simplifier builds rather than the input. Not measured
 getConstantBit: on-path: reads one bit of a constant, descending the first child of a BVCONCAT chain. Depth not measured; it is called only where the simplifier has already established a constant of that shape
-intersection: unaudited: predates this check
+intersection: on-path: PropagateEqualities runs by default and this walks for the variables under a node, one frame per level, guarded by a visited set. Depth not measured
 mostSignificantConstants: on-path: counts leading constant bits down the first child of a BVCONCAT chain, one frame per level. Depth not measured
-noteRoundingMode: unaudited: predates this check
+noteRoundingMode: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2; recurses through an if-then-else over rounding modes
 numberOfReadsLessThan: on-path: the flagged overload forwards, but the walk it calls counts array reads over the whole input one frame per level, and STP.cpp asks it on every array solve that is not using array equality. It stops early once the limit is passed, which a bit-vector-only chain never does. Measured to die between 80,000 and 100,000 at 8 MiB, and at 20,000 at 1 MiB -- roughly ten times the deepest corpus input
-outputFloatingPointSMTLIB2: unaudited: predates this check
+outputFloatingPointSMTLIB2: safe: overload forwarding. It is on the model-printing path, but the flagged overload only reads the format off the term and calls the other
 primeMemo: safe: the walk that replaces these recursions; it is iterative
-tagNodes: unaudited: predates this check
+tagNodes: on-path: PropagateEqualities again, tagging shared nodes one frame per level, guarded by a memo. Depth not measured
