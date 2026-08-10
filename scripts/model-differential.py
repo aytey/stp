@@ -31,9 +31,11 @@ has its counterexample constructed, checked against the original formula, and
 printed. The whole of stdout is compared, which covers the answer, the model,
 and the order the model is printed in.
 
-Runs that do not finish are dropped rather than compared: a run cut short by
-the timeout differs from itself. So is a query that errors in both, since the
-message is the same either way and there is nothing to compare.
+A query neither binary finishes is dropped rather than compared: a run cut
+short by the timeout differs from itself. A query only one of them finishes is
+a difference, and the one worth having this script for -- a walk that stops
+terminating shows up nowhere else, and dropping it too would report the change
+that caused it as green.
 
 Usage: model-differential.py <stp-a> <stp-b> <query-dir>
 """
@@ -78,18 +80,23 @@ def main():
 
     for query in queries:
         ra, rb = solve(a, query), solve(b, query)
-        if ra is None or rb is None:
+        name = os.path.relpath(query, query_dir)
+        if ra is None and rb is None:
             incomparable += 1
+            continue
+        if ra is None or rb is None:
+            finished = "the second" if ra is None else "the first"
+            differed.append("%s (only %s finished)" % (name, finished))
             continue
 
         compared += 1
         if b"\n(\n" in ra[1] or ra[1].startswith(b"(\n"):
             models += 1
         if ra != rb:
-            differed.append(os.path.relpath(query, query_dir))
+            differed.append(name)
 
     print("compared %d queries, %d of them with a printed model "
-          "(%d could not be compared)" % (compared, models, incomparable))
+          "(%d neither binary finished)" % (compared, models, incomparable))
 
     if differed:
         print("the answer or the model differs, for:")

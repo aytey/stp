@@ -702,20 +702,20 @@ bool transformFormulaSpineOk(Context& c, unsigned depth)
 
 // Counterexample evaluation. TermToConstTermUsingModel and
 // ComputeFormulaUsingModel evaluate the ORIGINAL formula against the model a
-// sat answer produced, and reach each other once per level of it, so a term
-// nested deeply enough takes the stack with them. Two frames per level: a
-// chain of 30,000 selects dies here at the ordinary 8 MiB, and it is the
-// last thing on that input's path that does.
+// sat answer produced, and reached each other once per level of it, so a term
+// nested deeply enough took the stack with them. Two frames per level: a
+// chain of 30,000 selects died here at the ordinary 8 MiB, and it was the
+// last thing on that input's path that did.
 //
-// Neither generic tool fits. The term side has no memo to prime -- only
-// CounterExampleMap, written for array reads and float encodings -- and a
-// memo could not be keyed on the node alone anyway, since the answer depends
-// on ArrayReadFlag and on whether the walk is already inside an encoded
-// evaluation. And both sides evaluate an if-then-else's condition and then
-// only the branch it leaves alive, where a dropped branch is not merely
-// wasted work: it can be genuinely unevaluable against the model, and both
-// call FatalError when it is. So priming would turn a working query into an
-// abort. This one needs a state machine over both functions.
+// Neither generic tool fits, which is why it is a state machine. The term
+// side has no memo to prime -- only CounterExampleMap, written for array
+// reads and float encodings -- and a memo could not be keyed on the node
+// alone anyway, since the answer depends on ArrayReadFlag and on whether the
+// walk is already inside an encoded evaluation. And both sides evaluate an
+// if-then-else's condition and then only the branch it leaves alive, where a
+// dropped branch is not merely wasted work: it can be genuinely unevaluable
+// against the model, and both call FatalError when it is. So priming would
+// turn a working query into an abort.
 //
 // No solve is needed to reach it: with an empty model every symbol takes its
 // default and the walk still descends the whole term.
@@ -735,6 +735,70 @@ bool counterExampleEvalOk(Context& c, unsigned depth)
   AbsRefine_CounterExample ce(&c.mgr, &simp, &at);
 
   return ce.ComputeFormulaUsingModel(f).isConstant();
+}
+
+// The formula side's own spine, which is the arm nearly every query reaches:
+// a connective evaluates each operand and rebuilds over the answers.
+bool counterExampleFormulaOk(Context& c, unsigned depth)
+{
+  ASTNode f = c.hf->CreateNode(EQ, c.mgr.CreateSymbol("t0", 0, 8),
+                               c.mgr.CreateZeroConst(8));
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string nm = "t" + std::to_string(i);
+    f = c.hf->CreateNode(
+        NOT, c.hf->CreateNode(
+                 AND, c.hf->CreateNode(EQ, c.mgr.CreateSymbol(nm.c_str(), 0, 8),
+                                       c.mgr.CreateZeroConst(8)),
+                 f));
+  }
+  c.roots.push_back(f);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer at(&c.mgr, &simp);
+  AbsRefine_CounterExample ce(&c.mgr, &simp, &at);
+
+  return ce.ComputeFormulaUsingModel(f).isConstant();
+}
+
+// A chain of if-then-else terms, which is the shape the two functions are
+// mutually recursive for: each level evaluates a condition as a formula and
+// then descends into the branch it leaves alive as a term. The chain is in
+// the else-branch because a boolean symbol the model says nothing about
+// takes false.
+//
+// The type of each level is asked for as the chain is built, which is what
+// keeps this a test of the evaluator. Asking a nested if-then-else its type
+// derives its float format, and that derivation walks the chain by calling
+// itself (GetType -> GetSigWidth -> cacheFPFormat -> deriveFPFormat ->
+// GetExpWidth on a branch), so a cold format cache overflows there instead --
+// at 20,000 levels it does, before this walk gets a turn. Filling the cache
+// one level at a time as the chain grows is what a bottom-up pass does
+// anyway, and it is not a recursion this file has converted: like
+// TermToConstTermUsingModel's own _inner, the loop runs through another
+// function, so scripts/check-ast-recursion.py cannot see it either.
+bool counterExampleTermIteOk(Context& c, unsigned depth)
+{
+  const ASTNode cond = c.mgr.CreateSymbol("p", 0, 0);
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  ASTNode t = c.mgr.CreateSymbol("x", 0, 8);
+  for (unsigned i = 0; i < depth; i++)
+  {
+    t = c.hf->CreateTerm(ITE, 8, cond, zero, t);
+    t.GetType();
+  }
+
+  c.roots.push_back(t);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer at(&c.mgr, &simp);
+  AbsRefine_CounterExample ce(&c.mgr, &simp, &at);
+
+  // ModelValueOfTerm asks with the read-tolerant flag off, so every level has
+  // to come back a constant.
+  return ce.ModelValueOfTerm(t).GetKind() == BVCONST;
 }
 
 // The LISP printer, which is what operator<< on a node uses -- so a deep
@@ -926,7 +990,9 @@ TEST(DeepDag, deep_array_read_chain)   { EXPECT_STACK_SAFE(arrayReadChainOk, 200
 TEST(DeepDag, deep_array_write_chain)  { EXPECT_STACK_SAFE(arrayWriteChainOk, 20000); }
 TEST(DeepDag, deep_transform_formula_spine) { EXPECT_STACK_SAFE(transformFormulaSpineOk, 20000); }
 TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
-TEST(DeepDag, DISABLED_deep_counterexample_eval) { EXPECT_STACK_SAFE(counterExampleEvalOk, 20000); }
+TEST(DeepDag, deep_counterexample_eval) { EXPECT_STACK_SAFE(counterExampleEvalOk, 20000); }
+TEST(DeepDag, deep_counterexample_formula) { EXPECT_STACK_SAFE(counterExampleFormulaOk, 20000); }
+TEST(DeepDag, deep_counterexample_term_ite) { EXPECT_STACK_SAFE(counterExampleTermIteOk, 20000); }
 TEST(DeepDag, DISABLED_deep_printer_smtlib2)    { EXPECT_STACK_SAFE(printerSMTLIB2Ok, 20000); }
 
 } // namespace
