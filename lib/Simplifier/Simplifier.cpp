@@ -1528,6 +1528,12 @@ ASTNode Simplifier::pullUpBVSX(ASTNode output)
 //
 // Operands the pass carries through untouched -- an array-typed one, which
 // falls to its catch-all -- are skipped for the same reason.
+//
+// A node the substitution map covers is the third case the hook exists for.
+// SimplifyTerm does not simplify such a node at all: it looks the node up
+// and simplifies its image instead, which is not a child and can be as deep
+// as the input. Naming the image as the node's operand puts it under the
+// walk, so the call the pass makes on it lands on the map.
 void Simplifier::primeTerms(const ASTNode& n)
 {
   primeMemo(
@@ -1536,14 +1542,23 @@ void Simplifier::primeTerms(const ASTNode& n)
         if (node.isConstant())
           return Walk::Skip; // SimplifyTerm hands these straight back.
 
+        const types type = node.GetType();
+        const bool isTerm =
+            (type == BITVECTOR_TYPE || type == FLOATINGPOINT_TYPE);
+
+        // Ahead of the map test, because SimplifyTerm follows the
+        // substitution before it consults its own map.
+        ASTNode image;
+        if (isTerm && InsideSubstitutionMap(node, image))
+          return Walk::Descend; // into the image, named below.
+
         ASTNode ignored;
         if (CheckSimplifyMap(node, ignored, false))
           return Walk::Skip; // it would answer from the map.
 
-        const types type = node.GetType();
         if (type == BOOLEAN_TYPE)
           return Walk::Visit; // SimplifyFormula's side, which walks its own.
-        if (type != BITVECTOR_TYPE && type != FLOATINGPOINT_TYPE)
+        if (!isTerm)
           return Walk::Skip; // carried through unsimplified.
 
         if (node.GetKind() == SYMBOL || !is_Term_kind(node.GetKind()))
@@ -1551,7 +1566,16 @@ void Simplifier::primeTerms(const ASTNode& n)
 
         return Walk::Descend;
       },
-      [](const ASTNode& node, ASTVec& out) {
+      [this](const ASTNode& node, ASTVec& out) {
+        // Same order as classify: a substituted node's operand is its
+        // image, and its own children are never looked at.
+        ASTNode image;
+        if (InsideSubstitutionMap(node, image))
+        {
+          out.push_back(image);
+          return true;
+        }
+
         const Kind k = node.GetKind();
         if (k != BVAND && k != BVOR && k != BVPLUS)
           return false; // its own children, which the walk reads in place.

@@ -468,6 +468,29 @@ bool simplifyTermOk(Context& c, unsigned depth)
   return simp.SimplifyTerm(t).GetValueWidth() == 8;
 }
 
+// SimplifyTerm again, for the deep term it reaches through the substitution
+// map rather than through a child. The term handed to the pass is shallow;
+// everything below it arrives from the map, which is not somewhere a walk
+// over children would look.
+bool simplifyTermSubstitutedOk(Context& c, unsigned depth)
+{
+  const ASTNode deep = c.chain(BVXOR, depth);
+  c.roots.push_back(deep);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+
+  const ASTNode s = c.mgr.CreateSymbol("substituted", 0, 8);
+  if (!simp.UpdateSolverMap(s, deep))
+    return false; // the map refused it: prove nothing quietly.
+
+  const ASTNode t =
+      c.hf->CreateTerm(BVMULT, 8, s, c.mgr.CreateSymbol("y0", 0, 8));
+  c.roots.push_back(t);
+  return simp.SimplifyTerm(t).GetValueWidth() == 8;
+}
+
 // UseITEContext::visit. Carries a context set down, so neither the walker
 // nor priming fits: the same node under two contexts has two answers.
 bool useITEContextOk(Context& c, unsigned depth)
@@ -761,6 +784,7 @@ TEST(DeepDag, deep_bit_blast_nested)
 TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }
 TEST(DeepDag, deep_remove_unconstrained) { EXPECT_STACK_SAFE(removeUnconstrainedOk, 20000); }
 TEST(DeepDag, deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
+TEST(DeepDag, deep_simplify_term_substituted) { EXPECT_STACK_SAFE(simplifyTermSubstitutedOk, 20000); }
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
 TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }
