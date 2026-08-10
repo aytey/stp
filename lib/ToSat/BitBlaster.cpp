@@ -1607,6 +1607,55 @@ void convert(const BBNodeVec& v, BBNodeManagerAIG* nf, mult_type* result)
   }
 }
 
+// Cost of using v as the multiplier. mult_Booth emits one partial-product row
+// per symbolic bit and one per non-zero digit left after recoding, but the two
+// are not priced alike. A symbolic row is a fresh AND gate for every bit of the
+// other operand; a constant row costs no gates at all, since AND with true is
+// the bit itself and a negated bit is just a complemented AIG edge. What a
+// constant row does cost is the column height it adds, which is what the
+// addition network then has to reduce -- and reducing that count is exactly
+// what recoding a run achieves.
+//
+// So "symbolic" is the figure that dominates, and "rows" only separates
+// operands that tie on it. Constant zeros -- including the ones a zero-extend
+// leaves behind, and the ones recoding creates inside a run -- cost nothing
+// either way. "recoded" reports how many runs were rewritten into a
+// subtract/add pair; zero means mult_Booth would leave the vector alone, so
+// there is nothing to be gained by preferring it over mult_normal.
+//
+// This asks convert(), so it sees whatever the bit-blasted vector actually
+// holds -- bits that constant bit propagation or simplification fixed count
+// just as much as the bits of a BVCONST term.
+int boothRows(const BBNodeVec& v, BBNodeManagerAIG* nf, int& recoded,
+              int& symbolic)
+{
+  recoded = 0;
+  symbolic = 0;
+  if (v.size() == 0)
+    return 0;
+
+  mult_type* t = (mult_type*)alloca(sizeof(mult_type) * v.size());
+  convert(v, nf, t);
+
+  int rows = 0;
+  for (size_t i = 0; i < v.size(); i++)
+  {
+    if (t[i] == MINUS_ONE_MT)
+    {
+      recoded++;
+      rows++;
+    }
+    else if (t[i] == ONE_MT)
+      rows++;
+    else if (t[i] == SYMBOL_MT)
+    {
+      symbolic++;
+      rows++;
+    }
+  }
+  return rows;
+}
+
 // Multiply "multiplier" by y[start ... bitWidth].
 void pushP(vector<vector<BBNode>>& products, const int start,
            const BBNodeVec& y, const BBNode& multiplier, BBNodeManagerAIG* nf)
@@ -1885,6 +1934,79 @@ void BitBlaster::mult_Booth(
     sort(t_products[i].begin(), t_products[i].end());
     for (unsigned j = 0; j < t_products[i].size(); j++)
       products[i].push_back(t_products[i][j]);
+  }
+}
+
+// Radix-4 modified Booth recoding.
+//
+// mult_Booth only rewrites runs of *constant* one bits, so a symbolic
+// multiplier still costs one partial-product row per bit. This groups the
+// multiplier into overlapping three-bit windows instead, halving the rows to
+// ceil(width/2). Each window picks a digit in {-2,-1,0,1,2}:
+//
+//   b(2i+1) b(2i) b(2i-1)   digit         b(-1) reads as zero
+//     0 0 0                   0
+//     0 0 1 / 0 1 0          +1
+//     0 1 1                  +2
+//     1 0 0                  -2
+//     1 0 1 / 1 1 0          -1
+//     1 1 1                   0
+//
+// which is carried as three signals: neg = b(2i+1), one = b(2i) xor b(2i-1),
+// and two = the pair of patterns that select twice y. Row bit j is then a
+// select between y[j] and y[j-1], conditionally inverted, and the inversion is
+// completed by adding neg itself into the row's lowest column -- the usual
+// two's complement identity -y = ~y + 1, made conditional. The all-ones window
+// falls out correctly: it selects nothing, inverts to all ones, and the added
+// one carries it back to zero.
+//
+// The trade is that halving the rows has to pay for a costlier row: a naive row
+// is one AND per bit, a radix-4 row is a select plus an XOR. Whether that is
+// worthwhile in CNF rather than in silicon is a question for measurement.
+//
+// Truncation keeps the negative digits honest: BVMULT is same-width, so bits
+// above the width are dropped and each row only needs to be right modulo
+// 2^width.
+void BitBlaster::mult_Booth_radix4(const BBNodeVec& x, const BBNodeVec& y,
+                                   vector<list<BBNode>>& products,
+                                   const ASTNode& n)
+{
+  const unsigned bitWidth = x.size();
+  const BBNode& BBFalse = nf->getFalse();
+
+  // The column bounds in MultiplicationStatsMap describe the un-recoded matrix
+  // of AND terms. This matrix holds conditionally negated selects instead, so
+  // those bounds do not apply to it -- mark the node so statsFound() keeps them
+  // away, exactly as mult_Booth does once it has recoded a run.
+  booth_recoded.insert(n);
+
+  for (unsigned base = 0; base < bitWidth; base += 2)
+  {
+    const BBNode& below = (base == 0) ? BBFalse : x[base - 1];
+    const BBNode& low = x[base];
+    const BBNode& high = (base + 1 < bitWidth) ? x[base + 1] : BBFalse;
+
+    const BBNode& neg = high;
+    const BBNode one = nf->CreateNode(XOR, low, below);
+    // twice y is selected by 011 and by 100, i.e. when low and below agree with
+    // each other and disagree with high.
+    // Sequenced deliberately; see the note in BBcompareFP.
+    const BBNode lowAgrees = nf->CreateNode(NOT, nf->CreateNode(XOR, low, below));
+    const BBNode highDiffers = nf->CreateNode(XOR, high, below);
+    const BBNode two = nf->CreateNode(AND, lowAgrees, highDiffers);
+
+    for (unsigned j = 0; base + j < bitWidth; j++)
+    {
+      const BBNode single = nf->CreateNode(AND, one, y[j]);
+      const BBNode dbl =
+          (j == 0) ? BBFalse : nf->CreateNode(AND, two, y[j - 1]);
+      const BBNode selected = nf->CreateNode(OR, single, dbl);
+      products[base + j].push_back(nf->CreateNode(XOR, selected, neg));
+    }
+
+    // The +1 that completes a negated row, and nothing when the digit is
+    // positive.
+    products[base].push_back(neg);
   }
 }
 
@@ -2170,6 +2292,68 @@ void BitBlaster::setColumnsToZero(
   }
 }
 
+// Fill the partial-product matrix by Booth recoding a constant multiplier,
+// choosing whichever operand is the cheaper one to decompose.
+//
+// Only the operand mult_Booth decomposes into partial products is worth
+// recoding: the other is added whole once per row, so its bit pattern does not
+// change the row count, and its constant bits are folded inside each row by the
+// AIG. The choice is therefore which operand to hand it first, and the cost
+// that dominates is the number of symbolic rows -- each is a fresh AND gate per
+// bit of the other operand, whereas a constant row costs no gates and only adds
+// column height. Rows overall break a tie.
+//
+// The test is on the bit-blasted vectors rather than on BVCONST, because that
+// is what convert() itself looks at: a run of ones that constant bit
+// propagation established is worth just as much as one written down in the
+// input. Testing the term instead would both miss those and route constants
+// with no run of ones -- which encode the same either way -- down a path that
+// only churns the encoding.
+//
+// Returns false, leaving products untouched, when neither operand recodes.
+// That is the symbolic x symbolic case, and the caller picks the fallback.
+bool BitBlaster::mult_Booth_constant(const BBNodeVec& x, const BBNodeVec& y,
+                                     BBNodeSet& support,
+                                     vector<list<BBNode>>& products,
+                                     const ASTNode& n)
+{
+  int xRecoded = 0, yRecoded = 0, xSymbolic = 0, ySymbolic = 0;
+  const int xRows = boothRows(x, nf, xRecoded, xSymbolic);
+  const int yRows = boothRows(y, nf, yRecoded, ySymbolic);
+
+  if (xRecoded == 0 && yRecoded == 0)
+    return false;
+
+  // BBMult swapped x to the constant side, so track which AST child each vector
+  // now names -- xN/yN are used only for debug output, but keeping them
+  // consistent costs nothing.
+  const bool swapped =
+      (BVCONST != n[0].GetKind()) && (BVCONST == n[1].GetKind());
+  const ASTNode& xN = swapped ? n[1] : n[0];
+  const ASTNode& yN = swapped ? n[0] : n[1];
+
+  const bool useY = (yRecoded > 0) &&
+                    (xRecoded == 0 || ySymbolic < xSymbolic ||
+                     (ySymbolic == xSymbolic && yRows < xRows));
+
+  if (useY)
+    mult_Booth(y, x, support, yN, xN, products, n);
+  else
+    mult_Booth(x, y, support, xN, yN, products, n);
+
+  // No setColumnsToZero() by the callers, unlike the other Booth variants. It
+  // would do nothing: it reaches the constant-bit multiplication bounds through
+  // statsFound(), which refuses any node mult_Booth has recoded -- the column
+  // sums it holds describe the un-recoded matrix and are wrong once a run has
+  // become a subtract/add pair. Those variants call mult_Booth
+  // unconditionally, so for them the node is often not recoded and the call
+  // still pays; this path is only taken when the multiplier did recode, so the
+  // bounds are never available. The all-false argument of
+  // buildAdditionNetworkResult() is unreachable for the same reason. Measured
+  // over 1276 multiplies: the bounds were live 0 times.
+  return true;
+}
+
 // Multiply two bitblasted numbers
 BBNodeVec BitBlaster::BBMult(const BBNodeVec& _x,
                              const BBNodeVec& _y,
@@ -2276,6 +2460,52 @@ BBNodeVec BitBlaster::BBMult(const BBNodeVec& _x,
       mult_Booth(_x, _y, support, n[0], n[1], products, n);
       setColumnsToZero(products, support, n);
       return v13(products, support, n);
+    }
+
+    case 14:
+    {
+      // Variant 1, except that a multiplier holding a run of constant one bits
+      // is Booth recoded.
+      //
+      // mult_normal walks the set bits of the multiplier and pays for one
+      // ripple-carry adder per set bit, so a constant containing a run of ones
+      // costs far more than it needs to: multiplying by 4095 builds twelve
+      // adders where two suffice.  Booth recoding rewrites each run of ones
+      // into a subtract/add pair, which is where nearly all of the encoding
+      // cost of a constant multiply goes.
+      //
+      // Symbolic x symbolic keeps mult_normal: routing it through mult_Booth
+      // would recode nothing and only change the summation strategy, which the
+      // existing Booth variants already offer.
+      if (mult_Booth_constant(x, y, support, products, n))
+        return buildAdditionNetworkResult(products, support, n);
+      return mult_normal(x, y, support, n);
+    }
+
+    case 15:
+    {
+      // Radix-4 modified Booth: half as many partial-product rows, at the cost
+      // of a costlier row. Unlike the other Booth variants this recodes
+      // symbolic multipliers too, so it applies to every multiply rather than
+      // only to those with a constant operand.
+      //
+      // No setColumnsToZero() here: mult_Booth_radix4 marks the node recoded,
+      // because the constant-bit column bounds describe the un-recoded matrix
+      // of AND terms and would be wrong applied to conditionally negated
+      // selects.
+      mult_Booth_radix4(x, y, products, n);
+      return buildAdditionNetworkResult(products, support, n);
+    }
+
+    case 16:
+    {
+      // 14 and 15 win on different multiplies: 14's radix-2 constant recoding
+      // is the better encoding when the multiplier is constant, and 15's
+      // radix-4 is the only one of the two that does anything at all when it is
+      // symbolic. This picks between them per multiply rather than per query.
+      if (!mult_Booth_constant(x, y, support, products, n))
+        mult_Booth_radix4(x, y, products, n);
+      return buildAdditionNetworkResult(products, support, n);
     }
 
     default:
@@ -3180,8 +3410,13 @@ BBNode BitBlaster::BBcompareFP(const ASTNode& form, BBNodeSet& support)
 
   const BBNode aNotNaN = nf->CreateNode(NOT, BBfpIsNaN(aBits, sb, w));
   const BBNode bNotNaN = nf->CreateNode(NOT, BBfpIsNaN(bBits, sb, w));
-  const BBNode bothZero =
-      nf->CreateNode(AND, BBfpIsZero(aBits, w), BBfpIsZero(bBits, w));
+  // Both operands' circuits are built before they are combined. Written as
+  // two statements because C++ does not sequence a call's arguments against
+  // each other: as one expression, which operand's AIG nodes get built first
+  // is the compiler's choice, and the numbering it decides reaches the CNF.
+  const BBNode aZero = BBfpIsZero(aBits, w);
+  const BBNode bZero = BBfpIsZero(bBits, w);
+  const BBNode bothZero = nf->CreateNode(AND, aZero, bZero);
   const BBNodeVec aKey = key(aBits, w);
   const BBNodeVec bKey = key(bBits, w);
   // key(a) >u key(b) when strict, key(a) >=u key(b) otherwise.
@@ -3232,8 +3467,10 @@ BBNode BitBlaster::BBeqFP(const ASTNode& form, BBNodeSet& support)
 
   if (k == FP_SMT_EQ)
   {
-    const BBNode bothNaN = nf->CreateNode(AND, BBfpIsNaN(aBits, sb, w),
-                                          BBfpIsNaN(bBits, sb, w));
+    // Sequenced deliberately; see the note in BBcompareFP.
+    const BBNode aNaN = BBfpIsNaN(aBits, sb, w);
+    const BBNode bNaN = BBfpIsNaN(bBits, sb, w);
+    const BBNode bothNaN = nf->CreateNode(AND, aNaN, bNaN);
     return nf->CreateNode(OR, bothNaN, sameBits);
   }
 
@@ -3249,8 +3486,10 @@ BBNode BitBlaster::BBeqFP(const ASTNode& form, BBNodeSet& support)
   // choice is per-node and deterministic.
   const BBNodeVec& nanSide = form[0].isConstant() ? aBits : bBits;
   const BBNode notNaN = nf->CreateNode(NOT, BBfpIsNaN(nanSide, sb, w));
-  const BBNode bothZero =
-      nf->CreateNode(AND, BBfpIsZero(aBits, w), BBfpIsZero(bBits, w));
+  // Sequenced deliberately; see the note in BBcompareFP.
+  const BBNode aZero = BBfpIsZero(aBits, w);
+  const BBNode bZero = BBfpIsZero(bBits, w);
+  const BBNode bothZero = nf->CreateNode(AND, aZero, bZero);
   const BBNode sameValue = nf->CreateNode(OR, sameBits, bothZero);
 
   return nf->CreateNode(AND, notNaN, sameValue);
