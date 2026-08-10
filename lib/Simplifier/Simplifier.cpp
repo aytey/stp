@@ -976,13 +976,53 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
   std::deque<Frame> stack;
   ASTNode result;
 
+  // The head of SimplifyFormula: the answers it gives before dispatching to
+  // an arm at all. `a` is left holding the node PullUpITE produced, which is
+  // what the arm runs on. True when `result` is the answer.
+  auto head = [&](const ASTNode& n, const bool neg, ASTNode& a) -> bool {
+    ASTNode out;
+    if (formulaShortcut(n, neg, a, out))
+    {
+      result = out;
+      return true;
+    }
+
+    // Every arm began by asking the map about the node PullUpITE produced,
+    // which is not the node formulaShortcut just asked about.
+    ASTNode cached;
+    if (CheckSimplifyMap(a, cached, neg))
+    {
+      // ... and SimplifyFormula's tail then recorded it against the node as
+      // it arrived, and against that one if they differ.
+      UpdateSimplifyMap(n, cached, neg);
+      if (a != n)
+        UpdateSimplifyMap(a, cached, neg);
+      result = cached;
+      return true;
+    }
+    return false;
+  };
+
   // Ask for the simplification of `n` under `neg`, and suspend this frame:
   // it picks up at `resume` with the answer in `result`.
+  //
+  // The head runs here rather than in the frame below because most of the
+  // time it answers: the operands of a DAG are mostly nodes the walk has
+  // already simplified, and a memo hit does not need a frame to return
+  // through. Either way this returns true, so the caller stops -- the frame
+  // is resumed by the main loop with `result` already holding the answer when
+  // there was nothing to push.
   auto want = [&](Frame& f, const Frame::Phase resume, const ASTNode& n,
                   const bool neg) -> bool {
     f.phase = resume;
+
+    ASTNode a;
+    if (head(n, neg, a))
+      return true;
+
     Frame below;
     below.b = n;
+    below.a = a;
     below.pushNeg = neg;
     stack.push_back(std::move(below));
     return true;
@@ -1011,22 +1051,7 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
       return false;
     };
 
-    if (f.phase == Frame::Start)
-    {
-      ASTNode out;
-      if (formulaShortcut(f.b, f.pushNeg, f.a, out))
-      {
-        result = out;
-        return false;
-      }
-
-      // Every arm began by asking the map about the node PullUpITE produced,
-      // which is not the node formulaShortcut just asked about.
-      ASTNode cached;
-      if (CheckSimplifyMap(f.a, cached, f.pushNeg))
-        return finishOuter(cached);
-    }
-
+    // `f.a` is set by the head, which ran before this frame was pushed.
     const Kind k = f.a.GetKind();
     switch (k)
     {
@@ -1290,6 +1315,8 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
     Frame top;
     top.b = b;
     top.pushNeg = pushNeg;
+    if (head(b, pushNeg, top.a))
+      return result; // the head answered: no walk at all.
     stack.push_back(std::move(top));
   }
 
