@@ -4,89 +4,103 @@
 # here, so that adding a recursive walk is a decision someone made rather
 # than one that slipped through.
 #
-# Being on this list is NOT a claim that a function is safe. Most of these
-# predate the check and carry "baseline": they have not been looked at. Ten
-# passes that did crash have been converted and are not here at all; the ones
-# that remain recursive on purpose say why.
+# Format: Name: status: reason
+#
+# The status is one of five, and the checker rejects anything else, so a new
+# line has to commit to one rather than describing itself freely:
+#
+#   safe       not a walk over the input at all -- usually an overload
+#              forwarding to one -- or bounded by something that is not the
+#              input's depth.
+#   bounded    it does recurse, but its memo is filled from the bottom up
+#              before it runs, so it stops one level down.
+#   partial    the recursion is gone on the paths that have been measured,
+#              and the shape that still reaches it is named on the line.
+#   by-choice  input-depth recursive on purpose. Either it is opt-in and has
+#              a disabled case in DeepDag_Test.cpp, or it is on by default
+#              and the line says what breaks it.
+#   unaudited  predates this check. Nobody has looked.
+#
+# Being on this list is NOT a claim that a function is safe: 54 of the 76
+# are "unaudited", and at least one of those turned out to crash on a valid
+# query. Read the status, not the presence of the name.
 #
 # The parsing is crude, so some of these are not walks at all -- an overload
 # forwarding to another overload reads the same from outside. Those say so.
-#
-# Format: Name: reason
 
-AIGSimplifyPropositionalCore::convert: baseline, not analysed for depth
-AIGSimplifyPropositionalCore::theoryToFresh: baseline, not analysed for depth
-AbsRefine_CounterExample::ComputeFormulaUsingModel: baseline, not analysed for depth
-ArrayTransformer::TransformArrayRead: baseline, not analysed for depth
-ArrayTransformer::TransformFormula: baseline, not analysed for depth
-ArrayTransformer::assertTransformPostConditions: baseline, not analysed for depth
-BVTypeCheckRecursive: baseline, not analysed for depth
-BitBlaster::BBForm: bounded, memo primed before it runs (primeFormMemo)
-BitBlaster::BBTerm: bounded, memo primed before it runs (primeTermMemo)
-BitBlaster::buildAdditionNetworkResult: baseline, not analysed for depth
-BitBlaster::updateTerm: recurses to a fixed point on one node, not down the DAG
-CommonSubSum::rebuild: baseline, not analysed for depth
-ConstantBitPropagation::checkAtFixedPoint: baseline, not analysed for depth
-Cpp_interface::LookupOrCreateSymbol: baseline, not analysed for depth
-Cpp_interface::newNode: baseline, not analysed for depth
-Dot_Print1: baseline, not analysed for depth
-ExtensionalityContext::lowerArrayEqualities: baseline, not analysed for depth
-FindPureLiterals::build: baseline, not analysed for depth
-FlattenKindNoDuplicates: baseline, not analysed for depth
-FloatBlaster::canonicalBits: baseline, not analysed for depth
-FloatBlaster::operandFormat: baseline, not analysed for depth
-FpTotalise::collectRoundingModeTerms: baseline, not analysed for depth
-FpTotalise::visit: baseline, not analysed for depth
-GDL_Print: baseline, not analysed for depth
-GDL_Print1: baseline, not analysed for depth
-HashingNodeFactory::CreateNode: overload forwarding, not a walk
-LetMgr::LetExprMgr: baseline, not analysed for depth
-LetizeNode: baseline, not analysed for depth
-NodeDomainAnalysis::buildMap: bounded, maps primed before it runs (primeMaps)
-NodeFactory::CreateArrayTerm: overload forwarding, not a walk
-NodeFactory::CreateNode: overload forwarding, not a walk
-NodeFactory::CreateTerm: overload forwarding, not a walk
-NonMemberBVConstEvaluator: baseline, not analysed for depth
-PL_Print1: baseline, not analysed for depth
-PropagateEqualities::isSymbol: baseline, not analysed for depth
-SMTLIB_Print1: input-depth recursive, opt-in (--print-back-SMTLIB2); DeepDag_Test.cpp has a disabled case
-STPMgr::CreateMaxConst: overload forwarding, not a walk
-STPMgr::CreateOneConst: overload forwarding, not a walk
-STPMgr::CreateZeroConst: overload forwarding, not a walk
-STPMgr::LookupOrCreateSymbol: overload forwarding, not a walk
-STPMgr::VarSeenInTerm: baseline, not analysed for depth
-STPMgr::arrayBaseSymbol: baseline, not analysed for depth
-Simplifier::CombineLikeTerms: baseline, not analysed for depth
-Simplifier::SimplifyArrayTerm: baseline, not analysed for depth
-Simplifier::SimplifyTerm: bounded, memo primed before it runs (primeTerms)
-Simplifier::checkIfInSimplifyMap: baseline, not analysed for depth
-SimplifyingNodeFactory::CreateSimpleAndOr: baseline, not analysed for depth
-SplitExtracts::buildMap: baseline, not analysed for depth
-StrengthReduction::replace: baseline, not analysed for depth
-SubstitutionMap::applySubstitutionMapUntilArrays: baseline, not analysed for depth
-SubstitutionMap::loops_helper: baseline, not analysed for depth
-SubstitutionMap::replace: baseline, not analysed for depth
-UnsignedIntervalAnalysis::visit: baseline, not analysed for depth
-UseITEContext::visit: input-depth recursive, opt-in (--ite-context-simplifications); DeepDag_Test.cpp has a disabled case
-VariablesInExpression::SetofVarsSeenInTerm: baseline, not analysed for depth
-VariablesInExpression::VarSeenInTerm: overload forwarding; the Symbols walk it calls is iterative
-VariablesInExpression::getSymbol: bounded, graph primed before it runs (primeSymbols)
-addToWorklist: baseline, not analysed for depth
-asPacked: baseline, not analysed for depth
-asUnpacked: baseline, not analysed for depth
-build: baseline, not analysed for depth
-buildListOfSymbols: baseline, not analysed for depth
-collectArrayIndexSorts: baseline, not analysed for depth
-collectDag: baseline, not analysed for depth
-collectRoundingModeUses: baseline, not analysed for depth
-comparisonLeaf: baseline, not analysed for depth
-evaluateMemoised: baseline, not analysed for depth
-getConstantBit: baseline, not analysed for depth
-intersection: baseline, not analysed for depth
-lower: baseline, not analysed for depth
-mostSignificantConstants: baseline, not analysed for depth
-noteRoundingMode: baseline, not analysed for depth
-numberOfReadsLessThan: baseline, not analysed for depth
-outputFloatingPointSMTLIB2: baseline, not analysed for depth
-primeMemo: the walk that replaces these recursions; it is iterative
-tagNodes: baseline, not analysed for depth
+AIGSimplifyPropositionalCore::convert: unaudited: predates this check
+AIGSimplifyPropositionalCore::theoryToFresh: unaudited: predates this check
+AbsRefine_CounterExample::ComputeFormulaUsingModel: unaudited: predates this check
+ArrayTransformer::TransformArrayRead: by-choice: input-depth recursive: it transforms a READ's index by calling TransformTerm, and nested selects crash between 10,000 and 20,000 deep at the ordinary 8 MiB; conversion pending
+ArrayTransformer::TransformFormula: by-choice: input-depth recursive on its AND/OR/NOT operands; survives in practice only because the simplifier flattens a conjunction first; conversion pending
+ArrayTransformer::assertTransformPostConditions: unaudited: predates this check
+BVTypeCheckRecursive: unaudited: predates this check
+BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (primeMemos)
+BitBlaster::BBTerm: bounded: both memos primed by one walk before either runs (primeMemos)
+BitBlaster::buildAdditionNetworkResult: unaudited: predates this check
+BitBlaster::updateTerm: safe: recurses to a fixed point on one node, not down the DAG
+CommonSubSum::rebuild: unaudited: predates this check
+ConstantBitPropagation::checkAtFixedPoint: unaudited: predates this check
+Cpp_interface::LookupOrCreateSymbol: unaudited: predates this check
+Cpp_interface::newNode: unaudited: predates this check
+Dot_Print1: unaudited: predates this check
+ExtensionalityContext::lowerArrayEqualities: unaudited: predates this check
+FindPureLiterals::build: unaudited: predates this check
+FlattenKindNoDuplicates: unaudited: predates this check
+FloatBlast::asPacked: unaudited: predates this check
+FloatBlast::asUnpacked: unaudited: predates this check
+FloatBlast::comparisonLeaf: unaudited: predates this check
+FloatBlast::lower: unaudited: predates this check
+FloatBlaster::canonicalBits: unaudited: predates this check
+FloatBlaster::operandFormat: unaudited: predates this check
+FpTotalise::collectRoundingModeTerms: unaudited: predates this check
+FpTotalise::visit: unaudited: predates this check
+GDL_Print: unaudited: predates this check
+GDL_Print1: unaudited: predates this check
+HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
+LetMgr::LetExprMgr: unaudited: predates this check
+LetizeNode: unaudited: predates this check
+MutableASTNode::build: safe: overload forwarding; the walk it calls is iterative
+NodeDomainAnalysis::buildMap: bounded: maps primed before it runs (primeMaps)
+NodeFactory::CreateArrayTerm: safe: overload forwarding, not a walk
+NodeFactory::CreateNode: safe: overload forwarding, not a walk
+NodeFactory::CreateTerm: safe: overload forwarding, not a walk
+NonMemberBVConstEvaluator: unaudited: predates this check
+PL_Print1: unaudited: predates this check
+PropagateEqualities::isSymbol: unaudited: predates this check
+SMTLIB_Print1: by-choice: input-depth recursive, opt-in (--print-back-SMTLIB2); DeepDag_Test.cpp has a disabled case
+STPMgr::CreateMaxConst: safe: overload forwarding, not a walk
+STPMgr::CreateOneConst: safe: overload forwarding, not a walk
+STPMgr::CreateZeroConst: safe: overload forwarding, not a walk
+STPMgr::LookupOrCreateSymbol: safe: overload forwarding, not a walk
+STPMgr::VarSeenInTerm: unaudited: predates this check
+STPMgr::arrayBaseSymbol: unaudited: predates this check
+Simplifier::CombineLikeTerms: unaudited: predates this check
+Simplifier::SimplifyArrayTerm: unaudited: predates this check
+Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses
+Simplifier::checkIfInSimplifyMap: unaudited: predates this check
+SimplifyingNodeFactory::CreateSimpleAndOr: unaudited: predates this check
+SplitExtracts::buildMap: unaudited: predates this check
+StrengthReduction::replace: unaudited: predates this check
+SubstitutionMap::applySubstitutionMapUntilArrays: unaudited: predates this check
+SubstitutionMap::loops_helper: unaudited: predates this check
+SubstitutionMap::replace: safe: overload forwarding; the walk it calls is iterative
+UnsignedIntervalAnalysis::visit: unaudited: predates this check
+UseITEContext::visit: by-choice: input-depth recursive, opt-in (--ite-context-simplifications); DeepDag_Test.cpp has a disabled case
+VariablesInExpression::SetofVarsSeenInTerm: unaudited: predates this check
+VariablesInExpression::VarSeenInTerm: safe: overload forwarding; the Symbols walk it calls is iterative
+VariablesInExpression::getSymbol: bounded: graph primed before it runs (primeSymbols)
+WorkList::addToWorklist: unaudited: predates this check
+buildListOfSymbols: unaudited: predates this check
+collectArrayIndexSorts: unaudited: predates this check
+collectDag: unaudited: predates this check
+collectRoundingModeUses: unaudited: predates this check
+evaluateMemoised: unaudited: predates this check
+getConstantBit: unaudited: predates this check
+intersection: unaudited: predates this check
+mostSignificantConstants: unaudited: predates this check
+noteRoundingMode: unaudited: predates this check
+numberOfReadsLessThan: unaudited: predates this check
+outputFloatingPointSMTLIB2: unaudited: predates this check
+primeMemo: safe: the walk that replaces these recursions; it is iterative
+tagNodes: unaudited: predates this check

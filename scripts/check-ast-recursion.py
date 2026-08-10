@@ -35,9 +35,19 @@ adding one silently is not.
 
 The parsing is deliberately crude: no compiler, just brace matching over the
 source with comments and strings removed. It over-reports -- a forwarding
-overload looks the same as a recursive walk from here -- which is why the
-allowlist carries a reason for each entry rather than just a name. It is a
+overload looks the same as a recursive walk from here -- which is why each
+allowlist line carries a status and a reason rather than just a name. It is a
 tripwire for review, not a proof.
+
+It under-reports too, and in a way worth knowing about. A function only
+counts if an ASTNode appears in its signature, which keeps the output down to
+something reviewable but misses a walk over a structure *built* from the
+input: VariablesInExpression's Symbols tree and RemoveUnconstrained's
+MutableASTNode graph are both as deep as the formula they came from, and
+neither mentions an ASTNode on the way down. Both were found by running a
+pass at depth, not by reading it, and MutableASTNode::propagateUpDirty still
+walks up the parents that way. Anything that mirrors the input's shape wants
+the same treatment whether or not this script can see it.
 """
 
 import os
@@ -57,6 +67,26 @@ QUALIFIED = re.compile(r'(\w+)::(\w+)\s*\(')
 # Free functions too -- the printers are ordinary functions in a namespace,
 # and a recursive one there crashes just the same.
 PLAIN = re.compile(r'(\w+)\s*\($')
+# A definition written inside its class body carries no Class:: prefix, so the
+# class is recovered from the braces around it. Without this, MutableASTNode's
+# walk is listed as plain "build", which says nothing about where it is and
+# would silently merge with any other in-class build() taking a node.
+CLASS_DECL = re.compile(r'(?<!enum )\b(?:class|struct)\s+(?:DLL_PUBLIC\s+)?'
+                        r'(\w+)\b[^;{]*\{')
+
+# What an allowlist line claims. Anything else is rejected, so a new entry
+# has to say which of these it is rather than describing itself freely.
+STATUSES = {
+    "safe":      "not a walk over the input: an overload forwarding to one, "
+                 "or bounded by something that is not input depth",
+    "bounded":   "recurses, but its memo is filled from the bottom first, so "
+                 "it stops one level down",
+    "partial":   "the recursion is gone on the paths that have been measured, "
+                 "and the shape that still reaches it is named on the line",
+    "by-choice": "input-depth recursive on purpose, with a case in "
+                 "DeepDag_Test.cpp saying so",
+    "unaudited": "predates this check and has not been looked at",
+}
 
 
 def strip_comments_and_strings(src):
@@ -112,6 +142,33 @@ def body_after(src, start):
     return None
 
 
+def class_extents(src):
+    """(open, close, name) for every class/struct body in `src`."""
+    spans = []
+    for m in CLASS_DECL.finditer(src):
+        open_brace = m.end() - 1
+        depth = 0
+        for i in range(open_brace, len(src)):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((open_brace, i, m.group(1)))
+                    break
+    return spans
+
+
+def enclosing_class(spans, pos):
+    """The innermost class whose body contains `pos`, or ""."""
+    best = None
+    for open_brace, close_brace, name in spans:
+        if open_brace < pos < close_brace:
+            if best is None or open_brace > best[0]:
+                best = (open_brace, name)
+    return best[1] if best else ""
+
+
 def self_recursive_ast_walkers(root):
     found = {}
     for dirpath, dirnames, filenames in os.walk(root):
@@ -122,6 +179,7 @@ def self_recursive_ast_walkers(root):
             path = os.path.join(dirpath, name)
             with open(path, errors="ignore") as handle:
                 src = strip_comments_and_strings(handle.read())
+            spans = class_extents(src)
 
             offset = 0
             for line in src.split("\n"):
@@ -141,7 +199,10 @@ def self_recursive_ast_walkers(root):
                     plain = PLAIN.search(line[:line.index("(") + 1])
                     if plain is None:
                         continue
-                    cls, func = "", plain.group(1)
+                    # Written inside its class body, or a free function.
+                    cls, func = enclosing_class(spans, start), plain.group(1)
+                    if cls == func:
+                        continue # a constructor.
                     if func in ("if", "for", "while", "switch", "return",
                                 "sizeof", "assert"):
                         continue
@@ -166,6 +227,8 @@ def self_recursive_ast_walkers(root):
 
 
 def read_allowlist(path):
+    """name -> (status, reason). Malformed lines get an empty status, which
+    main() rejects rather than passing over."""
     allowed = {}
     with open(path) as handle:
         for line in handle:
@@ -173,8 +236,13 @@ def read_allowlist(path):
             if not line or line.startswith("#"):
                 continue
             # Split on colon-space: the names themselves contain "::".
-            name, _, reason = line.partition(": ")
-            allowed[name.strip()] = reason.strip()
+            name, _, rest = line.partition(": ")
+            status, sep, reason = rest.partition(": ")
+            if not sep:
+                # `name: status` with nothing after it: a status and an
+                # empty reason, which reads better than a status of "safe:".
+                status, reason = rest.rstrip(":").strip(), ""
+            allowed[name.strip()] = (status.strip(), reason.strip())
     return allowed
 
 
@@ -191,7 +259,9 @@ def main():
 
     added = sorted(set(found) - set(allowed))
     gone = sorted(set(allowed) - set(found))
-    unexplained = sorted(n for n in set(found) & set(allowed) if not allowed[n])
+    both = set(found) & set(allowed)
+    unexplained = sorted(n for n in both if not allowed[n][1])
+    mislabelled = sorted(n for n in both if allowed[n][0] not in STATUSES)
 
     if added:
         print("These walk the AST by calling themselves and are not in %s:\n"
@@ -203,7 +273,16 @@ def main():
               "\nquery, and how ten of these were found. Either walk it with"
               "\nits frames on the heap (stp/Util/DagWalk.h has the two ways"
               "\nthat have been used, and DeepDag_Test.cpp has the tests), or"
-              "\nadd it to the allowlist with the reason it is safe.")
+              "\nadd it to the allowlist as `name: status: reason`.")
+        return 1
+
+    if mislabelled:
+        print("These carry no status, or one that is not a status:")
+        for name in mislabelled:
+            print("    %-52s %s" % (name, allowed[name][0] or "(empty)"))
+        print("\nEvery line reads `name: status: reason`. The statuses are:")
+        for status in sorted(STATUSES):
+            print("    %-11s %s" % (status, STATUSES[status]))
         return 1
 
     if unexplained:
@@ -217,7 +296,12 @@ def main():
             print("    " + name)
         return 1
 
-    print("%d self-recursive AST walkers, all accounted for" % len(found))
+    tally = {}
+    for name in found:
+        tally[allowed[name][0]] = tally.get(allowed[name][0], 0) + 1
+    print("%d self-recursive AST walkers, all accounted for: %s"
+          % (len(found), ", ".join("%d %s" % (tally[s], s)
+                                   for s in sorted(tally))))
     return 0
 
 
