@@ -969,9 +969,9 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
   };
 
   auto step = [&](Frame& f) -> bool {
-    // What simplifyNonAndOr did once an arm had answered: record it against
-    // the node as it arrived, and against the PullUpITE'd one if that is a
-    // different node.
+    // SimplifyFormula's tail, for an answer that did not come from an arm:
+    // record it against the node as it arrived, and against the PullUpITE'd
+    // one if that is a different node.
     auto finishOuter = [&](const ASTNode& output) {
       UpdateSimplifyMap(f.b, output, f.pushNeg);
       if (f.a != f.b)
@@ -980,11 +980,15 @@ ASTNode Simplifier::SimplifyFormula(const ASTNode& b, bool pushNeg)
       return false;
     };
 
-    // The whole tail: the arm's own memoise, then that pair. Every arm ended
-    // this way, and the AND/OR driver made all three writes itself.
+    // The whole tail: the arm's own memoise, then SimplifyFormula's. Two
+    // writes rather than the three the two functions made between them --
+    // the tail's `if (a != b) write a` cannot reach a key the arm's own write
+    // has not just set to the same value.
     auto finish = [&](const ASTNode& output) {
       UpdateSimplifyMap(f.a, output, f.pushNeg);
-      return finishOuter(output);
+      UpdateSimplifyMap(f.b, output, f.pushNeg);
+      result = output;
+      return false;
     };
 
     if (f.phase == Frame::Start)
