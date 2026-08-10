@@ -194,6 +194,39 @@ struct Context
   }
 };
 
+// A chain of if-then-else terms, nested in the else-branch: a boolean symbol
+// the model says nothing about takes false, so evaluating one descends the
+// chain rather than stopping at the first level.
+ASTNode iteChain(Context& c, unsigned depth)
+{
+  const ASTNode cond = c.mgr.CreateSymbol("p", 0, 0);
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  ASTNode t = c.mgr.CreateSymbol("x", 0, 8);
+  for (unsigned i = 0; i < depth; i++)
+    t = c.hf->CreateTerm(ITE, 8, cond, zero, t);
+  return t;
+}
+
+// A chain of stores over one array symbol, whose elements are `width` bits.
+ASTNode storeChain(Context& c, unsigned depth, const ASTNode& base,
+                   unsigned width = 8)
+{
+  ASTNode a = base;
+  for (unsigned i = 0; i < depth; i++)
+  {
+    const std::string nm = "w" + std::to_string(i);
+    a = c.hf->CreateArrayTerm(WRITE, 8, width, a,
+                              c.mgr.CreateSymbol(nm.c_str(), 0, 8),
+                              c.mgr.CreateZeroConst(width));
+  }
+  return a;
+}
+
+ASTNode storeChain(Context& c, unsigned depth)
+{
+  return storeChain(c, depth, c.mgr.CreateSymbol("A", 8, 8));
+}
+
 // Dependencies::build, the parent map constant-bit propagation runs on.
 // Two of the 21 known corpus crashes land here.
 bool dependenciesChainOk(Context& c, unsigned depth)
@@ -764,31 +797,16 @@ bool counterExampleFormulaOk(Context& c, unsigned depth)
 
 // A chain of if-then-else terms, which is the shape the two functions are
 // mutually recursive for: each level evaluates a condition as a formula and
-// then descends into the branch it leaves alive as a term. The chain is in
-// the else-branch because a boolean symbol the model says nothing about
-// takes false.
+// then descends into the branch it leaves alive as a term.
 //
-// The type of each level is asked for as the chain is built, which is what
-// keeps this a test of the evaluator. Asking a nested if-then-else its type
-// derives its float format, and that derivation walks the chain by calling
-// itself (GetType -> GetSigWidth -> cacheFPFormat -> deriveFPFormat ->
-// GetExpWidth on a branch), so a cold format cache overflows there instead --
-// at 20,000 levels it does, before this walk gets a turn. Filling the cache
-// one level at a time as the chain grows is what a bottom-up pass does
-// anyway, and it is not a recursion this file has converted: like
-// TermToConstTermUsingModel's own _inner, the loop runs through another
-// function, so scripts/check-ast-recursion.py cannot see it either.
+// This case wanted the float format of each level derived as the chain was
+// built, because asking a nested if-then-else its type used to overflow
+// deriving that format before this walk got a turn. deep_fp_format_ite below
+// is that recursion, converted and tested on its own, so the chain is left
+// cold here.
 bool counterExampleTermIteOk(Context& c, unsigned depth)
 {
-  const ASTNode cond = c.mgr.CreateSymbol("p", 0, 0);
-  const ASTNode zero = c.mgr.CreateZeroConst(8);
-  ASTNode t = c.mgr.CreateSymbol("x", 0, 8);
-  for (unsigned i = 0; i < depth; i++)
-  {
-    t = c.hf->CreateTerm(ITE, 8, cond, zero, t);
-    t.GetType();
-  }
-
+  const ASTNode t = iteChain(c, depth);
   c.roots.push_back(t);
 
   SubstitutionMap sm(&c.mgr);
@@ -799,6 +817,65 @@ bool counterExampleTermIteOk(Context& c, unsigned depth)
   // ModelValueOfTerm asks with the read-tolerant flag off, so every level has
   // to come back a constant.
   return ce.ModelValueOfTerm(t).GetKind() == BVCONST;
+}
+
+/* A node's floating-point format and its source sort are both derived from
+   its children and memoised on it, and both derivations read a child's answer
+   by asking for it -- which derives the child the same way. So each ran one
+   call frame per level of whatever it walked: a store chain for both of them,
+   an if-then-else spine for both of them.
+
+   Neither is a pass, so neither has an input of its own: they are reached by
+   asking an ordinary question about a node. GetType() asks for the format,
+   and everything asks GetType(). That is what makes these worth converting --
+   a query deep enough cannot be asked its type at all, from anywhere. */
+
+// deriveFPFormat's if-then-else arm, which takes a branch's format and so
+// walks the spine. Reached here through GetType, the way almost everything
+// reaches it.
+bool fpFormatIteChainOk(Context& c, unsigned depth)
+{
+  const ASTNode t = iteChain(c, depth);
+  c.roots.push_back(t);
+  return t.GetType() == BITVECTOR_TYPE;
+}
+
+// deriveFPFormat's read and store arms: an array of floats keeps its element
+// format on the array node, so a read over a store chain derives through
+// every store in it.
+//
+// The one case here that answers with a format rather than with "not a
+// float", so it checks that the walk carried an answer up rather than only
+// that it finished: the format found at the top is the one declared at the
+// bottom, 20,000 stores below.
+bool fpFormatStoreChainOk(Context& c, unsigned depth)
+{
+  const ASTNode a = c.mgr.CreateSymbol("A", 8, 16);
+  a.SetExpWidth(5);
+  a.SetSigWidth(11);
+
+  const ASTNode chain = storeChain(c, depth, a, 16);
+  const ASTNode r =
+      c.hf->CreateTerm(READ, 16, chain, c.mgr.CreateSymbol("j", 0, 8));
+  c.roots.push_back(r);
+  return r.GetExpWidth() == 5 && r.GetSigWidth() == 11;
+}
+
+// deriveSourceSort's if-then-else arm, which asks both branches and walks the
+// same spine.
+bool sourceSortIteChainOk(Context& c, unsigned depth)
+{
+  const ASTNode t = iteChain(c, depth);
+  c.roots.push_back(t);
+  return t.GetSourceSort().kind() == SourceSort::Kind::BitVector;
+}
+
+// deriveSourceSort's store arm: a store has the sort of the array under it.
+bool sourceSortStoreChainOk(Context& c, unsigned depth)
+{
+  const ASTNode a = storeChain(c, depth);
+  c.roots.push_back(a);
+  return a.GetSourceSort().kind() == SourceSort::Kind::Array;
 }
 
 // The LISP printer, which is what operator<< on a node uses -- so a deep
@@ -993,6 +1070,10 @@ TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000)
 TEST(DeepDag, deep_counterexample_eval) { EXPECT_STACK_SAFE(counterExampleEvalOk, 20000); }
 TEST(DeepDag, deep_counterexample_formula) { EXPECT_STACK_SAFE(counterExampleFormulaOk, 20000); }
 TEST(DeepDag, deep_counterexample_term_ite) { EXPECT_STACK_SAFE(counterExampleTermIteOk, 20000); }
+TEST(DeepDag, deep_fp_format_ite)      { EXPECT_STACK_SAFE(fpFormatIteChainOk, 20000); }
+TEST(DeepDag, deep_fp_format_store)    { EXPECT_STACK_SAFE(fpFormatStoreChainOk, 20000); }
+TEST(DeepDag, deep_source_sort_ite)    { EXPECT_STACK_SAFE(sourceSortIteChainOk, 20000); }
+TEST(DeepDag, deep_source_sort_store)  { EXPECT_STACK_SAFE(sourceSortStoreChainOk, 20000); }
 TEST(DeepDag, DISABLED_deep_printer_smtlib2)    { EXPECT_STACK_SAFE(printerSMTLIB2Ok, 20000); }
 
 } // namespace
