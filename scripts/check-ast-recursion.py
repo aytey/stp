@@ -91,6 +91,10 @@ STATUSES = {
                  "and the shape that still reaches it is named on the line",
     "by-choice": "input-depth recursive on purpose, with a case in "
                  "DeepDag_Test.cpp saying so",
+    "off-path":  "input-depth recursive, but nothing a solve does reaches it "
+                 "-- the line says what does",
+    "on-path":   "input-depth recursive on a path a solve takes, and not "
+                 "converted; the line says the depth it was measured to die at",
     "unaudited": "predates this check and has not been looked at",
 }
 

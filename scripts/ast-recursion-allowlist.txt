@@ -6,7 +6,7 @@
 #
 # Format: Name: status: reason
 #
-# The status is one of five, and the checker rejects anything else, so a new
+# The status is one of seven, and the checker rejects anything else, so a new
 # line has to commit to one rather than describing itself freely:
 #
 #   safe       not a walk over the input at all -- usually an overload
@@ -19,67 +19,79 @@
 #   by-choice  input-depth recursive on purpose. Either it is opt-in and has
 #              a disabled case in DeepDag_Test.cpp, or it is on by default
 #              and the line says what breaks it.
+#   off-path   input-depth recursive, but nothing a solve does reaches it:
+#              dead code, an assert, a printer behind a flag, a build-time
+#              tool. The line says which, because that is the whole claim.
+#   on-path    input-depth recursive on a path a solve takes, and not
+#              converted. The line says the depth it was measured to die at,
+#              so these can be ordered by how close that is to real input.
 #   unaudited  predates this check. Nobody has looked.
 #
-# Being on this list is NOT a claim that a function is safe: 52 of the 72
-# are "unaudited", and at least one of those turned out to crash on a valid
-# query. Read the status, not the presence of the name.
+# Being on this list is NOT a claim that a function is safe: 24 of the 72
+# are still "unaudited", and at least one of those turned out to crash on a
+# valid query. Read the status, not the presence of the name.
+#
+# The audit that filled in the rest asked reachability first, on the evidence
+# that "recursive" and "reachable" are not the same question:
+# BVTypeCheckRecursive sat here for weeks looking like the next thing to
+# convert, and turned out to be reached by nothing but a disabled tool's
+# assertions, while the type check every solve runs is per-node.
 #
 # The parsing is crude, so some of these are not walks at all -- an overload
 # forwarding to another overload reads the same from outside. Those say so.
 
-AIGSimplifyPropositionalCore::convert: unaudited: predates this check
-AIGSimplifyPropositionalCore::theoryToFresh: unaudited: predates this check
-ArrayTransformer::assertTransformPostConditions: unaudited: predates this check
-BVTypeCheckRecursive: unaudited: predates this check
+AIGSimplifyPropositionalCore::convert: off-path: walks the AIG the pass built, one frame per level of it, but the pass is behind --enable-aig-core-simplify (STP.cpp asks UserFlags.enable_aig_core_simplify)
+AIGSimplifyPropositionalCore::theoryToFresh: off-path: same pass, same flag; this half walks the AST rather than the AIG
+ArrayTransformer::assertTransformPostConditions: off-path: its one call site is inside an #if 0
+BVTypeCheckRecursive: off-path: nothing in the library calls it. The type check a solve runs is BVTypeCheck, which is one node -- 143 call sites, neither of its two helpers descends. This one is reached only from four asserts in tools/rewrite_rule_gen, which needs BUILD_EXTRA_TOOLS (default OFF) and is compiled out under NDEBUG anyway. Dies at 300,000 if called directly
 BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (primeMemos)
 BitBlaster::BBTerm: bounded: both memos primed by one walk before either runs (primeMemos)
-BitBlaster::buildAdditionNetworkResult: unaudited: predates this check
+BitBlaster::buildAdditionNetworkResult: safe: two overloads sharing a name. The one that looks recursive loops over the bit width calling the other, so it is bounded by the word size and not by the input
 BitBlaster::updateTerm: safe: recurses to a fixed point on one node, not down the DAG
 CommonSubSum::rebuild: unaudited: predates this check
-ConstantBitPropagation::checkAtFixedPoint: unaudited: predates this check
-Cpp_interface::LookupOrCreateSymbol: unaudited: predates this check
-Cpp_interface::newNode: unaudited: predates this check
-Dot_Print1: unaudited: predates this check
-ExtensionalityContext::lowerArrayEqualities: unaudited: predates this check
+ConstantBitPropagation::checkAtFixedPoint: off-path: its one caller is an assert in BitBlaster, so it is gone under NDEBUG; in an assertions build it does walk the input
+Cpp_interface::LookupOrCreateSymbol: safe: overload forwarding, not a walk
+Cpp_interface::newNode: safe: overload forwarding, not a walk
+Dot_Print1: off-path: the dot printer, behind --print-back-DOT (UserFlags.print_STPinput_back_dot_flag)
+ExtensionalityContext::lowerArrayEqualities: safe: overload forwarding, not a walk
 FindPureLiterals::build: unaudited: predates this check
-FlattenKindNoDuplicates: unaudited: predates this check
+FlattenKindNoDuplicates: on-path: FlattenKind(AND/OR/BVAND/BVOR) reaches it from the simplifier, the BV solver, PropagateEqualities, MergeSame and UseITEContext, and it walks a nested same-kind chain one frame per level. Measured to die between 100,000 and 150,000 at 8 MiB, and at 20,000 at 1 MiB. No parsed query gets there: the simplifying factory flattens an AND as it builds it, so the nested node never exists -- a 200,000-deep nested AND answers sat. A pass building with the hashing factory would reach it
 FloatBlast::asPacked: unaudited: predates this check
 FloatBlast::asUnpacked: unaudited: predates this check
 FloatBlast::comparisonLeaf: unaudited: predates this check
 FloatBlast::lower: unaudited: predates this check
-FloatBlaster::canonicalBits: unaudited: predates this check
-FloatBlaster::operandFormat: unaudited: predates this check
+FloatBlaster::canonicalBits: safe: overload forwarding, not a walk
+FloatBlaster::operandFormat: safe: overload forwarding; the walk it calls looks at one node's children
 FpTotalise::collectRoundingModeTerms: unaudited: predates this check
 FpTotalise::visit: unaudited: predates this check
-GDL_Print: unaudited: predates this check
-GDL_Print1: unaudited: predates this check
+GDL_Print: off-path: the GDL printer, behind --print-back-GDL (UserFlags.print_STPinput_back_GDL_flag)
+GDL_Print1: off-path: the same printer, same flag
 HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
-LetMgr::LetExprMgr: unaudited: predates this check
-LetizeNode: unaudited: predates this check
+LetMgr::LetExprMgr: safe: overload forwarding, not a walk
+LetizeNode: off-path: names shared subterms for the CVC and SMT-LIB1 printers, which are behind --print-back and --print-back-CVC
 MutableASTNode::build: safe: overload forwarding; the walk it calls is iterative
 NodeDomainAnalysis::buildMap: bounded: maps primed before it runs (primeMaps)
 NodeFactory::CreateArrayTerm: safe: overload forwarding, not a walk
 NodeFactory::CreateNode: safe: overload forwarding, not a walk
 NodeFactory::CreateTerm: safe: overload forwarding, not a walk
-NonMemberBVConstEvaluator: unaudited: predates this check
-PL_Print1: unaudited: predates this check
-PropagateEqualities::isSymbol: unaudited: predates this check
+NonMemberBVConstEvaluator: safe: overload forwarding. The flagged overload takes a node and hands its kind and children to the (kind, args, width) form, which evaluates one operation
+PL_Print1: off-path: the CVC printer, behind --print-back-CVC (UserFlags.print_STPinput_back_CVC_flag)
+PropagateEqualities::isSymbol: on-path: PropagateEqualities runs by default and this descends a chain of BVUMINUS, BVNOT or multiply-by-an-odd-constant looking for the symbol underneath, one frame per level. Depth not measured; the chain has to be of those three kinds alone, which no corpus query is
 SMTLIB_Print1: by-choice: input-depth recursive, opt-in (--print-back-SMTLIB2); DeepDag_Test.cpp has a disabled case
 STPMgr::CreateMaxConst: safe: overload forwarding, not a walk
 STPMgr::CreateOneConst: safe: overload forwarding, not a walk
 STPMgr::CreateZeroConst: safe: overload forwarding, not a walk
 STPMgr::LookupOrCreateSymbol: safe: overload forwarding, not a walk
-STPMgr::VarSeenInTerm: unaudited: predates this check
-STPMgr::arrayBaseSymbol: unaudited: predates this check
-Simplifier::CombineLikeTerms: unaudited: predates this check
+STPMgr::VarSeenInTerm: on-path: walks a term for a variable, one frame per level, with a per-(term, var) memo. One caller: the boolean-symbol arm of model evaluation, asking whether a symbol occurs in the value the model recorded for it. Depth not measured; a recorded model value is a constant in every corpus query
+STPMgr::arrayBaseSymbol: on-path: iterative down a write chain, and recursive only into the two branches of an array if-then-else, so its depth is how deeply those nest. Depth not measured
+Simplifier::CombineLikeTerms: safe: overload forwarding, not a walk
 Simplifier::SimplifyArrayTerm: unaudited: predates this check
 Simplifier::SimplifyTerm: partial: map primed before it runs (primeTerms), through children and through the substitution image -- but a term below a BOOLEAN operand is handed to SimplifyFormula and not primed, and still recurses
-Simplifier::checkIfInSimplifyMap: unaudited: predates this check
+Simplifier::checkIfInSimplifyMap: off-path: a debug check whose one caller is commented out
 SimplifyingNodeFactory::CreateSimpleAndOr: unaudited: predates this check
 SplitExtracts::buildMap: unaudited: predates this check
 StrengthReduction::replace: unaudited: predates this check
-SubstitutionMap::applySubstitutionMapUntilArrays: unaudited: predates this check
+SubstitutionMap::applySubstitutionMapUntilArrays: safe: overload forwarding, not a walk
 SubstitutionMap::loops_helper: unaudited: predates this check
 SubstitutionMap::replace: safe: overload forwarding; the walk it calls is iterative
 UnsignedIntervalAnalysis::visit: unaudited: predates this check
@@ -92,11 +104,11 @@ collectArrayIndexSorts: unaudited: predates this check
 collectDag: unaudited: predates this check
 collectRoundingModeUses: unaudited: predates this check
 evaluateMemoised: unaudited: predates this check
-getConstantBit: unaudited: predates this check
+getConstantBit: on-path: reads one bit of a constant, descending the first child of a BVCONCAT chain. Depth not measured; it is called only where the simplifier has already established a constant of that shape
 intersection: unaudited: predates this check
-mostSignificantConstants: unaudited: predates this check
+mostSignificantConstants: on-path: counts leading constant bits down the first child of a BVCONCAT chain, one frame per level. Depth not measured
 noteRoundingMode: unaudited: predates this check
-numberOfReadsLessThan: unaudited: predates this check
+numberOfReadsLessThan: on-path: the flagged overload forwards, but the walk it calls counts array reads over the whole input one frame per level, and STP.cpp asks it on every array solve that is not using array equality. It stops early once the limit is passed, which a bit-vector-only chain never does. Measured to die between 80,000 and 100,000 at 8 MiB, and at 20,000 at 1 MiB -- roughly ten times the deepest corpus input
 outputFloatingPointSMTLIB2: unaudited: predates this check
 primeMemo: safe: the walk that replaces these recursions; it is iterative
 tagNodes: unaudited: predates this check
