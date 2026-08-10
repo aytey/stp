@@ -21,7 +21,7 @@
 #              and the line says what breaks it.
 #   unaudited  predates this check. Nobody has looked.
 #
-# Being on this list is NOT a claim that a function is safe: 54 of the 74
+# Being on this list is NOT a claim that a function is safe: 52 of the 73
 # are "unaudited", and at least one of those turned out to crash on a valid
 # query. Read the status, not the presence of the name.
 #
@@ -88,7 +88,6 @@ UseITEContext::visit: by-choice: input-depth recursive, opt-in (--ite-context-si
 VariablesInExpression::SetofVarsSeenInTerm: unaudited: predates this check
 VariablesInExpression::VarSeenInTerm: safe: overload forwarding; the Symbols walk it calls is iterative
 VariablesInExpression::getSymbol: bounded: graph primed before it runs (primeSymbols)
-WorkList::addToWorklist: by-choice: input-depth recursive, on by default; it seeds constant-bit propagation by walking the DAG, and a 200,000-deep chain under an if-then-else condition crashes here
 buildListOfSymbols: unaudited: predates this check
 collectArrayIndexSorts: unaudited: predates this check
 collectDag: unaudited: predates this check

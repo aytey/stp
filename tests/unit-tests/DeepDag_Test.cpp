@@ -65,6 +65,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/StrengthReduction.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
+#include "stp/Simplifier/constantBitP/WorkList.h"
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <sstream>
@@ -574,6 +575,25 @@ bool removeUnconstrainedOk(Context& c, unsigned depth)
   return result.GetKind() != UNDEFINED;
 }
 
+// WorkList::addToWorklist, which seeds constant-bit propagation by walking
+// the whole input. A constant somewhere in the chain is what puts nodes on
+// the worklist at all, so the chain is built with one.
+bool workListOk(Context& c, unsigned depth)
+{
+  ASTNode t = c.mgr.CreateSymbol("k0", 0, 8);
+  for (unsigned i = 1; i < depth; i++)
+  {
+    const std::string nm = "k" + std::to_string(i);
+    t = c.hf->CreateTerm(BVXOR, 8, t, c.mgr.CreateSymbol(nm.c_str(), 0, 8));
+    t = c.hf->CreateTerm(BVPLUS, 8, t, c.mgr.CreateOneConst(8));
+  }
+  const ASTNode f = c.formula(t);
+  c.roots.push_back(f);
+
+  simplifier::constantBitP::WorkList wl(f);
+  return wl.size() > 0;
+}
+
 // CommonSubSum::topLevel. Already stack-safe; here to keep it that way.
 bool commonSubSumOk(Context& c, unsigned depth)
 {
@@ -855,6 +875,7 @@ TEST(DeepDag, deep_bit_blast_nested)
 }
 
 TEST(DeepDag, deep_common_sub_sum)              { EXPECT_STACK_SAFE(commonSubSumOk, 20000); }
+TEST(DeepDag, deep_work_list)          { EXPECT_STACK_SAFE(workListOk, 20000); }
 TEST(DeepDag, deep_remove_unconstrained) { EXPECT_STACK_SAFE(removeUnconstrainedOk, 20000); }
 TEST(DeepDag, deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
 TEST(DeepDag, deep_simplify_term_substituted) { EXPECT_STACK_SAFE(simplifyTermSubstitutedOk, 20000); }
