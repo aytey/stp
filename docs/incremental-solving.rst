@@ -287,19 +287,21 @@ nodes and re-mints their numbers, and the deterministic names are keyed
 on node numbers -- so the driver pins each round's node spine, and in
 general any cache in STP that keys on nodes must *hold* them.
 
-The first distinct exact-stack block keeps its raw word-level shape. This is
-an intentional search strategy: on write-heavy array graphs it can be much
-faster than the smaller formula produced by global simplification. Once a
-session changes to a new stack, that new block receives the high-yield prefix
-of the batch size-reducing pipeline (constant-bit propagation, equality
-propagation, unconstrained elimination and pure literals) before array
-transformation. This is safe here because the result and every definition it
-eliminates have exactly the assumption lifetime of the complete-stack block;
-ordinary per-level roots still never see facts from deeper scopes. The choice
-is cached per raw active conjunction, so repeating or re-pushing a stack
-recreates the same transformed root and reuses its encoding and lemmas instead
-of alternating between raw and simplified forms. If a scoped elimination
-reuses a symbol whose bits were created by an older block, model construction
+Under automatic engagement, the first distinct persistent exact-stack block
+keeps its raw word-level shape: that session has already received two batch
+solves, and the raw shape can be a useful search strategy on write-heavy array
+graphs. A session explicitly forced incremental from its first solve has no
+batch preprocessing to fall back on, so its first block -- and every genuinely
+new later stack in either mode -- receives the high-yield prefix of the batch
+size-reducing pipeline (constant-bit propagation, equality propagation,
+unconstrained elimination and pure literals) before array transformation.
+This is safe here because the result and every definition it eliminates have
+exactly the assumption lifetime of the complete-stack block; ordinary
+per-level roots still never see facts from deeper scopes. The choice is cached
+per raw active conjunction, so repeating or re-pushing a stack recreates the
+same transformed root and reuses its encoding and lemmas instead of
+alternating between raw and simplified forms. If a scoped elimination reuses
+a symbol whose bits were created by an older block, model construction
 withdraws those inactive SAT bits and evaluates the current definition.
 
 The deterministic block node participates in the same live-cone accounting as

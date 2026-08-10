@@ -9,13 +9,13 @@
 (assert (= a b))
 (assert (= (select a #x1) #x11))
 (assert (= (select b #x1) #x22))
-; CHECK: Incremental profile cbp/backend: check=1.*driver-clauses=422 refinement-clauses=35 retained-clauses=422 live-clauses=422 peak-live-clauses=422.*refinement-rounds=1.*extensionality=1
-; CHECK: Incremental profile total: checks=1.*driver-clauses=422 refinement-clauses=35 retained-clauses=422 live-clauses=422 peak-live-clauses=422.*refinement-rounds=1
+; CHECK: Incremental profile cbp/backend: check=1.*driver-clauses=323 refinement-clauses=35 retained-clauses=323 live-clauses=323 peak-live-clauses=323.*refinement-rounds=1 ext-preprocesses=1.*extensionality=1
+; CHECK: Incremental profile total: checks=1.*driver-clauses=323 refinement-clauses=35 retained-clauses=323 live-clauses=323 peak-live-clauses=323.*refinement-rounds=1 ext-preprocesses=1
 ; CHECK: ^unsat
 (check-sat)
 (pop 1)
-; CHECK: Incremental profile cbp/backend: check=2.*driver-clauses=0 refinement-clauses=0 retained-clauses=422 live-clauses=0 peak-live-clauses=422.*refinement-rounds=0.*extensionality=0
-; CHECK: Incremental profile total: checks=2.*driver-clauses=422 refinement-clauses=35 retained-clauses=422 live-clauses=0 peak-live-clauses=422.*refinement-rounds=1
+; CHECK: Incremental profile cbp/backend: check=2.*driver-clauses=0 refinement-clauses=0 retained-clauses=323 live-clauses=0 peak-live-clauses=323.*refinement-rounds=0 ext-preprocesses=0.*extensionality=0
+; CHECK: Incremental profile total: checks=2.*driver-clauses=323 refinement-clauses=35 retained-clauses=323 live-clauses=0 peak-live-clauses=323.*refinement-rounds=1 ext-preprocesses=1
 ; CHECK: ^sat
 (check-sat)
 (exit)

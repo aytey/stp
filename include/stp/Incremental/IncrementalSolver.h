@@ -85,10 +85,12 @@ public:
   // assumed one root literal each instead of grouped under an activation
   // literal -- check-sat-assuming passes its assumptions as that level and
   // wants per-assumption failure granularity for get-unsat-assumptions.
-  // `deferLargeBootstrapCbp` is set only by a frontend explicitly forced
-  // incremental from its first real solve. It may leave an oversized,
-  // initially empty cross-level propagation engine unbuilt until the next
-  // solve; all constraints are still prepared and encoded normally.
+  // `firstForcedIncrementalSolve` is set only by a frontend explicitly
+  // forced incremental from its first real solve. It enables first-engagement
+  // policies which automatic (third-solve) engagement does not need: an
+  // oversized, initially empty cross-level propagation engine may be left
+  // unbuilt until the next solve, and an exact-stack array block receives the
+  // batch pipeline's cheap size-reducing prefix.
   //
   // The driver holds no per-level state: the assumption set is recomputed
   // from `assertionsSMT2` on every call (against permanent encoding caches),
@@ -98,7 +100,7 @@ public:
   // destroyed only by reset/reset-assertions, which destroy this object.
   SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2,
                               bool assumeLastLevelPerConjunct = false,
-                              bool deferLargeBootstrapCbp = false);
+                              bool firstForcedIncrementalSolve = false);
 
   // The unsat story of the most recent checkSat, valid until the next one.
   // hasAssumptionGranularity: the last level was assumed per conjunct and
@@ -146,7 +148,7 @@ private:
   // exhaust a default-sized stack.
   SOLVER_RETURN_TYPE checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                                             bool assumeLastLevelPerConjunct,
-                                            bool deferLargeBootstrapCbp);
+                                            bool firstForcedIncrementalSolve);
 
   // Run `body` on the large-stack worker with the thread-local solver
   // state carried across (CONSTANTBV boot, the node uid counter);

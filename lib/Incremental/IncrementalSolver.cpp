@@ -2976,7 +2976,8 @@ struct IncrementalSolver::Impl
     return fragmentCache.insert(std::make_pair(n, f)).first->second;
   }
 
-  SOLVER_RETURN_TYPE extCheckSat(const ASTVec& assertionsSMT2);
+  SOLVER_RETURN_TYPE extCheckSat(const ASTVec& assertionsSMT2,
+                                 bool firstForcedIncrementalSolve);
   ToSATBase* ensureAdapter();
 
   // The session-long floating-point encoding context. Its totalisation
@@ -3836,7 +3837,8 @@ ToSATBase* IncrementalSolver::Impl::ensureAdapter()
 // The bit-blaster also shares every unchanged subcircuit, and learned clauses
 // over those survive.
 SOLVER_RETURN_TYPE
-IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
+IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2,
+                                     bool firstForcedIncrementalSolve)
 {
   profile.extensionality = true;
   ScopedProfileTimer extensionalityTimer(profile.enabled,
@@ -3892,17 +3894,18 @@ IncrementalSolver::Impl::extCheckSat(const ASTVec& assertionsSMT2)
   if (extActive)
     inputToSat = ext->conjoinRecordConstraints(inputToSat);
 
-  // The raw exact-stack encoding is an important first-round search
-  // strategy for write-heavy array graphs (the RTC canary is about 10x
-  // faster that way). Once the persistent solver already contains a round,
-  // however, rebuilding the current stack without batch's cheap global
-  // reductions is the dominant loss on the large changing-stack family.
-  // Defer this scoped pass until the second engaged solve: that retains the
-  // first-round strategy and pays whole-stack work only in sessions which
-  // have demonstrated reuse.
+  // Automatic engagement already received two batch-preprocessed solves, so
+  // its first persistent exact-stack block keeps the raw search shape and a
+  // genuinely new later stack takes this pass. Explicit first engagement has
+  // no such batch work to fall back on: preprocess its first block too, which
+  // removes the broad forced-first ABV tail. The decision is fixed per raw
+  // active conjunction above, so a repeated or re-pushed stack never flips
+  // encoding strategy underneath the block cache.
   const bool scopedPreprocess =
       extScopedPreprocessOf
-          .insert(std::make_pair(activeConjunction, engagedSolves > 1))
+          .insert(std::make_pair(activeConjunction,
+                                 engagedSolves > 1 ||
+                                     firstForcedIncrementalSolve))
           .first->second;
   if (scopedPreprocess)
   {
@@ -4293,14 +4296,14 @@ void IncrementalSolver::runOnDriverStack(const std::function<void()>& body)
 
 SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
                                                bool assumeLastLevelPerConjunct,
-                                               bool deferLargeBootstrapCbp)
+                                               bool firstForcedIncrementalSolve)
 {
   impl->beginProfile(assertionsSMT2.size());
   SOLVER_RETURN_TYPE result = SOLVER_ERROR;
   runOnDriverStack([&]() {
     result = checkSatOnCurrentStack(assertionsSMT2,
                                     assumeLastLevelPerConjunct,
-                                    deferLargeBootstrapCbp);
+                                    firstForcedIncrementalSolve);
   });
   impl->finishProfile();
   return result;
@@ -4337,7 +4340,7 @@ void IncrementalSolver::materializeOnCurrentStack()
 SOLVER_RETURN_TYPE
 IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                                           bool assumeLastLevelPerConjunct,
-                                          bool deferLargeBootstrapCbp)
+                                          bool firstForcedIncrementalSolve)
 {
   STPMgr* bm = impl->bm;
   UserDefinedFlags& uf = bm->UserFlags;
@@ -4511,7 +4514,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   for (const ASTNode& levelConjunction : assertionsSMT2)
   {
     if (impl->fragment(levelConjunction).arrayEq)
-      return impl->extCheckSat(assertionsSMT2);
+      return impl->extCheckSat(assertionsSMT2,
+                               firstForcedIncrementalSolve);
   }
 
   // No active equality this round, so no stale equality state may survive
@@ -4553,7 +4557,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // the third.
     const int64_t configuredBootstrapLimit =
         uf.incremental_cbp_bootstrap_limit;
-    if (deferLargeBootstrapCbp && configuredBootstrapLimit > 0 &&
+    if (firstForcedIncrementalSolve && configuredBootstrapLimit > 0 &&
         uf.optimize_flag && uf.bitConstantProp_flag &&
         assertionsSMT2.size() > 1 && impl->cbpFedLevels.empty() &&
         impl->cbpMemo.empty())
