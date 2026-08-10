@@ -375,11 +375,58 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   // each step holds stays valid across a push.
   std::deque<Frame> stack;
 
+  // The answer a job takes straight from its map, where the frame that would
+  // have taken it would then have done nothing else. On a DAG that is most
+  // operands: they are nodes the walk has already evaluated, and a map hit
+  // does not need a frame to return through.
+  //
+  // Only where the head has nothing else to do first. A formula whose kind is
+  // wrong, or whose recorded value is not TRUE or FALSE, has an error to
+  // raise; a term whose recorded value is not yet a value has to be evaluated
+  // in turn; the expander has its read-over-write precondition to check. All
+  // of those answer false here and get their frame, which runs the head as it
+  // always did -- there is one copy of it, in the step below.
+  auto known = [&](const Job j, const ASTNode& n) -> bool {
+    if (j == EvalFormula)
+    {
+      if (!(is_Form_kind(n.GetKind()) && BOOLEAN_TYPE == n.GetType()))
+        return false;
+
+      const ASTNodeMap::const_iterator it = ComputeFormulaMap.find(n);
+      if (it == ComputeFormulaMap.end() ||
+          (ASTTrue != it->second && ASTFalse != it->second))
+        return false;
+
+      result = it->second;
+      return true;
+    }
+
+    if (j != EvalTerm)
+      return false;
+
+    if (WRITE == n.GetKind() || BOOLEAN_TYPE == n.GetType())
+      return false; // what the term step asserts before looking anything up.
+
+    const ASTNodeMap::const_iterator it = CounterExampleMap.find(n);
+    if (it == CounterExampleMap.end() || BVCONST != it->second.GetKind())
+      return false;
+
+    // A term's answer is put into the plain bit-vector spelling once per
+    // frame, by the main loop as it drops one. There is no frame here, so it
+    // happens here instead.
+    result = plainModelCarrier(bm, it->second);
+    return true;
+  };
+
   // Ask for the value of `n`, and suspend this frame until it is known: it
-  // picks up at `resume` with the answer in `result`.
+  // picks up at `resume` with the answer in `result`. Either way this returns
+  // true, so the caller stops -- the frame is resumed by the main loop with
+  // `result` already holding the answer when there was nothing to push.
   auto want = [&](Frame& f, const Frame::Phase resume, const Job j,
                   const ASTNode& n, const bool flag = true) -> bool {
     f.phase = resume;
+    if (known(j, n))
+      return true;
     stack.push_back(Frame(j, n, flag));
     return true;
   };
@@ -1188,6 +1235,9 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
 
     return want(f, Frame::ExpandWriteIndex, EvalTerm, f.cursor[1], false);
   };
+
+  if (known(job, top))
+    return result; // the map answered: no walk at all.
 
   stack.push_back(Frame(job, top, topArrayReadFlag));
 
