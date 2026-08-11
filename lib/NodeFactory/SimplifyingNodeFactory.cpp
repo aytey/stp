@@ -2118,9 +2118,8 @@ ASTNode SimplifyingNodeFactory::handle_bvxor(unsigned int width, const ASTVec& i
 // nesting itself reaches sixty. A depth limit would have to be set at eight
 // to lose nothing, and eight is not a number with any meaning -- it is just
 // the deepest pair this corpus happens to contain. Bounding the conjuncts
-// bounds the cost directly instead, and since every BVAND has at least two
-// children it bounds the recursion too; sixty-four is comfortably past every
-// pair seen.
+// bounds the cost directly, and therefore also bounds the fixed traversal
+// path below; sixty-four is comfortably past every pair seen.
 //
 // Stopping early costs a rewrite that does not fire, never a wrong answer.
 static const size_t MAX_CONJUNCTS = 64;
@@ -2130,12 +2129,52 @@ static void collectConjuncts(const ASTNode& n, uint64_t* out, size_t& count)
   if (count >= MAX_CONJUNCTS)
     return;
 
-  out[count++] = (n.GetKind() == BVNOT) ? n[0].GetNodeNum() + 1
-                                        : n.GetNodeNum();
+  struct Frame
+  {
+    const ASTNode* node;
+    size_t nextChild;
+  };
 
-  if (n.GetKind() == stp::BVAND)
-    for (size_t i = 0; i < n.Degree(); i++)
-      collectConjuncts(n[i], out, count);
+  // A fixed path preserves the recursive depth-first, left-to-right order
+  // without allocating on the 1.9M common shallow calls. Every descent first
+  // records a conjunct, so count < MAX_CONJUNCTS also proves that the next
+  // suspended-parent slot exists.
+  Frame path[MAX_CONJUNCTS];
+  size_t depth = 0;
+  const ASTNode* current = &n;
+
+  while (true)
+  {
+    out[count++] = (current->GetKind() == BVNOT)
+                       ? (*current)[0].GetNodeNum() + 1
+                       : current->GetNodeNum();
+    if (count >= MAX_CONJUNCTS)
+      return;
+
+    if (current->GetKind() == stp::BVAND && current->Degree() != 0)
+    {
+      assert(depth < MAX_CONJUNCTS);
+      path[depth++] = {current, 1};
+      current = &(*current)[0];
+      continue;
+    }
+
+    bool advanced = false;
+    while (depth != 0)
+    {
+      Frame& parent = path[depth - 1];
+      if (parent.nextChild < parent.node->Degree())
+      {
+        current = &(*parent.node)[parent.nextChild++];
+        advanced = true;
+        break;
+      }
+      --depth;
+    }
+
+    if (!advanced)
+      return;
+  }
 }
 
 ASTNode SimplifyingNodeFactory::handle_bvand(unsigned int width, const ASTVec& new_children) 
