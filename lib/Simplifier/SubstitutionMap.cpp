@@ -26,7 +26,7 @@ THE SOFTWARE.
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/Simplifier/Simplifier.h"
-#include <deque>
+#include <vector>
 
 namespace stp
 {
@@ -240,23 +240,26 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
     return true;
   };
 
-  // Answer settled roots before constructing the deque. Its constructor may
-  // allocate even when no frame is ever pushed, which made constants, leaves,
-  // stopped arrays and cache hits pay for a traversal they did not need.
+  // Answer settled roots before constructing the stack, so constants, leaves,
+  // stopped arrays and cache hits pay for no traversal storage.
   Frame top;
   if (!prepare(n, top))
     return result;
 
-  // A deque, so descending never moves the frames above: `current` below
-  // stays valid across a push.
-  std::deque<Frame> stack;
+  // Most substitution walks are only a few frames deep. Keep those frames in
+  // one compact allocation instead of a deque's map and fixed-size blocks.
+  // A push may move every frame, so callers of descend must not retain or use
+  // a Frame reference after descend returns true.
+  std::vector<Frame> stack;
   stack.push_back(std::move(top));
 
-  auto descend = [&](const ASTNode& node) -> bool
+  auto descend = [&](const ASTNode& node, Frame* waitingParent = nullptr) -> bool
   {
     Frame frame;
     if (!prepare(node, frame))
       return false;
+    if (waitingParent != nullptr)
+      waitingParent->waiting = true;
     stack.push_back(std::move(frame));
     return true;
   };
@@ -353,9 +356,10 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
     bool descended = false;
     while (current.i < current.children.size())
     {
-      if (descend(current.children[current.i]))
+      // descend installs the continuation only when it will push, and does
+      // so before vector growth can move `current`.
+      if (descend(current.children[current.i], &current))
       {
-        current.waiting = true;
         descended = true;
         break;
       }

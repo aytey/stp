@@ -35,7 +35,8 @@ THE SOFTWARE.
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
-#include <deque>
+#include <utility>
+#include <vector>
 
 namespace stp
 {
@@ -331,7 +332,7 @@ struct ArrayTransformer::Frame
   ASTNode thn;
   ASTNode els;
 
-  Frame(Job j, const ASTNode& node) : job(j), n(node) {}
+  Frame(Job j, ASTNode node) : job(j), n(std::move(node)) {}
 };
 
 // TransformFormula, TransformTerm and TransformArrayRead, walked together
@@ -348,7 +349,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
   ASTNode result;
 
   // Decide whether transforming `n` needs a frame. A root which is already
-  // answered returns before the deque is constructed; descendant callers
+  // answered returns before the stack is constructed; descendant callers
   // use the same checks before pushing a frame.
   auto prepare = [&](const Frame::Job job, const ASTNode& n) -> bool {
     if (job == Frame::Read)
@@ -430,17 +431,29 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
   if (!prepare(rootJob, top))
     return result;
 
-  // A deque, so descending never moves the frames above it: the reference
-  // each step holds stays valid across a push.
-  std::deque<Frame> stack;
+  // Most transforms are shallow. Keep their continuations in one compact
+  // allocation instead of a deque's map and fixed-size blocks. A push may
+  // move every frame, so a step must return without touching its Frame after
+  // a successful call to want.
+  std::vector<Frame> stack;
+  // One allocation covers the common formula -> term -> read alternation and
+  // avoids moving these comparatively large frames while it remains shallow.
+  stack.reserve(8);
   stack.emplace_back(rootJob, top);
 
   // Ask for the transform of a descendant. Either `prepare` leaves its
   // immediate answer in `result`, or the walk goes below a new frame.
-  auto want = [&](const Frame::Job job, const ASTNode& n) -> bool {
+  auto want = [&](const Frame::Job job, const ASTNode& n,
+                  Frame* waitingParent = nullptr) -> bool {
     if (!prepare(job, n))
       return false;
-    stack.emplace_back(job, n);
+    // Own the requested node before vector growth invalidates a reference
+    // which may point into the current frame. Constructing in place then
+    // moves only this handle, not an entire large Frame, on every descent.
+    ASTNode owned = n;
+    if (waitingParent != nullptr)
+      waitingParent->waiting = true;
+    stack.emplace_back(job, std::move(owned));
     return true;
   };
 
@@ -471,12 +484,11 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
         continue;
       }
 
-      // Nothing above may be read after this push.
-      if (want(op == OperandFormula ? Frame::Formula : Frame::Term, f.n[i]))
-      {
-        f.waiting = true;
+      // want installs the continuation only when it will push, and does so
+      // before vector growth can move `f`.
+      if (want(op == OperandFormula ? Frame::Formula : Frame::Term, f.n[i],
+               &f))
         return true;
-      }
       f.parts.push_back(result);
     }
 
@@ -583,12 +595,10 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     {
       const ASTNode& child = f.n[f.i++];
 
-      // Nothing above may be read after this push.
-      if (want(Frame::Term, child))
-      {
-        f.waiting = true;
+      // want installs the continuation only when it will push, and does so
+      // before vector growth can move `f`.
+      if (want(Frame::Term, child, &f))
         return true;
-      }
       f.parts.push_back(result);
     }
 
