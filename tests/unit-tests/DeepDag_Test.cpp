@@ -826,6 +826,29 @@ bool concatConstantEqualityOk(Context& c, unsigned depth)
   return result.GetType() == BOOLEAN_TYPE;
 }
 
+// Simplifier::CreateSimplifiedEQ compares every bit of the leading constant
+// prefixes. Make the only difference their least-significant bit, so it must
+// inspect the whole prefix; each lookup must reuse the constant found by one
+// descent through these deep concat chains.
+bool leadingConcatConstantScanOk(Context& c, unsigned depth)
+{
+  ASTNode lhs = c.mgr.CreateZeroConst(depth);
+  ASTNode rhs = c.mgr.CreateOneConst(depth);
+  const ASTNode tail = c.mgr.CreateSymbol("leading-constant-tail", 0, 1);
+  for (unsigned i = 0; i < depth; ++i)
+  {
+    const unsigned width = depth + i + 1;
+    lhs = c.hf->CreateTerm(BVCONCAT, width, lhs, tail);
+    rhs = c.hf->CreateTerm(BVCONCAT, width, rhs, tail);
+  }
+  c.roots.push_back(lhs);
+  c.roots.push_back(rhs);
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  return simp.CreateSimplifiedEQ(lhs, rhs) == c.mgr.ASTFalse;
+}
+
 // UseITEContext::visit. Carries a context set down, so neither the walker
 // nor priming fits: the same node under two contexts has two answers.
 bool useITEContextOk(Context& c, unsigned depth)
@@ -1840,6 +1863,12 @@ TEST(DeepDag, shallow_concat_constant_equality)
   EXPECT_TRUE(concatConstantEqualityOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_leading_concat_constant_scan)
+{
+  Context c;
+  EXPECT_TRUE(leadingConcatConstantScanOk(c, SHALLOW));
+}
+
 TEST(DeepDag, shallow_mutable_dag_walks)
 {
   Context c;
@@ -2118,6 +2147,10 @@ TEST(DeepDag, deep_concat_equality)
 TEST(DeepDag, deep_concat_constant_equality)
 {
   EXPECT_STACK_SAFE(concatConstantEqualityOk, 4000);
+}
+TEST(DeepDag, deep_leading_concat_constant_scan)
+{
+  EXPECT_STACK_SAFE(leadingConcatConstantScanOk, 20000);
 }
 TEST(DeepDag, deep_mutable_dag_walks)
 {

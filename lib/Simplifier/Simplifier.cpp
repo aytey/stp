@@ -283,41 +283,36 @@ bool Simplifier::formulaShortcut(const ASTNode& b, bool pushNeg, ASTNode& a,
   return false;
 }
 
-// number of constant bits in the most significant places.
-unsigned mostSignificantConstants(const ASTNode& n)
+// A concat's leading constant, if it has one. Keep the answer itself rather
+// than only its width: callers inspect several bits, and chasing the first
+// child from the root again for every bit makes that quadratic in a deep
+// concat's depth and its constant prefix width.
+const ASTNode* mostSignificantConstant(const ASTNode& n)
 {
-  if (n.isConstant())
-    return n.GetValueWidth();
-  if (n.GetKind() == BVCONCAT)
-    return mostSignificantConstants(n[0]);
-  return 0;
+  const ASTNode* current = &n;
+  while (current->GetKind() == BVCONCAT)
+    current = &(*current)[0];
+  return current->isConstant() ? current : NULL;
 }
 
-unsigned getConstantBit(const ASTNode& n, const int i)
+unsigned getConstantBit(const ASTNode& constant, const unsigned i)
 {
-  if (n.GetKind() == BVCONST)
-  {
-    assert((int)n.GetValueWidth() >= i + 1);
-    return CONSTANTBV::BitVector_bit_test(n.GetBVConst(),
-                                          n.GetValueWidth() - 1 - i)
-               ? 1
-               : 0;
-  }
-  if (n.GetKind() == BVCONCAT)
-    return getConstantBit(n[0], i);
-
-  assert(false);
-  abort();
+  assert(constant.GetKind() == BVCONST && i < constant.GetValueWidth());
+  return CONSTANTBV::BitVector_bit_test(
+             constant.GetBVConst(), constant.GetValueWidth() - 1 - i)
+             ? 1
+             : 0;
 }
 
 unsigned numberOfLeadingZeroes(const ASTNode& n)
 {
-  unsigned c = mostSignificantConstants(n);
-  if (c == 0)
+  const ASTNode* constant = mostSignificantConstant(n);
+  if (constant == NULL)
     return 0;
 
+  const unsigned c = constant->GetValueWidth();
   for (unsigned i = 0; i < c; i++)
-    if (getConstantBit(n, i) != 0)
+    if (getConstantBit(*constant, i) != 0)
       return i;
   return c;
 }
@@ -609,13 +604,17 @@ ASTNode Simplifier::CreateSimplifiedEQ(const ASTNode& in1, const ASTNode& in2)
   // Check if some of the leading constant bits are different. Fancier code
   // would check
   // each bit, not just the leading bits.
-  const int constStart =
-      std::min(mostSignificantConstants(in1), mostSignificantConstants(in2));
+  const ASTNode* leading1 = mostSignificantConstant(in1);
+  const ASTNode* leading2 = mostSignificantConstant(in2);
+  const unsigned constStart =
+      leading1 == NULL || leading2 == NULL
+          ? 0
+          : std::min(leading1->GetValueWidth(), leading2->GetValueWidth());
 
-  for (int i = 0; i < constStart; i++)
+  for (unsigned i = 0; i < constStart; i++)
   {
-    const int a = getConstantBit(in1, i);
-    const int b = getConstantBit(in2, i);
+    const unsigned a = getConstantBit(*leading1, i);
+    const unsigned b = getConstantBit(*leading2, i);
     assert(a == 1 || a == 0);
     assert(b == 1 || b == 0);
 
@@ -626,7 +625,7 @@ ASTNode Simplifier::CreateSimplifiedEQ(const ASTNode& in1, const ASTNode& in2)
   // The above loop has determined that the leading bits are the same.
   if (constStart > 0)
   {
-    int newWidth = in1.GetValueWidth() - constStart;
+    const unsigned newWidth = in1.GetValueWidth() - constStart;
     ASTNode zero = nf->CreateZeroConst(32);
 
     ASTNode lhs = nf->CreateTerm(BVEXTRACT, newWidth, in1,

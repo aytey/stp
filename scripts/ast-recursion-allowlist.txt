@@ -116,9 +116,7 @@ buildListOfSymbols: off-path: collects the symbols a print-back has to declare; 
 collectArrayIndexSorts: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2, same as SMTLIB_Print1
 collectRoundingModeUses: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2
 evaluateMemoised: on-path: folds a constant expression child-first, memoised, reached from the node-taking NonMemberBVConstEvaluator. Its depth is the constant expression's, which the simplifier builds rather than the input. Not measured
-getConstantBit: on-path: reads one bit of a constant, descending the first child of a BVCONCAT chain. Depth not measured; it is called only where the simplifier has already established a constant of that shape
 intersection: on-path: PropagateEqualities runs by default and this walks for the variables under a node, one frame per level, guarded by a visited set. Depth not measured
-mostSignificantConstants: on-path: counts leading constant bits down the first child of a BVCONCAT chain, one frame per level. Depth not measured
 noteRoundingMode: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2; recurses through an if-then-else over rounding modes
 outputFloatingPointSMTLIB2: safe: overload forwarding. It is on the model-printing path, but the flagged overload only reads the format off the term and calls the other
 primeMemo: safe: the walk that replaces these recursions; it is iterative
