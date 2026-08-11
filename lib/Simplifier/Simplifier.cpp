@@ -851,6 +851,15 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       ArrayValue
     };
 
+    struct Init
+    {
+      Job job;
+      ASTNode b;
+      ASTNode a;
+      bool pushNeg;
+      Phase phase;
+    };
+
     Job job = FormulaJob;
 
     ASTNode b;
@@ -874,6 +883,14 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // frame would only make the explicit stack larger.
     ASTNode output;
     unsigned valueWidth = 0;
+
+    Frame() = default;
+
+    explicit Frame(Init&& init)
+        : job(init.job), b(std::move(init.b)), a(std::move(init.a)),
+          pushNeg(init.pushNeg), phase(init.phase)
+    {
+    }
   };
 
   ASTNode result;
@@ -1022,15 +1039,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     else if (job == Frame::AtomicJob)
       start = Frame::PrecheckedStart;
 
-    Frame below;
-    below.job = job;
-    below.b = n;
-    below.a = a;
-    below.pushNeg = neg;
-    below.phase = start;
+    // `n` can name storage in `f` (for example f.output or f.t0). Own it
+    // before emplacing because growing the vector can move `f`.
+    Frame::Init child{job, n, std::move(a), neg, start};
+    stack.emplace_back(std::move(child));
     if (start == Frame::TermSubstitutionPrechecked)
-      below.output = substitutionImage;
-    stack.push_back(std::move(below));
+      stack.back().output = std::move(substitutionImage);
     return StepResult::Pushed;
   };
 
