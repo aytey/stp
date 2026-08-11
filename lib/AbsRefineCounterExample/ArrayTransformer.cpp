@@ -34,6 +34,7 @@ THE SOFTWARE.
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -320,8 +321,8 @@ struct ArrayTransformer::Frame
   Phase phase = Start;
   ASTNode n;
 
-  ASTVec parts;        // operands transformed so far
-  size_t i = 0;        // the operand being worked on
+  size_t partsBegin = 0; // this frame's operands in the shared LIFO arena
+  size_t i = 0;          // the operand being worked on
   bool waiting = false; // an operand is being transformed below
 
   // Locals that outlive one of their function's suspension points.
@@ -441,6 +442,25 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
   stack.reserve(8);
   stack.emplace_back(rootJob, top);
 
+  // Operands accumulated by every suspended formula/term frame. A child
+  // owns the suffix beginning at partsBegin; completing it removes that
+  // suffix before its single result is appended to its parent. This avoids
+  // one separately allocated ASTVec in every continuation, and Read frames
+  // no longer carry an operand vector they never use.
+  ASTVec activeParts;
+  ASTVec finishedParts;
+
+  auto takeParts = [&](const Frame& f) -> const ASTVec& {
+    assert(activeParts.size() - f.partsBegin == f.n.Degree());
+    finishedParts.clear();
+    finishedParts.insert(
+        finishedParts.end(),
+        std::make_move_iterator(activeParts.begin() + f.partsBegin),
+        std::make_move_iterator(activeParts.end()));
+    activeParts.resize(f.partsBegin);
+    return finishedParts;
+  };
+
   // Ask for the transform of a descendant. Either `prepare` leaves its
   // immediate answer in `result`, or the walk goes below a new frame.
   auto want = [&](const Frame::Job job, const ASTNode& n,
@@ -462,13 +482,13 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (f.phase == Frame::Start)
     {
       f.phase = Frame::Operands;
-      f.parts.reserve(f.n.Degree());
+      f.partsBegin = activeParts.size();
     }
 
     if (f.waiting)
     {
       f.waiting = false;
-      f.parts.push_back(result);
+      activeParts.push_back(result);
     }
 
     const Kind k = f.n.GetKind();
@@ -480,7 +500,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 
       if (op == OperandAsIs)
       {
-        f.parts.push_back(f.n[i]);
+        activeParts.push_back(f.n[i]);
         continue;
       }
 
@@ -489,13 +509,15 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (want(op == OperandFormula ? Frame::Formula : Frame::Term, f.n[i],
                &f))
         return true;
-      f.parts.push_back(result);
+      activeParts.push_back(result);
     }
 
+    const ASTVec& parts = takeParts(f);
     if (k == EQ && bm->UserFlags.optimize_flag)
-      result = simp->CreateSimplifiedEQ(f.parts[0], f.parts[1]);
+      result = simp->CreateSimplifiedEQ(parts[0], parts[1]);
     else
-      result = nf->CreateNode(k, f.parts);
+      result = nf->CreateNode(k, parts);
+    finishedParts.clear();
 
     assert(!result.IsNull());
     if (f.n.Degree() > 0)
@@ -582,13 +604,13 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (f.phase == Frame::Start)
     {
       f.phase = Frame::Operands;
-      f.parts.reserve(f.n.Degree());
+      f.partsBegin = activeParts.size();
     }
 
     if (f.waiting)
     {
       f.waiting = false;
-      f.parts.push_back(result);
+      activeParts.push_back(result);
     }
 
     while (f.i < f.n.Degree())
@@ -599,15 +621,17 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       // before vector growth can move `f`.
       if (want(Frame::Term, child, &f))
         return true;
-      f.parts.push_back(result);
+      activeParts.push_back(result);
     }
 
+    const ASTVec& parts = takeParts(f);
     const ASTChildren c = f.n.GetChildren();
-    if (c != f.parts)
+    if (c != parts)
       result = nf->CreateArrayTerm(k, f.n.GetIndexWidth(), f.n.GetValueWidth(),
-                                   f.parts);
+                                   parts);
     else
       result = f.n;
+    finishedParts.clear();
 
     result = finishTransformTerm(f.n, result);
     return false;

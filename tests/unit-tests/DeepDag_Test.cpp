@@ -2111,6 +2111,7 @@ TEST(DeepDag, counterexample_consumes_ready_descendants_in_place)
 TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
 {
   Context c;
+  const ASTNode guard = c.mgr.CreateSymbol("array-guard", 0, 0);
   const ASTNode cond = c.mgr.CreateSymbol("array-cond", 0, 0);
   const ASTNode array = c.mgr.CreateSymbol("array-buffer", 8, 8);
   const ASTNode index = c.mgr.CreateSymbol("array-index", 0, 8);
@@ -2119,8 +2120,12 @@ TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
       BVXOR, 8, read, c.mgr.CreateOneConst(8));
   const ASTNode choice = c.hf->CreateTerm(
       ITE, 8, cond, sum, c.mgr.CreateZeroConst(8));
-  const ASTNode input = c.hf->CreateNode(
+  const ASTNode equality = c.hf->CreateNode(
       EQ, choice, c.mgr.CreateSymbol("array-rhs", 0, 8));
+  // Transforming equality suspends below an already completed guard. This
+  // pins the shared operand arena's nonzero child range: finishing the
+  // equality must remove only its suffix, leaving the parent's guard intact.
+  const ASTNode input = c.hf->CreateNode(AND, guard, equality);
 
   SubstitutionMap sm(&c.mgr);
   Simplifier simp(&c.mgr, &sm);
@@ -2130,6 +2135,7 @@ TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
   bool sawIte = false;
   bool sawGenericTerm = false;
   bool sawRead = false;
+  bool sawGuard = false;
   ASTNodeSet visited;
   ASTVec pending{result};
   while (!pending.empty())
@@ -2141,12 +2147,14 @@ TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
     sawIte |= n.GetKind() == ITE;
     sawGenericTerm |= n.GetKind() == BVXOR;
     sawRead |= n.GetKind() == READ;
+    sawGuard |= n == guard;
     pending.insert(pending.end(), n.begin(), n.end());
   }
 
-  EXPECT_EQ(EQ, result.GetKind());
+  EXPECT_EQ(AND, result.GetKind());
   EXPECT_TRUE(sawIte);
   EXPECT_TRUE(sawGenericTerm);
+  EXPECT_TRUE(sawGuard);
   EXPECT_FALSE(sawRead);
   ASSERT_EQ(1U, transformer.arrayToIndexToRead.count(array));
   EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(array).count(index));
