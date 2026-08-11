@@ -419,23 +419,25 @@ void FlattenKindNoDuplicates(const Kind k, const ASTChildren& children,
 {
   // Children left to right, and a same-kind one expanded where it is reached,
   // so flat_children comes out in the order the recursion built it. The
-  // frames hold spans into each node's own child storage, which the node
-  // above keeps alive for the whole walk.
-  std::vector<FlattenFrame> stack;
-  stack.push_back(FlattenFrame(children, 0));
+  // frames hold spans into each node's own child storage, which its parent
+  // keeps alive for the whole walk. Keep the current frame local so a flat
+  // input never allocates a traversal stack; parents are needed only after
+  // the first same-kind child is reached.
+  FlattenFrame current(children, 0);
+  std::vector<FlattenFrame> parents;
 
-  while (!stack.empty())
+  while (true)
   {
-    FlattenFrame& f = stack.back();
-    if (f.i == f.children.size())
+    if (current.i == current.children.size())
     {
-      stack.pop_back();
+      if (parents.empty())
+        break;
+      current = parents.back();
+      parents.pop_back();
       continue;
     }
 
-    // The child is stored in the node that lists it, so this reference
-    // survives the push below even though `f` does not.
-    const ASTNode& child = f.children[f.i++];
+    const ASTNode& child = current.children[current.i++];
 
     if (k != child.GetKind())
     {
@@ -448,30 +450,35 @@ void FlattenKindNoDuplicates(const Kind k, const ASTChildren& children,
     if (!alreadyFlattened.insert(child).second)
       continue;
 
-    // Nothing above may be read after this.
-    stack.push_back(FlattenFrame(child.GetChildren(), 0));
+    parents.push_back(current);
+    current = FlattenFrame(child.GetChildren(), 0);
   }
 }
 
 void FlattenKind(const Kind k, const ASTChildren& children, ASTVec& flat_children, int depth)
 {
-  std::vector<FlattenFrame> stack;
-  stack.push_back(FlattenFrame(children, depth));
+  FlattenFrame current(children, depth);
+  std::vector<FlattenFrame> parents;
 
-  while (!stack.empty())
+  while (true)
   {
-    FlattenFrame& f = stack.back();
-    if (f.i == f.children.size())
+    if (current.i == current.children.size())
     {
-      stack.pop_back();
+      if (parents.empty())
+        break;
+      current = parents.back();
+      parents.pop_back();
       continue;
     }
 
-    const ASTNode& child = f.children[f.i++];
-    const int below = f.depth - 1; // read before the push, which moves `f`.
+    const ASTNode& child = current.children[current.i++];
+    const int below = current.depth - 1;
 
-    if (k == child.GetKind() && f.depth >= 0)
-      stack.push_back(FlattenFrame(child.GetChildren(), below));
+    if (k == child.GetKind() && current.depth >= 0)
+    {
+      parents.push_back(current);
+      current = FlattenFrame(child.GetChildren(), below);
+    }
     else
       flat_children.push_back(child);
   }
@@ -481,6 +488,7 @@ void FlattenKind(const Kind k, const ASTChildren& children, ASTVec& flat_childre
 ASTVec FlattenKind(Kind k, const ASTChildren& children, int maxDepth)
 {
   ASTVec flat_children;
+  flat_children.reserve(children.size());
   if (k == OR || k == BVOR || k == BVAND || k == AND)
   {
     ASTNodeSet alreadyFlattened;

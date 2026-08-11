@@ -1422,6 +1422,22 @@ TEST(DeepDag, shallow_flatten_kind_depth)
   EXPECT_TRUE(flattenKindDepthOk(c, SHALLOW));
 }
 
+TEST(DeepDag, flat_flatten_kind_preserves_children)
+{
+  Context c;
+  ASTVec children;
+  for (unsigned i = 0; i < 4; ++i)
+  {
+    const std::string name = "flat" + std::to_string(i);
+    children.push_back(c.mgr.CreateSymbol(name.c_str(), 0, 8));
+  }
+  const ASTNode holder = c.hf->CreateTerm(BVXOR, 8, children);
+  const ASTVec expected = toASTVec(holder.GetChildren());
+
+  EXPECT_EQ(expected, FlattenKind(BVAND, holder.GetChildren()));
+  EXPECT_EQ(expected, FlattenKind(BVPLUS, holder.GetChildren()));
+}
+
 TEST(DeepDag, shallow_strength_reduction)
 {
   Context c;
