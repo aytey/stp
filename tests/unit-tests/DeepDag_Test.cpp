@@ -55,6 +55,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/NodeDomainAnalysis.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
+#include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/FloatBlaster/FpTotalise.h"
 #include "stp/Printer/printers.h"
 #include "stp/Simplifier/CommonSubSum.h"
@@ -69,10 +70,12 @@ THE SOFTWARE.
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
 #include "stp/Simplifier/constantBitP/WorkList.h"
+#include <algorithm>
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -195,6 +198,50 @@ struct Context
     return n;
   }
 };
+
+// Structural depth without putting the measurement itself on the call
+// stack. Memoisation matters for the generated FP circuits, which are DAGs
+// with extensive sharing rather than trees.
+size_t dagDepth(const ASTNode& top)
+{
+  struct Frame
+  {
+    ASTNode node;
+    size_t nextChild = 0;
+    size_t deepestChild = 0;
+
+    explicit Frame(const ASTNode& n) : node(n) {}
+  };
+
+  std::unordered_map<uint64_t, size_t> known;
+  std::vector<Frame> stack;
+  stack.emplace_back(top);
+  size_t result = 0;
+
+  while (!stack.empty())
+  {
+    Frame& frame = stack.back();
+    if (frame.nextChild < frame.node.Degree())
+    {
+      const ASTNode child = frame.node[frame.nextChild++];
+      const auto found = known.find(child.GetNodeNum());
+      if (found != known.end())
+        frame.deepestChild = std::max(frame.deepestChild, found->second);
+      else
+        stack.emplace_back(child);
+      continue;
+    }
+
+    result = frame.deepestChild + 1;
+    known[frame.node.GetNodeNum()] = result;
+    stack.pop_back();
+    if (!stack.empty())
+      stack.back().deepestChild =
+          std::max(stack.back().deepestChild, result);
+  }
+
+  return result;
+}
 
 // A chain of if-then-else terms, nested in the else-branch: a boolean symbol
 // the model says nothing about takes false, so evaluating one descends the
@@ -571,6 +618,45 @@ bool simplifyAlternatingTermFormulaOk(Context& c, unsigned depth)
   return output.GetValueWidth() == 8;
 }
 
+// A source expression only three operations deep can lower to a bit-vector
+// circuit thousands of terms deep. This is the shape that made term priming
+// an incomplete fix: the generated nodes did not exist when the input was
+// primed, so SimplifyTerm still descended them recursively. Exponent width
+// 11 is the supported boundary for fp.rem and generates the 8,000-level case
+// from rem-exponent-width-boundary.smt2; width 5 is the shallow control.
+bool simplifyInternallyGeneratedFpTermOk(Context& c, unsigned exponentWidth)
+{
+  const unsigned significandWidth = 8;
+  const unsigned width = exponentWidth + significandWidth;
+  const ASTNode x = c.mgr.CreateSymbol("generated-fp", 0, width);
+  x.SetExpWidth(exponentWidth);
+  x.SetSigWidth(significandWidth);
+  const ASTNode rm = c.mgr.CreateBVConst(
+      5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+  const ASTNode rounded =
+      c.hf->CreateTerm(FP_ROUNDTOINTEGRAL, width, rm, x);
+  const ASTNode remainder = c.hf->CreateTerm(FP_REM, width, rounded, x);
+  const ASTNode source = c.hf->CreateNode(FP_ISNAN, remainder);
+  c.roots.push_back(source);
+
+  FpEncodingContext encoding(&c.mgr);
+  const ASTNode prepared = encoding.prepare(source);
+  const ASTNode lowered = encoding.lowerPrepared(prepared);
+  c.roots.push_back(prepared);
+  c.roots.push_back(lowered);
+  if (lowered == prepared)
+    return false; // no generated circuit means the intended path was missed.
+  if (exponentWidth == 11 && dagDepth(lowered) < 4000)
+    return false; // keep the low-stack case deep even if lowering changes.
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode output = simp.SimplifyFormula_TopLevel(lowered, false);
+  c.roots.push_back(output);
+  return output.GetType() == BOOLEAN_TYPE && output.GetKind() != UNDEFINED;
+}
+
 // CreateSimpleEQ peels equal sides from two concat chains. Each peel used to
 // re-enter the simplifying node factory and consume another C++ frame.
 bool concatEqualityOk(Context& c, unsigned depth)
@@ -716,8 +802,20 @@ bool mutableDagWalksOk(Context& c, unsigned depth)
   ok = ok && symbols.size() == depth;
 
   MutableASTNode* leaf = root;
+  unsigned pathDepth = 0;
   while (!leaf->isSymbol())
-    leaf = leaf->children[0];
+  {
+    MutableASTNode* next = NULL;
+    for (MutableASTNode* child : leaf->children)
+      if (!child->isSymbol())
+      {
+        next = child;
+        break;
+      }
+    leaf = next == NULL ? leaf->children[0] : next;
+    pathDepth++;
+  }
+  ok = ok && pathDepth == depth - 1;
 
   vector<MutableASTNode*> variables;
   leaf->replaceWithVar(c.mgr.CreateSymbol("mutable-leaf", 0, 8), variables);
@@ -1182,6 +1280,12 @@ TEST(DeepDag, shallow_simplify_alternating_term_formula)
   EXPECT_TRUE(simplifyAlternatingTermFormulaOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_simplify_internally_generated_fp_term)
+{
+  Context c;
+  EXPECT_TRUE(simplifyInternallyGeneratedFpTermOk(c, 5));
+}
+
 TEST(DeepDag, shallow_concat_equality)
 {
   Context c;
@@ -1298,6 +1402,10 @@ TEST(DeepDag, deep_simplify_term_substituted) { EXPECT_STACK_SAFE(simplifyTermSu
 TEST(DeepDag, deep_simplify_alternating_term_formula)
 {
   EXPECT_STACK_SAFE(simplifyAlternatingTermFormulaOk, 20000);
+}
+TEST(DeepDag, deep_simplify_internally_generated_fp_term)
+{
+  EXPECT_STACK_SAFE(simplifyInternallyGeneratedFpTermOk, 11);
 }
 TEST(DeepDag, deep_concat_equality)
 {
