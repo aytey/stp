@@ -95,13 +95,14 @@ private:
   // graph for every query, and a 30,000-deep alternation of NOT and AND died
   // here. See DeepDag_Test.cpp.
   //
-  // A node is answered from `visited` or it is built, and building always
-  // records it -- so a frame that has just descended finds its child there on
-  // the way round, and no frame has to remember what it was waiting for.
+  // A node is answered from `visited` or it is built. A parent waiting for a
+  // new child consumes the returned pointer directly; shared children that
+  // were already built are still answered from `visited`.
   struct Frame
   {
     ASTNode n;
     size_t i = 0;
+    bool waiting = false;
     vector<MutableASTNode*> tempChildren;
 
     Frame(const ASTNode& node) : n(node)
@@ -137,6 +138,13 @@ public:
     {
       Frame& current = stack.back();
 
+      if (current.waiting)
+      {
+        current.waiting = false;
+        current.tempChildren.push_back(result);
+        current.i++;
+      }
+
       bool descended = false;
       while (current.i < current.n.Degree())
       {
@@ -148,6 +156,7 @@ public:
         }
 
         // Nothing above may be read after this push.
+        current.waiting = true;
         stack.emplace_back(current.n[current.i]);
         descended = true;
         break;

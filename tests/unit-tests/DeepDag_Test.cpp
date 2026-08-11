@@ -979,6 +979,42 @@ bool mutableDagRootFastPathsOk(Context& c)
   return ok;
 }
 
+// A parent consumes a newly built child directly when its child frame
+// returns; it must not need to find that child in `visited` a second time.
+// Mix misses and a shared hit so the continuation is pinned to the right
+// child position as well as to the right mutable node.
+bool mutableDagBuildResumeOrderOk(Context& c)
+{
+  const ASTNode a = c.mgr.CreateSymbol("mutable-build-a", 0, 8);
+  const ASTNode b = c.mgr.CreateSymbol("mutable-build-b", 0, 8);
+  const ASTNode d = c.mgr.CreateSymbol("mutable-build-d", 0, 8);
+  const ASTNode left = c.hf->CreateTerm(BVXOR, 8, a, b);
+  const ASTNode right = c.hf->CreateTerm(BVAND, 8, b, d);
+  const ASTNode top = c.hf->CreateTerm(BVPLUS, 8, left, right, left);
+  c.roots.push_back(top);
+
+  std::unordered_map<uint64_t, MutableASTNode*> nodes;
+  MutableASTNode* root = MutableASTNode::build(top, nodes);
+  bool ok = root->children.size() == top.Degree() && nodes.size() == 6;
+  for (size_t i = 0; ok && i < top.Degree(); ++i)
+  {
+    const auto child = nodes.find(top[i].GetNodeNum());
+    ok = child != nodes.end() && root->children[i] == child->second;
+  }
+
+  const auto leftNode = nodes.find(left.GetNodeNum());
+  size_t leftEdges = 0;
+  if (leftNode != nodes.end())
+  {
+    for (MutableASTNode* child : root->children)
+      leftEdges += child == leftNode->second;
+  }
+  ok = ok && leftNode != nodes.end() && leftEdges == 2 &&
+       leftNode->second->parents.count(root) == 1;
+  MutableASTNode::cleanup();
+  return ok;
+}
+
 // Mutable parents are a set, so two edges from one parent represent one
 // parent relationship. Detaching such a DAG must likewise process that
 // relationship once. Otherwise every duplicate edge revisits an already
@@ -1588,6 +1624,12 @@ TEST(DeepDag, mutable_dag_repeated_edges_are_detached_once)
 {
   Context c;
   EXPECT_TRUE(mutableDagRepeatedEdgesOk(c));
+}
+
+TEST(DeepDag, mutable_dag_build_consumes_returned_children_in_order)
+{
+  Context c;
+  EXPECT_TRUE(mutableDagBuildResumeOrderOk(c));
 }
 
 TEST(DeepDag, counterexample_prechecked_heads_preserve_model_values)
