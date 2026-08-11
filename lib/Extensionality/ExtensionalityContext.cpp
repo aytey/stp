@@ -146,39 +146,6 @@ void collectDag(const ASTNode& n, ASTNodeSet& visited)
 //
 // Anything else means an anchor was rewritten beyond recognition:
 // refuse loudly rather than guess.
-// Does any node of this DAG belong to `needles`? Iterative post-order,
-// because the terms it is asked about are as deep as the user's write
-// chains and if-then-else nests.
-bool subtreeMentions(const ASTNode& root, const std::set<ASTNode>& needles)
-{
-  std::map<ASTNode, bool> found;
-  std::vector<std::pair<ASTNode, bool>> stack;
-  stack.push_back(std::make_pair(root, false));
-  while (!stack.empty())
-  {
-    const ASTNode n = stack.back().first;
-    const bool expanded = stack.back().second;
-    stack.pop_back();
-    if (found.find(n) != found.end())
-      continue;
-    if (!expanded)
-    {
-      // Children are pushed after this node's second visit, so they are
-      // all answered before it is.
-      stack.push_back(std::make_pair(n, true));
-      for (unsigned k = 0; k < n.Degree(); k++)
-        if (found.find(n[k]) == found.end())
-          stack.push_back(std::make_pair(n[k], false));
-      continue;
-    }
-    bool here = needles.find(n) != needles.end();
-    for (unsigned k = 0; !here && k < n.Degree(); k++)
-      here = found[n[k]];
-    found[n] = here;
-  }
-  return found[root];
-}
-
 ASTNode recoverAnchoredOperand(const ASTNode& rhs, const ASTNode& lambda,
                                const ASTNode& proxy)
 {
@@ -716,14 +683,9 @@ ASTNode ExtensionalityContext::lowerArrayEqualities(
       currentLowerings[it->first] = loweredRewrite->second;
   }
 
-  // ARRAY_EQ is legal only in the user-facing AST. Ordinary simplification,
-  // array transformation and bit-blasting intentionally have no case for it.
-  ASTNodeSet nodes;
-  collectDag(lowered, nodes);
-  for (ASTNodeSet::const_iterator it = nodes.begin(); it != nodes.end(); ++it)
-    if (it->GetKind() == ARRAY_EQ)
-      FatalError("array-equality: query lowering left an opaque equality", *it);
-
+  // Activation walks this exact root next and checks the lowering
+  // postcondition while it does so; do not inventory the whole DAG once
+  // merely to traverse it again immediately afterwards.
   activateReachableRecords(lowered);
 
   return lowered;
@@ -744,13 +706,25 @@ void ExtensionalityContext::activateReachableRecords(
 {
   std::set<size_t> activeIds;
   ASTNodeSet visited;
+  visited.insert(loweredRoot);
   ASTVec pending(1, loweredRoot);
   while (!pending.empty())
   {
     const ASTNode node = pending.back();
     pending.pop_back();
-    if (!visited.insert(node).second)
-      continue;
+
+    // ARRAY_EQ is legal only in the user-facing AST. Ordinary
+    // simplification, array transformation and bit-blasting intentionally
+    // have no case for it. This used to be a separate complete walk just
+    // before activation.
+    if (node.GetKind() == ARRAY_EQ)
+      FatalError("array-equality: query lowering left an opaque equality",
+                 node);
+
+    auto enqueue = [&](const ASTNode& next) {
+      if (visited.insert(next).second)
+        pending.push_back(next);
+    };
 
     const std::map<ASTNode, size_t>::const_iterator proxy =
         proxyToRecord.find(node);
@@ -761,12 +735,12 @@ void ExtensionalityContext::activateReachableRecords(
       // condition or another operand subterm. Follow cached operands so that
       // activation is the transitive closure, not merely the proxies still
       // visible at the Boolean root.
-      pending.push_back(r.constructionLeft);
-      pending.push_back(r.constructionRight);
+      enqueue(r.constructionLeft);
+      enqueue(r.constructionRight);
     }
 
     for (unsigned i = 0; i < node.Degree(); ++i)
-      pending.push_back(node[i]);
+      enqueue(node[i]);
   }
 
   activeRecordIds.assign(activeIds.begin(), activeIds.end());
@@ -896,7 +870,7 @@ void ExtensionalityContext::locateCanonicalOperands(const ASTNode& root)
   // collected: a protected lambda or proxy turning up in an equation of
   // the same shape is none of this function's business.
   std::set<ASTNode> witnessNames;
-  std::set<ASTNode> witnessIndexes;
+  ASTNodeSet witnessIndexes;
   for (size_t i = 0; i < activeRecordIds.size(); i++)
   {
     const Record& r = records[activeRecordIds[i]];
@@ -929,6 +903,28 @@ void ExtensionalityContext::locateCanonicalOperands(const ASTNode& root)
   std::map<ASTNode, ASTNode> anchorRhs;
   ASTNodeSet visited;
   collectDag(root, visited);
+
+  // The question is existential and every write asks it against the same set
+  // of witness indexes. Once a node's complete subtree has been checked and
+  // found safe, every later write which shares that node is safe without a
+  // fresh post-order map. Across all writes this visits each unique index-DAG
+  // node once rather than once per write.
+  ASTNodeSet checkedWriteIndexNodes;
+  auto writeIndexMentionsWitness = [&](const ASTNode& index) {
+    bool mentions = false;
+    walkPreOrder(index, [&](const ASTNode& current) {
+      if (mentions || !checkedWriteIndexNodes.insert(current).second)
+        return false;
+      if (witnessIndexes.find(current) != witnessIndexes.end())
+      {
+        mentions = true;
+        return false;
+      }
+      return true;
+    });
+    return mentions;
+  };
+
   for (ASTNodeSet::const_iterator it = visited.begin(); it != visited.end();
        ++it)
   {
@@ -948,7 +944,7 @@ void ExtensionalityContext::locateCanonicalOperands(const ASTNode& root)
     // and a sort whose values are not all denoting needs exactly that --
     // and no such position gives a rewrite anything to work with. Only a
     // write index does.
-    if (n.GetKind() == WRITE && subtreeMentions(n[1], witnessIndexes))
+    if (n.GetKind() == WRITE && writeIndexMentionsWitness(n[1]))
       FatalError("array-equality: a write index mentions a witness index, "
                  "so a rewrite could decide that write against an anchor "
                  "read and move the operand recovery reads",
