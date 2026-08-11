@@ -352,6 +352,9 @@ public:
 
   void propagateUpDirty()
   {
+    if (dirty)
+      return;
+
     vector<MutableASTNode*> pending(1, this);
     while (!pending.empty())
     {
@@ -396,6 +399,9 @@ public:
 
   void removeChildren(vector<MutableASTNode*>& variables)
   {
+    if (children.empty())
+      return;
+
     struct RemoveFrame
     {
       MutableASTNode* node;
@@ -447,7 +453,18 @@ public:
   void getAllVariablesRecursively(vector<MutableASTNode*>& result,
                                   std::unordered_set<MutableASTNode*>& visited)
   {
-    vector<MutableASTNode*> pending(1, this);
+    if (!visited.insert(this).second)
+      return;
+
+    if (isSymbol())
+      result.push_back(this);
+
+    vector<MutableASTNode*> pending;
+    // A LIFO worklist needs the children in reverse to retain the original
+    // left-to-right depth-first order (and therefore result order).
+    for (size_t i = children.size(); i > 0; --i)
+      pending.push_back(children[i - 1]);
+
     while (!pending.empty())
     {
       MutableASTNode* current = pending.back();
@@ -458,8 +475,6 @@ public:
       if (current->isSymbol())
         result.push_back(current);
 
-      // A LIFO worklist needs the children in reverse to retain the original
-      // left-to-right depth-first order (and therefore result order).
       for (size_t i = current->children.size(); i > 0; --i)
         pending.push_back(current->children[i - 1]);
     }

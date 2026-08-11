@@ -885,6 +885,32 @@ bool mutableDagWalksOk(Context& c, unsigned depth)
   return ok;
 }
 
+// Root-level no-ops should not need a traversal worklist: a repeated variable
+// scan is already visited, a symbol has no children to remove, and propagating
+// from an already-dirty replacement has nowhere new to go.
+bool mutableDagRootFastPathsOk(Context& c)
+{
+  const ASTNode original = c.mgr.CreateSymbol("mutable-fast-original", 0, 8);
+  MutableASTNode* root = MutableASTNode::build(original);
+
+  vector<MutableASTNode*> symbols;
+  std::unordered_set<MutableASTNode*> visited;
+  root->getAllVariablesRecursively(symbols, visited);
+  root->getAllVariablesRecursively(symbols, visited);
+
+  vector<MutableASTNode*> variables;
+  root->removeChildren(variables);
+  const ASTNode replacement =
+      c.mgr.CreateSymbol("mutable-fast-replacement", 0, 8);
+  root->replaceWithVar(replacement, variables);
+  root->propagateUpDirty();
+
+  const bool ok = symbols.size() == 1 && symbols[0] == root &&
+                  variables.empty() && root->toASTNode(&c.mgr) == replacement;
+  MutableASTNode::cleanup();
+  return ok;
+}
+
 // WorkList::addToWorklist, which seeds constant-bit propagation by walking
 // the whole input. A constant somewhere in the chain is what puts nodes on
 // the worklist at all, so the chain is built with one.
@@ -1368,6 +1394,12 @@ TEST(DeepDag, shallow_mutable_dag_walks)
 {
   Context c;
   EXPECT_TRUE(mutableDagWalksOk(c, SHALLOW));
+}
+
+TEST(DeepDag, mutable_dag_root_fast_paths_preserve_no_ops)
+{
+  Context c;
+  EXPECT_TRUE(mutableDagRootFastPathsOk(c));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
