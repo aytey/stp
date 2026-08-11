@@ -955,8 +955,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     top.phase = Frame::PrecheckedStart;
   }
 
-  // A deque, so descending never moves the frames above it.
-  std::deque<Frame> stack;
+  // Keep shallow walks in one contiguous allocation. `want` is the only
+  // operation that can grow the vector, and every caller returns from its
+  // step immediately afterwards, so no Frame reference survives a move.
+  // Unlike deque, vector also avoids allocating a block plus a block map for
+  // the overwhelmingly common one- and two-frame walks.
+  std::vector<Frame> stack;
   stack.push_back(std::move(top));
 
   // Ask for the simplification of `n` under `neg`, and suspend this frame:
