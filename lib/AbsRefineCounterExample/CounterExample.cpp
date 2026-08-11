@@ -289,6 +289,7 @@ struct AbsRefine_CounterExample::Frame
     FormFpBlasted,       // ... for the lowering of the predicate
 
     // TermToConstTermUsingModel.
+    TermRecordedValueStart, // recorded non-constant: about to evaluate its value
     TermRecordedValue,  // for the value the model already records for this term
     TermEncoded,        // float source term: for its encoding
     TermCellIndex,      // owned array read: for the index
@@ -309,6 +310,7 @@ struct AbsRefine_CounterExample::Frame
     TermOperandStrict,  // ... for it again, this time refusing a bare read
 
     // Expand_ReadOverWrite_UsingModel.
+    ExpandRecordedValueStart, // recorded non-constant: about to evaluate its value
     ExpandRecordedValue, // for the value the model already records for the read
     ExpandReadIndex,     // for the read index
     ExpandWriteIndex,    // for the index the write at this level stores at
@@ -371,52 +373,126 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   // below it resumes with.
   ASTNode result;
 
-  // A deque, so descending never moves the frames above it: the reference
-  // each step holds stays valid across a push.
-  std::deque<Frame> stack;
-
-  // The answer a job takes straight from its map, where the frame that would
-  // have taken it would then have done nothing else. On a DAG that is most
-  // operands: they are nodes the walk has already evaluated, and a map hit
-  // does not need a frame to return through.
-  //
-  // Only where the head has nothing else to do first. A formula whose kind is
-  // wrong, or whose recorded value is not TRUE or FALSE, has an error to
-  // raise; a term whose recorded value is not yet a value has to be evaluated
-  // in turn; the expander has its read-over-write precondition to check. All
-  // of those answer false here and get their frame, which runs the head as it
-  // always did -- there is one copy of it, in the step below.
-  auto known = [&](const Job j, const ASTNode& n) -> bool {
+  // Run the non-recursive head of one of the three former functions. An
+  // immediate answer lands in `result` and needs no frame. Otherwise `frame`
+  // carries everything learned by the head into the walk below it, so a memo
+  // miss is never probed for a second time when the frame starts.
+  auto prepare = [&](const Job j, const ASTNode& n, Frame& frame) -> bool
+  {
+    assert(frame.job == j && frame.n == n);
     if (j == EvalFormula)
     {
       if (!(is_Form_kind(n.GetKind()) && BOOLEAN_TYPE == n.GetType()))
-        return false;
+      {
+        FatalError(" ComputeConstFormUsingModel: "
+                   "The input is a non-formula: ",
+                   n);
+      }
 
       const ASTNodeMap::const_iterator it = ComputeFormulaMap.find(n);
-      if (it == ComputeFormulaMap.end() ||
-          (ASTTrue != it->second && ASTFalse != it->second))
-        return false;
+      if (it != ComputeFormulaMap.end())
+      {
+        if (ASTTrue != it->second && ASTFalse != it->second)
+        {
+          FatalError("ComputeFormulaUsingModel: "
+                     "The value of a formula must be TRUE or FALSE:",
+                     n);
+        }
 
-      result = it->second;
+        result = it->second;
+        return false;
+      }
+
+      // These are the formula equivalent of a term constant: the switch only
+      // records and returns them, so do that without allocating a worklist.
+      if (n.GetKind() == TRUE || n.GetKind() == FALSE)
+      {
+        ComputeFormulaMap[n] = n;
+        result = n;
+        return false;
+      }
+
       return true;
     }
 
-    if (j != EvalTerm)
-      return false;
+    if (j == EvalTerm)
+    {
+      // The recursive term evaluator returned constants before consulting the
+      // model. Keeping that in the head matters here: constants are never
+      // memoised, so otherwise every occurrence would allocate a frame.
+      if (n.GetKind() == BVCONST)
+      {
+        result = plainModelCarrier(bm, n);
+        return false;
+      }
 
-    if (WRITE == n.GetKind() || BOOLEAN_TYPE == n.GetType())
-      return false; // what the term step asserts before looking anything up.
+      assert(is_Term_kind(n.GetKind()));
+      assert(WRITE != n.GetKind());
+      assert(BOOLEAN_TYPE != n.GetType());
+
+      const ASTNodeMap::const_iterator it = CounterExampleMap.find(n);
+      if (it != CounterExampleMap.end())
+      {
+        if (BVCONST == it->second.GetKind())
+        {
+          result = plainModelCarrier(bm, it->second);
+          return false;
+        }
+
+        if (n == it->second)
+        {
+          FatalError("TermToConstTermUsingModel: "
+                     "The input term is stored as-is "
+                     "in the CounterExample: Not ok: ",
+                     n);
+        }
+
+        frame.entry = it->second;
+        frame.phase = Frame::TermRecordedValueStart;
+        return true;
+      }
+
+      return true;
+    }
+
+    assert(j == EvalExpand);
+    if (READ != n.GetKind() || WRITE != n[0].GetKind())
+      FatalError("RemovesWrites: Input must be a READ over a WRITE", n);
 
     const ASTNodeMap::const_iterator it = CounterExampleMap.find(n);
-    if (it == CounterExampleMap.end() || BVCONST != it->second.GetKind())
-      return false;
+    if (it != CounterExampleMap.end())
+    {
+      if (BVCONST == it->second.GetKind())
+      {
+        result = it->second;
+        return false;
+      }
 
-    // A term's answer is put into the plain bit-vector spelling once per
-    // frame, by the main loop as it drops one. There is no frame here, so it
-    // happens here instead.
-    result = plainModelCarrier(bm, it->second);
+      if (n == it->second)
+      {
+        FatalError("TermToConstTermUsingModel: The input term is "
+                   "stored as-is "
+                   "in the CounterExample: Not ok: ",
+                   n);
+      }
+
+      frame.entry = it->second;
+      frame.phase = Frame::ExpandRecordedValueStart;
+      return true;
+    }
+
     return true;
   };
+
+  Frame first(job, top, topArrayReadFlag);
+  if (!prepare(job, top, first))
+    return result;
+
+  // A deque, so descending never moves the frames above it: the reference
+  // each step holds stays valid across a push. It is deliberately constructed
+  // only after the root head proves that a walk is needed.
+  std::deque<Frame> stack;
+  stack.push_back(std::move(first));
 
   // Ask for the value of `n`, and suspend this frame until it is known: it
   // picks up at `resume` with the answer in `result`. Either way this returns
@@ -425,9 +501,10 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   auto want = [&](Frame& f, const Frame::Phase resume, const Job j,
                   const ASTNode& n, const bool flag = true) -> bool {
     f.phase = resume;
-    if (known(j, n))
+    Frame below(j, n, flag);
+    if (!prepare(j, n, below))
       return true;
-    stack.push_back(Frame(j, n, flag));
+    stack.push_back(std::move(below));
     return true;
   };
 
@@ -448,43 +525,15 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
       return false;
     };
 
-    if (f.phase == Frame::Start)
-    {
-      if (!(is_Form_kind(k) && BOOLEAN_TYPE == form.GetType()))
-      {
-        FatalError(" ComputeConstFormUsingModel: "
-                   "The input is a non-formula: ",
-                   form);
-      }
-
-      // cerr << "Input to ComputeFormulaUsingModel:" << form << endl;
-      ASTNodeMap::const_iterator it1;
-      if ((it1 = ComputeFormulaMap.find(form)) != ComputeFormulaMap.end())
-      {
-        const ASTNode& res = it1->second;
-        if (ASTTrue == res || ASTFalse == res)
-        {
-          result = res;
-          return false;
-        }
-        else
-        {
-          FatalError("ComputeFormulaUsingModel: "
-                     "The value of a formula must be TRUE or FALSE:",
-                     form);
-        }
-      }
-
-      // Unlike the term arm (TermToConstTermUsingModel), floating-point
-      // *predicates* are not routed through encodeForModel. Encoding the whole
-      // predicate and re-entering the evaluator runs the walk at
-      // fpEncodedEvaluationDepth > 0, where the term arm's own encode step is
-      // switched off -- so any float operand reached inside the encoded
-      // predicate would fall through to the term switch's default. Instead the
-      // FP_* predicate cases below resolve each operand to a constant at depth
-      // 0 (where the term arm does encode floats correctly) and fold the
-      // predicate over those constants.
-    }
+    // Unlike the term arm (TermToConstTermUsingModel), floating-point
+    // *predicates* are not routed through encodeForModel. Encoding the whole
+    // predicate and re-entering the evaluator runs the walk at
+    // fpEncodedEvaluationDepth > 0, where the term arm's own encode step is
+    // switched off -- so any float operand reached inside the encoded
+    // predicate would fall through to the term switch's default. Instead the
+    // FP_* predicate cases below resolve each operand to a constant at depth
+    // 0 (where the term arm does encode floats correctly) and fold the
+    // predicate over those constants.
 
     switch (k)
     {
@@ -500,9 +549,11 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
           FatalError(" ComputeFormulaUsingModel: "
                      "Non-Boolean variables are not formulas",
                      form);
-        if (CounterExampleMap.find(form) != CounterExampleMap.end())
+        const ASTNodeMap::const_iterator recorded =
+            CounterExampleMap.find(form);
+        if (recorded != CounterExampleMap.end())
         {
-          ASTNode counterexample_val = CounterExampleMap[form];
+          const ASTNode counterexample_val = recorded->second;
           if (!bm->VarSeenInTerm(form, counterexample_val))
             return want(f, Frame::FormSymbolValue, EvalFormula,
                         counterexample_val);
@@ -735,85 +786,45 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
       return false;
     };
 
-    if (f.phase == Frame::Start)
+    if (f.phase == Frame::TermRecordedValueStart)
     {
-      if (k == BVCONST)
-      {
-        result = term;
-        return false;
-      }
+      return want(f, Frame::TermRecordedValue, EvalTerm, f.entry,
+                  ArrayReadFlag);
+    }
 
-      assert(is_Term_kind(k));
-      assert(k != WRITE);
-      assert(BOOLEAN_TYPE != term.GetType());
-
-      ASTNodeMap::const_iterator it1;
-      if ((it1 = CounterExampleMap.find(term)) != CounterExampleMap.end())
-      {
-        const ASTNode& val = it1->second;
-        if (BVCONST != val.GetKind())
-        {
-          // CounterExampleMap has two maps rolled into
-          // one. SubstitutionMap and SolverMap.
-          //
-          // descending is fine here. There are two maps that are checked
-          // here. One is the substitutionmap. We garuntee that the value
-          // of a key in the substitutionmap is always a constant.
-          //
-          // in the SolverMap we garuntee that "term" does not occur in
-          // the value part of the map
-          if (term == val)
-          {
-            FatalError("TermToConstTermUsingModel: "
-                       "The input term is stored as-is "
-                       "in the CounterExample: Not ok: ",
-                       term);
-          }
-          return want(f, Frame::TermRecordedValue, EvalTerm, val,
-                      ArrayReadFlag);
-        }
-        else
-        {
-          result = val;
-          return false;
-        }
-      }
-
+    if (f.phase == Frame::Start && fpEncodedEvaluationDepth == 0 &&
+        (is_FP_kind(k) || isFpIndexedArrayAccess(term)))
+    {
       // FP source operations are evaluated through the solve-owned lowering
       // context. This is deliberately before the target-language switch below:
       // counterexample evaluation must not maintain a second implementation of
       // totalisation, operand reconstruction, and SymFPU lowering.
-      if (fpEncodedEvaluationDepth == 0 &&
-          (is_FP_kind(k) || isFpIndexedArrayAccess(term)))
-      {
-        const ASTNode encoded =
-            requireFpEncodingContext().encodeForModel(term);
-        if (encoded == term && is_FP_kind(k))
-          FatalError("floating-point model encoding made no progress: ", term);
+      const ASTNode encoded = requireFpEncodingContext().encodeForModel(term);
+      if (encoded == term && is_FP_kind(k))
+        FatalError("floating-point model encoding made no progress: ", term);
 
-        // The invariant this arm exists to hold: *a float's model value is its
-        // canonical carrier*. A float symbol's raw model bits are whichever NaN
-        // payload the SAT solver happened to pick, and the solve compared
-        // pack(unpack(x)); the two agree on everything except the payload, which
-        // is exactly what an array index distinguishes. So any node the encoding
-        // pass rewrote must be evaluated through that rewrite and never through
-        // its raw bits.
-        //
-        // Whether a rewrite was needed is the pass's answer to give, not ours:
-        // an access whose indexes are all already canonical comes back unchanged
-        // and falls through to the ordinary switch below.
-        if (encoded != term)
-        {
-          // The lowered DAG retains source-sort metadata on carrier reads and
-          // leaves. Keep the entire evaluation below here in target mode so a
-          // nested read-over-write cannot mistake that metadata for a fresh
-          // source boundary and canonicalise it repeatedly. The scope ends
-          // when this frame is dropped, which is where the guard the recursive
-          // version held across the call to itself ended.
-          f.fpScope.reset(
-              new ScopedFpEncodedEvaluation(fpEncodedEvaluationDepth));
-          return want(f, Frame::TermEncoded, EvalTerm, encoded, ArrayReadFlag);
-        }
+      // The invariant this arm exists to hold: *a float's model value is its
+      // canonical carrier*. A float symbol's raw model bits are whichever NaN
+      // payload the SAT solver happened to pick, and the solve compared
+      // pack(unpack(x)); the two agree on everything except the payload, which
+      // is exactly what an array index distinguishes. So any node the encoding
+      // pass rewrote must be evaluated through that rewrite and never through
+      // its raw bits.
+      //
+      // Whether a rewrite was needed is the pass's answer to give, not ours:
+      // an access whose indexes are all already canonical comes back unchanged
+      // and falls through to the ordinary switch below.
+      if (encoded != term)
+      {
+        // The lowered DAG retains source-sort metadata on carrier reads and
+        // leaves. Keep the entire evaluation below here in target mode so a
+        // nested read-over-write cannot mistake that metadata for a fresh
+        // source boundary and canonicalise it repeatedly. The scope ends
+        // when this frame is dropped, which is where the guard the recursive
+        // version held across the call to itself ended.
+        f.fpScope.reset(
+            new ScopedFpEncodedEvaluation(fpEncodedEvaluationDepth));
+        return want(f, Frame::TermEncoded, EvalTerm, encoded, ArrayReadFlag);
       }
     }
 
@@ -894,12 +905,13 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
             return want(f, Frame::TermReadIteIndex, EvalTerm, index,
                         ArrayReadFlag);
 
-          if (CounterExampleMap.find(index) != CounterExampleMap.end())
+          const ASTNodeMap::const_iterator recorded =
+              CounterExampleMap.find(index);
+          if (recorded != CounterExampleMap.end())
           {
             // index has a const value in the CounterExampleMap
-            // ASTNode indexVal = CounterExampleMap[index];
-            return want(f, Frame::TermReadIndex, EvalTerm,
-                        CounterExampleMap[index], ArrayReadFlag);
+            return want(f, Frame::TermReadIndex, EvalTerm, recorded->second,
+                        ArrayReadFlag);
           }
           // index does not have a const value in the
           // CounterExampleMap. compute it.
@@ -1029,9 +1041,11 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
           BVTypeCheck(f.entry);
 
           // if a value exists in the CounterExampleMap then return it
-          if (CounterExampleMap.find(f.entry) != CounterExampleMap.end())
-            return want(f, Frame::TermReadValue, EvalTerm,
-                        CounterExampleMap[f.entry], ArrayReadFlag);
+          const ASTNodeMap::const_iterator recorded =
+              CounterExampleMap.find(f.entry);
+          if (recorded != CounterExampleMap.end())
+            return want(f, Frame::TermReadValue, EvalTerm, recorded->second,
+                        ArrayReadFlag);
 
           if (ArrayReadFlag)
           {
@@ -1164,41 +1178,14 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
       return false;
     };
 
-    if (f.phase == Frame::Start)
+    if (f.phase == Frame::ExpandRecordedValueStart)
     {
-      if (READ != term.GetKind() || WRITE != term[0].GetKind())
-      {
-        FatalError("RemovesWrites: Input must be a READ over a WRITE", term);
-      }
-
-      ASTNodeMap::const_iterator it1;
-      if ((it1 = CounterExampleMap.find(term)) != CounterExampleMap.end())
-      {
-        const ASTNode& val = it1->second;
-        if (BVCONST != val.GetKind())
-        {
-          // descending is fine here. There are two maps that are checked
-          // here. One is the substitutionmap. We garuntee that the value
-          // of a key in the substitutionmap is always a constant.
-          if (term == val)
-          {
-            FatalError("TermToConstTermUsingModel: The input term is "
-                       "stored as-is "
-                       "in the CounterExample: Not ok: ",
-                       term);
-          }
-          return want(f, Frame::ExpandRecordedValue, EvalTerm, val,
-                      arrayread_flag);
-        }
-        else
-        {
-          result = val;
-          return false;
-        }
-      }
-
-      return want(f, Frame::ExpandReadIndex, EvalTerm, term[1], false);
+      return want(f, Frame::ExpandRecordedValue, EvalTerm, f.entry,
+                  arrayread_flag);
     }
+
+    if (f.phase == Frame::Start)
+      return want(f, Frame::ExpandReadIndex, EvalTerm, term[1], false);
 
     // The value the model already records for this read is the answer, and
     // the map already holds it.
@@ -1235,11 +1222,6 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
 
     return want(f, Frame::ExpandWriteIndex, EvalTerm, f.cursor[1], false);
   };
-
-  if (known(job, top))
-    return result; // the map answered: no walk at all.
-
-  stack.push_back(Frame(job, top, topArrayReadFlag));
 
   while (true)
   {

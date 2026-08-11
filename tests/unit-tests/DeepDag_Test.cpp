@@ -1562,6 +1562,48 @@ TEST(DeepDag, mutable_dag_repeated_edges_are_detached_once)
   EXPECT_TRUE(mutableDagRepeatedEdgesOk(c));
 }
 
+TEST(DeepDag, counterexample_prechecked_heads_preserve_model_values)
+{
+  Context c;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer transformer(&c.mgr, &simp);
+  AbsRefine_CounterExample ce(&c.mgr, &simp, &transformer);
+
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+
+  // Constants and Boolean constants are answered by the job head itself.
+  EXPECT_EQ(zero, ce.ModelValueOfTerm(zero));
+  EXPECT_EQ(c.mgr.ASTTrue, ce.ModelValueOfFormula(c.mgr.ASTTrue));
+  EXPECT_EQ(c.mgr.ASTFalse, ce.ModelValueOfFormula(c.mgr.ASTFalse));
+
+  // A recorded non-constant still needs a frame, but the map lookup that
+  // discovered its image must carry through to that frame rather than being
+  // repeated when it starts.
+  const ASTNode x = c.mgr.CreateSymbol("ce-head-x", 0, 8);
+  const ASTNode y = c.mgr.CreateSymbol("ce-head-y", 0, 8);
+  ce.InsertIntoCounterExampleMap(x, y);
+  ce.InsertIntoCounterExampleMap(y, one);
+  EXPECT_EQ(one, ce.ModelValueOfTerm(x));
+
+  const ASTNode p = c.mgr.CreateSymbol("ce-head-p", 0, 0);
+  ce.InsertIntoCounterExampleMap(p, c.mgr.ASTTrue);
+  EXPECT_EQ(c.mgr.ASTTrue, ce.ModelValueOfFormula(p));
+  // The second question is a ComputeFormulaMap root hit.
+  EXPECT_EQ(c.mgr.ASTTrue, ce.ModelValueOfFormula(p));
+
+  // Exercise the corresponding prechecked image path in the read-over-write
+  // expander, not merely the term and formula jobs.
+  const ASTNode array = c.mgr.CreateSymbol("ce-head-array", 8, 8);
+  const ASTNode write = c.hf->CreateArrayTerm(WRITE, 8, 8, array, zero, one);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, write, zero);
+  const ASTNode recorded = c.mgr.CreateSymbol("ce-head-read", 0, 8);
+  ce.InsertIntoCounterExampleMap(read, recorded);
+  ce.InsertIntoCounterExampleMap(recorded, one);
+  EXPECT_EQ(one, ce.Expand_ReadOverWrite_UsingModel(read, false));
+}
+
 TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
 {
   Context c;
