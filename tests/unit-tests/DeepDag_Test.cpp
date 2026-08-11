@@ -1579,6 +1579,12 @@ TEST(DeepDag, shallow_flatten_share_count)
   EXPECT_TRUE(flattenShareCountOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_node_domain)
+{
+  Context c;
+  EXPECT_TRUE(nodeDomainOk(c, SHALLOW));
+}
+
 TEST(DeepDag, flatten_lazy_scratch_preserves_rebuild_and_dedup)
 {
   Context c;

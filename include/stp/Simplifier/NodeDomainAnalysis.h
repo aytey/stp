@@ -59,8 +59,17 @@ class NodeDomainAnalysis
 {
   STPMgr& bm;
 
-  // Debug-only: verify that priming keeps buildMap's call depth bounded.
-  PrimeAudit mapAudit{"NodeDomainAnalysis::buildMap", 8};
+  // Shallow inputs keep buildMap's ordinary recursive path: walking the DAG
+  // once to prime a memo costs more than the stack it saves there. Once the
+  // prefix reaches this budget, primeMaps fills the suffix bottom-up and the
+  // bounded prefix unwinds normally.
+  static constexpr size_t unprimedDepthLimit = 512;
+  size_t unprimedDepth = 0;
+
+  // Debug-only: verify that the deliberately recursive prefix is bounded and
+  // priming answers every call made below it.
+  PrimeAudit mapAudit{"NodeDomainAnalysis::buildMap",
+                      unprimedDepthLimit + 8};
 
   // Cache read-only empty objects of different sizes.
   FixedBits* emptyBoolean;
@@ -151,8 +160,9 @@ public:
   DomainInfo buildMap(const ASTNode& n);
 
   // buildMap reaches a node's children by calling itself, so a deeply nested
-  // input exhausts the stack. Fill the maps from the bottom up first, and
-  // those calls answer from the map instead. See DeepDag_Test.cpp.
+  // input exhausts the stack. Once the shallow recursion budget above is
+  // exhausted, fill the remaining maps from the bottom up, and those calls
+  // answer from the map instead. See DeepDag_Test.cpp.
   void primeMaps(const ASTNode& n);
   bool priming = false;
 

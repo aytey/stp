@@ -29,6 +29,33 @@ THE SOFTWARE.
 
 namespace stp
 {
+  namespace
+  {
+    // Keep the recursion counter balanced across buildMap's early returns.
+    class UnprimedDepth
+    {
+      size_t& depth;
+      const bool active;
+
+    public:
+      UnprimedDepth(size_t& depth_, const bool active_)
+          : depth(depth_), active(active_)
+      {
+        if (active)
+          ++depth;
+      }
+
+      UnprimedDepth(const UnprimedDepth&) = delete;
+      UnprimedDepth& operator=(const UnprimedDepth&) = delete;
+
+      ~UnprimedDepth()
+      {
+        if (active)
+          --depth;
+      }
+    };
+  }
+
 
   // True if the two domains have an intersection, i.e. share >=1 value.
   bool intersects(FixedBits * bits, UnsignedInterval * interval)
@@ -452,7 +479,10 @@ namespace stp
       }
     }
 
-    if (!priming && prime)
+    const auto number_children = n.Degree();
+
+    if (!priming && prime && number_children > 0 &&
+        unprimedDepth >= unprimedDepthLimit)
     {
       priming = true;
       primeMaps(n);
@@ -467,7 +497,9 @@ namespace stp
       }
     }
 
-    const auto number_children = n.Degree();
+    // Leaves do not recurse, so they consume no part of the depth budget.
+    UnprimedDepth depth(unprimedDepth,
+                        !priming && prime && number_children > 0);
 
     vector<FixedBits*> children_bits;
     children_bits.reserve(number_children);
