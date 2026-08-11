@@ -2065,24 +2065,33 @@ None is a correctness item; each needs a decision rather than analysis.
   policy, theory refusal, acceptance gate, elimination filter, replay sink and
   memo key), each using a distinct combination, so a single helper would
   parameterise itself into churn on the most subtle code on the branch.
-  **What is owed instead** is the invariant check the comparison exposed --- see
+  **The invariant check is DONE** (`see below`). What remains of this row is
+  only the docs table. See
   [D14](#d14--soundness-the-relief-rebuild-keeps-a-definition-whose-dependency-it-just-dropped),
   which came out of exactly this question and was a wrong answer:
-  1. port `preparePiece`'s assert (`:2103-2112`) to `resimplifyBaseAtRebuild`
-     and to `preprocessExactStackBlock` --- no variable recorded as eliminated
-     may occur in any conjunct the pass keeps;
-  2. add the missing `apply` between constant-bit propagation and
-     `RemoveUnconstrained` in `resimplifyBaseAtRebuild`, which batch has
-     (`STP.cpp:676-677`) and the exact-stack block has (`:4091-4092`). It is
-     benign today only because `RemoveUnconstrained` applies the same map
-     internally, so turning that pass off with
-     `--unconstrained-variable-elimination 0` leaves eliminated symbols present
-     in the emitted base --- and it is what would make the ported assert
-     misfire if landed without it. The two go together;
-  3. the docs table describing the four prefixes, which is cheap and matches
-     the F36 precedent --- but note it would **not** have surfaced D14, since it
-     records pass order, gate and replay channel, and the defect was in none of
-     those.
+  1. **DONE.** `preparePiece`'s assert is ported to `resimplifyBaseAtRebuild`
+     and to `preprocessExactStackBlock`: no variable recorded as eliminated may
+     occur in anything the pass emits. **Verified to catch D14** --- with the
+     untouchable-set closure removed, the assert fires on D14's witness instead
+     of the wrong answer being returned silently. On the block pass it is true
+     by construction (the emit loop skips any key still in the output), which
+     is what makes that pass's unconstrained call safe with no untouchable set
+     at all; it is asserted rather than argued.
+  2. **DONE, as symmetry, and labelled as such.** The `apply` between
+     constant-bit propagation and `RemoveUnconstrained` that batch has
+     (`STP.cpp:676-677`) and the exact-stack block has is added. The argument
+     for it is concrete --- CBP puts SYMBOL fixings only into the substitution
+     map, and `SimplifyFormula_TopLevel` cannot be relied on because
+     `is_simplified` is a permanent node flag the driver sets when base
+     conjuncts are asserted --- but **no failing case is in hand**: removing the
+     line and running the relief corpus with
+     `--unconstrained-variable-elimination 0` does not trip the assert. It is
+     kept because this pass being the odd one out with nobody checking is how
+     D14 happened, and the cost is one DAG walk on a rare path.
+  3. **STILL OPEN:** the docs table describing the four prefixes, cheap and
+     matching the F36 precedent --- but note it would **not** have surfaced D14,
+     since it records pass order, gate and replay channel, and the defect was in
+     none of those.
 - **F3** --- the forced-first-solve recovery family: three special-case entry
   conditions ([Part III.4](#4-overreach-inventory)). Deriving forced-first from
   `engagedSolves == 0` would drop the plumbed bool.

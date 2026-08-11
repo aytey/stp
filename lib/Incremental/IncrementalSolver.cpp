@@ -3931,6 +3931,31 @@ struct IncrementalSolver::Impl
         out = bm->ASTFalse;
     }
     out = pass.SimplifyFormula_TopLevel(out, false);
+    // Apply what the passes above harvested before the unconstrained pass
+    // looks at the formula, as the batch prefix does (`STP.cpp:676-677`) and
+    // as the exact-stack block does (`applySubstitutionMapAtTopLevel`, below).
+    // This pass was the only one of the four without it. Constant-bit
+    // propagation puts SYMBOL fixings ONLY into the substitution map, never
+    // into the rewrite it applies to the formula, and
+    // SimplifyFormula_TopLevel is not a reliable substitute because
+    // `is_simplified` is a permanent node flag and the driver marks base
+    // conjuncts simplified when they are asserted. What covers the gap today
+    // is RemoveUnconstrained applying the same map itself -- an internal
+    // detail of the callee, which `--unconstrained-variable-elimination 0`
+    // removes entirely.
+    //
+    // Be precise about the evidence: this is symmetry and defence, not a
+    // demonstrated fix. Removing this line and running the relief corpus with
+    // that flag off does NOT trip the assert below, so no case is in hand
+    // where its absence breaks the invariant. It is here because this pass was
+    // the only one of the four without it, and being the odd one out with
+    // nobody checking is exactly how D14 happened; the cost is one DAG walk
+    // on a path that fires rarely. The plain
+    // variant, not AtTopLevel, exactly as batch does: AtTopLevel advances
+    // `substitutionsLastApplied`, and the split below still needs to see
+    // every entry.
+    if (pass.hasUnappliedSubstitutions())
+      out = pass.applySubstitutionMap(out);
     // Definitions recorded up to here are implied equations; whatever
     // the unconstrained-variable pass adds after this point is a witness
     // choice (see BaseElimination).
@@ -4019,6 +4044,27 @@ struct IncrementalSolver::Impl
 
     pendingRebuiltBase.clear();
     splitConjuncts(out, bm->ASTTrue, pendingRebuiltBase);
+
+#ifndef NDEBUG
+    // The same invariant preparePiece asserts over its own output: a variable
+    // recorded as eliminated must not still be mentioned by anything this
+    // pass emits, or the base carries live backend bits for a symbol whose
+    // only remaining definition is model-only metadata.
+    //
+    // This pass is the one that had neither the assert nor an argument, and
+    // the gap was D14 -- a kept definition naming a variable whose last
+    // constraint RemoveUnconstrained had just dropped, giving a base strictly
+    // weaker than the raw one. It holds now because `untouch` is closed under
+    // the map's right-hand sides above, and because the apply above puts the
+    // harvested rewrites into the formula rather than relying on the
+    // unconstrained pass to do it.
+    for (std::map<ASTNode, BaseElimination>::const_iterator eit =
+             baseEliminatedDefs.begin();
+         eit != baseEliminatedDefs.end(); ++eit)
+      for (const ASTNode& c : pendingRebuiltBase)
+        assert(symbolsOf(c).find(eit->first) == symbolsOf(c).end() &&
+               "rebuilt base mentions a variable this pass eliminated");
+#endif
 
     if (bm->UserFlags.stats_flag)
       std::cerr << "Incremental: base re-simplified at rebuild, "
@@ -4173,6 +4219,18 @@ struct IncrementalSolver::Impl
       if (it->first.GetKind() == SYMBOL)
         done.eliminatedSymbols++;
     }
+#ifndef NDEBUG
+    // The third statement of the invariant preparePiece and
+    // resimplifyBaseAtRebuild assert. Here it is true by construction -- the
+    // loop above skips any key still present in the output, and this pass
+    // keeps no definitions -- but that is a property of the `continue` three
+    // lines up, not of the design, and it is what makes this pass's
+    // unconstrained call safe without an untouchable set at all. Say so where
+    // it can be checked rather than where it can be argued.
+    for (const std::pair<ASTNode, ASTNode>& e : done.eliminated)
+      assert(retainedSymbols.find(e.first) == retainedSymbols.end() &&
+             "scoped block output mentions a variable it eliminated");
+#endif
     if (eliminatedCount != NULL)
       *eliminatedCount = done.eliminatedSymbols;
     bm->ASTNodeStats("Incremental exact stack after preprocessing: ", out);
