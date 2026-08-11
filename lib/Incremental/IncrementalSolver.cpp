@@ -3938,6 +3938,39 @@ struct IncrementalSolver::Impl
     for (DenseNodeMap::const_iterator it = pass.Return_SolverMap()->begin();
          it != pass.Return_SolverMap()->end(); ++it)
       impliedKeys.insert(it->first);
+    // Close the untouchable set under the substitution map's right-hand
+    // sides before the unconstrained pass runs. A pushed level's symbol is
+    // untouchable because that level constrains it from outside the base;
+    // once this pass has harvested `k -> d`, k's value comes from d, so
+    // every symbol of d carries exactly the weight k did.
+    //
+    // RemoveUnconstrained decides from the FORMULA alone, and by this point
+    // a symbol's only surviving occurrence can be inside a map VALUE, which
+    // is invisible to it. It then drops that symbol's last conjunct and
+    // records a witness for it, while the loop below keeps the definition
+    // that mentions it -- because the definition's own variable is
+    // untouchable. The kept equation is now free to take any value, so the
+    // rebuilt base is strictly WEAKER than the raw base it replaced, and the
+    // pushed level that made the variable untouchable answers sat on an
+    // unsat query. A symbol added here can itself be a map key, so this runs
+    // to a fixpoint.
+    if (!untouch.empty())
+    {
+      bool grew = true;
+      while (grew)
+      {
+        grew = false;
+        for (DenseNodeMap::const_iterator it = pass.Return_SolverMap()->begin();
+             it != pass.Return_SolverMap()->end(); ++it)
+        {
+          if (untouch.find(it->first) == untouch.end())
+            continue;
+          for (const ASTNode& s : symbolsOf(it->second))
+            if (untouch.insert(s).second)
+              grew = true;
+        }
+      }
+    }
     if (bm->UserFlags.enable_unconstrained)
     {
       RemoveUnconstrained ru(*bm);
