@@ -1,17 +1,1540 @@
-# Incremental solving in STP: architecture review and roadmap
+# Incremental solving in STP: architecture review, defect ledger, and roadmap
 
-Status: architectural review 2026-08-07; closeout update 2026-08-08. The
-architectural comparison originally read STP branch
-`incremental-solving` at `0ff900332698c36f206476abfaf4f79d4678325a`, local
-`master` at `fa211128a39c9412baf7dcde4e85f367ab7b687a`, and the following
-reference checkouts. The implementation and closeout update uses branch-state
-baseline `f1e55c2c76b994e8a4aece59e404eb9494c08346`, which contains the merge of
-`master` at `34f69be1989910fd053008715de4b65c095fd770`. Solver implementation
-changes are covered through `ee8685bbbda44682b490cea67679c99f6f42db45`;
-the intervening commits through that baseline consist of documentation and
-campaign-reporting changes. The frozen closeout candidate is
-`e5a26c30f83b2cd9cc0ccb274b62f210865023cd`, which is the `ee8685bb`
-implementation plus documentation only.
+**Document status:** authoritative maintainer record for the `incremental-solving`
+branch. Rewritten 2026-08-11 to carry the second architectural review and its two
+reproduced soundness defects. The pre-existing material (reference-solver study,
+state-lifetime audit, scoped-state design, closeout campaign evidence) is
+retained below in Parts VI--X; nothing from the 2026-08-07/08 review has been
+deleted, only re-ordered and annotated where it is now superseded.
+
+`docs/incremental-solving.rst` remains the user-facing description of the
+feature. This file is maintainer-facing: what is broken, what is proven correct,
+what must not be re-chased, and what to do next.
+
+---
+
+## How to use this document
+
+| If you are... | Go to |
+|---|---|
+| Picking up the branch cold | [Status board](#status-board), then [Part I](#part-i--open-defects) |
+| About to fix a bug | [Part I](#part-i--open-defects) -- each defect has mechanism, witness, fix options, and a verification recipe |
+| About to "investigate" something | [Part II](#part-ii--verified-correct-do-not-re-chase) first. Fourteen plausible-sounding concerns are already disproved there, several with measurements. |
+| Deciding whether to merge | [Status board](#status-board) and [Part V](#part-v--work-queue) |
+| Wondering why the design is like this | [Part III](#part-iii--architecture-assessment), then [Part VI](#part-vi--reference-solver-investigations) |
+| Chasing performance | [Part IV](#part-iv--cost-model-and-measurements) |
+| Looking for a specific finding | [Appendix B](#appendix-b--full-finding-ledger) -- all 44, with verification verdicts |
+
+---
+
+## Status board
+
+**Merge recommendation: do not merge until D1 and D2 are fixed.** Both are
+silent wrong answers (`sat` on an `unsat` query) reachable with **no non-default
+flags at all**, on logics STP is built for. Everything else on this list is
+quality, cost, or maintainability.
+
+**Every defect below is branch-introduced.** None reproduces on master --- see
+[Validation against master](#validation-against-master) for the evidence, which
+is per-defect.
+
+### Open defects
+
+| ID | Class | Severity | Default flags? | In master? | Reproduced | Summary |
+|---|---|---|---|---|---|---|
+| [D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack) | soundness | **blocker** | yes | no (branch-only code) | yes, both builds | `levelPrivate` decides eliminability over the *raw* stack; levels are encoded from the *ctx-substituted* stack |
+| [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **blocker** | yes | no (branch-only code) | yes, both builds | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
+| [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | high | yes | no (branch-only code) | agent-measured | A semantic whole-base pass fires on all four rebuild reasons, unbudgeted (9.4 s measured) |
+| [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | high | yes | no (branch-only code) | yes (both) | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
+| [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | medium | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
+| [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | medium | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
+| [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | medium | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
+| [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | medium | array logics | **loop is master's**, blowup is not | agent-verified | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode |
+| [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | low | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
+| [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | low | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
+| [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
+| [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | cost | low | array logics | no (branch-only code) | agent-measured | ~1.8 ms per call, several calls per refinement round |
+
+### Verified correct (do not re-chase) — see [Part II](#part-ii--verified-correct-do-not-re-chase)
+
+Retraction mechanism; activation-literal keying and pinning; unsat-core
+conservatism; the frontend verdict cache including core-level recording; CaDiCaL
+factor translation on all four literal paths; `IncrementalCBP`'s undo trail
+(complete, all state enumerated); CBP prefix discipline by evaluation order;
+array congruence-lemma permanence; deterministic-name uniqueness; the
+`submittedClauses()` chokepoint; the cheap live-mass estimator's lower-bound
+property; `SessionProfile::add()` completeness.
+
+### Deferred from the previous review (unchanged)
+
+Phase 0 item 7, the three-run timing campaign, remains the only open item of the
+old roadmap. **It is now moot until D1/D2 are fixed:** any timing campaign run on
+the current tip measures a binary that returns wrong answers.
+
+---
+
+## Validation against master
+
+Every defect in this document was checked against master to establish that it is
+a **branch regression** rather than a pre-existing STP bug. Result: **all twelve
+are branch-introduced; none reproduces on master.**
+
+### Comparison baseline
+
+| | |
+|---|---|
+| master revision | `d47f6b579424e852d5c1f566726649af63e4262c` --- **exactly `git merge-base HEAD master`**, so no master-side delta is in play |
+| master build | rebuilt 2026-08-11 from that revision (the pre-existing binary was 41 commits / 121 files stale and was discarded) |
+| binary provenance | `stp --version` reports SHA `d47f6b57…`; targets `stp` (library) **and** `stp-bin` (executable) both relinked |
+| build configuration | `Release`, `ENABLE_ASSERTIONS=ON`, `USE_CADICAL=ON`, `USE_LIBBF=ON`, shared libs |
+| compile defines | **byte-identical to the branch build**, including `-DNDEBUG` --- so the `#ifndef NDEBUG construct = true` paths are inactive on *both* sides and the comparison is like-for-like |
+
+> ⚠ `make stp` builds the **library**; the executable target is `stp-bin`. A
+> `make stp` alone leaves a stale `build/stp`, and `libstp.so` is linked
+> dynamically, so a saved binary is never a valid A/B arm on its own.
+
+### 1. The two soundness defects: four independent engines say `unsat`, the branch says `sat`
+
+The witnesses were cross-checked against three external SMT solvers as well as
+STP master, so the expected answer does not rest on STP's own reasoning or on my
+hand-derivation of the formulas.
+
+| Engine | Version |
+|---|---|
+| Bitwuzla | `0.9.1-dev-fix-216-funsolver-uaf@d733897b` |
+| cvc5 | `1.3.5.dev+main@ed5e08073b` (run with `--incremental`) |
+| Z3 | `5.0.0`, build `4af3410d104ad291437275ad1553d2b82b152727` |
+| STP master | `d47f6b57` (see baseline above) |
+
+Full `sat`/`unsat` answer **sequences** were compared, not just the final answer.
+
+| Witness | Defect | checks | Bitwuzla | cvc5 | Z3 | STP master | STP branch |
+|---|---|---|---|---|---|---|---|
+| `w6.smt2` | D1 | 1 | unsat | unsat | unsat | unsat | **sat** ✗ |
+| `w7.smt2` | D1 | 35 | 34×sat, unsat | *idem* | *idem* | *idem* | 34×sat, **sat** ✗ |
+| `repro3.smt2` | D2 | 15 | 14×sat, unsat | *idem* | *idem* | *idem* | 14×sat, **sat** ✗ |
+| `promote7.smt2` | D2 | 13 | 12×sat, unsat | *idem* | *idem* | *idem* | 12×sat, **sat** ✗ |
+
+**All four engines agree on all 64 answers.** The branch matches on 60 of 64 and
+diverges on exactly one check per file --- always the **last** one, always `sat`
+where the consensus is `unsat`.
+
+That divergence pattern is itself confirmatory: the branch's answers are correct
+right up until the level that triggers the defect arrives, which is precisely
+what both mechanisms predict --- for D1, the deeper level whose `ctx`-substituted
+encoding names the eliminated variable; for D2, the level that makes a promoted
+level's private variable shared.
+
+Both defects are additionally isolable *within* the branch by a single flag:
+`--no-incremental-promote-units` fixes D2, and `--incremental-auto-engage-at 0`
+fixes both by routing to the batch path.
+
+### 2. Structural argument: most defects cannot exist on master
+
+`lib/Incremental/` and `include/stp/Incremental/` **do not exist on master**
+(`git ls-tree` returns nothing), and the master binary rejects every new flag:
+
+```
+$ master/build/stp --incremental
+Error: The following argument was not expected: --incremental
+$ master/build/stp --incremental-promote-units      # same
+$ master/build/stp --incremental-profile            # same
+$ master/build/stp --incremental-auto-engage-at     # same
+```
+
+D1, D2, D3, D4, D6, D7, D11 and D12 are entirely inside that absent code, so they
+cannot reproduce on master by construction.
+
+### 3. The branch modifies 30 pre-existing master files --- three carry a defect
+
+The branch touches these files that already existed on master (excluding tests,
+scripts and docs):
+
+```
+include/stp/AST/ASTInternal.h                include/stp/Sat/{SATSolver,Cadical,CryptoMinisat5,
+include/stp/AbsRefineCounterExample/           MinisatCore,Riss,SimplifyingMinisat}.h
+  ArrayTransformer.h                         include/stp/Simplifier/RemoveUnconstrained.h
+include/stp/STPManager/{STP,STPManager,       include/stp/{c_interface,cpp_interface}.h
+  UserDefinedFlags}.h                        lib/AbsRefineCounterExample/ArrayTransformer.cpp
+lib/Extensionality/ExtensionalityContext.cpp lib/Interface/{c,cpp}_interface.cpp
+lib/NodeFactory/SimplifyingNodeFactory.cpp   lib/Parser/smt2.y
+lib/STPManager/STP.cpp                       lib/Sat/{Cadical,CryptoMinisat5,MinisatCore,
+lib/Simplifier/RemoveUnconstrained.cpp         RissCore,SimplifyingMinisat}.cpp
+lib/CMakeLists.txt                           tools/stp/main.cpp
+                                             tools/test_fprewrites/test_fprewrites.cpp
+```
+
+Only three of those carry a tracked defect, and each was checked directly:
+
+**D10 --- `lib/NodeFactory/SimplifyingNodeFactory.cpp`. Reproduced as a
+divergence from master.** Master folds `(= x x)` on floats to `ASTTrue`
+unconditionally; the branch makes it conditional on
+`UserFlags.incremental_solving`, which `push()` sets. Probe:
+
+```smt2
+(set-logic QF_FP) (declare-fun x () Float32)
+[(push 1)]  (assert (= x x))  (check-sat)
+```
+
+| | without `(push 1)` | with `(push 1)` |
+|---|---|---|
+| master | node size **1** (folded) | node size **1** (folded) |
+| branch | node size **1** (folded) | node size **2** (**not** folded) |
+
+Node sizes are from `-s` and are identical at every pipeline stage
+(`input asserts`, `After Constant Bit Propagation`, `After Propagating
+Equalities`, `After Removing Unconstrained`, `After Domain Analysis`,
+`After Pure Literals`, `After Split Extracts`, …). The incremental **driver never
+engages here** --- QF_FP engages at solve 3 and this is solve 1 --- so this is the
+branch's *batch* pipeline behaving differently from master purely because a
+`push` occurred. That is the layering violation, demonstrated.
+
+**D9 --- `lib/STPManager/STP.cpp`. Source-verified branch-introduced.** Master's
+`TopLevelSTPAux` ends the derivation with
+
+```cpp
+  else
+    bm->UserFlags.construct_counterexample_flag = false;   // present on master
+```
+
+which the branch deletes, making the flag monotone for the session. Verified by
+`git diff master...HEAD -- lib/STPManager/STP.cpp`. The consequence on master's
+own code path is extra counterexample-construction work, which is a cost rather
+than an answer change; **I could not construct a CLI-visible observable for it**,
+so D9 is recorded as source-verified, not reproduced. (The agent's reproduction
+observed the branch-side consequence --- the frontend cache shortcut --- which is
+branch-only code.)
+
+**D8 --- `lib/AbsRefineCounterExample/ArrayTransformer.cpp`. The loop is master's;
+the blowup is not.** The whole-table anchor loop that emits
+`EQ(the_index, index_symbol)` for every row with a computed index is *pre-existing
+master code*. It cannot misbehave on master because master clears the table on
+every solve --- `ArrayTransformer.h:133-134` (`arrayToIndexToRead.clear();
+ack_pair.clear();`) and `STP.cpp:734`. The branch's contribution is *persisting
+the session registry and re-installing it into that table on every encode*, which
+is what turns a per-query loop into an all-reads-ever loop.
+
+**D5** is the mirror image: `RemoveUnconstrained`'s counter-based
+`CreateFreshVariable` naming is master's and is harmless there; the branch
+introduces a **cache that depends on that pass being deterministic**.
+
+The remaining modified files are additive or mechanical: `ASTInternal.h` (uid
+accessors), the `Sat/*` facade split (`addClauseInternal` + capability virtuals,
+all with declining defaults), `RemoveUnconstrained`'s extra defaulted parameter,
+`smt2.y` (`check-sat-assuming`/`get-unsat-assumptions` now implemented instead of
+`unsupported`), and the two interface files.
+
+### 4. Corpus differential: no other divergence
+
+Master `d47f6b57` versus the branch **at default settings** (no flags), over the
+72 files of `tests/query-files/incremental-tests/` plus the repository's scratch
+regressions (`moo.smt2`, `fp_soundness_bug.smt2`, `reduced-Problem101.smt2`),
+comparing full `sat`/`unsat`/`unknown` answer sequences:
+
+```
+identical answer streams : 71
+DISAGREEMENTS            :  1   -> unsat-assumptions.smt2
+no answers from either   :  0
+```
+
+The single flagged file is **not a defect**: master prints `unsupported` eight
+times because `check-sat-assuming` and `get-unsat-assumptions` do not exist on
+master at all. The branch implements them, and under the configuration its own
+RUN line specifies (`--incremental`) it produces exactly the precise cores the
+test expects.
+
+One behaviour worth knowing, surfaced by running that file *without*
+`--incremental`: `get-unsat-assumptions` then reports the **full** assumption set
+rather than the minimal core, because the driver was not engaged and
+`lastUnsatHasAssumptionGranularity()` is false. A superset of a core is a correct
+core, and this fallback is documented at
+`docs/incremental-solving.rst`, but it means **core precision silently depends on
+whether the driver engaged** --- worth stating explicitly in the user-facing docs.
+
+### 5. What this validation does and does not establish
+
+- **Does:** every tracked defect is a branch regression; the expected `unsat`
+  answers are confirmed by three external solvers as well as STP master, so they
+  do not depend on STP's own reasoning; the branch's batch path matches master on
+  71/72 corpus files; the only shared-code behavioural divergence found is D10.
+- **Does not:** prove the branch has no *further* defects. This differential
+  covers 72 small files chosen to exercise the driver, not the 22,999-file
+  corpus, and it compares answers only. The campaign re-run demanded by
+  [Part V](#part-v--work-queue) item 3 --- with `--check-sanity` on the
+  incremental arm --- is still the required gate.
+
+### Reproducing this validation
+
+```sh
+# --- independent confirmation of the expected answers ---
+BZ=/home/avj/clones/bitwuzla/main/build/src/main/bitwuzla
+CVC=/home/avj/clones/cvc5/main/build/bin/cvc5
+Z3=/home/avj/clones/z3/master/build/z3
+for w in w6 w7 repro3 promote7; do
+  for s in "$BZ" "$CVC --incremental" "$Z3"; do
+    printf '%-12s %s ' "$w" "$(basename ${s%% *})"
+    $s $w.smt2 | grep -xE 'sat|unsat' | tail -1        # every one: unsat
+  done
+done
+
+# --- STP master at the merge base ---
+# master must be at the merge base, and BOTH targets must be built
+cd /home/avj/clones/stp/master
+git rev-parse HEAD                                   # d47f6b57… == git merge-base HEAD master
+cd build && make -j20 stp stp-bin                    # 'stp' alone builds only the library
+LD_LIBRARY_PATH=lib ./stp --version | sed -n 2p      # must print d47f6b57…
+
+M="LD_LIBRARY_PATH=/home/avj/clones/stp/master/build/lib /home/avj/clones/stp/master/build/stp"
+for w in w6 w7 repro3 promote7; do
+  printf '%-14s master=%s\n' "$w" "$(eval $M --SMTLIB2 $w.smt2 2>&1 | tail -1)"   # all: unsat
+done
+```
+
+---
+
+## Provenance and method
+
+### What was reviewed
+
+| | |
+|---|---|
+| Branch | `incremental-solving`, tip `278552ce` ("Merge upstream/master into incremental-solving") |
+| Base | `master`; diff base `master...HEAD` = 103 commits, 133 files, +18,185 lines |
+| Builds used | `build/` (Release + assertions, CaDiCaL 3.0.1, FP, LibBF) and `bd-dbg/` (RelWithDebInfo + assertions). Both were current with the tip at review time. |
+| Date | 2026-08-11 |
+
+The previous review (2026-08-07/08) covered solver code through `ee8685bb`. The
+~16 commits after it were **not** covered by that review and are where most of
+this review's new material lives:
+
+```
+3d030827 Incremental: discard definitions from rejected trials
+3933a396 C API: materialize lazy models before fd printing
+826aaab1 Incremental: preserve trails when FP arrives late
+20ea1b66 Incremental: delay reflexive FP equality folding      <-- D10
+45a36a07 Incremental: narrow late FP trail retention
+f3e9c1e0 Incremental: scope late FP trail retirement to array sessions
+90186061 Incremental: require a stable base before inprocessing retirement
+1b6e994c Incremental: batch overlapping CBP symbol walks
+8ed8c0d4 Incremental: defer oversized first-solve CBP bootstrap
+e5b1442? Incremental: preprocess changing exact-stack blocks
+45b846fa Incremental: preprocess explicitly forced first array blocks
+5ae90c7a Incremental: eliminate pure literals on forced first bases
+56f14241 Incremental: collapse forced first BV stacks
+f48c84fc Incremental: solve scoped BV blocks directly
+cf4b29dc Incremental: make auto-engagement threshold configurable
+06dbdccf Incremental: delay BV auto-engagement to solve 32     <-- see Part IV
+```
+
+### Method
+
+Nine independent review lenses were run over the branch (retraction model;
+preprocessing under retraction; CBP; arrays and refinement; extensionality and
+FP; relief valve and accounting; frontend and engagement; SAT layer; complexity
+and overreach). Each produced ranked findings with file:line evidence; **every
+finding was then handed to an independent adversarial verifier instructed to
+refute it**, which read the cited code itself rather than trusting the quoted
+evidence. 44 findings; 12 CONFIRMED, 26 PARTLY (real but narrower or differently
+scoped than claimed), 6 REFUTED.
+
+The two soundness defects were then reproduced by hand against both builds
+before being recorded here.
+
+### Evidence classes used in this document
+
+Every claim below carries one of these. Do not upgrade a claim's class without
+redoing the work.
+
+- **Reproduced** --- a witness file was run against a built binary and the wrong
+  behaviour observed. Commands are in [Appendix C](#appendix-c--reproduction-command-reference).
+- **Measured** --- a number was obtained from `--incremental-profile`, `perf`, or
+  `-s` on a stated input. Timing numbers are indicative unless the note says
+  interleaved quiet-box A/B (see the branch protocol: sequential timings swing
+  30--50 %).
+- **Code-verified** --- established by reading the code path end to end, with the
+  reasoning recorded so it can be re-checked.
+- **Agent-reported** --- produced by a review agent and survived adversarial
+  verification, but not independently re-run for this document. Treated as a
+  strong lead, not as settled fact.
+
+---
+
+# PART I — OPEN DEFECTS
+
+## D1 — SOUNDNESS: private-elimination privacy is decided over the raw stack
+
+**Class:** silent wrong answer (`sat` where `unsat`). One-directional: this
+defect can never produce a wrong `unsat`.
+**Reachable at:** default flags, pure `QF_BV`, automatic engagement.
+**Evidence:** reproduced at tip `278552ce` on `build/` and `bd-dbg/`.
+**Sites:** `lib/Incremental/IncrementalSolver.cpp:1687-1708` (`levelPrivate`),
+`:1862-1872` (elimination decision), `:5306-5322` (ctx substitution),
+`:5400-5424` (the "repair" join), `:2688-2745` (`recogniseDefinition`).
+
+### Mechanism
+
+Two different pieces of code read the same conjunct as a definition of two
+*different* variables:
+
+- `recogniseDefinition` (`:2688`) requires a `SYMBOL` on one side. Given
+  `(= (bvnot v) y)` it reads **`y := ~v`** and `harvestPushed` puts that in `ctx`
+  --- so a live `ctx` body now mentions `v`.
+- `PropagateEqualities`, running inside `preparePiece`, reads the same conjunct
+  as **`v := ~y`** (its `BVNOT` rule, `PropagateEqualities.cpp:582-586`, ungated).
+
+`levelPrivate` is then asked whether `v` may be eliminated. It consults
+`baseSymbols`, `symbolsOf(stack[j])` for the **raw** level conjunctions,
+`bbMgr.symbolToBBNode`, the CBP-protected set, and a per-level conjunct count
+that is *vacuous* at whole-level granularity (one raw conjunct ⇒ every count is
+1). It does **not** consult `ctx`. `v` is declared private and its defining
+equation is deleted from the formula.
+
+Deeper levels are not encoded from their raw conjunctions --- they are encoded
+from `SubstitutionMap::replace(level, ctx, …)` (`:5310`). So `v` reaches the
+bit-blaster inside a deeper level's formula, **completely unconstrained**.
+
+The one mechanism that is supposed to repair this --- re-joining the eliminated
+definition into `ctx` at `:5400-5424` so `replace` expands `v` away --- declines
+**silently** in three cases: already present; the occurs-check at `:5412` (which
+is exactly what fires here, since expanding `~y` under `ctx[y] = ~v` yields `v`);
+and the `defInlineCap` size test at `:5415`. When it declines, **nothing
+retracts the elimination**. `screenNewContent` never sees substituted content, so
+no later check catches it either.
+
+The source comment at `:5392-5399` states the precondition correctly and then
+draws the wrong conclusion:
+
+> "The elimination itself stays (it is sound for the piece and its replay); only
+> the context entry is withheld."
+
+True for the piece. False for every deeper level substituted under a `ctx` entry
+that still names the variable.
+
+### Witness
+
+`w6.smt2` (see [Appendix A](#appendix-a--witness-files)). `y = ~v` and
+`y*y = y` force `y ∈ {0,1}`; the deeper level asserts `y > 1`. The `bvmul`
+constraints exist only to keep constant-bit propagation from independently
+refuting the query.
+
+```
+--incremental-auto-engage-at 0   (batch)     -> unsat   [correct]
+--incremental                                -> sat     [WRONG]
+--incremental-auto-engage-at 1               -> sat     [WRONG]
+--incremental --check-sanity                 -> STP Error: the model does not satisfy an asserted formula
+```
+
+`w7.smt2` is `w6.smt2` preceded by 34 trivial push/check/pop rounds so the
+session crosses the QF_BV engagement ordinal (35 `check-sat`s in total):
+
+```
+(no flags at all)                            -> sat     [WRONG]
+--incremental-auto-engage-at 0   (batch)     -> unsat   [correct]
+```
+
+Both reproduce identically on `bd-dbg/`.
+
+### Why 23,000 files of differential fuzzing did not catch it
+
+The campaign compared **answer streams only**. This defect needs: a definition
+`PropagateEqualities` harvests that `recogniseDefinition` refuses (BVNOT-headed
+equations, XOR, some speculative BVPLUS/BVUMINUS shapes) --- otherwise
+`harvestPushed`'s `ctx` entry repairs the hole; the occurs-check or size decline
+to fire; CBP not to refute the query independently; and PE's candidate ordering
+to prefer the compound side (which depends on child sort order). `--check-sanity`
+catches it instantly, and was not part of the campaign.
+
+### Fix
+
+Make the eliminability predicate range over **everything that can reach the
+encoder**, not over the raw stack. Concretely: maintain a symbol-set union over
+live `ctx` bodies as entries are inserted, and add it to `protectedSymbols`
+before `levelPrivate` is consulted. One extra clause in `levelPrivate`.
+
+That also subsumes the join's repair role, so the declines at `:5412-5417`
+become pure optimisation declines rather than silent soundness holes. With the
+extra clause the `ctx` join at `:5400-5424` is provably inert for its stated
+purpose and can be deleted.
+
+**Cheap independent guard, worth landing regardless:** assert at the encode
+boundary (`rootLit`, `:2963`) that no conjunct being encoded mentions a variable
+in `activeEliminatedVars`. That single assert would have caught this class at
+test time.
+
+### Verification recipe
+
+1. `w6.smt2` under `--incremental` must answer `unsat`.
+2. `w7.smt2` with no flags must answer `unsat`.
+3. Both under `--check-sanity` must not error.
+4. `tests/query-files/incremental-tests/level-elimination.smt2` must still report
+   `2 eliminated` --- the fix must not disable elimination wholesale.
+5. Re-run the differential campaign **with `--check-sanity` on the incremental
+   arm** (see [Part V](#part-v--work-queue)).
+
+---
+
+## D2 — SOUNDNESS: unit promotion pins a prepared form it never revalidates
+
+**Class:** silent wrong answer (`sat` where `unsat`). One-directional.
+**Reachable at:** default flags (`incremental_promote_units` defaults to true).
+**Evidence:** reproduced at tip `278552ce` on `build/` and `bd-dbg/`.
+**Sites:** `lib/Incremental/IncrementalSolver.cpp:5501-5526` (promotion),
+`:5484-5488` (the skip), `:2046-2084` (`updateStackStability`), `:1602-1623`
+(screening), `:1728-1755` (cache-hit revalidation), `:1634-1657` (the repair the
+base level has and promotion does not).
+
+### Mechanism
+
+Promotion asserts a level's **prepared** conjuncts as permanent units:
+
+```cpp
+// :5477-5482 -- levelRoots comes from `conjuncts`, the PREPARED form
+for (const ASTNode& c : conjuncts) { levelRoots.push_back(rootLit(c)); … }
+…
+// :5487-5488 -- and a promoted level is skipped ever after
+if (level <= impl->promotedDepth) continue;
+…
+// :5508-5518 -- the prepared roots become permanent units
+for (const int r : levelRoots) { … addClause(unit); }
+impl->promotedDepth = level;
+```
+
+The only thing that can undo promotion is `updateStackStability`, which compares
+the level's **raw** conjunction node against `lastStackSeen` (`:2049-2057`).
+
+A promoted level's prepared form can legitimately change while its raw node is
+byte-identical. `preparePiece` deletes a level-private defining equation
+(`:1862-1872`); later content mentioning that variable makes it non-private, so
+`screenNewContent → dropPreparedLevel` (`:1614-1623`) invalidates the entry and
+the cache-hit revalidation (`:1738-1754`) refuses it. The level is re-prepared
+**with the equation restored** --- and that re-prepared form is encoded via
+`rootLit` and then dropped on the floor by the `continue` at `:5487`. No unit is
+added, no assumption is pushed, no rebuild is triggered. The older, weaker units
+--- the ones with the definition eliminated --- stay permanently asserted, and
+the variable is unconstrained in the SAT formula while a live deeper level
+constrains it.
+
+The base level has exactly the repair this path is missing:
+`screenNewContent` restores a base elimination's originals as permanent units,
+tracked in `restoredBaseRoots` (`:1634-1657`). The hazard was recognised for
+level 0 and not inherited by promotion, which turns a *pushed* level into
+base-like permanence.
+
+### Witness
+
+`repro3.smt2` (see [Appendix A](#appendix-a--witness-files)). `QF_BVFP`; the FP
+conjunct retires trail reuse on solve 1, which is promotion's precondition; the
+stable level carries `(= (bvnot p) (bvmul t (bvmul t t)))`, a BVNOT-headed
+equation `recogniseDefinition` refuses and PE harvests; the `bvmul` nest keeps
+CBP from re-deriving the lost fact.
+
+```
+(no flags at all)                            -> sat     [WRONG]
+--no-incremental-promote-units               -> unsat   [correct]
+--incremental-auto-engage-at 0   (batch)     -> unsat   [correct]
+--check-sanity                               -> STP Error: the model does not satisfy an asserted formula
+```
+
+`promote7.smt2` is a second, independently constructed witness in pure `QF_BVFP`
+that reproduces under `--incremental --disable-cbitp`; it isolates the *masking*
+relationship described next.
+
+### The architectural point, not just the bug
+
+In four of my five construction attempts the wrong answer did **not** appear ---
+because some *other* mechanism re-derived the lost constraint:
+
+- the pushed-definition `ctx`, rebuilt from raw conjuncts every solve, substituted
+  the eliminated variable away in the deeper level;
+- the simplifying node factory normalised `(= (bvadd p #x01) #x05)` into
+  `(= p #x04)` at construction, making it raw-recognisable after all;
+- constant-bit propagation, which holds **all** raw levels including the promoted
+  one, re-derived the fixing and folded the deeper level to `FALSE`;
+- on array levels, the refinement loop's model check evaluates the candidate
+  against the **raw** active conjunction and rejects it.
+
+Promotion's soundness is therefore not established by promotion's own logic. It
+is established, incidentally and partially, by four redundant re-derivations.
+That is the finding, and it is worse than the bug: **any change that makes one of
+those mechanisms less eager --- retiring CBP, tightening the node factory,
+skipping a `ctx` harvest --- can silently expose a wrong answer somewhere else.**
+
+### Fix (pick one; (a) is smallest)
+
+- **(a)** Store the promoted conjunct set per promoted level; before the
+  `continue` at `:5487`, compare the freshly prepared `conjuncts` against it and
+  demote + `rebuildEncodings` on any difference.
+- **(b)** Refuse promotion for any level whose prepared piece carries
+  eliminations --- the only known source of prepared-form drift under a stable
+  raw conjunction.
+- **(c)** Hook `dropPreparedLevel` so that dropping a piece belonging to a level
+  ≤ `promotedDepth` forces `rebuildEncodings`, mirroring what
+  `updateStackStability` already does for a raw change.
+
+### Verification recipe
+
+1. `repro3.smt2` with no flags must answer `unsat`.
+2. `promote7.smt2` under `--incremental --disable-cbitp` must answer `unsat`.
+3. Both under `--check-sanity` must not error.
+4. `tests/query-files/incremental-tests/unit-promotion.smt2` must still report
+   `promoted level 1 (1 conjuncts) to units after 8 stable solves` --- the fix
+   must not disable promotion outright.
+5. Add a regression covering *re-preparation of a promoted level*; the existing
+   test covers only firing, binding, and demotion-on-retraction.
+
+---
+
+## D3 — ARCHITECTURE: whole-base re-simplification is welded to `rebuildEncodings`
+
+**Severity:** high. **Class:** architecture (cost + coupling; no soundness
+consequence found). **Evidence:** agent-reported, adversarially verified,
+measured by the agent at 9.4 s.
+**Sites:** `IncrementalSolver.cpp:3415` (the call), `:3514-3651`
+(`resimplifyBaseAtRebuild`), `:3340-3352` (`RebuildReason`), `:4738`, `:4806`.
+
+`rebuildEncodings()` unconditionally calls `resimplifyBaseAtRebuild()`, and it is
+called for **all four** `RebuildReason` values --- including `Inprobing` (`:4738`)
+and `Trail` (`:4806`), which are pure SAT-backend *configuration latches* with no
+semantic content whatsoever.
+
+The pass runs `PropagateEqualities` + `applySubstitutionMap` +
+`ConstantBitPropagation::topLevelBothWays` + `SimplifyFormula_TopLevel` +
+`RemoveUnconstrained` over the **entire base conjunction** with no size test, no
+trial/reject gate, no memo, and no off-switch --- and re-derives the
+model-visible `baseEliminatedDefs` from scratch on every fire. Every neighbouring
+use of these same passes in the same file *is* budgeted (`:1796-1817` trial cost
+bound, `:5107` adopter gate, `bigFormulaCap` at `:838`/`:5210`,
+`incremental_cbp_bootstrap_limit`).
+
+Measured (agent): a 23,294-conjunct array-free base with 12 tiny FP rounds costs
+**9.4 s** inside a single trail-retirement rebuild --- a rebuild whose entire
+purpose was to set one CaDiCaL option.
+
+**Fix:** make the base pass a first-class, budgeted, content-keyed step rather
+than a side effect of epoch replacement. Key it on the base conjunction so a
+second rebuild over an unchanged base is a no-op; give it the same
+trial/halving gate every other use of these passes has; invoke it only from the
+`Relief` path (and the first forced solve). `Inprobing`/`Trail`/`Promotion`
+rebuilds need a fresh backend, not a fresh formula.
+
+**Related (D3b, `PARTLY/low`):** `baseEliminatedDefs` is cleared only on
+`resimplifyBaseAtRebuild`'s full path (`:3545`), not in `rebuildEncodings` beside
+`restoredBaseRoots.clear()` (`:3413`). On the two early-return paths (arrays in
+the base; an `ExtensionalityContext` that was ever created --- the test is
+`!= NULL`, not `active()`), a stale map survives into the new epoch and
+`screenNewContent` can re-assert the same witness originals a second time,
+double-counting `baseLiveMass` and `permanentUnitMass`. Bookkeeping only, but the
+one-line fix is: clear `baseEliminatedDefs` in `rebuildEncodings` next to
+`restoredBaseRoots`, and route the `pendingRebuiltBase` flush through
+`restoredBaseRoots` too.
+
+---
+
+## D4 — COST: the privacy predicate makes a no-op check quadratic in stack depth
+
+**Severity:** high (this is the cost the engagement-at-32 policy is compensating
+for). **Evidence:** measured by me; stronger figures agent-reported.
+**Sites:** `IncrementalSolver.cpp:1700-1706` (`levelPrivate`'s scan),
+`:1738-1747` (revalidation on cache **hit**), `:5219-5222` (`conjunctCountOf`),
+`:5150-5177` (context rebuild), `:1551-1574` (`symbolsOfCache`).
+
+On a check where **nothing changed**, the driver still:
+
+- rebuilds the pushed-definition context from scratch (fresh per-call `ctx`,
+  `:5140`) by re-running `splitConjuncts` + `harvestPushed` over every level;
+- rebuilds `conjunctCountOf` per level at Θ(total stack symbols) --- and at
+  whole-level granularity (any level under `bigFormulaCap`) every count is 1, so
+  its only consumer (`cnt->second > 1`) can never fire. Pure waste in the common
+  branch;
+- re-proves `levelPrivate` for **every eliminated variable of every cached
+  piece** (`:1738-1747`), and `levelPrivate` scans **every live level**
+  (`:1700-1706`) --- with the same `symbolsOf(stack[j])` call written twice.
+
+Total: Θ(depth × eliminations-per-level × depth) per check, on the *cache-hit*
+path.
+
+**My measurements** (`--incremental-profile`, `build/`, agent-generated
+deepening-stack files `w1_{100,200,400}.smt2`):
+
+| depth | checks | total | semantic reconstruction | per-check semantic |
+|---|---|---|---|---|
+| 100 | 100 | 3.36 s | 0.94 s | 9.4 ms |
+| 200 | 200 | 6.44 s | 2.65 s | 13.2 ms |
+| 400 | 400 | 20.75 s | 8.17 s | 20.4 ms |
+
+Per-check semantic cost grows with depth, so the session total is superlinear.
+On a *toy* 3-level, 9-node stack (`tests/query-files/incremental-tests/incremental-profile.smt2`,
+6 checks) the split is `semantic-us=1758` (46 %) against `sat-us=210` (5.5 %) ---
+i.e. even at the smallest scale, reconstruction dominates solving.
+
+**Agent-reported, not re-run by me:** on a 400-level session whose levels each
+adopt one private elimination, `prepare-us` is 79 % of the session (2.35 s of
+2.99 s) against 5.7 ms of SAT time, with `perf` attributing 60.5 % of process
+time to `Impl::symbolsOf` and 20.3 % to `Impl::preparePiece`; per-hit cost grows
+linearly with depth (8.3 µs at 100 levels, 29.5 µs at 400). With zero
+eliminations `prepare-us` is flat below 100 µs at all depths.
+
+**Fix.** Three bounded changes, none of which needs the assertion journal:
+
+1. Maintain a **symbol → set-of-live-levels** index (or per-symbol level bitset)
+   as levels are screened, so `levelPrivate` is O(1). This is the same
+   longest-common-prefix comparison the CBP fed-prefix and promotion already
+   perform. *This is also the index D1's fix wants and the record D2's fix wants
+   --- one structure closes all three.*
+2. Skip building `conjunctCountOf` entirely when `rawConjuncts.size() == 1`.
+3. Memoise the harvested-definition set per level-conjunction node, so
+   `harvestPushed` is paid once per distinct level rather than once per check per
+   level. Remember the previous check's base conjunction node and skip the
+   base split when unchanged (the same pointer-equality trick
+   `updateStackStability` already uses).
+
+Then **re-measure the engagement ordinal.** A cost-model-driven threshold is the
+principled version of the 32.
+
+**Caveat for whoever fixes this:** the rescan is a deliberate soundness repair
+(`ee8685bb`) for a stale privacy proof after pop/re-push. A fix must *preserve*
+that guarantee, not drop the check.
+
+**Related (low):** `symbolsOfCache` (`:658-659`) is unbounded and never cleared,
+not even at `rebuildEncodings`. Memory only --- symbol sets are a pure function
+of the node, so entries can never be stale --- measured by the agent at ~12 % of
+peak heap in the shape that maximises it.
+
+---
+
+## D5 — ARCHITECTURE: the exact-stack block cache is fronted by a non-deterministic pass
+
+**Severity:** medium. **Evidence:** agent-measured, adversarially verified.
+**Sites:** `IncrementalSolver.cpp:3709` (`RemoveUnconstrained` in the block
+pass), `:4179` (the cached accept/reject bool), `:4262` (the `rootLitOf` block
+lookup), `RemoveUnconstrained.cpp:133`, `STPManager.h:571`
+(`CreateFreshVariable`).
+
+`docs/incremental-solving.rst:341-344` promises that "repeating or re-pushing a
+stack recreates the same transformed root and reuses its encoding and lemmas".
+The block cache (`rootLitOf` hit at `:4262`) is the *only* reuse above the
+bit-blast memo on this path --- and `preprocessExactStackBlock` is **not** a
+deterministic function of its input node, because `RemoveUnconstrained` names its
+stand-in variables from `STPMgr::_symbol_count`, a mutable counter.
+
+Whenever a stand-in survives into the output --- which needs the replaced parent
+term to have ≥2 uses, a common symbolic-execution shape --- an identical
+re-pushed `--array-equality` stack lowers to a *fresh node*, misses `rootLitOf`,
+and gets a complete fresh AIG cone, CNF variables, and clause copy.
+
+Measured (agent): +24 SAT variables per identical repeat on a small stack;
+**4,177 → 56,299 variables over 15 identical repeats** on a 40-read stack; flat
+with unconstrained elimination disabled.
+
+Separately, only the accept/reject *bool* is cached (`:4179-4184`), so the whole
+CBP + equality-propagation + unconstrained + pure-literal pass re-runs on every
+check even when it hits.
+
+**Fix:** memoise the pass by input node, storing `(output, eliminated
+definitions)` together --- that restores determinism *and* makes a repeated stack
+O(1) above the transform. Alternatively (or additionally) give
+`RemoveUnconstrained`'s stand-ins deterministic names via the branch's own
+`CreateDeterministicVariable`.
+
+---
+
+## D6 — MEASUREMENT: `--incremental-profile` changes the relief schedule it measures
+
+**Severity:** medium. **Evidence:** code-verified by me; demonstrated at the
+shipped default configuration by an agent.
+**Sites:** `IncrementalSolver.cpp:2536-2569` (`stageLiveConeMass`), `:2556` (the
+`!profile.enabled` guard), `:4693-4706` (the relief decision), `:5565-5566`.
+
+`stageLiveConeMass` feeds **two different quantities** into
+`recordLiveClauseMass → maxLiveClauseMass` depending on `profile.enabled`: an
+exact de-duplicated AIG-cone walk when profiling, the per-key `clauseMassOf`
+lower bound otherwise. The compensating lazy repair
+(`expandPendingLiveConeMass`) is *disabled* under profiling by the
+`!profile.enabled` guard at `:2556`, so `hasPendingLiveCone` is never set and the
+lazy path is never exercised.
+
+Since exact ≥ cheap, and the non-profiled path repairs only the last solve's
+snapshot, **the profiled peak is always ≥ the unprofiled peak** --- so
+`--incremental-profile` can suppress or delay relief rebuilds, never advance
+them.
+
+This matters twice over. The measurement apparatus perturbs the thing it
+measures, in the direction that hides rebuild events; and 17 of the branch's 87
+lit RUN lines assert counters produced under the profiled regime, so those
+expectations describe a configuration production never runs.
+
+*(Two small relief-valve cases I tried did not diverge between the two regimes;
+the divergence is established from the code paths, not from a demonstrated
+answer difference on those files. The agent demonstrated it on a synthetic
+variant-push corpus at default `incremental_reencode_limit`.)*
+
+**Fix:** compute **one** live value for the decision on both paths --- the exact
+walk when a snapshot exists, the lower bound otherwise --- and let profiling only
+add *reporting*. If the exact walk is affordable every solve, it is the right
+production estimator and the cheap-estimate-plus-lazy-repair pair
+(`clauseMassOf` staging, `PendingLiveCone`, `expandPendingLiveConeMass`) can be
+deleted outright: roughly 80 lines and 4 fields. If it is not affordable, the
+profiler must report the estimate the driver actually used and expose the exact
+walk as a separate column.
+
+---
+
+## D7 — POLICY: `cbpEverFixed` does not measure what its retirement tier needs
+
+**Severity:** medium. **Evidence:** agent-reproduced on two structurally
+identical 120-query sessions.
+**Sites:** `IncrementalCBP.cpp:458-468`, `IncrementalSolver.cpp:1360-1377`,
+`:955-973` (the two-tier comment), `:4943-4956` (the leash).
+
+The retirement policy has two tiers: a session whose engine has **never derived
+a fixing** retires after 8 barren divergences; one with fixings but no adoption
+gets 64. But `feedLevel` records the level's own **assumed truth** as a fixing,
+and the harvest's interior-node loop sets `cbpEverFixed = true` off it --- so in
+any session whose first fed level is array-free, the flag is true after the first
+feed, before the engine has derived anything at all.
+
+The 8-divergence tier is therefore **unreachable** for exactly the sessions it
+was designed for. Reproduced: two structurally identical 120-query pop-per-query
+sessions, one array-free and one with a `select` in every level, retire at 64 and
+8 divergences respectively --- the opposite of the intent.
+
+**Fix:** set `cbpEverFixed` only from fixings that are not the fed level's own
+assumed truth --- i.e. only in the SYMBOL loop (`:1358`) and, in the interior
+loop, only for nodes not in `callCbpFedConjuncts`. Better: drive the leash off
+evidence that a fixing *crossed a level boundary* (survived `cbpFinishLevel` and
+later matched in a deeper level's `cbpAdopt` walk), which is the property the
+pass exists for, and let one leash serve both tiers.
+
+**Related (D7b, `PARTLY/low`) --- the feed cap double-counts.** `cbpFeedCap` is
+charged as the *sum* of per-level DAG sizes (`callCbpFed += dagSizeUpToMemo(...)`,
+`:1249-1266`) while the engine retains their *union* (`extendParentMap` dedupes
+via `depsVisited`). A live stack of ~25 levels over a single 8k-node define-fun
+spine therefore trips the 200k cap even though retained content is ~8k nodes
+(agent-reproduced), and because `cbpSessionRetired` sits deliberately outside the
+undo trail, the pass stays off after the stack shrinks. Fix: charge the union
+(the engine can report `depsVisited.size()`), and let a rollback below the
+tripping level re-arm the pass --- the rollback already restores `callCbpFed`
+correctly.
+
+---
+
+## D8 — COST: every array encode installs and copies back the whole session registry
+
+**Severity:** medium. **Evidence:** agent-verified empirically (anchors == rows
+on all 400 encodes of a 400-query session).
+**Sites:** `IncrementalSolver.cpp:2884`, `:2891`, `:2897-2933`,
+`ArrayTransformer.cpp:79-136`.
+
+`encodePrepared` installs the entire persistent registry into `batchAT` **by
+value** and copies it back (`:2884-2892`). `TransformFormula_TopLevel`'s
+post-loop (`ArrayTransformer.cpp:84-133`) uses a call-local `replaced` map with
+no check on an already-set `index_symbol`, so it re-conjoins an index-binding
+equation for **every registry row with a computed index** onto **every array
+conjunct it transforms** --- including rows from other levels and popped levels,
+since `myReads` is never pruned.
+
+The comment at `:2897-2908` asserts the opposite invariant and is false; the
+repair loop at `:2909-2933` is today a strict, redundant subset (identical node
+factory, operands, and skip condition).
+
+**Fix:** give the driver a registry it owns and hand it to the transformer by
+pointer/reference instead of by value; make anchor emission **per transform run**
+rather than per table --- emit `EQ(index, index_symbol)` only for rows in
+`touchedReads`, which the driver already collects. That deletes both the
+whole-table loop in `ArrayTransformer` and the compensating loop at `:2909-2933`,
+restores per-conjunct locality of the encoding, and makes `clauseMassOf` mean
+what the relief valve assumes it means.
+
+**Related (D8b, low):** congruence lemmas are permanent and unconditional, but
+`refinementMassOf` charges them to a content-addressed **whole-stack** owner key
+(`AND(assertionsSMT2)`). On a growing stack a later check's live mass omits the
+axioms earlier checks emitted while `retainedClauseMass()` still counts them,
+biasing the relief ratio toward firing. The natural owner is the registry row
+pair (or the active read-row set) --- a lemma is live while both its rows are in
+the active seeded table.
+
+---
+
+## D9 — CONTRACT: `construct_counterexample_flag` was made sticky
+
+**Severity:** low (no wrong answers). **Evidence:** agent-reproduced on a Release
+build and isolated by rebuilding with the master behaviour.
+**Sites:** `STP.cpp:448-457` (the deleted `else … = false`),
+`IncrementalSolver.cpp:4337` (set unconditionally on array-equality rounds, never
+restored --- unlike `savedAck` at `:4126`/`:4388`), `:4016-4022`, `:5641-5647`,
+`cpp_interface.cpp:706-708`.
+
+Removing `else construct_counterexample_flag = false` from `TopLevelSTPAux` and
+having both incremental drivers OR the flag into their own derivation makes the
+flag **monotone for the life of the session**. Because the frontend reads that
+same flag as its "a model was demanded" predicate, one array round whose array
+ops survive Ackermannisation --- or one `(set-option :produce-models true)` ---
+**permanently disables the verdict cache's unchanged-stack shortcut** documented
+at `docs/incremental-solving.rst:38-42`, and permanently re-enables per-solve
+counterexample construction in the *batch* pipeline too.
+
+**Fix:** give the driver a private `needsCandidateModel` derived per check from
+`needRefinement`/extensionality, instead of latching the shared user flag;
+restore `construct_counterexample_flag` to being recomputed per check from its
+genuine inputs (`check_counterexample_flag`, `print_counterexample_flag`,
+`produce_models`, and the C API's `'c'` request held in its own field). The
+frontend's cache predicate should read the *request*, not the derived flag.
+
+---
+
+## D10 — LAYERING: a node-construction rewrite is gated on a mutable session mode flag
+
+**Severity:** low (performance/predictability, no soundness consequence found).
+**Evidence:** code-verified by me; measured by an agent.
+**Sites:** `SimplifyingNodeFactory.cpp:946-951`, `cpp_interface.cpp:610`
+(`push()` sets the flag), `c_interface.cpp:892`, `UserDefinedFlags.h:92`.
+
+```cpp
+if (kind == stp::FP_SMT_EQ)
+  result = bm.UserFlags.incremental_solving
+             ? hashing.CreateNode(kind, children)   // keep x = x
+             : bm.ASTTrue;                          // fold it
+```
+
+A semantics-preserving reflexive rewrite in the **generic** simplifying node
+factory is gated on a driver-lifecycle flag that `push()` sets mid-session and
+never clears. Three consequences:
+
+1. The branch's own design doc still asserts the opposite invariant ---
+   `docs/incremental-solving.rst:114-115`, *"Node-construction rewrites (the
+   simplifying node factory) … are context-free and always on"* --- and was
+   edited two days after this change without carving out the exception.
+2. The gate's reach is wider than "incremental mode": `push()` sets the flag even
+   when the driver never engages, so a QF_BV session that stays on the batch
+   pipeline until solve 32 still gets a different word-level DAG. Agent-measured:
+   adding a bare `(push 1)` to a one-check QF_FP file changes a formula that
+   otherwise folds away entirely.
+3. It weakens the branch's own primary oracle. Batch-vs-incremental differential
+   testing now compares two engines that were handed **different node graphs**.
+
+The stated justification is a >3× CaDiCaL swing on the Newton family --- i.e. a
+search-luck effect, deliberately embedded in a shared rewrite rule.
+
+**Fix:** keep the rewrite unconditional. If encoding order genuinely matters,
+express it where order is chosen --- the bit-blaster/CNF conversion, or a
+driver-owned lowering step --- not in a node-construction rule keyed on a mutable
+global.
+
+**Related (D10b, low, reproduced by agent):** because `push()` sets
+`UserFlags.incremental_solving` permanently and `reset()` re-runs `init()`, which
+re-derives `incremental_from_start` from that flag, **any SMT-LIB session that
+issues `(push)` and later `(reset)` runs its entire post-reset session through the
+driver as though `--incremental` had been passed**, with
+`firstForcedIncrementalSolve` set on its first solve --- contradicting
+`IncrementalSolver.h:88-96`. No wrong answers; the cost is losing the batch
+pipeline's whole-formula simplification on the first post-reset query. Fix: keep
+`UserFlags.incremental_solving` as the immutable user *request* and hold "this
+session became incremental" in `Cpp_interface`, as the C API already does with
+`STP::incrementalFromStart`.
+
+---
+
+## D11 — DEAD: `Backtrack.h`, `canHandle`, `batchTablesSeeded`
+
+**Severity:** low. **Evidence:** verified by me (grep across the whole tree) and
+by agents.
+
+- **`include/stp/Incremental/Backtrack.h`** --- 273 lines: `BacktrackManager`,
+  `Backtrackable`, and backtrackable `vector`/`unordered_map`/`unordered_set`,
+  modelled on Bitwuzla's `src/backtrack/`. Complete, correct, unit-tested
+  (`tests/unit-tests/Backtrack_Test.cpp`, 5 tests) --- and **used by no
+  translation unit outside that test**. No file names `stp::backtrack`; it is not
+  an installed public header. Its comment describes stores the driver never grew
+  (there is no "first-seen" rule or symbol-level record anywhere in
+  `lib/Incremental`).
+
+  This is the branch's clearest statement about itself: the design was started
+  one way (scoped containers) and finished another (snapshot reconstruction), and
+  both philosophies shipped.
+
+  **Two acceptable dispositions, not one.** (a) Delete it, its test, and the
+  CMake entry --- 383 lines, zero behaviour change --- and accept the two local
+  trails as the design. (b) Land the first real consumer with it: the natural one
+  is exactly the symbol→levels index D4 asks for and the promoted-conjunct record
+  D2 asks for, both insert-only per level, which is the discipline this header
+  already implements.
+
+- **`IncrementalSolver::canHandle`** (`:4502-4510`) is unconditionally
+  `return true`. The `.cpp` comment describes it honestly as a future seam, but
+  the header comment at `IncrementalSolver.h:75` --- *"Verdicts are cached per
+  assertion node"* --- is stale (left from `eb793409`, when it really did call
+  `impl->supported()` per level). Because it never returns false, the batch
+  fallback at `c_interface.cpp:834-836` is dead too. Additionally,
+  `Cpp_interface::getValue` (`:994-995`), `getUnsatAssumptions` (`:1068`) and
+  `getModel` (`:1111-1112`) call `GlobalSTP->getIncrementalSolver()`, which
+  **constructs on null** --- so their `!= NULL` guards can never be false, and a
+  plain batch session that prints a model allocates a whole driver (including a
+  CaDiCaL instance) as a side effect of asking whether one exists. Change those
+  three to `hasIncrementalSolver()`, matching the C API.
+
+- **`batchTablesSeeded`** (`:3094`) is write-only: initialised at `:2127`,
+  assigned at `:2900`, `:3212`, `:3392`, `:4250`, **read nowhere**. Its 12-line
+  comment still documents a key-fingerprint skip-if-unchanged policy that
+  `seedActiveReads` explicitly declines to implement (`:3168-3174`). Git history
+  pins it: `8ce5ecc5` added the flag with its one read; `1e1d5969` replaced that
+  fast path and removed the read but not the flag or its comment.
+
+- **`CbpCallerCheckpoint::offBefore` / `conflictBefore`** (`:1044-1046`) are a
+  dead store/restore pair --- `cbpRollbackCallerTo` has one call site and both
+  fields are unconditionally reassigned a few lines later with no intervening
+  read. Correct if a rollback ever ran mid-call; today unobservable.
+
+---
+
+## D12 — COST: the `ToSATBase` adapter rebuilds an O(all session symbols) map per call
+
+**Severity:** low. **Evidence:** agent-measured at ~1.8 ms per call for a
+3000-symbol/96k-bit memo.
+**Sites:** `IncrementalSolver.cpp:3993-3998`, `:3894-3930` (`buildSymbolMap`),
+`CounterExample.cpp:2121`, `AbstractionRefinement.cpp:433`,
+`ExtensionalityContext.cpp:1670`.
+
+`IncrementalToSAT::SATVar_to_SymbolIndexMap()` clears and re-runs
+`buildSymbolMap` on **every call**, walking the entire never-pruned
+`bbMgr.symbolToBBNode` (all symbols ever blasted, popped ones included) and
+allocating a `vector<unsigned>` per symbol before it can discover the symbol
+contributes nothing. The batch adapter returns a stored map by reference.
+
+It is called twice per ordinary refinement round and **once per pending lemma**
+on the array-equality path, so the cost is Θ((rounds + lemmas) × all-session
+symbol-bits).
+
+**Fix:** maintain the symbol map incrementally --- the driver already knows
+exactly when a symbol acquires bits (`totalizeSymbol`, `ensureEncoded`) and when
+the epoch resets (`rebuildEncodings` clears `aigIdToVar`) --- and return the
+stored map by reference, as `ToSATAIG` does.
+
+---
+
+# PART II — VERIFIED CORRECT (do not re-chase)
+
+Each item below was actively attacked during this review and survived. The
+argument is recorded so it can be re-checked cheaply rather than re-derived.
+
+### Retraction and level identity
+
+- **Base-as-permanent-units is justified.** The frontend guarantees the one
+  invariant it needs: level 0 only grows, and `reset`/`reset-assertions` destroy
+  the driver (`cpp_interface.cpp:491-495, 527, 571`). The C API, which guarantees
+  nothing of the kind, correctly prepends a synthetic `TRUE` base and treats
+  every real level as retractable (`c_interface.cpp:818-831`).
+- **Activation literals are keyed correctly** --- on the sorted, deduped root
+  vector, not the formula (`:3801-3832`) --- which is exactly right, since the
+  same formula can encode to different roots under different pushed definitions.
+  `actLitOf` is cleared on every rebuild (`:3383`), so no stale literal survives
+  a re-mint.
+- **Retirement by pinning is sound, for precisely the stated reason and no
+  other.** An activation variable occurs *only* negatively (all its clauses are
+  `¬a ∨ root`), so pinning `¬a` is a pure-literal fixing that preserves
+  satisfiability; and the entry is erased from `actLitOf`, so a recurring root
+  set mints a fresh variable rather than reusing a pinned one (`:3295-3330`).
+  Extending eviction to encoding variables would violate their Tseitin clauses
+  --- the boundary is correct.
+- **Unsat-core attribution is conservative everywhere it must be.**
+  `SATSolver::unsatAssumptions`'s default returns the whole assumption set
+  (`SATSolver.h:198-204`); extensionality and provisional blocks set
+  `lastUnsatCoarse` so every level is reported (`:4050`, `:4460-4470`); promoted
+  levels are floored into every core (`:4474-4482`); the frontend only ever takes
+  `core.back()` to truncate, so a coarser core is always safe.
+
+### Frontend
+
+- **The verdict cache's SMT reasoning is in the right layer and is sound.**
+  `cache[deepest]` is only written for a level strictly beneath the top
+  (`cpp_interface.cpp:751-760`). The obvious hole --- a refutation resting on a
+  *promoted* level asserted unconditionally --- is explicitly closed by the core
+  floor above. `check-sat-assuming` as an internal level is safe: its own cache
+  entry is always fresh, so the only way it can be answered without a solve is
+  push-inheritance, which means the stack *below* the assumptions is already
+  unsat and any reported assumption subset is a correct core.
+- **Model lifetime is modelled properly** by `model_valid` plus lazy
+  `materializePendingModel()`, with SMT-LIB invalidation on assert/push/pop/reset
+  and the C API's historical post-pop model contract preserved deliberately.
+- **`bm->ValidFlag` is not stale on the incremental path.** I hypothesised that a
+  C-API session could read `ASTUndefined` from `GetCounterExample` after an
+  incremental `sat` following a batch `unsat`. **Refuted empirically:**
+  `ToSATBase::PrintOutput` --- the only writer --- is called from
+  `Cpp_interface::checkSat` for *both* engines, and the C API never sets it true
+  at all. A compiled C-API probe (batch `sat`, batch `unsat`, incremental `sat`,
+  then `vc_getCounterExample`) returned the correct value.
+
+### SAT layer
+
+- **The facade rework is clean.** Non-virtual `addClause` + virtual
+  `addClauseInternal` means theory-refinement code that only holds a
+  `SATSolver&` cannot bypass accounting; capability queries degrade to "hint
+  declined, not an error"; `supportsAssumptions`/`solveWithAssumptionsInternal`
+  defaults are mutually coherent, so the `exit(-1)` default is unreachable at
+  runtime.
+- **CaDiCaL's factor translation is complete.** *Every* path that names a
+  variable goes through `ext_of_stp`: `addClauseInternal` (`Cadical.cpp:324-338`),
+  `solveWithAssumptionsInternal` (`:91-114`), `unsatAssumptions` (`:269-285`),
+  `suggestPhase` (`:287-299`), `modelValue` (`:340-348`). The assumption path
+  correctly declares *before* naming rather than relying on `solveInternal`.
+  I went looking for the missing one; there isn't one.
+- **The configuration-window rule is respected at every live call site** ---
+  constructor and `rebuildEncodings` configure a fresh solver;
+  `resimplifyBaseAtRebuild` deliberately submits no clause; `decideBVA` (`:4814`)
+  precedes the first `addClause` (`:5026`/`:5077`); `retireStaleActivation`'s pins
+  (`:5043`) come after. It is respected *by call ordering only* --- see the
+  suggested `configuration_closed` latch in [Part V](#part-v--work-queue) --- but
+  it is respected.
+- **Trail reuse has no soundness precondition to violate.** CaDiCaL sorts the
+  assumption vector by trail position before comparing, so the mechanism depends
+  on set overlap, not caller ordering. The `SATSolver.h:155-158` comment states a
+  sufficient condition as if it were necessary; that is a wording imprecision,
+  not a defect. Promotion and activation re-minting shrink the reusable set,
+  which is exactly why both are gated on trail retirement.
+
+### CBP
+
+- **The engine's undo trail is complete.** Every piece of state `feedLevel`
+  mutates is restored: `fixedMap` via `fixedUndo` + `fixedCreated` with the
+  correct "created this level ⇒ delete, not restore" split
+  (`IncrementalCBP.cpp:327-334, 151-171`); `msm` via
+  `multiplicationCreated`/`multiplicationUndo` (`:105-122`); **the parent map and
+  `depsVisited`** via `dependenciesAdded`, popped in reverse so duplicate child
+  positions unwind exactly (`:127-149`); `conflict` via the per-checkpoint field
+  (`:71-73, 173`); worklists, `newlyFixed`, and per-step scratch cleared
+  (`:92-97`). Caller-side: `callCbpSubst`, `callCbpFedConjuncts`,
+  `callCbpFactEmitted`, `callCbpFed`, `cbpFedArrays`, `callCbpOff`,
+  `callCbpConflict`, `cbpFedLevels` all checkpointed or trailed (`:1066-1171`).
+- **Prefix discipline is enforced by evaluation order, not by bookkeeping** ---
+  feed level L → adopt L's conjuncts → `cbpFinishLevel` releases L's own fixings
+  → feed L+1 (`:5187, :5345, :5472`). Deeper levels' facts therefore cannot reach
+  a shallower conjunct *by construction*. This is the best structural decision in
+  the newest machinery.
+- **Conflicting feeds are recorded as fed levels** (`:1297-1319`), so popping a
+  contradictory level removes its effect --- the fix for the one real CBP
+  soundness bug in the branch's history.
+- **The memo replay is sound.** The key includes the base conjunction, so it is
+  trimmed by every event that can change `ctx` except elimination decisions; the
+  surviving drift is neutralised by two explicit invariants (harvested definers
+  always stay asserted; `levelPrivate` permanently refuses any bit-blasted
+  symbol, and `bbMgr.symbolToBBNode` is never cleared, including across
+  `rebuildEncodings`).
+
+### Arrays and naming
+
+- **Congruence-lemma permanence genuinely holds.** Abstraction variables and
+  index anchors are deterministic functions of the `(array, index)` node pair;
+  node uids are allocated monotonically and never recycled
+  (`ASTInternal.h:191`, `node_uid_cntr += 2`); the registry itself holds the index
+  nodes, so a re-minted node cannot collide with a live row's name. Even if a
+  popped row leaked into the axiom set, the axiom is a Horn implication
+  `idx_a = idx_b → val_a = val_b` over variables that are unconstrained once
+  their root literal is unassumed --- every model of the live formula extends to
+  it. Permanence is a conservative extension, not a convention.
+- **Eager Ackermannisation with a persistent `myAckPairs` is sound**: the
+  new-versus-existing ITE shape means any two reads are related by whichever was
+  encoded later, and popped rows only ever offer an unconstrained alternative.
+- **Naming by node number is sound.** `node_uid_cntr += 2` is strictly monotone
+  and never recycles, so two live nodes can never collide onto one generated
+  name; the worker thread hands the counter back (`:4585-4601`). What is coupled
+  to GC is only the *reuse* property, and `exactStackKeepAlive` pins whole cones
+  (an `ASTNode` holds its children), which is sufficient. **Weakness, not
+  defect:** it is enforced by four manual inserts at one call site with no
+  assertion and no test --- disabling all four leaves every incremental and
+  extensionality RUN line byte-identical, so no test would notice if the pin
+  stopped covering the right nodes. Consider moving the pin into
+  `CreateDeterministicVariable` itself.
+
+### Accounting
+
+- **The exact AIG-cone walk is a sound estimator, not a heuristic.**
+  `encodedAigConeMass` (`:2498-2530`) charges 3 per AND, 1 for the shared TRUE
+  node, 0 for CIs, deduped by `Aig_ObjId` --- exactly what `ensureEncoded`
+  (`:2616-2680`) emits --- and every node in a live cone is provably encoded in
+  the current epoch because `aigRootOf` is cleared and repopulated per epoch.
+- **Both sides of the relief ratio are submission counts in the same epoch**, so
+  backend-internal simplification cancels rather than skewing the trigger.
+- **The cheap per-key estimate is provably a lower bound** (a first-encode delta
+  counts only nodes first encoded at that key, so summing over live keys counts
+  each node at most once, and only nodes in some live cone). Its only failure
+  mode is a *premature* rebuild, never a missed one; the lazy exact repair closes
+  it. **Do not delete the cheap tier** --- an agent proposed exactly that, and
+  the verifier showed it is what makes relief fire *less* eagerly: without it,
+  recorded live mass collapses to hundreds of clauses against 10⁵--10⁶ retained
+  and `reliefRatioReached()` becomes essentially unconditional past the variable
+  floor.
+- **Choosing whole-solver rebuild over cvc5's propagator pinning is right** given
+  MiniSat/CMS/Riss have no propagator interface --- and the branch already
+  applies the cvc5 trick exactly where it *is* portable and sound (activation
+  literal false-pinning).
+- **`SessionProfile::add()` is complete.** I diffed the field sets
+  programmatically: 91 `CheckProfile` fields, 80 `SessionProfile` fields, 0
+  omissions in `add()`. The 12 Check-only fields are per-check snapshots
+  (`activeKeys`, `assumptions`, `levels`, `liveClauses`, `peakLiveClauses`,
+  `retainedClauses`, `readRowsLive`, `stablePrefix`, `contextEntries`, `check`,
+  `enabled`, `extensionality`), correctly non-additive. The duplication is
+  verbose, not buggy.
+
+### Explicitly refuted claims (do not resurrect)
+
+| Claim | Why it fails |
+|---|---|
+| "Six ad-hoc invalidation mechanisms, no shared predicate" | There *is* one shared predicate: `levelPrivate`, applied with identical arguments both when an elimination is created (`:1862`) and on every cache hit (`:1738`). Two of the alleged mechanisms are contributors to one `protectedSymbols` argument; two others are re-armings of the screening memo. `ee8685bb` deliberately *replaced* `56de220c`'s ad-hoc partial invalidation with the general revalidation --- convergence, not divergence. |
+| "Exact-stack scoped elimination lacks a freeze check" | The block encodes the complete active stack **including the base**, so each permanent unit is a conjunct of the block's own source formula: it can neither over- nor under-constrain the round. Hiding the eliminated symbols' bits in `buildSymbolMap` is *required*, not a bug --- `ConstructCounterExample` copies the model channel first and overwrites from SAT bits, so reporting stale bits is precisely what would produce a contradictory model. |
+| "Two parallel live-mass estimators; delete the cheap one" | See above --- the cheap tier is the numerator's floor and deleting it makes relief nearly unconditional. Measured. |
+| "Forced-first recovery is gated on CLI provenance" | `firstForcedIncrementalSolve` is `--incremental && session's first check-sat`, i.e. "no batch solve preceded this one" --- a session fact the driver genuinely cannot derive from `engagedSolves`/`cbpFedLevels`/`cbpMemo`. Two of the four sites are *skips*, so the auto path is not deprived. (A cleaner `engagedSolves == 0` predicate is still worth doing; see Part V.) |
+| "`enableTrailReuse`'s correctness precondition does not exist" | Not a correctness contract at all --- a performance hint. See above. |
+| "The CBP memo caches four subsystems behind a CBP-shaped key" | The key includes the base conjunction, and the two documented invariants neutralise the surviving drift. `--check-sanity` does validate models on this path. |
+
+---
+
+# PART III — ARCHITECTURE ASSESSMENT
+
+## 1. What is right, and should not be replaced
+
+The **retraction core**. One persistent SAT solver, one AIG, one bit-blast memo;
+everything encoded is a conservative extension (fresh Tseitin variables and
+definitional clauses), so it is valid in every context forever; base-level
+conjuncts become permanent units; pushed levels are asserted through one
+activation literal per level; a pop retracts by *not assuming*. Learned clauses
+survive checks and pops by construction. This matches Bitwuzla's default
+bit-vector engine closely and is responsible for the branch's measured wins.
+
+Snapshot reconstruction --- the driver receives no `push`/`pop` notification and
+rebuilds the active context from the assertion-stack snapshot each check --- is
+also a **defensible** choice for STP specifically. It makes pop correctness free
+and total: a popped assertion vanishes because it is not in the next snapshot.
+The reference solvers all chose scoped containers instead, but they had
+context-dependent infrastructure to build on and STP does not.
+
+## 2. The root pattern behind both soundness defects
+
+Both D1 and D2 are the *same shape*:
+
+> **A predicate computed over one representation of the stack governs something
+> computed over a different representation.**
+
+- D1: `levelPrivate` decides over the **raw** stack; the encoder consumes the
+  **ctx-substituted** stack.
+- D2: `updateStackStability` validates the **raw** conjunction; promotion pinned
+  the **prepared** conjuncts.
+
+This is the price of snapshot reconstruction *as currently implemented*: because
+no structure owns a level, every derived fact is re-derived ad hoc, and the
+easiest thing to re-derive it from is the raw stack --- which is not what the
+encoder sees.
+
+Six mechanisms currently defend the one invariant "nothing eliminated may still
+be reachable": the prefix discipline, `screenNewContent`'s memo, the cache-hit
+revalidation, `eliminationUsers`/`dropPreparedLevel`, the `ctx` re-join, and the
+CBP protected-symbol set. None *owns* it. D1 is what happens when the one route
+none of them covers (a `ctx` body) is taken.
+
+**This is the finding that matters most**, because it predicts future bugs of the
+same class. The fix is not the full assertion-journal refactor: it is a single
+maintained occurrence index consulted by one `eliminable(v)` predicate, plus a
+level-owned record of what promotion pinned. Both are small, and both also fix
+D4's quadratic cost.
+
+## 3. The cost model contradicts the feature's purpose
+
+Delaying `QF_BV`/`QF_ABV` --- the theories STP exists for --- to the **32nd**
+solve is not a tuning constant. It is the measured price of per-check
+reconstruction (D4). See [Part IV](#part-iv--cost-model-and-measurements).
+
+## 4. Overreach inventory
+
+**The forced-first-solve family.** Three pipelines exist so that `--incremental`
+(a forcing/diagnostic flag) is not embarrassed on solve 1: base-only pure-literal
+elimination (`:3426-3500`), the whole-stack "must at least halve" collapse trial
+(`:4840-4866` → `exactStackCheckSat(requireScopedCollapse=true)`), and the CBP
+bootstrap deferral (`:4896-4927`). The adversarial verifier correctly narrowed
+this: all three are *entry conditions into machinery that already exists* and is
+reachable without `--incremental`, the witness restore path is sound, and each
+has regression coverage. What survives is the **regime count**: a single
+`check-sat` now has ≥5 distinct routes (ordinary per-level; extensionality block;
+provisional plain-BV block; base-only pure-literal; deferred-CBP), and **73 of the
+branch's 87 lit RUN lines use `--incremental`** --- so the suite predominantly
+tests the mode production never takes.
+
+**The CBP subsystem.** ~700 lines of engine plus caller overlay, its own
+transactional undo trail, memo replay, a pinning-fact discipline, harvest and
+feed caps, a two-tier retirement state machine, and `--incremental-cbp-reset`
+shipped as a production flag --- motivated by one benchmark family where "4
+adopting solves near solve 115 are the entire 40×". It is whole-formula
+preprocessing in a design whose central invariant is that facts must not cross
+levels, which is why it then needs pinning facts to stay sound, and why it
+already produced one soundness bug (`precise.smt2`, fixed by `56de220c`/`ee8685bb`).
+The *engine* is the best-built new component in the branch (see Part II); the
+question is whether it is earned at all. D7 shows its retirement heuristic does
+not measure what it claims.
+
+**Policy constants.** 21 `static const` in `IncrementalSolver.cpp` plus a
+self-doubling `promoteAfterSolves`, the 32/3 engagement ordinals, and the 4×
+relief ratio:
+
+| Constant | Value | Derivation stated? |
+|---|---|---|
+| `inprobingRetireSolves` | 8 | measured class split (1--2 vs 20+ solves) |
+| `inprobingRetireMinVars` | 20000 | measured |
+| `defInlineCap` | 200 | measured (10M clauses from 7 conjuncts) |
+| `bigFormulaCap` | 20000 | measured |
+| `firstStackCollapseMinNodes` | 128 | asserted, not derived |
+| `firstStackMinReencodeLimit` | 1000000 | policy tie-break |
+| `cbpRetireBarrenNeverFixed` | 8 | benchmark-fitted (and see D7) |
+| `cbpRetireBarrenFixed` | 64 | benchmark-fitted |
+| `cbpHarvestCap` | 4096 | asserted |
+| `cbpFeedCap` | 200000 | asserted (and see D7b) |
+| `reachesAnyOf` walk budget | 2000 | asserted |
+| `actLitRetireAge` | 16 | none |
+| `trailReuseVarLimit` | 100000 | measured |
+| `trailReuseFpRetireSolves` | 7 | measured |
+| `trailReuseLateArrayFpProbeSolves` | 3 | measured |
+| `trailReuseEstablishedVarFloor` | 10000 | measured |
+| `trailReuseRefinementClauseFloor` | 500 | asserted |
+| `promoteAfterSolves` | 8, doubling | measured |
+| big-stack worker | 256 MB | derived (27k chained defines → depth ~25k) |
+| `symbolVisitPage*` | 2¹⁶ | implementation detail, fine |
+
+Plus 8 new CLI flags (`--incremental`, `--incremental-auto-engage-at`,
+`--incremental-profile`, `--incremental-cbp-reset`,
+`--incremental-cbp-bootstrap-limit`, `--incremental-reencode-limit`,
+`--incremental-promote-units`, `--incremental-inprobing`), two of which are
+purely diagnostic and one of which exists to bound a workaround.
+
+Worse than the count is the **mutual gating**: trail-reuse retirement gates
+inprobing retirement (`:4729`) *and* unit promotion (`:5502`); inprobing
+retirement also disables `elim` and `shrink` (undocumented outside the commit
+message and `SATSolver.h` --- D36 in the ledger). Three independent constant sets
+implement one latent concept: *session shape*.
+
+**The measurement apparatus as deliverable.** 171 hand-maintained counter fields
+across two structs, ~200 lines of stream formatting, and 1,938 lines of Python
+(`incremental-bench.py` 848, `incremental-bench-report.py` 1090) in the repo. The
+counters are correct (verified) and the harness's verdict discipline
+(`FULL_OK` / `PREFIX_ONLY_INCONCLUSIVE` / `DISAGREEMENT`) is genuinely good. But
+the profiler is not behaviour-neutral (D6), and it did not catch either soundness
+defect --- because it measures work, not correctness.
+
+## 5. Layering inventory
+
+| Violation | Site | Note |
+|---|---|---|
+| Node factory reads a mutable solver-mode flag | `SimplifyingNodeFactory.cpp:946` | D10; contradicts the branch's own documented invariant |
+| Driver owns the batch pipeline's mutable tables | `:2884-2893`, `:4241-4243` | `arrayToIndexToRead`, `ack_pair`, `recordTouchedReads` assigned by value both ways; D8 |
+| Model channel is a shared `SolverMap` with a hand-rolled withdraw protocol | `:3839-3886` | `batchSimp->Return_SolverMap()`; correct today, but the protocol is the driver's and the map is not |
+| `construct_counterexample_flag` used as an accumulator | `STP.cpp:448`, `:4337` | D9 |
+| `bm->ValidFlag` poked directly | `:4076`, `:5813` | benign (Part II) but reaches into manager state |
+| Engagement policy split across two frontends | `cpp_interface.cpp:712-731`, `c_interface.cpp:809-811` | the C API hard-codes 3 and cannot see `--incremental-auto-engage-at` |
+| `exit(-1)` in a library | `:149`, `SATSolver.h:339` | pre-existing STP convention; unreachable today |
+
+## 6. Resource shape
+
+The driver is a **never-free** design by construction: `rootLitOf`,
+`clauseMassOf`, `aigRootOf`, `preparedPieceOf`, `fragmentCache`,
+`symbolsOfCache`, `readsOfEncoded`, `cbpMemo`, `myReads`, `myAckPairs`, and
+`exactStackKeepAlive` all hold `ASTNode`s as keys, so every node of every formula
+version ever seen is pinned; the AIG and bit-blast memo grow monotonically too.
+The relief valve reclaims **only** the SAT solver. For the KLEE-class workloads
+this feature targets (10⁴--10⁵ queries), node/AIG memory is the dominant
+resource, and nothing reclaims it. This is documented as a limitation; it is
+worth re-reading as a design constraint rather than a footnote.
+
+**Per-check thread creation.** `runOnBigStack` (`:4542-4573`) creates and joins a
+fresh 256 MB-stack `pthread` **per check-sat**, and again per deferred model
+materialization. It is purely a stack-size trick (the thread is joined
+immediately; there is no parallelism), working around recursion depth in the
+batch passes --- a problem the project already knows about (see the deep-DAG
+stack-safety work). One persistent worker fed by a queue would remove the
+per-query `mmap`/`munmap` of a 256 MB reservation. On the many-small-queries
+workloads this feature exists for, that is measurable fixed overhead --- and it
+is a candidate explanation for the RTOS tail the old review left unexplained.
+
+---
+
+# PART IV — COST MODEL AND MEASUREMENTS
+
+## The engagement ordinal is a symptom
+
+```cpp
+// cpp_interface.cpp:712-731
+int64_t engageAt = bm.UserFlags.incremental_auto_engage_at;
+if (engageAt < 0)
+  engageAt = delayed_bv_auto_engagement ? 32 : 3;   // QF_BV / QF_ABV : everything else
+```
+
+A policy that says *"for the theory STP is built for, do not use the incremental
+engine until the 32nd solve"* is a strong statement about where the incremental
+path stands relative to the batch pipeline. The commit message records a
+"targeted 107-session sweep" finding 32 to be the best finite compromise.
+
+Read together with D4, the interpretation is: **per-check reconstruction cost
+exceeds encoding-reuse benefit for up to 31 solves on QF_BV.** The principled
+version is not a larger ordinal --- it is to make reconstruction incremental and
+then re-derive the ordinal from a cost model. D4's three fixes are the concrete
+path.
+
+Two secondary problems with the ordinal as implemented:
+
+- The C API hard-codes `incrementalSolvesRun > 1` (threshold 3) with no logic
+  knowledge, and `--incremental-auto-engage-at` cannot reach it. The documented
+  override is silently inert for C API clients.
+- The counter counts real checks made **before** the first push, so two pre-push
+  checks can cause the first post-push check to engage immediately. That is not
+  the stated "two batch warm-ups in the incremental session" policy. *(Carried
+  over from the previous review; still true.)*
+
+## My measurements (this review)
+
+All on `build/` (Release + assertions), tip `278552ce`. Indicative only --- not
+interleaved quiet-box A/B.
+
+**Fixed per-check cost, toy stack** (`incremental-profile.smt2`, 3 levels, 9
+nodes, 6 checks, `--incremental --incremental-profile`):
+
+```
+total-us=3795  semantic-us=1758 (46%)  prepare-us=467  encode-us=356
+cbp-us=450     sat-us=210 (5.5%)
+```
+
+**Scaling with depth** (agent-generated `w1_{100,200,400}.smt2`): see the table in
+[D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth).
+Per-check semantic reconstruction 9.4 ms → 13.2 ms → 20.4 ms for depths
+100 → 200 → 400.
+
+**Relief-valve regime check:** `reencode-relief.smt2` with
+`--incremental-reencode-limit 500` fired exactly one rebuild both with and
+without `--incremental-profile`. The two regimes are established from the code
+paths (D6), not from a divergence on that file.
+
+## Test-suite shape
+
+69 files, 87 RUN lines in `tests/query-files/incremental-tests/`:
+
+| flag | RUN lines |
+|---|---|
+| `--incremental` | 73 |
+| `--check-sanity` | 26 |
+| `--incremental-profile` | 17 |
+| `--array-equality` | 10 |
+| `--incremental-reencode-limit` | 8 |
+| `--incremental-cbp-reset` | 5 |
+| `--incremental-auto-engage-at` | 4 |
+| `--disable-cbitp` | 4 |
+| `--ackermanize` | 4 |
+| `--incremental-cbp-bootstrap-limit` | 1 |
+
+Two structural observations. **(a)** The suite tests the *forced* mode; production
+runs the *automatic* mode, whose first solves take entirely different paths.
+**(b)** Only 26 of 87 lines use `--check-sanity` --- the one check that catches
+both D1 and D2.
+
+---
+
+# PART V — WORK QUEUE
+
+Ordered. Items 1--3 are merge blockers.
+
+### 1. Fix D1 (privacy over the raw stack)
+
+Add live-`ctx`-body symbols to `protectedSymbols` before `levelPrivate` is
+consulted. Land the `rootLit` debug assert (`activeEliminatedVars` ∩ encoded
+conjunct symbols = ∅) at the same time. Verification recipe in
+[D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack).
+
+### 2. Fix D2 (promotion pins an unvalidated prepared form)
+
+Option (a): store the promoted conjunct set per level and demote + rebuild on
+difference. Until fixed, consider defaulting `--incremental-promote-units` off.
+Verification recipe in [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates).
+
+### 3. Strengthen the correctness gate
+
+- Land `w6.smt2`, `w7.smt2`, `repro3.smt2`, `promote7.smt2` as regressions under
+  `tests/query-files/incremental-tests/` (they are in
+  [Appendix A](#appendix-a--witness-files) in full).
+- **Add `--check-sanity` to the incremental arm of the differential campaign.**
+  Both defects are caught by it and missed by answer-stream comparison. This is
+  the single highest-value change to the validation protocol.
+- Add campaign arms with `--disable-cbitp`, `--no-incremental-promote-units`, and
+  `--incremental-auto-engage-at 1`. Mechanisms that mask each other must be
+  tested independently --- D2 exists precisely because four mechanisms
+  redundantly re-derive the same fact.
+- Rebalance the suite toward the automatic engagement path.
+
+### 4. Give the elimination invariant one owner (fixes D1's class and D4)
+
+A maintained **symbol → live-level** occurrence index, consulted by a single
+`eliminable(v)` predicate covering every source that can reach the encoder (raw
+live levels, base symbols, live `ctx` bodies, live CBP facts, blasted symbols).
+Then delete the screening memo's special cases and the `ctx` re-join. Same index
+serves `conjunctCountOf`'s job; skip that map entirely when
+`rawConjuncts.size() == 1`.
+
+This is also the natural first production consumer for `Backtrack.h` (D11) ---
+it is insert-only per level, exactly the discipline that header implements.
+
+### 5. Unweld the base pass from epoch replacement (D3)
+
+Content-key it on the base conjunction; budget it like every neighbouring use;
+invoke it only from `Relief`. Clear `baseEliminatedDefs` in `rebuildEncodings`.
+
+### 6. Make the profiler behaviour-neutral (D6)
+
+One live-mass estimator for the decision; profiling adds reporting only.
+
+### 7. Re-derive the engagement ordinal
+
+After items 4 and 6, re-measure. Move the threshold behind an
+`IncrementalSolver::worthEngaging(stack, solvesRun)` seam so the driver owns the
+cost judgement and the C API gets the same policy; leave only flag plumbing in
+`Cpp_interface`.
+
+### 8. Consolidate session shape
+
+One `SessionShape` computed per solve (few-solve vs many-solve, growing vs fixed
+base, array/FP presence, size band). Trail retirement, inprobing retirement, and
+unit promotion become three consumers of it rather than three constant sets with
+mutual gating. Fix D7's `cbpEverFixed` as part of this.
+
+### 9. Structural cleanups (any order)
+
+- `BackendEpoch` value type owning the solver plus exactly the fields
+  `rebuildEncodings` clears, with a `Config`; one
+  `EpochPolicy::decide(stack, stats) -> Config` replacing the four trigger sites
+  and the three copies of the inprobing predicate.
+- Latch `configuration_closed` in the non-virtual `SATSolver::addClause` facade
+  and assert it in the setters, so the configuration window is a checked
+  invariant rather than a call-ordering convention backed by a third-party
+  `abort()`.
+- Delete or adopt `Backtrack.h`; delete `batchTablesSeeded` and its stale
+  comment; implement or delete `canHandle`; switch the three `Cpp_interface`
+  model readers to `hasIncrementalSolver()`.
+- Revert the node-factory `incremental_solving` special case (D10); split
+  `UserFlags.incremental_solving` into request vs session state.
+- One `ScopedSimplification` helper and one `EliminationChannel` object,
+  replacing the duplicated harvest-split loops and the three elimination-replay
+  representations.
+- Replace the per-check thread with a persistent large-stack worker.
+
+### 10. Deferred, unchanged from the previous review
+
+The three-run timing campaign (old Phase 0 item 7). **Moot until items 1--2 land**
+--- do not spend machine time measuring a binary that returns wrong answers.
+
+### 11. Longer term
+
+The assertion journal with independent stage cursors
+([Part VIII](#part-viii--recommended-scoped-state-architecture)) remains the right
+destination, but items 4 and 8 capture most of its value at a fraction of the
+cost. Reassess after they land.
+
+---
+
+# PART VI — REFERENCE SOLVER INVESTIGATIONS
+
+*(Retained from the 2026-08-07 review. Reference-solver paths and line numbers
+refer to the revisions in the table below. Still accurate and still the best
+available justification for the design choices.)*
 
 | Solver | Revision read |
 |---|---|
@@ -19,1368 +1542,260 @@ implementation plus documentation only.
 | cvc5 | `e8c0387caeceaf631e0d3b114373b1bc7942334b` |
 | Z3 | `4af3410d104ad291437275ad1553d2b82b152727` |
 
-Reference-solver paths and line numbers, and STP passages explicitly labelled
-as the original review, refer to those original revisions; implementation
-status without that qualification refers to `ee8685bb`, while campaign and
-tooling status refers to update baseline `f1e55c2c`. Line numbers may have
-drifted as the branch was closed out. This is a maintainer-facing design record.
-`docs/incremental-solving.rst` remains the user-facing description of the
-implemented feature.
-
-## Executive conclusions
-
-The branch has already implemented the most important low-level incremental
-solver architecture correctly:
-
-- one normally persistent SAT solver, bit-blaster, AIG, and definitional CNF
-  encoding, with explicit backend rebuild epochs;
-- frontend-appropriate permanent or retractable roots supplied through units,
-  activations, and SAT assumptions;
-- learned-clause and structural-encoding reuse across checks and pops;
-- persistent, canonical theory encodings for arrays and floating point;
-- model, failed-assumption, C API, and whole-array-equality support;
-- a relief valve for accumulated dead encoding.
-
-That is the durable core of the branch and should not be replaced.
-
-The main architectural difference from Bitwuzla, cvc5, and Z3 is now above the
-SAT boundary. All three reference solvers have first-class scoped semantic
-state and explicit frontiers between raw and processed assertions. Bitwuzla
-exposes separate stage-ordered consumer views; Z3 uses `qhead`/formula-head
-boundaries at its wrapper and simplifier-state layers; cvc5 advances a
-context-dependent driver frontier after committing a delta through its
-pipeline. STP instead receives the whole active assertion stack as one
-conjunction per level. It reconstructs much of its live preprocessing state on
-each check. Content caches make the expensive transformations reusable, but the
-driver still rebuilds definition contexts, active preparation records, roots,
-read ownership, stack summaries, and related bookkeeping.
-
-This explains an apparent contradiction in the branch:
-
-- its permanent SAT/AIG design is close to Bitwuzla and is already highly
-  effective;
-- its word-level incremental machinery increasingly maintains local substitutes
-  for a missing common scoped-state architecture: CBP prefix memos, active-read
-  reference counts, promotion stability, elimination invalidation, model-seed
-  withdrawal, and rebuild repair.
-
-The major long-term gap is therefore not another SAT trick. It is the absence
-of a first-class scoped semantic-state architecture and per-stage assertion
-cursors. The unused `include/stp/Incremental/Backtrack.h`, repeated
-reconstruction of active state, and later additions such as prefix CBP,
-active-read refcounts, promotion state, and rebuild repair logic are symptoms
-of that choice.
-
-That does **not** make a general scoped-state refactor the immediate next patch.
-The active-read rebuild risk has been fixed, semantic reconstruction has been
-instrumented, the measured CBP whole-prefix re-feed has been replaced by a
-differential-tested rollback trail, retained/extensionality clause accounting
-has been repaired, current master has been merged, and one observed soundness
-bug plus a related stale preparation-privacy proof found during closeout have
-been fixed (see the implementation updates below). The frozen one-run corpus
-reconciliation and its authoritative longer reruns are complete: no answer
-disagreement was observed, while 234 incomplete rows remain explicitly
-inconclusive. That closes the correctness-reconciliation part of Phase 0
-without pretending those incomplete rows are correctness successes. The
-remaining Phase 0 action is the separate three-run timing campaign now in
-progress, including its authoritative longer reruns and final report. Introduce
-a versioned assertion journal and independent cursors only when profiles or
-recurring lifetime bugs justify the migration of another semantic consumer.
-
-The remaining RTOS small-file loss class appears to be engagement/cold-start
-overhead. Scoped semantic state is not presently supported as its remedy.
-
-## Implementation update: instrumentation and CBP rollback
-
-The recommendation to instrument first and then implement a narrow CBP trail
-has now been carried out:
-
-- `ded8d07e` added the opt-in per-check/session profiler, including stable
-  prefixes, fresh and re-fed CBP work, semantic construction, preparation,
-  encoding, array/refinement work, and SAT time;
-- `8f37f17b` added first-write engine checkpoints for fixed-bit state,
-  conflicts, multiplication state, and dependency-graph additions;
-- `842b03ef` added matching caller checkpoints for substitutions, fed
-  conjuncts, emitted facts, feed mass, array presence, and conflict state,
-  and changed divergence handling to roll back to the existing LCP and feed
-  only the replacement suffix;
-- `--incremental-cbp-reset` preserves the old reset-and-prefix-re-feed path as
-  a differential oracle and conservative fallback; and
-- rewrite memos now record a pinning fact's substitution-domain node
-  explicitly. The old attempt to recover it from the assertion shape was
-  ambiguous for a positive Boolean fact whose node was itself an equality.
-
-The implementation deliberately leaves the successful persistent SAT/AIG
-architecture and the LCP-based stack interface intact. It is a narrow scoped
-state transaction around the one measured reconstruction bottleneck, not the
-general assertion-journal refactor.
-
-### Measured result
-
-Release measurements compared the default rollback path with the forced-reset
-oracle in the same binary. The runs used `--incremental`; profile runs also
-used `--incremental-profile`. The Release build enabled CaDiCaL, floating
-point, and mimalloc and did not enable LibBF. Wall values are alternating-order
-means of four pairs for Industrial, `1ccb771c`, and RTOS, ten for `f84c6e97`,
-and three for each Automotive file. Answer streams matched in every pair.
-
-| Workload | Checks | Default rollback wall time | Forced reset wall time | Result |
-|---|---:|---:|---:|---|
-| Industrial `d58a9331` | 164 | 2.120 s | 2.728 s | 22% faster; mean RSS 29.6 vs 33.1 MB |
-| Robotics `f84c6e97` | 20 | 0.081 s | 0.083 s | neutral |
-| Aerospace `1ccb771c` | 118 | 1.810 s | 1.843 s | 2% faster |
-| RTOS `80f6692b` | 27 | 1.002 s | 1.005 s | neutral, as predicted |
-| Automotive `8c5a7a8f` | 42 | 0.750 s | 0.767 s | neutral-to-positive |
-| Automotive `7256a4bd` | 42 | 0.750 s | 0.760 s | neutral |
-| Automotive `115a02fc` | 42 | 0.727 s | 0.730 s | neutral |
-
-The single-check `Problem18_label55` canary has no divergence and showed parity,
-as expected: the rollback path is inert there.
-
-The Industrial profile explains the wall-time result. Nineteen rollbacks took
-0.211 ms in total and removed all 1,989 surviving-prefix re-feeds (1,455,220
-bounded DAG nodes). CBP time fell from 829.0 ms to 228.5 ms. On `1ccb771c`, 218
-re-fed levels disappeared and CBP time fell from 161.2 ms to 88.6 ms. RTOS had
-only 86 re-fed nodes under the oracle, so removing them could not materially
-change its roughly one-second run time.
-
-Correctness validation for the CBP rollback checkpoint included four engine
-unit tests; the complete configured suite at that checkpoint; all 49
-then-existing incremental SMT-LIB regression files;
-trail-versus-reset answer comparison both normally and under `--check-sanity`;
-conflict/pop/replacement, multi-level rollback, caller-substitution retraction,
-and cross-level array-fold regressions; and the Industrial specimen's
-164-answer stream. The later frozen-candidate corpus reconciliation is recorded
-under “Results and established invariants”; unlike this checkpoint evidence,
-it includes the complete 22,999-file manifest and the selected longer reruns.
-
-The result supports keeping the trail. The next architectural step remains an
-assertion journal with independent consumer cursors, but it is now a
-maintainability/lifetime project that should proceed only when further profiling
-or recurring lifetime defects justify it. It should not be presented as an
-RTOS cold-start optimization.
-
-## Implementation update: integration, accounting, privacy, and campaign tools
-
-The other concrete closeout work is implemented through `ee8685bb`, with
-campaign-reporting support through `f1e55c2c`:
-
-- merge `4b60b401` integrates `master` through `34f69be1`, including the
-  backend-neutral SAT literal/factory work and optional-MiniSat build shape;
-- `db4aab0a` makes clause submission a non-virtual `SATSolver` facade operation
-  and counts every submission before delegating to a backend, so generic theory
-  code cannot bypass the count;
-- `c604e923` replaces the relief valve's partial structural proxy with exact
-  current-epoch retained submissions plus explicit live ownership, and gives
-  the profile separate lifetime, refinement, retained, live, and peak-live
-  views;
-- `45fe552b` adds forced extensionality churn and monotonic-live regressions;
-- `02607540` restores active eager-Ackermann read observations before a model
-  can be constructed on an all-cache-hit round, with deferred-model and sanity
-  regressions;
-- `8e421b89` checks the absence of a spurious extensionality rebuild at every
-  live-growth round, rather than only at the first one;
-- `9cb7b34b` extends lazy exact live-cone repair to the union of all ordinary
-  and extensionality roots, with an ordinary shared-cone regression;
-- `30680576` repairs the paired campaign harness and adds fake-solver tests for
-  its sequence, timeout, order, resume, provenance, and revalidation behavior;
-- `40acb2c4` adds the paired-campaign aggregator, captured answer streams and
-  timeout prefixes, coverage checks, per-file median classification, and
-  logic/family summaries;
-- `239c4402` makes the main phase's completed selection manifests authoritative,
-  so absent or interrupted longer reruns cannot silently fall back to the
-  shorter main rows;
-- `56de220c` protects every symbol used by a new, replayed, or potentially
-  emitted CBP pinning fact before preparation, and invalidates a prepared cache
-  entry that had eliminated one of those now-live definitions; and
-- `ee8685bb` rechecks every eliminated definition against current level privacy
-  on a prepared-piece cache hit, closing the stale-screening variant exposed by
-  repeated pop and re-push.
-
-The first fix was forced by the initial closeout attempt. Its frozen
-`9cb7b34b` candidate returned
-`unsat;unsat;sat;unsat` on
-`QF_FP/schanda/spark/precise.smt2`, while master and the independent solver
-oracles returned four `unsat` answers. `--check-sanity` confirmed that the
-candidate model violated the asserted result equality. CBP had emitted a real
-pinning fact only after preparation had eliminated the fact's `result`
-definition as private, disconnecting the fact from the floating-point
-operation. Commit `56de220c` orders that lifetime protection before
-preparation. A targeted follow-up audit found that screening a raw node only on
-first sight could leave a prepared cache entry's privacy proof stale after a
-later stack shape recreated the elimination; `ee8685bb` makes cache reuse
-validate the proof against the current stack. The regressions are
-`cbp-fact-private-definition.smt2`, exercised in default, forced-incremental,
-and reset-oracle modes, with its fourth scope covering memo replay, and
-`prepared-piece-stale-privacy.smt2`, which asserts the otherwise answer-silent
-cache invalidation through the profile.
-
-### Retained total versus lifetime submissions
-
-`SATSolver::submittedClauses()` is the exact number of input-clause submissions
-to the current backend instance. It counts at the common interface boundary,
-including a submission that discovers an already-inconsistent formula, rather
-than relying on backend statistics that may omit simplified clauses or not
-exist. This is the relief valve's retained total for the current backend epoch.
-
-Before a backend rebuild, the driver adds that epoch's count to
-`retiredClauseSubmissions`. The profile's historical `driver-clauses` name now
-means all clause submissions during the current check, and the session record
-is their driver-lifetime cumulative total across rebuilds. The separately
-reported `refinement-clauses` is a subset of that total: clauses emitted by
-lazy-array or extensionality checking/refinement. It must not be added to
-`driver-clauses` again. `retained-clauses`, by contrast, resets with the backend
-and reports only the current epoch.
-
-### Live and peak ownership
-
-The retained total is exact; live mass is a policy ownership model used as the
-relief ratio's denominator. Its inexpensive value is provisional, while a lazy
-exact structural-union guard prevents that value from authorizing a rebuild:
-
-- structural submission deltas are charged to the deterministic formula key
-  whose encoding first emitted them, and that key also retains its actual AIG
-  root for the exact union;
-- base, restored-base, and promoted roots are recorded as permanent structural
-  roots, with their unit clauses counted separately for the epoch;
-- activation implication clauses are live only while that activation literal
-  appears in the current assumptions;
-- retiring an activation forgets its live ownership, while its implication
-  clauses and false pin remain retained dead mass; and
-- theory-valid array/refinement lemmas are owner-keyed to the deterministic
-  active conjunction or extensionality block that caused them to be emitted.
-
-Owner-keying the theory lemmas is intentional. Calling every old lemma live
-would hide refinement-heavy dead growth; calling every permanent lemma dead
-would rebuild repeatedly on an unchanged live query. Every reported live value
-is capped by the exact retained total, and the current value and epoch
-high-water mark are exposed as `live-clauses` and `peak-live-clauses`.
-
-A formula key's newly submitted structural delta can be much smaller than its
-current live cone whenever its AIG root reuses nodes first encoded for an
-earlier, now-popped key. This was first repaired for whole-array equality, but
-an independent ordinary-path regression then demonstrated the same failure: a
-composite ordinary root owned only nine newly submitted clauses while retaining
-roughly 2,900 clauses of multiplier cones introduced by prior roots. The cheap
-denominator could therefore authorize a false rebuild even though the whole
-cone remained live.
-
-Commit `9cb7b34b` records the actual AIG root for every encoded formula key.
-The exact structural measurement is the unique union reachable from the
-backend epoch's permanent roots and the current ordinary roots, or the current
-extensionality-block root: three clauses per AND plus one unit if the union
-reaches the shared true node. Permanent root units, active activation
-implications, and owner-keyed refinement mass are exact non-structural terms
-added separately. Taking a union both preserves sharing and prevents shared
-clauses from being counted twice.
-
-The normal path avoids this walk until it can affect policy. Below the
-re-encoding variable floor it neither collects an ordinary root vector nor
-walks a cone. Above the floor, each solve coalesces the previous state into one
-latest pending snapshot: normalized current roots, the permanent-root prefix
-length, and non-structural mass. Only if the cheap retained/peak ratio would
-otherwise authorize relief does the next check pay for one exact union walk,
-repair the historical peak, and test the ratio again. Retaining only the newest
-snapshot avoids quadratic memory on a growing stack, while popped historical
-stacks intentionally cease to protect dead clauses. Opt-in profiling computes
-the exact current union on every solve instead.
-
-The forced-churn regression proves extensionality-only dead growth can fire the
-valve and remain sound across the rebuild. The strengthened monotonic-live
-regression checks every extensionality growth round for a false rebuild, and
-the ordinary shared-cone regression covers the analogous non-array case.
-Profile coverage also checks that extensionality and refinement submissions
-appear in the total, that refinement is a subset, and that the current live
-estimate does not exceed the retained total.
-
-Two accounting limitations are deliberate or theoretical. Refinement clauses
-are charged to the deterministic owner that emitted them; a lemma useful to a
-different live owner can therefore be omitted from live mass and cause an
-unnecessary rebuild, but rebuilding merely re-derives any needed theory facts
-and does not change satisfiability. The common exact-submission counter is a
-plain `uint64_t` increment and would wrap after `2^64` submissions; the derived
-mass additions saturate, but a session that reaches the interface-counter limit
-is outside any practical workload.
-
-### Eager-Ackermann model state on cache hits
-
-`Cpp_interface::resetSolver()` clears the batch `ArrayTransformer` tables before
-every solve. Lazy-array refinement calls `seedActiveReads()`, but eager
-Ackermannisation has no refinement loop that would do so. Consequently, an
-unchanged second solve could reuse every correct SAT encoding while leaving no
-active rows from which deferred `get-model`/`get-value` or immediate sanity
-checking could reconstruct the source array; the reported array cells could be
-missing or arbitrary despite a correct SAT answer.
-
-Commit `02607540` rematerializes the active read observations after a
-satisfiable eager-array solve whenever a model can be observed. This is model
-state only: it neither emits clauses nor redoes Ackermannisation. The new
-`ackermanize-model-cache.smt2` requests both models around an entirely
-cache-backed second solve, while `ackermanize-rounds.smt2` now also runs under
-`--check-sanity`.
-
-### Repaired campaign harness
-
-Paired mode now takes explicit solver A and B paths and records every
-`sat`/`unsat`/`unknown` answer, including the answer prefix available when a
-process times out. Its verdicts have narrow meanings:
-
-- `FULL_OK`: both arms completed successfully with identical full sequences;
-- `PREFIX_ONLY_INCONCLUSIVE`: the common prefix agrees but at least one arm did
-  not complete successfully, which is not a correctness success; and
-- `DISAGREEMENT`: an answer in the common prefix differs, or two completed arms
-  produced sequences of different lengths.
-
-Execution order is deterministically balanced AB/BA by file and run. Complete
-pairs are flushed as they finish; `--resume` accepts them only when the
-sidecar manifest and identity metadata still match. Sorted manifests and
-deterministic `--shard-index`/`--shard-count` selection make independent chunks
-reproducible. Each arm's metadata includes its binary SHA-256, arguments,
-embedded STP SHA and compilation options, `ldd` output, and hashes of linked
-`libstp` libraries; the harness also checks that the arm did not change during
-the run. Non-full results, timeouts, and large timing ratios are selected for a
-longer revalidation phase, which may be explicitly deferred.
-
-The aggregator added in `40acb2c4` checks schema, phase provenance, solver
-identity, manifests, unique `(file, run)` keys, exact expected coverage and
-answer totals. It preserves every produced answer, timeout prefix, and any
-disagreement ever seen.
-Since `239c4402`, each main shard's completed `.revalidate.manifest` is the
-authoritative selection: all selected main rows are removed even if a longer
-rerun is absent, and each revalidation shard must name its loaded main source.
-This prevents an interrupted rerun from being silently reported with the
-shorter main result. Main and revalidation input globs must also be
-phase-specific; `f1e55c2c` corrected the documented invocation because a broad
-`main-shard-*.csv` glob matches both phases in this campaign layout.
-
-The harness and reporter have now completed the frozen one-run reconciliation
-described below. A distinct three-run campaign is in progress for stable
-performance medians; partial timing rows are not results and are not used in
-this document.
-
-## Scope and evidence
-
-The original review compared branch `0ff90033` and then-local master from merge
-base `f66852e1fe950e66acd50fb7b3ae12b0023a82ad`. Reviewed branch state `f1e55c2c`
-contains master `34f69be1` through merge `4b60b401`; there is no unmerged
-master-side delta in this reviewed snapshot. The frozen candidate used for
-closeout is `e5a26c30`, whose last solver change is `ee8685bb`. Historical
-file/line/count claims from the initial audit should not be projected onto the
-larger current implementation.
-
-The recorded historical performance figures in this document come from the
-branch history and local campaign notes unless a passage explicitly identifies
-the frozen closeout campaign. The completed one-run reconciliation is current
-observed-answer and process-status evidence for the frozen candidate, but it is
-not a stable performance measurement. A separately pinned three-run campaign
-over the same manifest and binaries is in progress; no result from that
-unfinished phase is claimed here.
-
-At implementation closeout through `ee8685bb`, the complete configured
-RelWithDebInfo suites passed with CaDiCaL plus floating point (116/116), MiniSat
-plus floating point (115/115), and MiniSat without floating point (87/87).
-These backend/build matrices validate the merged implementation and the two
-privacy regressions. The frozen external-corpus reconciliation below provides
-the complementary end-to-end evidence.
-
-The original pre-implementation investigation is preserved in commit
-`f5235e54` (`Incremental solving: architecture review and phased plan`). It was
-removed after its initial phases were implemented by `5244299a`. This document
-is a post-implementation review: it records where the implementation followed
-that design, where it deliberately diverged, and what the resulting next steps
-are.
-
-## Master baseline
-
-Master is level-aware only at the frontend.
-
-- `STPMgr::_asserts` stores one `ASTVec` per push level
-  (`include/stp/STPManager/STPManager.h:158-166`).
-- `Cpp_interface` keeps declaration frames and a result-cache entry at the same
-  depth (`lib/Interface/cpp_interface.cpp:43-46`).
-- The result cache implements useful monotonicity: UNSAT survives pushes, SAT
-  propagates to shallower levels, and an unchanged stack can sometimes be
-  answered without another solve.
-
-For an uncached check, master is deliberately single-shot:
-
-- each level is collapsed to a conjunction and the active levels are conjoined;
-- `TopLevelSTP` creates a fresh floating-point context and SAT solver;
-- the complete whole-formula simplification, array, bit-blast, CNF, and
-  refinement pipeline runs;
-- the SAT solver and query-local encoding machinery are discarded.
-
-The batch pipeline consequently gets its full global preprocessing power, but
-it retains no preprocessing products, structural encodings, theory lemmas, SAT
-trail, or learned clauses across real checks. Master re-establishes pop
-soundness by retaining almost nothing.
-
-This baseline is still useful. A single large all-new query can profit more
-from whole-formula preprocessing than from persistence that has not yet had a
-chance to reuse anything. The branch's two-driver policy exists to preserve
-that property.
-
-## What this branch implemented
-
-### Driver selection
-
-The branch adds a persistent driver beside the batch path. Absent explicit
-`--incremental` forcing, an SMT-LIB session without an explicit or internal
-push remains entirely on the batch path;
-`check-sat-assuming` creates an internal temporary scope and therefore counts as
-a push for this purpose. By default, a pushed session runs its first two real
-solves through the batch pipeline and engages the incremental driver on the
-third; `--incremental` forces engagement from the first solve
-(`lib/Interface/cpp_interface.cpp:636-649,702-716`). The same solve threshold
-is applied by the C API after `vc_push` enables incremental mode.
-
-This is a performance policy, not an incremental-semantics requirement. Moving
-engagement from the second to the third solve in `cf911af5` removed two-check
-sessions from the measured loss tail: the last solve in such a session cannot
-repay the cost of constructing a persistent encoding.
-
-One remaining detail deserves an explicit decision: the counter counts real
-checks made before the first push. Two pre-push checks can therefore cause the
-first post-push check to engage immediately. That is not exactly the stated
-"two batch warm-ups in the incremental session" policy.
-
-### Persistent encoding and retraction
-
-`IncrementalSolver::Impl` owns, for the session
-(`lib/Incremental/IncrementalSolver.cpp:181-269`):
-
-- one SAT backend;
-- one AIG manager and bit-blaster;
-- an AIG-node-to-SAT-variable table for the current backend epoch;
-- a formula-to-root-literal cache for the current SAT-backend epoch;
-- session-owned fragment, symbol, DAG-size, and explicitly invalidatable
-  preparation caches;
-- persistent lazy-array and eager-Ackermann registries;
-- one session-long floating-point encoding context;
-- activation-literal, model-replay, and clause-mass bookkeeping.
-
-`ensureEncoded()` emits only Tseitin definitions
-(`IncrementalSolver.cpp:1381-1449`). These clauses are conservative extensions
-and remain valid in every assertion context. Retraction is separated from
-encoding:
-
-- on the ordinary SMT-LIB path, a level-zero root becomes a permanent unit
-  clause;
-- a pushed level is represented by a root literal, or by one cached activation
-  literal implying all roots in that level;
-- every check supplies the currently active retractable literals as SAT
-  assumptions;
-- pop performs no SAT-side deletion: the next check simply omits the popped
-  assumption.
-
-There are intentional exceptions to the simple level-zero rule. The C API
-prepends a synthetic `TRUE` base and treats every real assertion level as
-retractable, because the API's query bracket and model lifetime differ from
-SMT-LIB. Whole-array equality assumes one root for the complete active stack.
-Long-stable pushed SMT-LIB prefixes may be promoted to permanent units, with a
-backend rebuild as the only sound way to retract them later.
-
-The solver's learned clauses remain valid because persistent clauses are
-definitions, permanent base facts, theory-valid lemmas, or lifecycle clauses
-over private activation variables (activation implications and pins for
-retired activations). This is the same core invariant used by Bitwuzla's
-bit-vector SAT layer and cvc5's dedicated bit-blasting solver.
-
-### Word-level preprocessing
-
-The incremental driver does not run master's whole-stack destructive pipeline
-on every engaged check. It instead combines context-free rewrites, content
-caches, and carefully constrained prefix-sensitive transformations.
-
-Base definitions are monotone. They may be used as permanent substitutions
-because level zero cannot be popped without destroying the driver, while the
-defining assertion remains a permanent fact.
-
-Pushed definitions are rebuilt into a query-local context in stack order
-(`IncrementalSolver.cpp:3269-3519`). A definition at level `L` rewrites its own
-level and deeper levels, never a shallower level. A defining assertion is not
-rewritten under its own entry. This prefix rule prevents deeper stack growth
-from changing the encoded form of an already prepared shallow assertion.
-
-Preparation runs over either the whole level or its individual conjuncts,
-depending on size. It applies substitutions, floating-point totalisation where
-needed, equality propagation, simplification, and guarded variable elimination.
-The result is cached by the rewritten formula, not merely by the raw assertion.
-
-A definition can be removed only while its variable is private: it must not be
-used by the base, another live level, another conjunct in the same level, a CBP
-pinning fact, or an already bit-blasted encoding
-(`IncrementalSolver.cpp:1534-1735`). Eliminated definitions are replayed into
-models. Newly seen content is screened against eliminated variables; if a later
-assertion makes a variable shared, the cached preparation is invalidated and
-its equation returns (`IncrementalSolver.cpp:1451-1602`). Because raw-content
-screening is deliberately memoized, a prepared cache hit also revalidates every
-eliminated variable against current level privacy. CBP-fact symbols are
-protected before preparation, including on memo replay, so the fact cannot be
-appended only after its definition has disappeared
-(`IncrementalSolver.cpp:4394-4783`).
-
-These rules are sound, but they are more dynamic than the strictly
-forward-only policies in the reference solvers. They are also the reason a
-single monotone "preparation cursor" would be insufficient: future content can
-invalidate a still-live earlier preparation.
-
-### Cross-level constant-bit propagation
-
-`0ff90033` adds word-level CBP over the assertion prefix. Raw level
-conjunctions are fed in order; facts discovered at level `L` may rewrite level
-`L` and deeper content, with slot protection and pinning facts preventing
-circular "assume it, simplify it to true" reasoning. Rewrites happen before
-piece preparation, cache keying, and array transformation.
-
-At the original review baseline, the engine persisted only while the stack
-extended its previously fed prefix. A pop, changed level, or base growth reset
-the engine and re-fed the surviving prefix. Per-level rewrite/fact memos
-survived when their own prefix remained valid. This design fixed the
-Industrial_Control_C family but made reset-and-re-feed the leading measured
-scoped-state cost. The implementation update above records the subsequent
-engine/caller rollback trail that removed that cost.
-
-At the original reviewed revision, the source comments in `IncrementalCBP.h` and the
-beginning of the CBP field block still described a per-call engine. They
-predated the cross-call persistence added at that branch tip; the closeout
-documentation changes corrected them.
-
-### Arrays, floating point, and extensionality
-
-Lazy arrays use a persistent canonical row for each `(array,index)` pair.
-Congruence lemmas over those canonical abstractions are theory-valid and can
-remain permanent. The batch model/refinement table must nevertheless contain
-only rows owned by the active encodings; a row from a popped assertion can have
-floating SAT anchors and make model checking or refinement fail.
-
-The branch records rows per encoded key and maintains active row-key reference
-counts (`IncrementalSolver.cpp:1822-1958`). The table is materialized from fresh
-registry values before refinement because refinement mutates the batch table in
-place. Eager Ackermannisation instead keeps its per-array read history
-monotonically: the newer read's ITE covers its relationships to older reads.
-
-Floating-point operations are totalised and lowered through a session-long
-context. The structural caches persist; assertion-specific side conditions
-travel with the formula root and retract with it. Substitution is refused when
-it would manufacture a novel variant of an already shared symfpu circuit rather
-than genuinely collapse one.
-
-Whole-array equality remains a whole-query operation. The complete active stack
-is lowered, prepared, transformed, and assumed through one block root
-(`IncrementalSolver.cpp:2508-2728`). The extensionality procedure's graph and
-witness records are solve-local, while deterministic names, the root cache, and
-the session AIG caches let an identical block reuse its encoding. At the
-original reviewed revision, an implementation comment incorrectly said block
-roots were not cached even though the code at
-`IncrementalSolver.cpp:2614-2634` caches them; the closeout comment change
-corrected it.
-
-### Models, assumptions, and API lifetimes
-
-Models are built lazily. Definitions eliminated from the active stack are
-seeded into the legacy model-evaluation channel for the current solved state,
-and all entries seeded by the previous solve are withdrawn first
-(`IncrementalSolver.cpp:2352-2405`). Array refinement receives a freshly
-materialized active row table.
-
-On the ordinary incremental path, `check-sat-assuming` uses a temporary
-assertion frame, flattens its conjunction back to individual root literals, and
-maps failed literals to the original assumption terms. Batch warm-ups and the
-whole-array-equality block cannot provide that internal granularity and
-conservatively report the full assumption list. The frontend frame is popped
-after the check, but the solved model/core state deliberately remains readable
-until the next state-changing operation
-(`lib/Interface/cpp_interface.cpp:623-660,1007-1030`).
-
-Ordinary SMT-LIB stack mutation invalidates a model. The C API has a different,
-historical contract: a counterexample belongs to the last `vc_query` and remains
-readable after the usual push/query/pop bracket. Any future eager semantic pop
-hook must preserve both contracts.
-
-### Solver growth and policy adaptations
-
-The permanent encoding accumulates dead cones after pops. The relief valve
-rebuilds a fresh SAT backend from live content once the solver is large and
-the exact current-epoch submitted-clause total substantially exceeds the peak
-owned by a live working set. Formula-key submission deltas provide a cheap
-structural estimate. Before that estimate may authorize a rebuild, one lazy
-exact walk repairs the peak from the unique AIG-cone union of the permanent and
-latest current roots, whether the solve took the ordinary or extensionality
-path. Permanent units, active activation implications, and owner-keyed theory
-lemmas supply the non-structural share; retired activation lifecycle clauses
-remain retained but dead. The AIG and semantic registries survive, but SAT
-variables, root literals, learned clauses, and refinement lemmas are
-rematerialized or re-derived.
-
-The branch also contains measured policies for persistent-solver workloads:
-
-- prefix-stable assumption-trail reuse, retired for large/FP sessions;
-- retirement of recurring CaDiCaL inprobing, elimination, and shrinking;
-- disabled lucky-phase probes;
-- phase hints away from retracted roots;
-- retirement of stale activation literals;
-- promotion of long-stable prefix levels to permanent units, with a solver
-  rebuild if a promoted level is later retracted.
-
-These are not substitutes for semantic scoping, but several maintain their own
-stack identity, liveness, or repair records because no common scoped substrate
-exists.
-
-## Results and established invariants
-
-### Frozen closeout reconciliation
-
-The completed one-run closeout reconciliation compared master
-`34f69be1989910fd053008715de4b65c095fd770` with candidate
-`e5a26c30f83b2cd9cc0ccb274b62f210865023cd`. Both were frozen Release
-builds using CaDiCaL 3.0.1, floating-point support, shared libraries, and the
-system allocator; each arm was invoked with `--array-equality`. The master and
-candidate executable SHA-256 values were, respectively,
-`6f03a9edbbbfe6db2918ca9a36e6f2fd3903f5061e6a520db0c489f19212517a`
-and `2c9186d98aa55df055d751e3ea3b40d7f3d13f248b19789fea1ab57d2bbdb8ce`;
-their linked `libstp` hashes were
-`0f063a88125c10070b403e2d107e25b9b0cb9177c8aa22b95decff6bc4553a6b`
-and `84a36b4f447ab47ca97f2ea60b03cfe5628a65cef9f722b4d2a9bef7ab17e03f`.
-
-The exact corpus was 22,999 sorted, unique files totalling 20,308,257,767
-bytes. Every file was verified against a content ledger. The corpus-manifest
-SHA-256 was
-`cd1310ebac50f4d35c837df0a01e6f8ffe020c3e6df1a8f8b03d13a9bbf784d7`
-and the content-ledger SHA-256 was
-`7c0fca20fc75e5cd7506b0e225621d17aa20dc98e087b28f159f0dd40f4d98db`.
-Before the full pass, all 36 smoke pairs and all nine selected 120-second smoke
-reruns were `FULL_OK`.
-
-The main reconciliation ran every file once with a 30-second per-arm limit and
-produced 22,481 `FULL_OK` rows and 518
-`PREFIX_ONLY_INCONCLUSIVE` rows. Those 518 files were the authoritative
-selection for a 120-second rerun. The final report verified all 22,999 effective
-`(file, run)` pairs, all 518 selected entries and result rows across the 12
-revalidation shard manifests, exact solver identity, and zero missing or
-unexpected work. It observed no `DISAGREEMENT` row in either phase. After the
-selected main rows were replaced, 22,765 files were `FULL_OK` and 234 remained
-`PREFIX_ONLY_INCONCLUSIVE`.
-
-Those 234 rows are not agreements or correctness successes. They comprise 21
-rows where both processes exited with signal 11, 155 where both timed out, 17
-where master completed and the candidate timed out, and 41 where master timed
-out and the candidate completed. Only the answer prefixes that both processes
-actually produced agreed; incomplete execution leaves any unobserved suffix
-inconclusive. Correspondingly, the effective evidence retained 607,747 master
-answers and 607,180 candidate answers, short of the structural 621,942 answers
-per arm.
-
-The original `QF_FP/schanda/spark/precise.smt2` oracle was clean in the frozen
-reconciliation: both binaries completed with `unsat` in all four scopes. The
-restarted reconciliation therefore found no recurrence of the known
-CBP/private-definition disagreement. Completion of this manifest, its
-authoritative reruns, and the explicit inconclusive inventory closes the Phase
-0 correctness-reconciliation action; it does not prove the unobserved suffixes
-of those 234 rows or complete the separate performance action.
-
-A separate six-shard, three-run timing campaign over the same frozen binaries
-and manifest is in progress. It uses balanced execution order, pinned CPUs, a
-30-second main limit, and selected 120-second reruns. Its incomplete CSVs are
-not performance results. No quantitative conclusion from that phase should be
-drawn until all 68,997 main pairs, authoritative reruns, and the final report
-are complete.
-
-### Historical performance evidence
-
-Historical local campaign notes covered 22,999 files and reported 7,520 wins
-of at least 2x, 258 losses of at least 5x, median runtime 0.086s versus master's
-0.164s, and no disagreement under that harness's comparison. That run predates
-the latest tip and the repaired paired harness. The frozen reconciliation above
-supersedes it as current observed-answer evidence, but the historical timing
-figures remain contextual only until the three-run timing phase finishes.
-
-At an earlier implementation checkpoint, the recorded Industrial_Control_C
-specimen improved from at least 90 seconds to 2.6 seconds, versus master at 1.5
-seconds, with 164/164 answers agreeing. A 31-file family sample agreed fully.
-The same CBP work took three Automotive stragglers from roughly 12--18 seconds
-to roughly 0.8 seconds. The later rollback-versus-reset measurements above are
-more specific to the retained CBP trail; neither set substitutes for the
-in-progress, full-manifest three-run timing campaign.
-
-Other measurements materially shaped the design:
-
-- rebuilding the full active read table consumed 42% of a thousand-query
-  KLEE-style session before differential row seeding;
-- a repeated capped DAG-size walk consumed 30% of the post-CBP specimen before
-  per-node memoisation;
-- the full Industrial specimen with fresh-per-call CBP took 9.7 seconds;
-  prefix persistence reduced the run to 2.6 seconds;
-- the remaining specimen gap is approximately 1.1 seconds of driver work,
-  chiefly 31 pop-triggered prefix re-feeds, plus raw model validation at roughly
-  13%;
-- activating the driver on the second solve made two-check files the loss tail;
-  engaging on the third restored batch parity for that class.
-
-The development history established several load-bearing invariants:
-
-- assumption literals must pass through any SAT-backend variable translation;
-- a definition or CBP-fed assertion must never erase its own constraint;
-- a transformation based on scoped facts must retain an asserted justification;
-- every symbol in a CBP fact that will be appended after preparation must
-  participate in definition-privacy analysis before that preparation;
-- memoized raw-content screening is not a durable privacy proof: a prepared
-  cache hit must revalidate its eliminated definitions against the live stack;
-- a cached encoding is permanent, but the assertion selecting it is scoped;
-- array abstractions may be structurally permanent while their participation in
-  model/refinement state is scoped;
-- every active array user must carry its row's index binding;
-- stale model substitutions and popped rows must be withdrawn;
-- conflicting CBP feeds must participate in prefix divergence;
-- a refinement round rejecting a model without producing a new lemma indicates
-  an encoding/model inconsistency, not useful progress;
-- generated extensionality names keyed by nodes require the relevant node spine
-  to be kept alive;
-- semantic caches may survive a SAT rebuild, but SAT literals may not.
-
-## Reference solver investigations
-
-The reference solvers use different internal machinery, but converge on the
-same separation of concerns:
-
-1. a scoped assertion source or working stream;
-2. an explicit frontier for each independently advancing pipeline, or an
-   atomic commit boundary across stages;
-3. scoped preprocessing facts and model reconstruction;
-4. permanent structural encoding where sound;
-5. explicit query/assumption-result lifetimes;
-6. hard gates or repair rules for transformations that are not naturally
-   incremental.
-
-### Bitwuzla: the closest end-to-end model
-
-Bitwuzla has one scoped `AssertionStack`, a solver-wide backtrack manager, a
-preprocessor, and a solver engine (`src/solving_context.h:159-180`). Each
-assertion is appended together with its current scope level
-(`src/backtrack/assertion_stack.cpp:24-34`). Push records an assertion-count
-watermark; pop truncates the stack and clamps all registered consumers
-(`assertion_stack.cpp:126-157`).
-
-This stack is a mutable working stream, not an immutable raw-input journal.
-Preprocessing can replace its entries and insert derived assertions through an
-`AssertionVector`; Bitwuzla retains original user assertions separately
-(`src/solving_context.cpp:112-123,245-248`;
-`src/backtrack/assertion_stack.cpp:37-78`). STP's recommended immutable raw
-journal plus derived per-stage records is therefore a synthesis, not a literal
-copy of this container.
-
-#### Independent assertion views
-
-An `AssertionView` contains its own `d_index` and exposes only unseen
-assertions (`src/backtrack/assertion_stack.h:24-104`). The preprocessor and
-solver engine own separately tracked views, so advancing one does not claim
-work for the other:
-
-- preprocessor construction and consumption:
-  `src/preprocess/preprocessor.cpp:42-60,70-118`;
-- solver-engine construction and consumption:
-  `src/solver/solver_engine.cpp:32-54,457-494`.
-
-Pending assertions carry their insertion level. Each consumer can therefore
-defer work across pushes and later synchronize its local backtrack manager to
-the stamped level. Empty levels do not force every subsystem to do work. The
-views are not freely reorderable, however: the solving context always invokes
-preprocessing before the solver-engine view consumes its output
-(`src/solving_context.cpp:52-70`).
-
-`AssertionVector` exposes the assertions of one level and allows passes to
-replace them or insert derived assertions at that same level
-(`src/preprocess/assertion_vector.h:25-95`). The preprocessor operates to a
-fixed point over this window; lower levels are never reopened. Short-lived
-rewrite/pass caches are cleared after the window, while true semantic state is
-backtracked (`src/preprocess/preprocessor.cpp:124-133,234-383`).
-
-#### Substitution safety
-
-Bitwuzla explicitly handles the core incremental-elimination hazard. Suppose a
-previous batch already encoded `F(b)`, and a later batch discovers `b = s`.
-The later equality may simplify new formulas, but it cannot be replaced by
-`true`: the old `F(b)` was never rewritten. Bitwuzla retains the defining
-equality unless the variable first appeared in the current batch
-(`src/preprocess/pass/variable_substitution.cpp:751-803,820-827`).
-
-This is a deliberately conservative forward-only policy. It avoids the need to
-invalidate or reprocess earlier levels. It may lose an elimination that STP's
-current privacy analysis can recover, but its lifetime invariant is much
-simpler.
-
-#### Permanent encoding and active roots
-
-The default bit-vector engine keeps its bit-blaster, AIG-to-CNF encoder, and SAT
-backend alive. New top-level assertions are encoded with their roots asserted;
-retractable assertions are definitionally encoded without a unit and their
-roots are supplied as SAT assumptions on every solve
-(`src/solver/bv/bv_bitblast_solver.cpp:154-187,225-256`). Its term-to-AIG and
-AIG-to-CNF maps are permanent; its active root/assumption vectors are scoped.
-Normal bit-vector push/pop does not touch the SAT clause database.
-
-There are deliberate mode-specific exceptions. With unsat-core production,
-all non-lemma user assertions, including level zero, travel as assumptions so
-their provenance remains visible. Interpolation mode schedules SAT/CNF
-reconstruction after pop (`bv_bitblast_solver.cpp:225-243,318-325,364-392`).
-The persistent design described here is the default path, not a claim that
-every Bitwuzla mode has identical lifetime rules.
-
-The result is almost exactly STP's successful low-level design. Reasserting
-popped content reuses the old circuit and clauses while restoring only its
-active root.
-
-Bitwuzla registers generated theory lemmas at top level. Correctness therefore
-requires the lemma formula itself to be valid independently of the current user
-assertions—for example, a guarded array congruence implication. This is a
-producer invariant, not a generic enforcement mechanism. Its FP solver also
-separates a permanent word-blast cache from backtrackable records saying that
-the associated validity constraints are active in the current scope
-(`src/solver/fp/fp_solver.cpp:64-109`; `src/solver/fp/word_blaster.h:162-166`).
-STP's array-row and FP-side-condition designs must continue to observe the same
+The reference solvers use different internal machinery but converge on the same
+separation of concerns: (1) a scoped assertion source or working stream; (2) an
+explicit frontier for each independently advancing pipeline, or an atomic commit
+boundary across stages; (3) scoped preprocessing facts and model reconstruction;
+(4) permanent structural encoding where sound; (5) explicit query/assumption
+result lifetimes; (6) hard gates or repair rules for transformations that are not
+naturally incremental.
+
+## Bitwuzla: the closest end-to-end model
+
+One scoped `AssertionStack`, a solver-wide backtrack manager, a preprocessor, and
+a solver engine (`src/solving_context.h:159-180`). Each assertion is appended with
+its scope level (`src/backtrack/assertion_stack.cpp:24-34`); push records a count
+watermark, pop truncates and clamps all registered consumers
+(`assertion_stack.cpp:126-157`). It is a mutable *working stream*, not an
+immutable raw journal: preprocessing may replace entries and insert derived
+assertions, with original user assertions retained separately
+(`src/solving_context.cpp:112-123,245-248`).
+
+**Independent assertion views.** An `AssertionView` carries its own `d_index` and
+exposes only unseen assertions (`src/backtrack/assertion_stack.h:24-104`). The
+preprocessor and solver engine own separately tracked views
+(`src/preprocess/preprocessor.cpp:42-60,70-118`;
+`src/solver/solver_engine.cpp:32-54,457-494`), so advancing one does not claim
+work for the other. Pending assertions carry their insertion level, so each
+consumer can defer across pushes and later synchronize. The views are not freely
+reorderable: preprocessing always runs before the solver-engine view consumes its
+output (`src/solving_context.cpp:52-70`).
+
+**Substitution safety.** Bitwuzla handles the core incremental-elimination hazard
+explicitly: if `F(b)` was already encoded and a later batch discovers `b = s`, the
+equality may simplify new formulas but is **not** replaced by `true` --- the
+defining equality is retained unless the variable first appeared in the current
+batch (`src/preprocess/pass/variable_substitution.cpp:751-803,820-827`). A
+deliberately conservative forward-only policy: it loses eliminations STP's
+privacy analysis can recover, and its lifetime invariant is far simpler. **D1 is
+exactly the hazard this policy exists to prevent.**
+
+**Permanent encoding and active roots.** The default bit-vector engine keeps its
+bit-blaster, AIG-to-CNF encoder, and SAT backend alive; new top-level assertions
+are encoded with roots asserted, retractable ones definitionally encoded without
+a unit and supplied as assumptions each solve
+(`src/solver/bv/bv_bitblast_solver.cpp:154-187,225-256`). Term-to-AIG and
+AIG-to-CNF maps permanent; active root vectors scoped. **This is almost exactly
+STP's design.** Mode-specific exceptions exist (unsat-core production routes all
+user assertions as assumptions; interpolation schedules SAT/CNF reconstruction
+after pop).
+
+Bitwuzla's FP solver separates a permanent word-blast cache from backtrackable
+records saying the associated validity constraints are active in the current
+scope (`src/solver/fp/fp_solver.cpp:64-109`; `src/solver/fp/word_blaster.h:162-166`).
+STP's array-row and FP-side-condition designs observe the same
 content-cache/active-side-condition rule.
 
-#### Models and temporary assumptions
+**Models and temporary assumptions.** `check_sat(assumptions)` pushes a temporary
+context, appends assumptions as ordinary formulas, solves, and **delays the pop**
+so values and cores still observe the solved state
+(`src/api/cpp/bitwuzla.cpp:1609-1643`); the next mutating call realizes the
+pending pop (`:1808-1819`).
 
-`check_sat(assumptions)` pushes a temporary context, appends the assumptions as
-ordinary formulas, solves, and delays the pop so values and cores still observe
-the solved state (`src/api/cpp/bitwuzla.cpp:1609-1643`). The next mutating API
-call realizes the pending pop and invalidates the result
-(`bitwuzla.cpp:1808-1819`). Model lookup applies the active preprocessing
-substitutions before reading the solver model.
+**What to borrow:** the level-stamped working stream, separate preservation of
+original inputs, independently tracked stage views, deferred processing, and the
+permanent-content/scoped-activation distinction. **Not** every backtrackable
+container.
 
-#### What to borrow
+## cvc5: context-dependent state and explicit flush boundaries
 
-STP should borrow Bitwuzla's level-stamped working stream, separate preservation
-of original inputs, independently tracked stage views, deferred processing, and
-distinction between permanent content encoding and scoped activation. STP
-should not blindly copy every backtrackable container or preprocessing pass.
-Its current prefix rewriting is more aggressive and needs either
-dependency-aware rewind or a deliberate move to Bitwuzla's simpler
-forward-only rule.
+Assertions in a user-context `CDList` (`src/smt/assertions.cpp:36-40`); a
+user-context `CDO<size_t>` is the frontier into it
+(`src/smt/smt_driver.cpp:151-155,204-215`); only `[frontier,end)` enters the
+pipeline.
 
-### cvc5: context-dependent state and explicit flush boundaries
+**Container cost models** rather than one universal map: `CDO<T>` for scoped
+scalars, `CDList` for append/truncate, insert-only maps/sets that trail inserted
+keys, fully mutable context-dependent maps where overwrite restoration is
+required, and notification objects for caches cheapest to invalidate wholesale.
+It also distinguishes the *user assertion* context from the *SAT/theory decision*
+context.
 
-cvc5 stores assertions in a user-context `CDList`
-(`src/smt/assertions.cpp:36-40`). `SolverEngine::assertFormula()` appends raw
-assertions; preprocessing and SAT assertion are deferred. A
-user-context-dependent `CDO<size_t>` is the frontier into that list
-(`src/smt/smt_driver.cpp:151-155,204-215`). Only `[frontier,end)` is copied into
-the preprocessing pipeline.
+**Flush before push.** cvc5's raw assertions are not individually stamped, so it
+enforces a different clean invariant: flush all pending assertions through
+preprocessing and into the propositional engine before a user push
+(`src/smt/smt_driver.cpp:119-147`; `src/smt/context_manager.cpp:142-187`).
 
-#### Context-dependent containers
+> Two sound alternatives: **Bitwuzla** stamps each pending assertion and lets each
+> stage synchronize lazily; **cvc5** makes raw-to-internal processing atomic and
+> flushes before establishing the next scope. STP should choose explicitly, and
+> should not let a single cursor imply that several independently fallible stages
+> have all completed unless their transaction boundary really is atomic.
 
-cvc5's context library trails the first mutation to context-dependent objects.
-It provides several cost models rather than one universal map:
+**Incremental preprocessing.** If preprocessing finds `x = t` after `x` has
+appeared in materialized formulas, cvc5 keeps the equality as a real assertion
+while using the substitution on subsequent inputs
+(`src/preprocessing/passes/non_clausal_simp.cpp:316-346`) --- the same semantic
+rule as Bitwuzla through different structures.
 
-- `CDO<T>` for a scoped scalar such as the assertion frontier;
-- `CDList` for append/truncate sequences;
-- insert-only maps and sets that trail inserted keys;
-- fully mutable context-dependent maps for the smaller number of places that
-  require overwrite restoration;
-- notification objects for ordinary caches that are cheapest to invalidate
-  wholesale on pop.
+**SAT lifetime.** The Minisat-derived CDCL(T) backend tags variables and clauses
+with assertion dependency levels and can physically remove them above a saved
+level; the CaDiCaL path uses activation literals through the attached propagator;
+the dedicated BV bit-blasting solver resembles STP/Bitwuzla. **STP should not
+copy clause-level deletion** --- it depends on owning the SAT solver's internals.
 
-It also distinguishes the user assertion context from the SAT/theory decision
-context. Preprocessing and input assertion state follow user push/pop; theory
-fact queues and search state can follow the finer SAT context.
-
-#### Flush before push
-
-cvc5's raw assertions are not individually stamped for deferred processing.
-It therefore enforces a different clean invariant: before a user push, flush
-all pending assertions through preprocessing and into the propositional engine
-(`src/smt/smt_driver.cpp:119-147`; `src/smt/context_manager.cpp:142-187`). Then
-push both contexts. Pop reverses the dependency order.
-
-This shows two sound alternatives:
-
-- Bitwuzla: stamp each pending assertion and let each stage synchronize lazily;
-- cvc5: make raw-to-internal processing atomic and flush it before establishing
-  the next scope.
-
-STP should choose explicitly. It should not let a single cursor imply that
-several independently fallible stages have all completed unless their
-transaction boundary really is atomic.
-
-#### Incremental preprocessing
-
-cvc5's assertion pipeline processes only the supplied delta. If preprocessing
-finds `x = t` after `x` has already appeared in materialized formulas, it keeps
-the equality as a real assertion while using the substitution on subsequent
-inputs (`src/preprocessing/passes/non_clausal_simp.cpp:316-346`). Already
-materialized symbols and substitutions are user-context dependent.
-
-This is the same semantic rule as Bitwuzla expressed through different data
-structures: never make an old encoded occurrence unconstrained merely because
-a later definition was discovered.
-
-#### SAT lifetime choices
-
-cvc5's default Minisat-derived CDCL(T) backend tags variables and clauses with
-assertion dependency levels. Pop can physically remove clauses, learned clauses,
-and variables above a saved level while preserving lower-level learning. Its
-main CDCL(T) CaDiCaL path uses activation literals through the attached
-propagator; not every internal CaDiCaL instance has that lifetime. Its dedicated
-BV bit-blasting solver instead resembles STP/Bitwuzla: the bit-blaster and CNF
-stream live in persistent/null-context storage, while active facts, assumptions,
-and fact-to-literal provenance remain context dependent.
-
-STP should not copy cvc5's clause-level deletion machinery. It depends on
-owning the SAT solver's variable, clause, and resolution-dependency internals.
-For STP's external backends, permanent definitional CNF plus assumptions is the
-more portable design and is already implemented.
-
-#### Models, assumptions, and reset
-
-Generic `check-sat-assuming` opens a temporary context and inserts assumptions
-through the ordinary assertion pipeline (`src/smt/assertions.cpp:59-69`;
-`src/smt/context_manager.cpp:51-68`). Pending post-solve cleanup is delayed so
-model, proof, and core queries still see the exact solved context. Model lookup
-applies preprocessing substitutions. Model access is modal—available only
-immediately after an appropriate SAT/UNKNOWN result—and the theory model is
-deliberately independent of the SAT context
-(`src/smt/solver_engine.cpp:663-700`).
-
-cvc5 also has distinct SAT-assumption mechanisms beneath this API behavior.
-Assumption-based unsat-core mode passes input roots directly as SAT assumptions;
-the dedicated BV bit-blaster solves under scoped fact literals. These should not
-be conflated with generic `check-sat-assuming`, which uses the ordinary temporary
-assertion context (`src/prop/prop_engine.cpp:265-309,452-495`;
-`src/theory/bv/bv_solver_bitblast.cpp:187-216`).
-
-`reset-assertions` unwinds user assertions and reconstructs the main
+**Reset.** `reset-assertions` unwinds user assertions and reconstructs the main
 propositional engine, SAT solver, and CNF stream while retaining the theory
-engine (`src/smt/smt_solver.cpp:102-117`). It discards assertions rather than
-replaying a live stack. cvc5's deep-restart driver does replay saved preprocessed
-assertions while recreating more of the engine, but is not supported in
-incremental mode. STP's live-journal replay across a fresh backend is therefore
-a stronger, branch-specific rebuild contract.
+engine (`src/smt/smt_solver.cpp:102-117`). STP's live-journal replay across a
+fresh backend is a stronger, branch-specific rebuild contract.
 
-#### What to borrow
+## Z3: cursor-based rewriting with replay and repair
 
-STP should borrow the explicit raw-to-internal frontier, flush/commit boundary,
-context-sensitive substitution/provenance discipline, and fresh
-main-propositional-backend escape hatch. It should not copy cvc5's full region
-allocator, dual-context framework, proof pipeline, or clause dependency
-deletion merely to obtain assertion cursors.
+**Hybrid driver selection.** `combined_solver` wraps a from-scratch child and an
+incremental child (`src/tactic/portfolio/smt_strategic_solver.cpp:153-188`); both
+receive every raw assertion; a push, pop, assumptions, or an assertion after a
+completed check selects the incremental child
+(`src/solver/combined_solver.cpp:162-220`). Z3 deliberately **duplicates**
+frontend state rather than translating optimized batch state at the switch. STP
+chose a related but cheaper policy.
 
-### Z3: cursor-based rewriting with replay and repair
+**Assertion cursor and scoped simplifier state.** Dependent formulas in a scoped
+vector with append-only ingestion and a mutable unprocessed suffix; `qhead` marks
+the committed prefix (`src/ast/simplifiers/dependent_expr_state.h:45-88,119-185`);
+simplifiers iterate only `[qhead,qtail)`. Push trails the cursor and frozen-symbol
+state; pop restores. The classic `asserted_formulas` path has the same discipline
+(`src/solver/assertions/asserted_formulas.cpp:190-242,266-307,491-537`).
 
-Z3 supplies two relevant examples: the general SMT context and the QF_BV-oriented
-incremental SAT solver.
-
-#### Hybrid driver selection
-
-The default strategic solver wraps a tactic/from-scratch child and an
-incremental child in `combined_solver`
-(`src/tactic/portfolio/smt_strategic_solver.cpp:153-188`). Both children receive
-each raw assertion. A push, pop, assumptions, or an assertion after a completed
-check selects the incremental child (`src/solver/combined_solver.cpp:162-220`).
-
-Z3 deliberately duplicates frontend state rather than translating optimized
-batch state into incremental state at the switch. STP chose a related but
-cheaper policy: preserve its batch path, then let the incremental driver build
-from the raw active stack when engagement occurs.
-
-#### Assertion cursor and scoped simplifier state
-
-Z3's newer simplifier framework stores dependent formulas in a scoped vector
-with append-only assertion ingestion and a mutable unprocessed suffix. Passes
-may replace suffix entries in place, and `flatten_suffix()` may compact it;
-`qhead` still marks the committed prefix
-(`src/ast/simplifiers/dependent_expr_state.h:45-88,119-185`). Simplifiers
-iterate only `[qhead,qtail)` (`dependent_expr_state.h:203-223`). Push trails the
-cursor and frozen-symbol state; pop restores them. After a successful flush,
-`advance_qhead()` freezes the processed prefix and moves the cursor to the end.
-
-`simplifier_solver::flush()` first replays prior model-reconstruction records
-against the new suffix and assumptions, runs the incremental simplifier, commits
-the cursor, and then sends the resulting processed range beginning at the saved
-old `qhead` to the child solver (`src/solver/simplifier_solver.cpp:129-150`).
-
-The classic SMT `asserted_formulas` path has the same underlying discipline:
-every preprocessing pass sees its uncommitted suffix; push is lazy, but forcing
-it first reduces and commits pending formulas, then saves formula, substitution,
-definition, macro, and cursor limits. Pop restores those watermarks and clears
-rewrite caches (`src/solver/assertions/asserted_formulas.cpp:190-242,266-307,
-491-537`).
-
-#### Freeze, replay, and repair
-
-Once a prefix is handed to the backend, Z3 freezes the symbols it contains
-(`src/ast/simplifiers/dependent_expr_state.cpp:92-100`). Incremental passes skip
-unsafe elimination targets from that prefix.
-
-Z3 also supports a more aggressive repair mechanism. The model-reconstruction
-trail distinguishes equivalence-preserving definitions/substitutions from
-loose substitutions, loose constraints, hidden terms, and related records that
-must be disabled or replayed when later formulas intersect them
-(`src/ast/simplifiers/model_reconstruction_trail.h:38-88`). Before simplifying
-a new suffix, it checks whether its symbols intersect an older transformation:
+**Freeze, replay, and repair.** Once a prefix is handed to the backend, Z3 freezes
+the symbols it contains (`src/ast/simplifiers/dependent_expr_state.cpp:92-100`).
+Its model-reconstruction trail distinguishes equivalence-preserving
+definitions/substitutions from *loose* substitutions, loose constraints, and
+hidden terms that must be disabled or replayed when later formulas intersect them
+(`src/ast/simplifiers/model_reconstruction_trail.{h,cpp}`):
 
 - stable definitions may rewrite the new suffix;
-- a loose substitution is disabled and its equality is reasserted;
+- a loose substitution is **disabled and its equality reasserted**;
 - a loose removed constraint is replayed;
 - the same records reconstruct eliminated values in the model.
 
-See `src/ast/simplifiers/model_reconstruction_trail.cpp:39-195`. The taxonomy is
-powerful, but incorrectly classifying a loose transformation as
-equivalence-preserving is a direct soundness risk. STP's private-elimination
-screening is a specialized form of the same repair idea, currently without a
-first-class level record to rewind.
+> The taxonomy is powerful, but incorrectly classifying a loose transformation as
+> equivalence-preserving is a direct soundness risk. **STP's private-elimination
+> screening is a specialized form of the same repair idea, currently without a
+> first-class level record to rewind --- and D1 is exactly the misclassification
+> this warns about.**
 
-#### Three distinct lifetimes
+**Three distinct lifetimes** --- user assertion scopes, temporary
+query/assumption/search scopes, SAT decision/theory scopes --- each either
+trailing mutations or exposing a watermark/pop hook
+(`src/smt/smt_context.h:677-727`; `src/smt/smt_context.cpp:3122-3155,…`).
 
-The classic SMT context coordinates:
+**Incremental SAT mode.** `inc_sat_solver` is especially close to an STP target:
+formula log, `m_fmls_head`, per-scope limits, one bit-blaster, one persistent SAT
+solver (`src/sat/sat_solver/inc_sat_solver.cpp:50-82`); user scopes are marker
+literals; pop drops markers and garbage-collects clauses mentioning popped
+variables while retaining learning over survivors
+(`src/sat/sat_solver.cpp:351-373,1887-1912,3765-3800`). SAT simplification
+explicitly disables unsafe variable/clause elimination in incremental mode ---
+the same gate STP applies by substituting plain MiniSat for the simplifying one.
 
-- user assertion scopes;
-- temporary query/assumption/search scopes;
-- SAT decision/theory scopes.
-
-Each subsystem either trails its mutations or exposes a saved watermark/pop
-hook. Arbitrary Boolean assumptions are represented by temporary proxies in a
-query scope. UNSAT cores are copied through the proxy mapping before that scope
-is removed; a SAT query scope remains alive long enough for lazy model creation.
-The next check or mutation removes it (`src/smt/smt_context.h:677-727`;
-`src/smt/smt_context.cpp:3122-3155,3330-3583,3801-3829,4865-4936`).
-
-This is the central lifetime lesson for STP: assertion state, last-result state,
-and SAT search state are related but not interchangeable depths.
-
-#### Incremental SAT mode
-
-`inc_sat_solver` is especially close to an STP target. It owns a formula log,
-`m_fmls_head`, per-scope formula/head/assumption limits, scoped atom and model
-converter state, one bit-blaster, and one persistent SAT solver
-(`src/sat/sat_solver/inc_sat_solver.cpp:50-82`). It internalizes exactly
-`[m_fmls_head,end)` and then advances the head (`inc_sat_solver.cpp:1094-1115`).
-Push flushes pending formulas and records all component watermarks; pop restores
-them (`inc_sat_solver.cpp:272-318`).
-
-At the SAT layer, user scopes are marker literals. New clauses are augmented
-with active markers; checks assume the markers' negations; pop drops markers and
-garbage-collects clauses mentioning popped variables while retaining learning
-over survivors (`src/sat/sat_solver.cpp:351-373,1887-1912,3765-3800`;
-`src/sat/sat_gc.cpp:403-461`). SAT simplification explicitly disables unsafe
-variable/clause elimination in incremental mode.
-
-This differs from Z3's classic SMT user pop, which truncates learned state to a
-saved lemma watermark and may save/re-internalize AST atoms from search scopes.
-The marker-based incremental SAT path is the closer analogue to STP because it
-can retain survivor-only learning.
-
-STP should borrow the formula-head/watermark organization and preprocessing
-gates, not Z3's physical E-graph/Boolean deletion and reinternalization.
-
-### Convergence and important differences
+## Convergence table
 
 | Question | Bitwuzla | cvc5 | Z3 | STP branch |
 |---|---|---|---|---|
-| Assertion source/working stream | Scoped original-input list plus level-stamped mutable stack | User-context raw `CDList` | Scoped dependent-formula vector with mutable suffix | Per-level raw `ASTVec`, destructively conjoined for solving |
-| Unprocessed work | Separately tracked, stage-ordered assertion views | One context-dependent transaction frontier | `qhead` per simplifier/state | Recomputed whole-stack loops plus subsystem-specific memos |
-| Pop of semantic state | Backtracked containers and clamped views | Context-dependent objects | Trails and watermarks | Mostly reconstruct next check; manual subsystem repair |
-| Preprocess old levels again | No | No | No, unless replay/repair invalidates a transformation | Metadata/context rebuilt; heavy transformations usually cache-hit |
-| Structural BV encoding | Permanent in the default path | Persistent/null-context maps in BV solver; scoped in general CDCL(T) | Persistent in incremental SAT mode | Session AIG/cache plus backend-epoch CNF/root map |
-| Retractable SAT assertions | Assumed roots | Assumptions, clause levels, or activations depending on backend | Marker/assumption scopes | Root or per-level activation assumptions |
-| Late variable definition | Keep equality unless safe in current batch | Reassert definition if symbol already materialized | Freeze or replay/repair | Dynamic privacy test plus future-content invalidation |
-| Temporary assumptions | Delayed-pop assertion scope | Delayed cleanup of temporary context | Query scope/proxies | Temporary frontend level, solved state retained |
-| Batch path | Same engine with gated passes | Same driver with option gates | Separate tactic child | Separate batch driver, delayed engagement |
+| Assertion source | Scoped original-input list + level-stamped mutable stack | User-context raw `CDList` | Scoped dependent-formula vector with mutable suffix | Per-level raw `ASTVec`, destructively conjoined |
+| Unprocessed work | Stage-ordered assertion views | One context-dependent frontier | `qhead` per simplifier | Recomputed whole-stack loops + subsystem memos |
+| Pop of semantic state | Backtracked containers, clamped views | Context-dependent objects | Trails and watermarks | Mostly reconstruct next check; manual repair |
+| Reprocess old levels | No | No | Only if replay/repair invalidates | Metadata rebuilt; heavy transforms usually cache-hit |
+| Structural BV encoding | Permanent (default path) | Persistent in BV solver | Persistent in incremental SAT mode | Session AIG/cache + backend-epoch CNF/root map |
+| Retractable assertions | Assumed roots | Assumptions / clause levels / activations | Marker/assumption scopes | Root or per-level activation assumptions |
+| Late variable definition | Keep equality unless safe in current batch | Reassert if symbol already materialized | Freeze, or replay/repair | Dynamic privacy test + future-content invalidation **(D1)** |
+| Temporary assumptions | Delayed-pop assertion scope | Delayed cleanup of temp context | Query scope/proxies | Temporary frontend level, solved state retained |
+| Batch path | Same engine, gated passes | Same driver, option gates | Separate tactic child | Separate batch driver, delayed engagement |
 
-No solver provides a zero-cost universal answer. Bitwuzla's variable-
-substitution pass copies its full map and apply cache when its local manager
-pushes so processing remains valid after pop; cvc5 pays for context-dependent
-objects and clause provenance; Z3 pays for duplicate drivers, trails, and repair
-classification. The shared lesson is not a particular container. It is that
-state lifetime is explicit and local rather than inferred by reconstructing the
-whole active query.
+No solver provides a zero-cost universal answer. The shared lesson is not a
+container: **state lifetime is explicit and local rather than inferred by
+reconstructing the whole active query.**
 
-## State-lifetime audit of the STP branch
+---
 
-The current implementation already has several distinct lifetimes. They are
-real, but they are expressed through container choice, cache keys, and repair
-code rather than through a common scoped-state interface.
+# PART VII — STATE-LIFETIME AUDIT
+
+*(Retained and updated. The table is still accurate at tip `278552ce`.)*
 
 | Lifetime | Representative state | Current mechanism |
 |---|---|---|
-| Session-owned semantic content | fragment, symbol, DAG-size, generated-name, array-read, eager-Ackermann, and FP caches; retired-epoch clause-submission accumulator | Content-keyed maps and lifetime totals generally retained for the `IncrementalSolver` lifetime |
-| Explicitly invalidatable semantic caches | prepared pieces, elimination users, screened content | Retained until dependency invalidation or backend-repair logic drops/clears them |
-| SAT-backend epoch | SAT variables, AIG-to-variable map, root literals, activation literals, learned clauses, refinement lemmas, exact retained-submission counter, root/ownership maps, permanent-root/unit mass, one pending live-cone snapshot, and current/peak live mass | Retained until a relief/policy rebuild; explicitly cleared or rematerialized by `rebuildEncodings()` |
-| Permanent base semantics | `level0Asserted`, `sigma0`, restored base eliminations | Monotone sets/maps on the SMT-LIB path because reset destroys the driver |
+| Session-owned semantic content | fragment, symbol, DAG-size, generated-name, array-read, eager-Ackermann and FP caches; retired-epoch clause accumulator | Content-keyed maps retained for the `IncrementalSolver` lifetime |
+| Explicitly invalidatable semantic caches | prepared pieces, elimination users, screened content | Retained until dependency invalidation or rebuild repair |
+| SAT-backend epoch | SAT variables, AIG→variable map, root literals, activation literals, learned clauses, refinement lemmas, retained-submission counter, root/ownership maps, permanent-root/unit mass, pending live-cone snapshot, current/peak live mass | Retained until a relief/policy rebuild; cleared by `rebuildEncodings()` (~28 fields, by hand) |
+| Permanent base semantics | `level0Asserted`, `sigma0`, restored base eliminations | Monotone on the SMT-LIB path because reset destroys the driver |
 | Active user scopes | raw frontend `ASTVec` levels | Supplied again as a complete snapshot at each check |
-| Subsystem views of active scopes | CBP fed prefix/memos, promotion stability, active read-key refcounts, current eliminated definitions | Independently maintained ad hoc, usually by longest-common-prefix or set-difference logic |
-| One query/refinement round | assumptions, active roots, pushed definition context, batch array table, extensionality records | Rebuilt for the current snapshot and discarded or overwritten |
-| Last result | model-pending state, failed literals, assumption-to-level map, eliminated-definition model seeds | Retained after solve under API-specific invalidation rules |
+| Subsystem views of active scopes | CBP fed prefix/memos, promotion stability, active read-key refcounts, current eliminated definitions | Independently maintained ad hoc, usually by LCP or set difference |
+| One query/refinement round | assumptions, active roots, pushed definition context, batch array table, extensionality records | Rebuilt for the current snapshot and discarded |
+| Last result | model-pending state, failed literals, assumption→level map, eliminated-definition model seeds | Retained after solve under API-specific invalidation rules |
 
-This table also explains why the existing `Backtrack.h` is not yet the missing
-architecture. It supplies tested append-only and insert-only backtrackable
-containers, but production solver state does not use it. More importantly,
-several important states overwrite existing values: CBP tightens `FixedBits`,
-preparations can be invalidated, active-row reference counts rise and fall, and
-SAT literals are replaced wholesale at a rebuild. Insert-only containers cannot
-express those lifetimes without an additional mutation trail or a different
-record structure.
+This table explains why `Backtrack.h` is not yet the missing architecture: it
+supplies insert-only containers, but several important states **overwrite**
+existing values --- CBP tightens `FixedBits`, preparations are invalidated,
+row refcounts rise and fall, SAT literals are replaced wholesale at a rebuild.
+Insert-only containers cannot express those lifetimes without a value-undo trail.
+*(The symbol→levels index of Part V item 4 is insert-only per level, which is why
+it is the natural first consumer.)*
 
-### What is reconstructed on an ordinary check
+## What is reconstructed on an ordinary check
 
-Even when no new formula is encoded, `checkSatOnCurrentStack()` currently does
-work proportional to some or all of the active stack:
+Even when nothing is newly encoded, `checkSatOnCurrentStack()` does work
+proportional to the active stack: compares saved level conjunctions for promotion
+and CBP prefix stability; scans levels for FP/array-equality/array fragments
+(cached); screens newly observed raw content; splits each live level and
+re-harvests pushed definitions into `ctx`/`ctxSources`/`ctxHasFp` in prefix order;
+reconstructs per-level symbol counts and the current eliminated-definition list
+(usually hitting preparation caches --- **and re-proving privacy on every hit,
+D4**); reconstructs roots, activation assumptions, failed-core provenance, active
+encoding keys, and live clause mass; computes the active read-key difference and
+materializes fresh batch array rows; rolls CBP back to the LCP and feeds the
+replacement suffix on divergence; seeds reconstruction definitions when a model
+is materialized.
 
-- compares saved level conjunctions to the current stack for promotion and CBP
-  prefix stability;
-- scans levels for floating-point, array-equality, and array fragments (the
-  fragment analysis itself is cached);
-- screens newly observed raw content against prior private eliminations;
-- splits each live level and re-harvests pushed definitions into `ctx`,
-  `ctxSources`, and `ctxHasFp` in prefix order;
-- reconstructs per-level symbol counts and the current list of eliminated
-  definitions, while usually hitting the expensive preparation caches;
-- reconstructs roots, activation assumptions, failed-core provenance, active
-  encoding keys, and live clause mass;
-- computes the active read-key difference and materializes fresh batch array
-  rows for refinement;
-- when CBP has diverged, rolls its scoped engine/caller state back to the LCP
-  and feeds only the replacement suffix (the diagnostic oracle instead resets
-  and re-feeds the surviving prefix);
-- when a model is materialized, seeds current reconstruction definitions; when
-  counterexample checking or array refinement requires validation, it also
-  checks a candidate against the relevant raw/semantic active formula.
+Some whole-query work is **irreducible** under the present semantics: SAT
+assumptions must describe every active retractable root; counterexample
+validation must establish the candidate satisfies the current query; ordinary
+array refinement needs a fresh table containing all live rows; whole-array
+equality deliberately reasons about the complete active graph; a SAT rebuild must
+rematerialize every live semantic root.
 
-The main loop and context reconstruction are visible at
-`IncrementalSolver.cpp:3183-3643`; active-row seeding is at
-`IncrementalSolver.cpp:1893-1958`. Caches change much of this from repeated
-transformation into repeated traversal and collection, which is why the branch
-can still win substantially without cursors.
+> The objective of scoped state is therefore **not** "make every check O(delta)".
+> It is to stop rediscovering semantic facts that already have a precise scope,
+> and to make pop correctness local and auditable. D1 and D2 are what
+> rediscovery costs.
 
-Some whole-query work is irreducible under the present semantics:
+## Why one monotone preparation cursor would be unsound
 
-- SAT assumptions must describe every active retractable root unless stable
-  prefixes are made permanent or represented by a hierarchical activation
-  scheme;
-- requested counterexample validation must establish that the candidate
-  satisfies the current query;
-- ordinary array refinement needs a fresh table containing all live rows;
-- whole-array equality deliberately reasons about the complete active graph;
-- a SAT-backend rebuild must rematerialize every live semantic root in the new
-  literal epoch.
-
-The objective of scoped state is therefore not “make every check O(delta).” It
-is to stop rediscovering semantic facts that already have a precise scope and
-to make pop correctness local and auditable.
-
-### Why one monotone preparation cursor would be unsound
-
-A cursor is safe only if processing an assertion is final until that assertion
-is popped. That is not true for all of STP's current preprocessing:
-
-1. More assertions can be appended to an existing top level without a push.
-   The conjunction node and level revision then change at the same depth.
-2. A later assertion can mention a variable privately eliminated from an
-   earlier live piece. `screenNewContent()` must invalidate that earlier
-   preparation and restore its defining equation.
+1. More assertions can be appended to an existing top level without a push --- the
+   conjunction node and level revision change at the same depth.
+2. A later assertion can mention a variable privately eliminated from an earlier
+   live piece; `screenNewContent()` must invalidate that preparation.
 3. A deeper definition may rewrite deeper assertions but must never change an
-   already materialized shallower assertion. Cursor movement must preserve this
-   prefix rule.
-4. Whole-array equality routes all levels through a different, whole-query
-   pipeline. A level that has passed the ordinary encoder has not thereby
-   passed the extensionality pipeline.
+   already materialized shallower one.
+4. Whole-array equality routes all levels through a different pipeline; passing
+   the ordinary encoder is not passing the extensionality pipeline.
 5. A SAT rebuild invalidates every literal cursor without invalidating the
-   semantic preparation cache that produced the formulas.
+   semantic preparation cache.
 6. `check-sat-assuming` needs individual assumption provenance and a result
-   lifetime that extends beyond removal of its temporary assertion frame.
-7. Reusing stack depth as identity is ambiguous: after pop and push, a new
-   level at the same depth is a different scope even if its conjunction happens
-   to be structurally equal.
+   lifetime extending beyond removal of its temporary frame.
+7. Stack depth is ambiguous as identity: after pop and push, a new level at the
+   same depth is a different scope even if structurally equal.
 
-Consequently, the target is an assertion journal with versioned scope identity,
-independent stage cursors, and explicit invalidation—not one global “processed
-up to here” index.
+Consequently the target is an assertion journal with versioned scope identity,
+independent stage cursors, and explicit invalidation --- not one global
+"processed up to here" index.
 
-## Immediate risks and completed closeout work
+---
 
-These are the prerequisites before a broad semantic-state migration. The
-implementation, documentation, and correctness-reconciliation actions are
-complete through solver tip `ee8685bb`, campaign/documentation tip `f1e55c2c`,
-and the frozen reconciliation. Phase 0 remains open on the separate three-run
-performance campaign, which is in progress and will replace the old timing
-baseline.
+# PART VIII — RECOMMENDED SCOPED-STATE ARCHITECTURE
 
-### 1. Active-read state across rebuilds and eager cache hits (complete)
-
-`seedActiveReads()` maintains pushed read ownership by taking a set difference
-between `lastSeededKeys` and the current active keys. It keeps the resulting
-row reference counts in `seededRowRef`, with each key's contribution recorded
-in `foldedRowsOf` (`IncrementalSolver.cpp:1834-1958`).
-
-`rebuildEncodings()` clears `lastSeededKeys` at line 2111 but retains
-`seededRowRef` and `foldedRowsOf`. If the live array cone differs between the
-last refinement round and the first refinement round after a rebuild, the
-forgotten old-key set can no longer drive `unfoldKeyReads()`. A stale popped
-row can consequently remain materialized, while an apparently new key that is
-still in `foldedRowsOf` will not be folded again.
-
-Follow-up confirmed reachability. A permanent read initially encoded at
-`A[i+1]`, followed by the permanent definition `i = 0` and enough dead pushed
-circuits to trigger the valve, re-encoded the same base key at `A[1]`. The stale
-folding state then seeded `A[i+1]` and omitted the replacement, causing the
-refinement no-progress guard to abort. Commit `9eb8e407` adds the forced-valve
-regression and fixes the rebuild by clearing `lastSeededKeys`, `seededRowRef`
-and `foldedRowsOf` together, clearing the materialized batch tables, and
-re-queuing every permanent key. The canonical `myReads` registry remains
-session-owned.
-
-A second reachable problem affected eager Ackermannisation without changing
-the SAT answer. The frontend clears the batch transformer before every solve,
-and an all-cache-hit eager round had no refinement stage that would seed its
-active reads again. Commit `02607540` now rematerializes those observations
-after SAT whenever a model may be read, covering deferred model construction
-and immediate sanity checking without re-encoding the constraints.
-
-### 2. Retained-clause accounting and extensionality (complete)
-
-The original inspection found that the ordinary path counted only structural
-encoding deltas, while direct theory clauses, extensionality blocks,
-activation lifecycle clauses, and permanent units could bypass either the
-retained total or its live ownership model. `db4aab0a` and `c604e923` close
-those blind spots: the common SAT facade supplies the exact current-epoch
-submission total, the driver separately preserves lifetime submissions across
-backend rebuilds, and theory-refinement submissions are a reported subset.
-
-Live/peak ownership now covers actual structural AIG roots,
-base/restored/promoted units, currently assumed activation implications, and
-owner-keyed theory lemmas. Retired implications and their false pins stay
-retained but dead. `9cb7b34b` replaced the extensionality-only repair with one
-exact unique-cone union for both ordinary and extensionality paths. Normal
-solving retains only the latest snapshot above the variable floor and walks it
-only if the cheap ratio would rebuild; profiling measures the exact union on
-every solve. The forced-churn and monotonic-live tests in `45fe552b`, repaired
-per-round negative checks in `8e421b89`, and ordinary shared-cone regression in
-`9cb7b34b` cover the policy.
-
-### 3. Integrate current master before structural work (complete)
-
-Merge `4b60b401` integrates master through `34f69be1`, including the earlier
-`d272dc2a` difficulty/FP work and `fa211128` fixed-width types, plus the later
-SAT-backend factory, backend-neutral literal, and optional-MiniSat changes. The
-incremental code was adapted to that backend construction and build matrix
-before any assertion-journal work.
-
-### 4. Keep the corrected documentation with the branch (complete)
-
-The user guide, source comments, and this review now describe third-solve
-automatic engagement, persistent CBP rollback, extensionality block reuse,
-unified live-cone accounting, eager-array model rematerialization, exact
-retained versus lifetime clause counters, preparation-privacy repairs, and the
-repaired campaign verdict/provenance rules. These are soundness and measurement
-contracts, not implementation trivia, and belong with the branch.
-
-### 5. Repair preparation privacy exposed by closeout (complete)
-
-The first frozen attempt made the CBP/private-definition bug reproducible on
-`precise.smt2` and was stopped rather than allowing one bad row to contaminate
-the closeout baseline. `56de220c` moved CBP-fact symbol protection before
-preparation and invalidated unsafe cached elimination. `ee8685bb` then made
-cached eliminated definitions re-prove level privacy against the current stack.
-The focused regressions, configured suites, frozen `precise.smt2` oracle, and
-restarted corpus reconciliation all cover these repairs.
-
-### 6. Rerun the full reconciliation (complete)
-
-The repaired paired harness completed all 22,999 one-run main pairs and all 518
-authoritatively selected longer reruns with zero observed answer disagreement.
-The frozen inputs, binaries, linked libraries, manifests, content ledger, full
-answer streams, timeout prefixes, and process statuses were preserved. Only
-22,765 effective rows completed on both arms; the 234 incomplete rows remain
-`PREFIX_ONLY_INCONCLUSIVE` and must never be summarized as agreements. The
-detailed provenance and status breakdown are recorded above.
-
-### 7. Complete the three-run performance campaign (in progress)
-
-The separately pinned three-run timing campaign is running over the same
-frozen binaries and manifest. Wait for its 68,997 main pairs, authoritative
-longer reruns, completeness checks, and final report before replacing the
-historical performance figures or reclassifying the tail. This is the final
-Phase 0 action.
-
-### 8. Treat the RTOS tail as engagement overhead until measured otherwise
-
-The remaining recorded loss class is about 1.3 seconds on inputs master solves
-in roughly 0.02 seconds. There is no evidence that semantic stack
-reconstruction dominates that delta. It is more consistent with constructing
-and warming a second solver path, backend startup, or another fixed engagement
-cost. Measure it separately; do not use it as justification for scoped state.
-
-Two narrower policy questions can be settled at the same time:
-
-- should automatic engagement count checks before the first push, as it does
-  now, or checks within the pushed phase only;
-- should the all-ever-rows walk in `totalizeRegistrySymbols()`
-  (`IncrementalSolver.cpp:1960-1977`) become a touched/live-row delta if it is
-  material on long lazy-array sessions.
-
-## Instrumentation before refactoring
-
-The instrumentation phase made semantic reconstruction visible. The older
-statistics reported newly encoded conjuncts, clauses, assumptions,
-substitutions, CBP rewrites, and refinement rounds, but did not partition the
-driver time well enough to decide which scoped state would pay.
-
-The per-check and session-aggregate profiler reports:
-
-- stack snapshot/LCP synchronization and promotion repair;
-- new-content screening and preparation invalidations;
-- pushed-definition harvest, context replay, and context size by level;
-- preparation attempts, cache hits/misses, and accepted/rejected trials;
-- CBP prefix comparison, divergence, rollback/reset count and work, re-fed
-  levels/nodes, fresh feeds, propagation, harvest, adoption, and memo replay;
-- root/activation lookup, assumption construction, active key count, lifetime
-  clause submissions, refinement submissions, exact current-epoch retained
-  submissions, and current/peak live ownership;
-- active-read fold/unfold deltas, live-row materialization, and all-registry
-  totalization;
-- extensionality lowering, preparation, encoding, totalization, checking, and
-  refinement;
-- model-seed withdrawal/install, model construction, and—when enabled or
-  required by refinement—raw/semantic formula validation;
-- time inside SAT, split by the initial solve and refinement re-solves.
-
-The output distinguishes cache-hit traversal from genuinely new semantic work
-and includes counts as well as time. A timer saying “context: 20 ms” is hard to
-interpret; “130 levels replayed, 4 new assertions, 0 preparation misses”
-identifies the missing cursor directly. It uses a dedicated
-`--incremental-profile` switch rather than `-s`, whose verbose pass diagnostics
-would distort the measured scopes. Ordinary output and benchmark parsers
-therefore remain unchanged.
-
-Measure at least these workload shapes:
-
-- the Industrial Control specimen and family, especially its 31 pop-triggered
-  CBP re-feeds;
-- RTOS small files, to isolate fixed engagement cost;
-- KLEE `b64`, for pop-per-query behavior and read/table costs;
-- `f84c6e97` and `1ccb771c`, for stable-prefix and solver-policy behavior;
-- the Automotive family and the seven former FP-substitution timeouts;
-- forced-rebuild lazy-array and extensionality cases;
-- representative QF_BV, QF_BVFP, and QF_ABVFP samples from the full campaign.
-
-The measurements did confirm CBP re-feed as the leading narrow candidate and
-the implementation result is recorded above. Further cursor work should still
-be decided from cross-workload aggregates, not from the one Industrial
-specimen. If future profiles show context reconstruction, active-root assembly,
-or row materialization dominating important workloads, move that consumer
-forward in the cursor roadmap. If reconstruction stays small, scoped state
-remains a maintainability investment and should be paced accordingly.
-
-## Recommended scoped-state architecture
-
-This should be introduced narrowly. STP does not need cvc5's complete context
-framework or Z3's E-graph scope machinery to obtain the useful invariant.
+*(Retained. Still the right destination; see Part V item 11 for sequencing.)*
 
 ### 1. A versioned assertion journal
-
-Replace “one newly collapsed conjunction per current depth” as the driver's
-semantic input with a lightweight canonical journal. A suitable logical model
-is:
 
 ```text
 AssertionEntry = { assertion_id, scope_id, level, raw_formula }
@@ -1388,69 +1803,36 @@ ScopeRecord    = { scope_id, kind, revision, begin, end, cached_conjunction }
 Journal        = { epoch, entries, scope_watermarks, next_unique_id }
 ```
 
-- `assertion_id` and `scope_id` are monotone unique identities, never reused
-  merely because a depth is reused after pop;
-- appending at the current level adds an entry and increments that scope's
-  revision;
-- push records the current journal length and creates a new scope ID;
-- pop truncates to the saved watermark and reports the removed scope IDs;
-- reset increments the journal epoch, invalidating every external cursor;
-- the per-level conjunction is a cached view, not the canonical data.
+`assertion_id`/`scope_id` are monotone and never reused merely because a depth is
+reused after pop; appending at the current level increments that scope's
+revision; push records the journal length; pop truncates and reports removed
+scope IDs; reset increments the epoch, invalidating every external cursor; the
+per-level conjunction is a **cached view**, not canonical data.
 
-`kind` must encode frontend semantics, for example `permanent_user`,
-`retractable_user`, or `query_overlay`; depth zero alone does not imply
-permanence. The C API prepends a synthetic `TRUE`, treats every real assertion
-level as retractable, and appends `NOT query` only to the local solve vector—not
-to `STPMgr::_asserts` (`lib/Interface/c_interface.cpp:817-830`). The journal API
-therefore needs an explicit query-local overlay or a frontend-specific view.
+`kind` must encode frontend semantics (`permanent_user`, `retractable_user`,
+`query_overlay`); depth zero alone does not imply permanence --- the C API
+prepends a synthetic `TRUE`, treats every real level as retractable, and appends
+`NOT query` only to the local solve vector (`c_interface.cpp:817-830`).
 
-The existing `STPMgr::_asserts` is the frontend source of individual assertions
-and scopes, but its current `getVectorOfAsserts()` destructively replaces each
-level's entries with one conjunction (`STPManager.cpp:860-883`). Batch warm-ups
-can therefore erase assertion boundaries before delayed driver engagement.
-Either make that accessor non-mutating or make the journal canonical from
-session start at `AddAssert`/push/pop time. A driver created later treats all
-currently active journal entries as initially unprocessed; it must not attempt
-to recover identities from already collapsed conjunctions.
+⚠ `STPMgr::getVectorOfAsserts()` **destructively** replaces each level's entries
+with one conjunction (`STPManager.cpp:860-883`), so batch warm-ups erase assertion
+boundaries before delayed engagement. Either make that accessor non-mutating, or
+make the journal canonical from session start at `AddAssert`/push/pop time.
 
 ### 2. Independent stage cursors
-
-Each consumer owns a cursor and its own scoped watermarks:
 
 ```text
 StageCursor = { journal_epoch, next_entry, per_scope_limits, reset_epoch }
 ```
 
-Consumers advance only after their outputs have been committed. If processing
-throws, times out, routes to another pipeline, or triggers a SAT rebuild, no
-unrelated cursor is advanced implicitly. Pop clamps each cursor and rolls back
-that stage's scoped outputs; it does not pretend that another stage completed.
-Whenever the API says a result outlives the removed scope, result-dependent
-substitutions, provenance, and extensionality state must first be snapshotted or
-pinned, or cleanup must be deferred until the next operation that invalidates
-the result.
-
-Initial low-risk consumers are:
-
-- assertion/scope metadata and cached conjunction views;
-- statistics about new assertions and scope shape;
-- pure symbol-set and DAG-size memoization;
-- frontend-aware base-symbol discovery.
-
-`screenNewContent()` should migrate with processed-level dependency state, not
-in this first group. It can invalidate older preparations, call `rootLit()`, and
-add permanent units while restoring a base elimination; its seen-content memo
-is also cleared at a backend rebuild. It therefore needs a semantic/rebuild
-generation and a transactional ordering rule that finishes screening all new
-content before any stale prepared entry can be reused.
-
-The initial consumers exercise journal identity and pop/reset handling without
-changing formula semantics.
+Consumers advance only after their outputs are committed. If processing throws,
+times out, routes elsewhere, or triggers a SAT rebuild, no unrelated cursor is
+advanced implicitly. Low-risk first consumers: assertion/scope metadata and
+cached conjunction views; statistics; pure symbol-set and DAG-size memoization;
+frontend-aware base-symbol discovery. `screenNewContent()` migrates **later**,
+with processed-level dependency state.
 
 ### 3. Versioned processed-level records
-
-Context-sensitive preprocessing needs more than a cursor. Give each scope a
-processed record, conceptually:
 
 ```text
 LevelState = {
@@ -1463,308 +1845,475 @@ LevelState = {
 }
 ```
 
-A record is reusable only when its scope revision, relevant prefix generation,
-mode, and semantic-cache epoch match. Later content mentioning a previously
-eliminated variable marks the owning record dirty and invalidates the earliest
-dependent suffix; it does not merely move a global cursor forward. This is the
-first-class form of the repair already implemented by `eliminationUsers` and
-`dropPreparedLevel()`.
-
-Context maps should be represented as per-level deltas plus watermarks or a
-persistent overlay, not copied wholesale for every check. Replaying a prefix
-then means installing its recorded deltas in order. A conservative first
-version can retain STP's current prefix rules exactly; adopting Bitwuzla's
-forward-only elimination policy is a separate performance/complexity choice,
-not a prerequisite for the journal.
+Reusable only when scope revision, prefix generation, mode, and semantic-cache
+epoch match. **`prepared_conjuncts` in this record is precisely what D2's fix
+needs.** Context maps as per-level deltas plus watermarks, not copied wholesale
+per check.
 
 ### 4. Separate semantic-cache and SAT epochs
 
-Every record that contains SAT literals must carry a backend epoch. A rebuild
-increments that epoch and invalidates literal/activation views while preserving
-AST-level preparation, canonical array rows, FP circuits, and other semantic
-caches. Live records are then replayed into the fresh backend. This makes the
-existing rebuild contract explicit and prevents a journal cursor from
-accidentally treating old literals as processed in a new solver.
+Every record containing SAT literals carries a backend epoch; a rebuild
+increments it and invalidates literal/activation views while preserving AST-level
+preparation, canonical array rows, and FP circuits.
 
 ### 5. Keep result lifetime separate from assertion lifetime
 
-Do not make model/core state an ordinary user-scope container. A temporary
-assumption scope can disappear from the active journal while the last result
-still needs its substitutions, assumption provenance, extensionality records,
-and solved SAT assignment. Either retain a result snapshot or use a delayed
-query-scope cleanup, as all three reference solvers do.
+Snapshot or pin everything needed to interpret the result **first**, then clamp
+assertion cursors, then destroy the snapshot on the next invalidating operation.
+The C API's model-survives-the-bracket contract must be preserved.
 
-The ordering invariant is: first snapshot or pin everything needed to interpret
-the result, then clamp assertion cursors, and only later destroy the snapshot on
-the next invalidating operation. Immediate semantic rollback without that first
-step is not safe merely because the raw scope has been removed.
+---
 
-The C API needs an additional explicit rule: the model of `asserts AND NOT
-query` survives the conventional `vc_push`/`vc_query`/`vc_pop` bracket until
-the next invalidating API operation. A generic pop broadcast that clears all
-scoped state would regress that contract.
+# PART IX — TEST MATRIX FOR SCOPED STATE
 
-## Why the CBP undo trail should precede the journal
+Journal/view unit tests: independent consumers advancing at different rates;
+append at the current level and revision invalidation; empty push/pop and
+multi-level pop; cursor clamping and reset epochs; pop followed by a new scope at
+the same depth; identical re-pushed content receiving new scope identity while
+still hitting content caches; a consumer failing before commit and retrying.
 
-The assertion journal would tell CBP exactly which levels are new or popped,
-but it would not restore the engine's old `FixedBits`. At the review baseline,
-the engine tightened multiple `FixedBits` objects through bidirectional
-transfer functions, latched conflict, grew auxiliary multiplication state, and
-maintained a caller-side substitution/fact overlay without an undo mechanism.
-It therefore had to reset and re-feed the surviving prefix after every pop.
-Thus implementing the journal first would have been a broad refactor that left
-the one measured reconstruction bottleneck intact.
+Solver tests: repeated unchanged checks and extension-only stacks; append, pop,
+alternate re-push, identical re-push; same-level late definitions and deeper
+definitions that may not rewrite a shallow prepared root; later content
+invalidating private elimination and restoring the equation; content seen before
+a pop, a later elimination, and an identical re-push screened under a new
+semantic/rebuild generation; base growth after engagement and after a rebuild;
+`check-sat-assuming` models and failed-assumption granularity; SMT-LIB model
+invalidation versus the C API's post-pop model lifetime; the C API's synthetic
+base and query-local `NOT query` overlay; lazy arrays across forced rebuild,
+active-row withdrawal, and refinement; eager Ackermannization, FP side
+conditions, array equality; SAT-backend epoch changes, promotion repair, and
+re-materialized roots.
 
-The implemented narrow CBP change uses the existing longest-common-prefix
-synchronization:
+**Added by this review:**
 
-1. begin a level transaction before feeding it and commit only after feed,
-   rewrite/adoption, memo and pinning-fact writes, and `cbpFinishLevel()` have
-   all completed;
-2. on divergence, roll back directly to the LCP rather than destroying the
-   engine;
-3. feed only the changed suffix;
-4. leave the existing per-level rewrite/fact memo and adoption policy in place;
-5. later replace LCP polling with journal push/pop notifications without
-   changing the engine contract.
+- **A definition eliminated from a piece while a live `ctx` body names the same
+  variable** (D1).
+- **Re-preparation of a promoted level** (D2) --- the existing
+  `unit-promotion.smt2` covers firing, binding, and demotion-on-retraction, but
+  never this.
+- An `--array-equality` stack pushed, popped, and re-pushed identically, asserting
+  that solver variable count does **not** grow (D5).
+- A session that engages automatically (not via `--incremental`) exercising each
+  of the five check-sat routes.
+- `--check-sanity` on every incremental behavioural test that produces a model.
 
-### Required rollback state
+---
 
-The trail must cover all semantic mutation, not just newly inserted map keys:
-
-- the first pre-level value of every existing `FixedBits` object changed by a
-  transfer function, plus keys created in the level;
-- the previous conflict state, including a feed that ends in conflict;
-- caller-side `callCbpConflict` and `callCbpOff`, which a conflicting feed
-  latches and a rollback below that level must clear/restore;
-- mutable multiplication-transfer auxiliary state, either by trailing it or by
-  conservatively clearing/rederiving it on rollback;
-- insertions, overwrites, erasures, and restores in the accumulated constant
-  substitution, recording the previous binding rather than only inserted keys;
-- deferred intra-level fixings;
-- fed-conjunct and emitted-pinning-fact membership;
-- feed mass/cap and array-presence summaries;
-- the active fed-level and memo watermarks.
-
-The implementation records each mutable object at most once per level (a
-first-write trail), even if the worklist visits it repeatedly, and restores
-entries in reverse order. `newlyFixed` deliberately remains populated as the
-successful feed's output until the next feed; rollback clears it. Conflict
-paths clear both work queues and the output immediately, and rollback clears
-all transient scratch defensively before restoring state.
-
-Session policy is a different lifetime. `cbpSessionRetired`, `cbpEverFixed`,
-and the retirement evidence counters describe observed workload behavior and
-normally should not roll back with assertions. Preserve reset/re-feed as both a
-differential oracle and a fallback if trail memory/growth becomes more
-expensive than rebuilding.
-
-The implementation trails exact parent-graph and visited-DAG additions. This
-keeps later replacement feeds from retaining dependency edges introduced only
-by a popped suffix and permits the caller's array-presence summary to roll back
-to the same boundary.
-
-`Backtrack.h` can supply the manager/watermark shape and insert-only pieces, but
-cannot trail in-place `FixedBits` mutations as written. Extend it with a
-purpose-built value undo trail or keep that trail local to `IncrementalCBP`;
-do not force the engine into an insert-only abstraction.
-
-### Do not resurrect the old prototype unchanged
-
-Commit `d61d2c04` contains an earlier CBP undo-log experiment, and commit
-`8a0d4a30` removed its integration after real answer disagreements. The
-recorded root cause was circular preprocessing—assuming individual pieces,
-simplifying them under their own truth, and then losing the original
-constraint—not evidence that rollback is impossible. The current word-level
-engine has since acquired the necessary level feed, slot protection, pinning
-facts, conflict recording, cross-level adoption, and prefix memo semantics.
-
-The old code is useful as a catalogue of mechanics, but it also had incomplete
-dependency growth and recorded snapshots before mutations without a
-first-write discipline. Port the rollback idea into the current engine and
-re-prove the current invariants; do not cherry-pick it as an implementation.
-
-### Validation mode for the trail
-
-The reset/re-feed behavior is available as `--incremental-cbp-reset`. Separate
-trail and oracle runs compare:
-
-- conflict status;
-- the set and value of harvested total fixings;
-- rewritten conjuncts and emitted pinning facts at every level;
-- final answer sequence and, for SAT, raw-formula model validation.
-
-Include conflict/pop/re-push, appending to the current top level, empty scopes,
-base growth, feed-cap retirement, symbol definer preservation, array-containing
-nodes, and repeated rollback to several different depths. The Industrial
-specimen is the performance acceptance test, not the soundness test.
-
-## Phased roadmap
-
-### Phase 0 (six of seven complete): close the current branch
-
-1. **Complete:** resolve active-read state across a lazy-array rebuild and an
-   all-cache-hit eager-Ackermann model (`9eb8e407`, `02607540`).
-2. **Complete:** define exact retained and guarded live/peak clause accounting,
-   cover extensionality and refinement, and protect both extensionality and
-   ordinary shared live cones (`db4aab0a`, `c604e923`, `45fe552b`, `8e421b89`,
-   `9cb7b34b`).
-3. **Complete:** integrate master through `34f69be1` and resolve the backend
-   construction/type overlap deliberately (`4b60b401`).
-4. **Complete:** reconcile the user guide, this review, source comments, and
-   campaign-harness and reporter contracts (`30680576`, `40acb2c4`,
-   `239c4402`, `f1e55c2c`).
-5. **Complete:** repair the CBP-fact/private-definition ordering bug and stale
-   prepared-cache privacy proof found during closeout
-   (`56de220c`, `ee8685bb`).
-6. **Complete:** run the frozen 22,999-file reconciliation, preserve manifests,
-   fingerprints, all produced answer streams and timeout prefixes, and all 518
-   authoritative longer reruns, and retain the 234 incomplete effective rows
-   as inconclusive rather than upgrading them to agreement.
-7. **In progress:** complete all 68,997 pinned three-run timing pairs, run the
-   authoritative longer reruns, validate the final report, and replace the
-   historical performance distribution and tail classification.
-
-A confirmed correctness issue still preempts performance work. The first
-campaign attempt followed that rule: it stopped at `precise.smt2`, landed the
-two narrow fixes and regressions, froze a new candidate, and restarted from a
-fresh result root.
-
-The implementation, documentation, and reconciliation prerequisites are now
-closed without converting 234 common-prefix-only rows into full correctness
-results. Phase 0 remains open only on the separate three-run timing campaign;
-it must finish before the historical performance numbers and tail
-classification are replaced.
-
-### Phase 1 (complete): instrument semantic reconstruction
-
-Land counters/timers without changing solver policy. Re-run the representative
-workloads and quantify both absolute cost and percentage of driver time. Record
-the result in this document or a checked-in benchmark ledger.
-
-### Phase 2 (complete): add the narrow CBP undo trail
-
-Checkpoint/rollback now covers the engine and caller overlay while retaining
-LCP-based stack synchronization, with reset/re-feed as the oracle. It met the
-acceptance condition: Industrial pop cost fell without answer changes or a
-material canary regression. The measurements above support keeping the trail.
-
-### Phase 3: introduce the journal and safe cursors
-
-Add stable assertion/scope identity and independent views. First migrate
-journal observability and pure metadata; then migrate frontend-aware fragment
-and base discovery. Keep screening with dependency-aware `LevelState` work.
-Keep the public solver behavior and persistent SAT/AIG design unchanged.
-
-### Phase 4: migrate preprocessing state where justified
-
-Add `LevelState` records and scoped context deltas. Replace whole-stack
-definition re-harvest and active-elimination reconstruction only after
-dependency invalidation tests are in place. Preserve the current prefix
-semantics first; consider a simpler forward-only substitution rule only as a
-separate measured change.
-
-### Phase 5: migrate array liveness and other aggregates
-
-Express active read ownership, live clause mass, promotion stability, and
-similar stack aggregates as consumers of the same scope identities. Preserve
-fresh row materialization before refinement. Optimize all-ever-row
-totalization only if instrumentation identifies it.
-
-### Phase 6: reconsider whole-query procedures
-
-Extensionality is deliberately whole-graph and should be migrated last, if at
-all. Reusing its deterministic encoded block may remain the right design even
-after ordinary assertions become cursor-driven.
-
-At every phase, stop if the measured benefit is absent. The journal still has
-maintainability value if repeated lifetime bugs continue, but it should not be
-sold as a demonstrated RTOS performance fix.
-
-## Test matrix for scoped state
-
-The architecture needs tests below the SMT-LIB answer level as well as the
-existing differential suite.
-
-Journal/view unit tests should cover:
-
-- independent consumers advancing at different rates;
-- append at the current level and revision invalidation;
-- empty push/pop and multi-level pop;
-- cursor clamping and reset epochs;
-- pop followed by a new scope at the same depth;
-- identical re-pushed content receiving new scope identity while still hitting
-  content caches;
-- a consumer failing before commit and retrying the same delta.
-
-Solver tests should cover:
-
-- repeated unchanged checks and extension-only stacks;
-- append, pop, alternate re-push, and identical re-push;
-- same-level late definitions and deeper definitions that may not rewrite a
-  shallow prepared root;
-- later content invalidating private elimination and restoring the equation;
-- content seen before a pop, a later elimination, and an identical re-push that
-  must be screened under the new semantic/rebuild generation;
-- base growth after engagement and after a SAT rebuild;
-- `check-sat-assuming` models and failed-assumption granularity;
-- SMT-LIB model invalidation versus the C API's post-pop model lifetime;
-- the C API's synthetic base and query-local `NOT query` overlay;
-- lazy arrays across forced rebuild, active-row withdrawal, and refinement;
-- eager Ackermannization, floating-point side conditions, and array equality;
-- SAT-backend epoch changes, promotion repair, and re-materialized roots.
-
-Every semantic phase should retain batch-versus-incremental answer-sequence
-differential testing. The completed frozen reconciliation is the current
-reconciliation baseline; future semantic phases need an equivalent full-corpus
-gate, not only unit tests and selected performance specimens. The timing part
-of the Phase 0 baseline remains in progress.
-
-## Approaches not recommended
+# PART X — APPROACHES NOT RECOMMENDED
 
 - Do not replace permanent definitional CNF plus assumptions with SAT-clause
-  deletion. STP's multiple external backends make cvc5/Z3-style clause
-  provenance a poor fit.
+  deletion. STP's multiple external backends make cvc5/Z3-style clause provenance
+  a poor fit.
 - Do not introduce cvc5's complete dual-context/region/proof infrastructure to
   obtain assertion cursors.
-- Do not copy Z3's E-graph deletion and re-internalization machinery into this
-  bit-vector-focused driver.
+- Do not copy Z3's E-graph deletion and re-internalization machinery.
 - Do not backtrack canonical structural encodings merely because their current
   activation is scoped. Preserve the content/activation separation.
 - Do not equate a cache with liveness. Canonical array rows, FP rewrites, and
   root encodings may persist while their participation in the current model or
   query must be explicitly scoped.
-- Do not promise O(delta) checks where the API/configuration requires all active
-  assumptions, a whole-query model check, live-row materialization, or
+- Do not promise O(delta) checks where the API or configuration requires all
+  active assumptions, a whole-query model check, live-row materialization, or
   extensionality over the complete graph.
+- **Do not delete the cheap live-mass estimator** (Part II) --- it is the relief
+  ratio's floor, not redundancy.
+- **Do not rely on one mechanism to cover another's soundness gap.** D2's four
+  incidental rescuers are the argument.
 
-## Final recommendation
+---
 
-The branch's persistent SAT/AIG architecture is sound in shape, portable across
-its backends, and responsible for the measured wins. Keep it.
+# APPENDIX A — WITNESS FILES
 
-Instrumentation and the narrowly designed CBP first-write undo trail are now
-implemented. They directly removed the measured pop-triggered whole-prefix
-re-feed, and the cross-workload results support retaining the change.
+Verbatim and self-contained. All four reproduce at tip `278552ce` on both
+`build/` and `bd-dbg/`. Recommended home:
+`tests/query-files/incremental-tests/`.
 
-The concrete implementation and correctness-reconciliation work is also
-complete: current master is integrated, retained/extensionality accounting and
-array-model repair are covered, the two preparation-privacy defects found
-during closeout are fixed, and the restarted frozen reconciliation
-observed no answer disagreement. Keep its 234 incomplete rows labelled
-`PREFIX_ONLY_INCONCLUSIVE`; the reconciliation does not establish unobserved
-answers past those common prefixes.
+## A.1 `w6.smt2` — D1, minimal (needs `--incremental` or `--incremental-auto-engage-at 1`)
 
-The immediate work is to finish and report the already-running three-run timing
-campaign. Until its main pairs and authoritative longer reruns are complete,
-the one-run reconciliation and partial timing CSVs must not be used to publish
-a new performance distribution or tail classification.
+True answer **unsat**: `y = ~v` and `y*y = y` force `y ∈ {0,1}`, contradicting
+`y > 1`.
 
-The assertion journal with independent stage cursors remains the right
-architectural foundation after that. It should be introduced incrementally to
-make semantic lifetime explicit, remove repeated whole-stack bookkeeping, and
-reduce the likelihood of further manual cache/refcount/rebuild bugs. It is not
-the next automatic performance patch. Use the completed profiler and final
-timing evidence to establish another material reconstruction target, or proceed
-because further scoped-lifetime defects make the maintainability case concrete.
-The journal does not address the likely fixed engagement cost in the RTOS tail.
+```smt2
+(set-logic QF_BV)
+(declare-fun v () (_ BitVec 8))
+(declare-fun p () (_ BitVec 8))
+(push 1)
+; keeps the node (bvnot v) alive and numbered before y is declared
+(assert (bvult (bvnot v) p))
+(declare-fun y () (_ BitVec 8))
+(assert (= (bvnot v) y))
+; y*y = y  =>  y in {0,1}; constant-bit propagation cannot see this
+(assert (= (bvmul y y) y))
+(declare-fun w1 () (_ BitVec 8))
+(declare-fun w2 () (_ BitVec 8))
+(declare-fun w3 () (_ BitVec 8))
+(declare-fun w4 () (_ BitVec 8))
+(declare-fun w5 () (_ BitVec 8))
+(declare-fun w6 () (_ BitVec 8))
+(declare-fun w7 () (_ BitVec 8))
+(declare-fun w8 () (_ BitVec 8))
+(declare-fun w9 () (_ BitVec 8))
+(declare-fun w10 () (_ BitVec 8))
+(assert (= w1 (bvmul v w2)))
+(assert (= w3 (bvmul v w4)))
+(assert (= w5 (bvmul v w6)))
+(assert (= w7 (bvmul v w8)))
+(assert (= w9 (bvmul v w10)))
+(push 1)
+(assert (bvugt y #x01))
+(check-sat)
+(exit)
+```
+
+## A.2 `w7.smt2` — D1 at **default flags**
+
+`w6.smt2` preceded by 34 rounds of `(push 1)(assert (bvult q #xNN))(check-sat)(pop 1)`
+(constants `#x03` … `#x24`) so the session crosses the QF_BV engagement ordinal,
+then the `w6` body verbatim (35 `check-sat`s in total). Answers `sat` with **no
+flags**; batch answers `unsat`.
+
+*Generation:*
+
+```sh
+{ printf '(set-logic QF_BV)\n(declare-fun v () (_ BitVec 8))\n'
+  printf '(declare-fun p () (_ BitVec 8))\n(declare-fun q () (_ BitVec 8))\n'
+  for i in $(seq 3 36); do
+    printf '(push 1)\n(assert (bvult q #x%02x))\n(check-sat)\n(pop 1)\n' "$i"
+  done
+  tail -n +4 w6.smt2   # the w6 body from its first (push 1)
+} > w7.smt2
+```
+
+## A.3 `repro3.smt2` — D2 at **default flags**
+
+True answer **unsat**. The FP conjunct retires trail reuse on solve 1 (promotion's
+precondition); the stable level's BVNOT-headed equation is refused by
+`recogniseDefinition` and harvested by `PropagateEqualities`; the `bvmul` nest
+keeps CBP from re-deriving the lost fact.
+
+```smt2
+(set-logic QF_BVFP)
+(declare-fun fx () Float32)
+(declare-fun fy () Float32)
+(assert (fp.lt fx fy))
+(declare-fun p () (_ BitVec 8))
+(declare-fun t () (_ BitVec 8))
+(declare-fun w () (_ BitVec 8))
+(push 1)
+(assert (and (= (bvnot p) (bvmul t (bvmul t t))) (bvult w #x80)))
+; fourteen churning rounds on top; the stable level promotes at the ninth
+(push 1) (assert (bvult w #x10)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x11)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x12)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x13)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x14)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x15)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x16)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x17)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x18)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x19)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x1a)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x1b)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x1c)) (check-sat) (pop 1)
+(push 1) (assert (bvult w #x1d)) (check-sat) (pop 1)
+; the level that makes p non-private; its re-prepared form is discarded
+(push 1)
+(assert (bvult (bvadd p (bvmul t (bvmul t t))) #xff))
+(check-sat)
+(exit)
+```
+
+## A.4 `promote7.smt2` — D2, second witness, isolates the CBP masking
+
+Reproduces under `--incremental --disable-cbitp` (answers `sat`; batch with the
+same flags answers `unsat`; `--no-incremental-promote-units` answers `unsat`).
+Structure: `QF_BVFP` base `(bvult y #xff)` + `(fp.gt f (_ +zero 8 24))`; stable
+level `(= u #x03)`, `(= (bvadd p u) #x07)`, `(bvugt z #x05)`; twelve churn rounds
+`(push 1)(assert (bvugt y #x0N))(check-sat)(pop 1)` for `N` in `0`…`b`; then
+`(push 1)(assert (bvugt y #x01))(push 1)(assert (= p #xff))(check-sat)`
+(13 `check-sat`s in total).
+
+The definition `p = 4` is derivable by `PropagateEqualities` after `u → 3` but not
+by `recogniseDefinition` on the raw conjunct.
+
+---
+
+# APPENDIX B — FULL FINDING LEDGER
+
+44 findings from the 2026-08-11 review. **Status** is the adversarial verifier's
+verdict: `CONFIRMED` = holds essentially as claimed; `PARTLY` = a real but
+narrower or differently scoped issue (the *corrected* claim is what to act on);
+`REFUTED` = does not hold. **Severity** is post-verification.
+
+| # | Status | Sev | Dimension | Finding | Tracked as |
+|---|---|---|---|---|---|
+| F1 | CONFIRMED | high | retraction | Unit promotion pins a PREPARED form validated only by raw-conjunction identity | **D2** |
+| F2 | CONFIRMED | med | retraction | Steady-state per-check cost is O(stack); privacy predicate makes it O(depth²) | **D4** |
+| F3 | PARTLY | low | retraction | Forced-first-solve recovery family --- three special-case entry conditions | Part III.4 |
+| F4 | CONFIRMED | low | retraction | `Backtrack.h`: complete scoped-container library, zero production users | **D11** |
+| F5 | CONFIRMED | high | preprocessing | Privacy tested on raw stack symbols; levels encoded from ctx-substituted content | **D1** |
+| F6 | REFUTED | low | preprocessing | "Six ad-hoc invalidation mechanisms, no shared predicate" | Part II |
+| F7 | CONFIRMED | med | preprocessing | Whole-stack rescan per candidate per check; unbounded `symbolsOfCache` | **D4** |
+| F8 | REFUTED | none | preprocessing | Exact-stack scoped elimination lacks a freeze check | Part II |
+| F9 | PARTLY | low | preprocessing | Trial "must halve" budget measured against a clipped size after sigma0 expansion | --- |
+| F10 | PARTLY | low | cbp | Adoption's shrink gate ignores the pinning facts it obliges | --- |
+| F11 | CONFIRMED | med | cbp | `cbpEverFixed` set by a level's own assumed truth; retirement tier unreachable | **D7** |
+| F12 | REFUTED | low | cbp | Memo caches four subsystems behind a CBP-shaped key | Part II |
+| F13 | PARTLY | low | cbp | Engine/caller/memo triple kept aligned by asserts + repair fallback; two dead fields | **D11** |
+| F14 | PARTLY | low | cbp | Session-wide retirement from prefix-scoped, double-counted evidence | **D7b** |
+| F15 | PARTLY | med | arrays | Every array encode seeds the whole registry; anchors for every read ever seen | **D8** |
+| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | --- |
+| F17 | PARTLY | low | arrays | Active-read liveness is a refcount shadow; `batchTablesSeeded` dead | **D11** |
+| F18 | CONFIRMED | low | arrays | Adapter rebuilds an O(all session symbols) map per call | **D12** |
+| F19 | PARTLY | low | arrays | Congruence lemmas "permanent" but charged to a per-stack owner key | **D8b** |
+| F20 | CONFIRMED | med | ext/FP | Exact-stack block cache fronted by a non-deterministic, unmemoised pass | **D5** |
+| F21 | PARTLY | low | ext/FP | Solver-mode policy in the generic simplifying node factory | **D10** |
+| F22 | PARTLY | low | ext/FP | Ext and ordinary rounds mint two deterministic names for the same (array, index) | --- |
+| F23 | PARTLY | low | ext/FP | `fragment()` totalises whole levels to compute a boolean, on a memo that does not exist | --- |
+| F24 | PARTLY | low | ext/FP | Keep-alive pin set makes name reuse depend on GC, by convention at one call site | Part II |
+| F25 | CONFIRMED | high | relief | Whole-base semantic simplification welded to `rebuildEncodings` | **D3** |
+| F26 | PARTLY | low | relief | `everAssumedLits` not pruned on the extensionality route | --- |
+| F27 | REFUTED | none | relief | "Two parallel live-mass estimators; delete the cheap one" | Part II |
+| F28 | PARTLY | low | relief | `--incremental-profile` changes the relief schedule | **D6** |
+| F29 | PARTLY | low | relief | `baseEliminatedDefs` epoch-scoped state cleared behind four early returns | **D3b** |
+| F30 | REFUTED | low | frontend | Forced-first recovery gated on CLI provenance, not driver state | Part II |
+| F31 | PARTLY | low | frontend | `UserFlags.incremental_solving` conflates request with session state | **D10b** |
+| F32 | CONFIRMED | low | frontend | `construct_counterexample_flag` made sticky, disabling the cache shortcut | **D9** |
+| F33 | PARTLY | med | frontend | Per-engaged-check work is O(base conjuncts) and O(levels²) | **D4** |
+| F34 | CONFIRMED | low | frontend | `canHandle()` is a no-op seam; model readers construct the driver to ask | **D11** |
+| F35 | PARTLY | low | sat | `SATSolver` as CaDiCaL option panel; no object owns an epoch's configuration | Part V.9 |
+| F36 | PARTLY | low | sat | `--incremental-inprobing` silently disables three techniques, gated on one probe | Part III.4 |
+| F37 | REFUTED | low | sat | `enableTrailReuse`'s stated precondition does not exist | Part II |
+| F38 | PARTLY | low | sat | `suggestPhase` performs CaDiCaL's model-destroying variable declaration | --- |
+| F39 | PARTLY | low | sat | `supportsAssumptions` pairing is a runtime `exit(-1)` invariant | Part II |
+| F40 | PARTLY | low | complexity | Backend epoch is not an object: ~28 fields by hand, 4 triggers, 3 predicate copies | Part V.9 |
+| F41 | CONFIRMED | med | complexity | `--incremental-profile` substitutes a different live-mass computation | **D6** |
+| F42 | PARTLY | low | complexity | Three push/pop trail implementations; the tested generic one is unused | **D11** |
+| F43 | PARTLY | low | complexity | Four re-implementations of the batch preprocessing prefix; three replay reps | Part V.9 |
+| F44 | PARTLY | low | complexity | ~20 fitted constants, 8 flags, the most intricate policy undocumented | Part III.4 |
+
+### Findings recorded but not yet tracked as work items
+
+- **F9** --- `preparePiece` applies `sigma0` *after* the granularity gate measured
+  the pre-sigma0 piece, and then measures with `dagSizeUpTo(out, bigFormulaCap)`,
+  which saturates at 20001; so for any piece sigma0 grows past ~20000 nodes,
+  `budget` is a fixed 10000-node ceiling rather than half the actual input.
+  `harvestSigma0` has **no** inlining cap, unlike `harvestPushed`'s
+  `defInlineCap`. Fix: measure `before` unclipped, and decide deliberately whether
+  base definitions deserve the same inline cap.
+- **F10** --- `cbpAdopt`'s shrink gate measures only the rewritten conjunct, not
+  the pinning facts it obliges, and facts are never discharged into each other the
+  way the batch pass does. Fix: build one `fromTo` from the collected domains,
+  emit each fact as `EQ(replaceChildren(domain, fromTo), k)`, drop facts folding
+  to TRUE, stop the walk at an emitted domain, and include surviving facts' mass
+  in the gate.
+- **F16** --- the no-progress guard fires on "no SAT call this round", which is
+  strictly narrower than "no progress". Because the candidate-pair set is
+  recomputed identically each round and a round exiting UNDECIDED has already put
+  every pair's axiom into the solver, the loop is provably either one round or
+  unbounded, re-encoding duplicate axioms each time. Fix: compare
+  `submittedClauses()` across the round, or memoise emitted pairs in
+  `applyAxiomsToSolver`.
+- **F22** --- in a session alternating extensionality and ordinary array rounds, a
+  SYMBOL-rooted read is abstracted twice (`@ext_read_k<A>_k<i>` and
+  `@array_A_k<i>`) sharing nothing. Fix: one deterministic name keyed on
+  `(array, index)` in both routes; the ext spelling generalises.
+- **F23** --- `fragment()` runs a full `FpTotalise::topLevel` solely to derive the
+  `f.arrays` boolean, and the justifying comment is wrong: `FpTotalise` has no
+  root-level input→output memo. Fix: decide `f.arrays` syntactically
+  (`FP_TO_UBV`/`FP_TO_SBV` or an FP-indexed array access), and give `FpTotalise` a
+  root-level memo.
+- **F26** --- `exactStackCheckSat`'s array-equality return bypasses the sole
+  `retireStaleActivation()` call, so hint aging never runs in an all-ext session.
+  Fix: move the call to just after `decideBVA`, which both routes pass.
+- **F38** --- drop the unnecessary `declareNewVariables()` from
+  `Cadical::suggestPhase`; the early return already guards undeclared variables,
+  and the call can leave CaDiCaL's SATISFIED state under `--cadical-factor`.
+
+---
+
+# APPENDIX C — REPRODUCTION COMMAND REFERENCE
+
+Binaries used: `build/stp` (Release + assertions) and `bd-dbg/stp`
+(RelWithDebInfo + assertions). `libstp.so` is linked **dynamically** --- a saved
+binary alone is not an A/B arm; use a separate worktree build.
+
+```sh
+# --- D1: privacy over the raw stack -------------------------------------
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental-auto-engage-at 0 w6.smt2   # unsat  (correct)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental                   w6.smt2   # sat    (WRONG)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2                                 w7.smt2   # sat    (WRONG, default flags)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental-auto-engage-at 0 w7.smt2   # unsat  (correct)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental --check-sanity    w6.smt2   # STP Error: model does not satisfy an asserted formula
+
+# --- D2: promotion pins an unvalidated prepared form ---------------------
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2                                  repro3.smt2  # sat   (WRONG, default flags)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --no-incremental-promote-units   repro3.smt2  # unsat (correct)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental-auto-engage-at 0   repro3.smt2  # unsat (correct)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --check-sanity                   repro3.smt2  # STP Error
+# second witness, isolates the CBP masking
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental --disable-cbitp    promote7.smt2 # sat   (WRONG)
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental --disable-cbitp \
+                                    --no-incremental-promote-units             promote7.smt2 # unsat (correct)
+
+# --- Which mechanism is masking a defect? --------------------------------
+#   --disable-cbitp                    removes constant-bit propagation
+#   --no-incremental-promote-units     removes promotion
+#   --incremental-auto-engage-at 0     batch reference (ground truth)
+#   --check-sanity                     validates the model against raw assertions
+
+# --- D4 / cost profiling -------------------------------------------------
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental --incremental-profile FILE 2>&1 \
+  | grep '^Incremental profile total'
+#   read: total-us, semantic-us, prepare-us, sat-us, prepare-hits, stable-prefix
+
+# --- Driver engagement / policy tracing ---------------------------------
+LD_LIBRARY_PATH=build/lib build/stp --SMTLIB2 --incremental -s FILE 2>&1 \
+  | grep -E 'promoted|trail reuse|inprobing|cbp retired|re-encoded'
+```
+
+**Traps** (carried from the branch protocol --- all still current):
+
+- zsh does **not** word-split unquoted `$VAR`; inline flags explicitly.
+- Sequential timings swing ±30--50 % with load and thermals. Only interleaved
+  quiet-box A/B counts --- and your own parallel jobs are the load.
+- The newton/sine/square QF_BVFP family flips 0.98 s ↔ timeout on identical code.
+  Never diagnose from it.
+- CaDiCaL `set()` after the first clause is a fatal abort; configuration-window
+  options only at construction or rebuild.
+- `grep -c` exits 1 on zero matches, breaking `&&` chains after successful builds.
+- The Bash tool's cwd sticks across calls: always `make -C <dir>`.
+
+---
+
+# APPENDIX D — HISTORICAL EVIDENCE (2026-08-07/08 closeout)
+
+*(Retained verbatim in substance. All of it predates the discovery of D1 and D2
+and must be read with that in mind: the campaign compared answer streams only,
+which is precisely why both defects survived it.)*
+
+## Frozen closeout reconciliation
+
+Master `34f69be1989910fd053008715de4b65c095fd770` vs candidate
+`e5a26c30f83b2cd9cc0ccb274b62f210865023cd` (the `ee8685bb` implementation plus
+documentation). Frozen Release builds, CaDiCaL 3.0.1, FP, shared libraries,
+system allocator, `--array-equality` on both arms.
+
+| | |
+|---|---|
+| master exe SHA-256 | `6f03a9edbbbfe6db2918ca9a36e6f2fd3903f5061e6a520db0c489f19212517a` |
+| candidate exe SHA-256 | `2c9186d98aa55df055d751e3ea3b40d7f3d13f248b19789fea1ab57d2bbdb8ce` |
+| master `libstp` | `0f063a88125c10070b403e2d107e25b9b0cb9177c8aa22b95decff6bc4553a6b` |
+| candidate `libstp` | `84a36b4f447ab47ca97f2ea60b03cfe5628a65cef9f722b4d2a9bef7ab17e03f` |
+| corpus | 22,999 unique files, 20,308,257,767 bytes |
+| corpus manifest SHA-256 | `cd1310ebac50f4d35c837df0a01e6f8ffe020c3e6df1a8f8b03d13a9bbf784d7` |
+| content ledger SHA-256 | `7c0fca20fc75e5cd7506b0e225621d17aa20dc98e087b28f159f0dd40f4d98db` |
+
+One run per file at 30 s; 518 files selected for an authoritative 120 s rerun.
+Coverage exact: all 22,999 `(file, run)` pairs and all 518 reruns present. **No
+`DISAGREEMENT` observed in either phase.** After replacement, 22,765 `FULL_OK`
+and 234 `PREFIX_ONLY_INCONCLUSIVE` (21 shared `exit-11`, 155 shared timeouts, 17
+master-ok/candidate-timeout, 41 master-timeout/candidate-ok). Effective streams
+retained 607,747 master and 607,180 candidate answers of the structural 621,942
+per arm.
+
+> The 234 incomplete rows are **not** agreements. Only the prefixes both
+> processes produced agreed.
+
+`QF_FP/schanda/spark/precise.smt2` --- the oracle that exposed the
+CBP/private-definition bug in the *first* campaign attempt --- was clean in the
+frozen campaign (both arms `unsat` in all four scopes).
+
+Configured suites at `ee8685bb`: CaDiCaL + FP 116/116; MiniSat + FP 115/115;
+MiniSat without FP 87/87.
+
+## Historical performance figures (contextual only)
+
+22,999 files: 7,520 wins ≥2×, 258 losses ≥5×, median 0.086 s vs master 0.164 s.
+Industrial_Control_C specimen ≥90 s → 2.6 s (master 1.5 s), 164/164 answers agree;
+Automotive stragglers ~12--18 s → ~0.8 s.
+
+Measurements that shaped the design: full active-read table rebuild was 42 % of a
+1000-query KLEE session before differential seeding; a repeated capped DAG-size
+walk was 30 % of the post-CBP specimen before per-node memoisation; fresh-per-call
+CBP took 9.7 s on the Industrial specimen against 2.6 s with prefix persistence;
+engaging on the second solve made two-check files the loss tail, and the third
+restored parity.
+
+## Invariants established by the development history
+
+Assumption literals must pass through any SAT-backend variable translation. A
+definition or CBP-fed assertion must never erase its own constraint. A
+transformation based on scoped facts must retain an asserted justification. Every
+symbol in a CBP fact appended after preparation must participate in
+definition-privacy analysis *before* that preparation. Memoized raw-content
+screening is not a durable privacy proof --- a prepared cache hit must revalidate
+against the live stack. A cached encoding is permanent, but the assertion
+selecting it is scoped. Array abstractions may be structurally permanent while
+their participation in model/refinement state is scoped. Every active array user
+must carry its row's index binding. Stale model substitutions and popped rows must
+be withdrawn. Conflicting CBP feeds must participate in prefix divergence. A
+refinement round rejecting a model without a new lemma indicates an
+encoding/model inconsistency. Generated extensionality names keyed by nodes
+require the node spine kept alive. Semantic caches may survive a SAT rebuild; SAT
+literals may not.
+
+> **This review adds one more:** *a predicate that governs what is encoded must be
+> computed over the representation that is encoded.* D1 and D2 are the two places
+> that invariant is currently violated.
+
+## Prior roadmap status (Phase 0--2 complete; unchanged)
+
+1. ✅ Active-read state across rebuild and eager cache hits (`9eb8e407`, `02607540`)
+2. ✅ Retained/live/peak clause accounting incl. extensionality (`db4aab0a`,
+   `c604e923`, `45fe552b`, `8e421b89`, `9cb7b34b`)
+3. ✅ Master integrated through `34f69be1` (`4b60b401`)
+4. ✅ Documentation reconciled (`30680576`, `40acb2c4`, `239c4402`, `f1e55c2c`)
+5. ✅ CBP-fact/private-definition ordering + stale prepared-cache privacy
+   (`56de220c`, `ee8685bb`)
+6. ✅ Frozen 22,999-file reconciliation
+7. ⏸ Three-run timing campaign --- **moot until D1/D2 land**
+
+Phase 1 (instrumentation, `ded8d07e`) and Phase 2 (CBP undo trail, `8f37f17b`,
+`842b03ef`) are complete. Phases 3--6 (journal, cursors, preprocessing state,
+array liveness, whole-query procedures) are superseded in sequencing by
+[Part V](#part-v--work-queue) items 4 and 8, which capture most of the value at a
+fraction of the cost.
+
+## Why the CBP undo trail preceded the journal (retained rationale)
+
+The journal would say which levels are new or popped but would not restore the
+engine's `FixedBits`. Implementing it first would have been a broad refactor
+leaving the one measured reconstruction bottleneck intact. The implemented trail
+uses the existing LCP synchronization: begin a level transaction before feeding,
+commit only after feed/rewrite/memo/fact writes and `cbpFinishLevel()`; on
+divergence roll back to the LCP; feed only the changed suffix; later replace LCP
+polling with journal notifications without changing the engine contract.
+
+⚠ **Do not resurrect the old prototype unchanged.** Commit `d61d2c04` contains an
+earlier CBP undo-log experiment; `8a0d4a30` removed its integration after real
+answer disagreements. The root cause was circular preprocessing (assuming
+individual pieces, simplifying them under their own truth, losing the original
+constraint), not that rollback is impossible. Use it as a catalogue of mechanics,
+not as an implementation.
+
+---
+
+# APPENDIX E — DOCUMENT HISTORY
+
+| Date | Author/commit | Change |
+|---|---|---|
+| 2026-08-07 | review of branch `0ff90033` vs master `fa211128` | Original architecture review: reference-solver study, state-lifetime audit, scoped-state design, phased roadmap |
+| 2026-08-08 | closeout update at `f1e55c2c` (solver tip `ee8685bb`) | Instrumentation and CBP-rollback results; accounting/privacy repairs; frozen 22,999-file reconciliation |
+| **2026-08-11** | **second review at tip `278552ce`** | **Restructured. Added: two reproduced soundness defects (D1, D2) with witnesses and fixes; ten further tracked defects; a verified-correct / do-not-re-chase register; the 44-finding ledger; cost measurements; a re-ordered work queue. Prior content retained in Parts VI--X and Appendix D.** |
+| **2026-08-11** (same day, later) | **master `d47f6b57` rebuilt at the merge base** | **Added [Validation against master](#validation-against-master): all four witnesses answer `unsat` on master; per-defect master-exposure analysis; D10 reproduced as a divergence from master; D9 source-verified; D8/D5 shown to depend on branch-only persistence; 72-file corpus differential (71 identical, 1 = a feature master lacks). Status board gained an "In master?" column.** |
+| **2026-08-11** (same day, later still) | **cross-checked with Bitwuzla, cvc5 and Z3** | **The four witnesses' expected answers no longer rest on STP alone: Bitwuzla `0.9.1-dev`, cvc5 `1.3.5.dev` and Z3 `5.0.0` agree with STP master on all 64 answers across the four files; the branch matches 60/64 and diverges on the final check of each. Recorded in Validation §1.** |
+
+**Working-tree note at time of writing:** the branch tip is local and unpushed.
+Untracked in the worktree: `HANDOVER.md`, `NEXT-SESSION-PROMPT.md`, build
+directories `bd-dbg/`, `bd-mid/`, `bd-pretoday/`, and scratch queries
+`moo.smt2`, `fp_soundness_bug.smt2`, `reduced-Problem101.smt2`. `lib/extlib-abc`
+shows as modified. The four witness files in
+[Appendix A](#appendix-a--witness-files) are **not** yet in the tree --- landing
+them is [Part V](#part-v--work-queue) item 3.
