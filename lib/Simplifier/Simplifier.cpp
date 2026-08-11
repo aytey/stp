@@ -877,8 +877,6 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     unsigned valueWidth = 0;
   };
 
-  // A deque, so descending never moves the frames above it.
-  std::deque<Frame> stack;
   ASTNode result;
 
   // The head of SimplifyFormula: the answers it gives before dispatching to
@@ -905,6 +903,62 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     }
     return false;
   };
+
+  // Answer root-level leaves and memo hits before constructing the deque.
+  // A deque may allocate initial storage in its constructor (libstdc++ does),
+  // so returning after the first push can still make every shallow call pay
+  // for a traversal worklist it never used.
+  Frame top;
+  top.b = b;
+  top.pushNeg = pushNeg;
+  if (rootJob == SimplifyJob::Formula)
+  {
+    top.job = Frame::FormulaJob;
+    if (head(b, pushNeg, top.a))
+      return result;
+  }
+  else if (rootJob == SimplifyJob::Term)
+  {
+    assert(_bm->UserFlags.optimize_flag);
+    top.job = Frame::TermJob;
+
+    // A root substitution frame only returned the answer from its image and
+    // deliberately did not memoise the substituted key. Follow those
+    // transparent frames here, applying the same constant/substitution/memo
+    // head as `want`, until a real term frame is needed.
+    ASTNode root = b;
+    ASTNode substitutionImage;
+    while (true)
+    {
+      if (root.isConstant())
+        return root;
+      if (InsideSubstitutionMap(root, substitutionImage))
+      {
+        root = substitutionImage;
+        continue;
+      }
+      if (CheckSimplifyMap(root, result, false))
+        return result;
+      break;
+    }
+
+    top.b = root;
+    top.phase = Frame::PrecheckedStart;
+  }
+  else
+  {
+    assert(b.GetIndexWidth() > 0);
+    top.job = Frame::ArrayJob;
+    if (CheckSimplifyMap(b, result, false))
+      return result;
+    if (b.GetKind() == SYMBOL)
+      return b;
+    top.phase = Frame::PrecheckedStart;
+  }
+
+  // A deque, so descending never moves the frames above it.
+  std::deque<Frame> stack;
+  stack.push_back(std::move(top));
 
   // Ask for the simplification of `n` under `neg`, and suspend this frame:
   // it picks up at `resume` with the answer in `result`.
@@ -1293,7 +1347,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
           f.phase == Frame::TermSubstitutionPrechecked)
       {
         assert(_bm->UserFlags.optimize_flag);
-        if (f.b.isConstant())
+        if (f.phase == Frame::Start && f.b.isConstant())
           return finishTerm(f.b);
 
         f.a = f.b;
@@ -1701,23 +1755,6 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
                     Frame::AtomicJob);
     }
   };
-
-  {
-    Frame top;
-    top.b = b;
-    top.pushNeg = pushNeg;
-    if (rootJob == SimplifyJob::Formula)
-    {
-      top.job = Frame::FormulaJob;
-      if (head(b, pushNeg, top.a))
-        return result; // the head answered: no walk at all.
-    }
-    else if (rootJob == SimplifyJob::Term)
-      top.job = Frame::TermJob;
-    else
-      top.job = Frame::ArrayJob;
-    stack.push_back(std::move(top));
-  }
 
   while (true)
   {

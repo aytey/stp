@@ -674,6 +674,48 @@ bool simplifyNotAtomicMemoOk(Context& c)
          simp.SimplifyFormula(input, false) == output;
 }
 
+// Leaves, cached roots and transparent root substitutions are all answered
+// before the unified simplifier needs a continuation frame. Exercise each
+// shortcut and then a nontrivial substituted image, which must still enter
+// the job machine and produce the same result.
+bool simplifyRootFastPathsOk(Context& c)
+{
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode two = c.mgr.CreateBVConst(8, 2);
+  const ASTNode x = c.mgr.CreateSymbol("root-fast-x", 0, 8);
+  const ASTNode cachedTerm = c.hf->CreateTerm(BVXOR, 8, x, zero);
+  const ASTNode cachedFormula = c.hf->CreateNode(EQ, cachedTerm, zero);
+  const ASTNode substituted = c.mgr.CreateSymbol("root-fast-sub", 0, 8);
+  const ASTNode image = c.hf->CreateTerm(BVPLUS, 8, one, two);
+  c.roots.push_back(cachedFormula);
+  c.roots.push_back(image);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+
+  if (simp.SimplifyTerm(zero) != zero ||
+      simp.SimplifyFormula(c.mgr.ASTTrue, false) != c.mgr.ASTTrue)
+    return false;
+
+  const ASTNode termOutput = simp.SimplifyTerm(cachedTerm);
+  const ASTNode formulaOutput = simp.SimplifyFormula(cachedFormula, false);
+  if (simp.SimplifyTerm(cachedTerm) != termOutput ||
+      simp.SimplifyFormula(cachedFormula, false) != formulaOutput)
+    return false;
+
+  if (!simp.UpdateSolverMap(substituted, image))
+    return false;
+  const ASTNode substitutedOutput = simp.SimplifyTerm(substituted);
+  c.roots.push_back(termOutput);
+  c.roots.push_back(formulaOutput);
+  c.roots.push_back(substitutedOutput);
+  return termOutput.GetType() == BITVECTOR_TYPE &&
+         formulaOutput.GetType() == BOOLEAN_TYPE &&
+         substitutedOutput == c.mgr.CreateBVConst(8, 3);
+}
+
 // A term contains a formula which contains the preceding term, at every
 // level. Separate iterative formula and term drivers are insufficient for
 // this shape: calling from one driver into the other still makes one C++
@@ -1426,6 +1468,12 @@ TEST(DeepDag, simplify_not_atomic_preserves_memo_edges)
 {
   Context c;
   EXPECT_TRUE(simplifyNotAtomicMemoOk(c));
+}
+
+TEST(DeepDag, simplifier_root_fast_paths_preserve_results)
+{
+  Context c;
+  EXPECT_TRUE(simplifyRootFastPathsOk(c));
 }
 
 TEST(DeepDag, shallow_simplify_alternating_term_formula)
