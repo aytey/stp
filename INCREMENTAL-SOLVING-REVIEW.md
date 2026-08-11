@@ -33,11 +33,14 @@ what must not be re-chased, and what to do next.
 **All twelve tracked defects are now FIXED or closed**, and D13 with them.
 D1 and D2 (`e1229764`, `926bf48f`) were silent wrong answers, with all four
 witnesses landed as regressions and the campaign harness hardened so a run of
-its kind would catch them (see [Part V](#part-v--work-queue)). D3 and the
-D4 remainder are the only substantive items left open. Both were silent wrong
-answers (`sat` on an `unsat` query) reachable with **no non-default flags at
-all**, on logics STP is built for. Everything still open on this list is
-quality, cost, or maintainability --- **no known soundness defect remains**.
+its kind would catch them (see [Part V](#part-v--work-queue)). Both were
+reachable with **no non-default flags at all**, on logics STP is built for.
+Everything still open in this document is quality, cost, or maintainability ---
+**no known soundness defect remains**.
+
+Two tracked rows were fixed only at their headline, and their sub-items are
+tracked separately: **D7b** (feed cap) is now fixed, and **D8b** (refinement
+mass) is closed as declined-with-measurement.
 
 **Every defect below is branch-introduced.** None reproduces on master --- see
 [Validation against master](#validation-against-master) for the evidence, which
@@ -56,8 +59,8 @@ mechanism is the part worth remembering.
 | [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **FIXED / closed** | yes | no (branch-only code) | ~4x; remainder measured flat | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
 | [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | **FIXED** `45504ef9` | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
 | [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | **FIXED** `635b3b04` | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
-| [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | **FIXED** `8ab75f81` | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
-| [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | **FIXED** `8ffd109f` | array logics | **loop is master's**, blowup is not | agent-verified | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode |
+| [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | **FIXED** `8ab75f81`; D7b **FIXED** `e438bbba` | yes | no (branch-only code) | agent-reproduced; D7b reproduced + 2 regressions | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions. **D7b:** the feed cap was charged the sum of level DAG sizes, not what the engine retains, and a refusal was latched for the session though its charge is refunded on pop |
+| [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | **FIXED** `8ffd109f`; D8b **closed** `95014cd7` | array logics | **loop is master's**, blowup is not | agent-verified; D8b measured | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode. **D8b:** theory-lemma mass is keyed on the whole-stack conjunction, so any stack change drops all of it; measured at one spurious relief rebuild and 646 of 6800 lemmas re-derived, no time difference --- declined, see Tier 2.2 |
 | [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | **FIXED** `060cc34f` | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
 | [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | **FIXED** `0767b22a` | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | **FIXED** | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
@@ -1439,7 +1442,7 @@ purely diagnostic and one of which exists to bound a workaround.
 Worse than the count is the **mutual gating**: trail-reuse retirement gates
 inprobing retirement (`:4729`) *and* unit promotion (`:5502`); inprobing
 retirement also disables `elim` and `shrink` (undocumented outside the commit
-message and `SATSolver.h` --- D36 in the ledger). Three independent constant sets
+message and `SATSolver.h` --- F36 in the ledger). Three independent constant sets
 implement one latent concept: *session shape*.
 
 **The measurement apparatus as deliverable.** 171 hand-maintained counter fields
@@ -1594,7 +1597,7 @@ hidden by *other* mechanisms re-deriving what they lost:
 `--disable-cbitp`, `--no-incremental-promote-units`, and
 `--incremental-auto-engage-at 1`.
 
-### 0.2 Fix D5 --- non-deterministic naming in front of the block cache
+### 0.2 Fix D5 --- non-deterministic naming in front of the block cache --- DONE, `45504ef9`
 
 **Under-rated in the first review; it belongs here.** `RemoveUnconstrained`
 mints counter-named variables, and it sits directly in front of a cache keyed
@@ -1627,7 +1630,7 @@ neighbours have, and invoke it only from the `Relief` path. Clear
 
 ## Tier 1 — before any measurement or tuning is trusted
 
-### 1.1 Fix D6 --- make the profiler behaviour-neutral
+### 1.1 Fix D6 --- make the profiler behaviour-neutral --- DONE, `635b3b04`
 
 `--incremental-profile` substitutes a different live-mass estimator, so it
 changes **when relief rebuilds fire**. Any number taken with the profiler
@@ -1655,24 +1658,54 @@ cost judgement and the C API --- which hard-codes 3 and cannot see
 
 ## Tier 2 — real costs, no correctness exposure
 
-### 2.1 Fix D7 --- CBP retirement measures the wrong thing
+### 2.1 Fix D7 --- CBP retirement measures the wrong thing --- DONE, `8ab75f81` + `e438bbba`
 
 `cbpEverFixed` is set by a level's own assumed truth, so the 8-divergence tier
 is unreachable for array-free sessions and the two tiers are effectively
 inverted. Drive the leash off evidence that a fixing *crossed a level boundary*
---- the property the pass exists for. Charge the feed cap against the union the
-engine retains rather than the per-level sum (D7b), and let a rollback below the
-tripping level re-arm the pass.
+--- the property the pass exists for.
 
-### 2.2 Fix D8 --- per-encode registry copy and whole-table anchors
+**D7b, done in `e438bbba`.** The cap is now charged what a level ADDS: the
+engine answers `freshNodeCount` under `extendParentMap`'s own stopping rule, so
+an accepted feed grows its dependency set by exactly what was charged, and that
+is asserted. The old per-level sum billed one shared cone once per level that
+mentioned it --- nine charged against five retained on a three-level toy. A
+refusal is no longer the session-wide futility latch: it is keyed to the
+fed-level count refused and released once the stack falls back below it, which
+is what the trail already does for `callCbpOff`. `--incremental-cbp-feed-cap`
+makes both halves reachable from a test; both regressions were confirmed to fail
+against the old accounting.
+
+### 2.2 Fix D8 --- per-encode registry copy and whole-table anchors --- DONE, `8ffd109f`; D8b CLOSED, measured
 
 Every array encode installs the entire session registry into the batch
 transformer by value and copies it back, and the transformer then re-conjoins an
 index-binding equation for **every registry row with a computed index** onto
 every array conjunct --- including rows from popped levels. Hand the transformer
 a registry by reference and emit anchors only for `touchedReads`, which the
-driver already collects. Charge theory lemmas to their registry rows rather than
-to a whole-stack owner key (D8b).
+driver already collects.
+
+**D8b: CLOSED, declined with the measurement (`95014cd7`).** Theory lemmas are
+charged to the emitting solve, keyed on that solve's whole-stack conjunction, so
+one push of an unrelated level mints a key whose mass is zero and every lemma
+ever emitted stops counting at once. The code called that a middle ground; it is
+not one --- the only two behaviours are "repeat the identical stack" and "drop it
+all". Reproduced on a 250-level read-heavy QF_ABV churn session forced to the
+valve at `--incremental-reencode-limit 8000` (125x tighter than the default,
+which no constructed workload reaches at all): **one** relief rebuild the true
+live mass would not have permitted, and 646 of 6800 refinement clauses
+re-derived after it. Across three interleaved pairs the time is a wash --- the
+rebuild compacts what it discards.
+
+The remedy is not free. Counting lemmas permanently live removes the rebuild and
+then never relieves at all on that session, which is the failure the policy
+exists to prevent, and it is the extreme the design already weighed and rejected.
+Charging mass to the live read rows is the answer that would be right, and needs
+always-on per-row clause accounting: the only per-row liveness today is a
+**profiling** counter, and feeding that into the valve recreates D6 exactly.
+Declined on the same standard as F10, F23 and D12; the code now states the cost
+instead of misdescribing the behaviour, including the map's one-entry-per-
+distinct-stack growth, which cannot be bounded without changing the policy.
 
 ### 2.3 Finish D4 --- the remaining linear term --- CLOSED, measured
 
@@ -1691,7 +1724,7 @@ iterated --- and the level's own symbol set hoisted out of the per-candidate
 loop in `namedByAnotherLevel`. About 9%: medians 830 ms → 757 ms, ahead in all
 six rounds of an interleaved A/B between saved binaries.
 
-### 2.4 Fix D13 --- one transaction for elimination and context inlining
+### 2.4 Fix D13 --- one transaction for elimination and context inlining --- DONE, `570bce9c`
 
 Recovers the eliminations D1's fix conservatively refuses (measured: 4 of 93
 across the corpus, 2 of them genuine) **and** deletes `collectCtxExportedSymbols`
@@ -1699,7 +1732,7 @@ outright. Strictly better than both the current and the pre-fix state. Verify
 `replace`'s transitive expansion before relying on it. Do **not** implement it by
 predicting the re-join's declines in a second place --- that is how D1 happened.
 
-### 2.5 Fix D12 --- incremental symbol map
+### 2.5 Fix D12 --- incremental symbol map --- CLOSED, measured
 
 ~1.8 ms per call, several calls per refinement round, walking every symbol ever
 blasted. Maintain it at `totalizeSymbol`/`ensureEncoded`/`rebuildEncodings` and
@@ -1710,7 +1743,7 @@ return it by reference.
 These are small, but they are behaviour master did not have, and two of them
 touch code outside the driver.
 
-### 3.1 D10 --- node-construction rewrite gated on a session mode flag
+### 3.1 D10 --- node-construction rewrite gated on a session mode flag --- DONE, `0767b22a`
 
 `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`, which `push()`
 sets, so a pushing session gets a different word-level DAG **even when the driver
@@ -1721,7 +1754,7 @@ order is chosen. Split the flag into request vs session state (D10b: a
 `push` followed by `reset` currently promotes the whole rest of the session to
 forced-incremental).
 
-### 3.2 D9 --- `construct_counterexample_flag` made sticky
+### 3.2 D9 --- `construct_counterexample_flag` made sticky --- DONE, `060cc34f`
 
 One array round or one `:produce-models` permanently disables the documented
 unchanged-stack cache shortcut and re-enables per-solve counterexample
@@ -1730,7 +1763,7 @@ construction in the batch pipeline. Give the driver a private
 
 ## Tier 4 — cleanups, any order
 
-### 4.1 D11 --- dead code
+### 4.1 D11 --- dead code --- DONE, `8a618f99`
 
 `Backtrack.h` (273 lines + test, zero production users): delete it, **or** land
 its first consumer. The natural one is the occurrence index `00ea5c1e` just
@@ -1758,14 +1791,54 @@ rather than a call-ordering convention backed by a third-party `abort()`.
 
 ### 4.4 Rebalance the test suite
 
-73 of 87 RUN lines force `--incremental`; production runs automatic engagement.
-`elimination-context-export-default-engagement.smt2` is currently the only test
-exercising engagement-at-32 at all.
+84 of 101 RUN lines across 78 files force `--incremental`; production runs
+automatic engagement. Nine files run without it, of which
+`engagement-default-bv.smt2`, `engagement-default-abv.smt2` and
+`elimination-context-export-default-engagement.smt2` drive 32 default-flag
+checks and so actually reach the QF_BV/QF_ABV engagement ordinal. (An earlier
+revision of this item said the last of those was the only such test and quoted
+73 of 87; both were wrong when written --- the first two were added by `06dbdccf`,
+two commits before this review began.) The gap that is real: the automatic path
+is exercised by nine files out of seventy-eight, and few model-producing
+incremental RUN lines carry `--check-sanity`.
 
-### 4.5 The untracked findings
+### 4.5 The untracked findings --- DONE
 
-F9, F10, F16, F22, F23, F26 and F38 in
-[Appendix B](#appendix-b--full-finding-ledger), each with a stated fix.
+All seven are resolved --- F9 (`96f14b16`), F16 (`cd34049d`), F26 and F38
+(`bac4c110`) fixed; F10 and F23 built, measured and reverted; F22 deferred with
+its reason. See [Appendix B](#appendix-b--full-finding-ledger).
+
+### 4.6 Findings the sweep recorded and never queued
+
+Collected here because until now they pointed at a section that does not exist.
+None is a correctness item; each needs a decision rather than analysis.
+
+- **F43** --- four re-implementations of the batch preprocessing prefix, three
+  replay representations. One helper, three callers. This row had no write-up
+  anywhere in this document.
+- **F3** --- the forced-first-solve recovery family: three special-case entry
+  conditions ([Part III.4](#4-overreach-inventory)). Deriving forced-first from
+  `engagedSolves == 0` would drop the plumbed bool.
+- **F36** --- `--incremental-inprobing` silently disables bounded variable
+  elimination, learned-clause shrinking and lucky phases, documented only in a
+  commit message and `SATSolver.h`. One paragraph in
+  `docs/incremental-solving.rst` closes it.
+- **F44** --- ~20 fitted constants and 8 flags, with the most intricate policy
+  undocumented.
+- **F7 (second half)** --- `symbolsOfCache` is never cleared, so it holds a
+  symbol set for every node measured since the session began. Entries can never
+  be stale (symbol sets are a pure function of the node), so a clear at
+  `rebuildEncodings` is pure reclamation. D4 is marked FIXED/closed while this
+  named sub-item is neither fixed nor declined.
+- **F24** --- the deterministic-name keep-alive pin is a convention held at one
+  call site, with no assertion and no test. Move it into
+  `CreateDeterministicVariable`, or pin it with a test.
+- **Per-check thread creation** --- `runOnBigStack` spawns a worker per check.
+  It is this document's own leading hypothesis for an unexplained
+  small-session loss, and it was never queued. A persistent worker, or an
+  explicit acceptance.
+- **Model channel `SolverMap`** ([Part III.5](#5-layering-inventory), row 3) ---
+  correct today; the review never says whether not owning the map is accepted.
 
 ## Tier 5 — after the above
 
@@ -2322,24 +2395,24 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F6 | REFUTED | low | preprocessing | "Six ad-hoc invalidation mechanisms, no shared predicate" | Part II |
 | F7 | CONFIRMED | med | preprocessing | Whole-stack rescan per candidate per check; unbounded `symbolsOfCache` | **D4** |
 | F8 | REFUTED | none | preprocessing | Exact-stack scoped elimination lacks a freeze check | Part II |
-| F9 | PARTLY | low | preprocessing | Trial "must halve" budget measured against a clipped size after sigma0 expansion | --- |
-| F10 | PARTLY | low | cbp | Adoption's shrink gate ignores the pinning facts it obliges | --- |
+| F9 | PARTLY | low | preprocessing | Trial "must halve" budget measured against a clipped size after sigma0 expansion | **fixed** `96f14b16` |
+| F10 | PARTLY | low | cbp | Adoption's shrink gate ignores the pinning facts it obliges | declined, measured |
 | F11 | CONFIRMED | med | cbp | `cbpEverFixed` set by a level's own assumed truth; retirement tier unreachable | **D7** |
 | F12 | REFUTED | low | cbp | Memo caches four subsystems behind a CBP-shaped key | Part II |
 | F13 | PARTLY | low | cbp | Engine/caller/memo triple kept aligned by asserts + repair fallback; two dead fields | **D11** |
 | F14 | PARTLY | low | cbp | Session-wide retirement from prefix-scoped, double-counted evidence | **D7b** |
 | F15 | PARTLY | med | arrays | Every array encode seeds the whole registry; anchors for every read ever seen | **D8** |
-| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | --- |
+| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | **fixed** `cd34049d` |
 | F17 | PARTLY | low | arrays | Active-read liveness is a refcount shadow; `batchTablesSeeded` dead | **D11** |
 | F18 | CONFIRMED | low | arrays | Adapter rebuilds an O(all session symbols) map per call | **D12** |
 | F19 | PARTLY | low | arrays | Congruence lemmas "permanent" but charged to a per-stack owner key | **D8b** |
 | F20 | CONFIRMED | med | ext/FP | Exact-stack block cache fronted by a non-deterministic, unmemoised pass | **D5** |
 | F21 | PARTLY | low | ext/FP | Solver-mode policy in the generic simplifying node factory | **D10** |
-| F22 | PARTLY | low | ext/FP | Ext and ordinary rounds mint two deterministic names for the same (array, index) | --- |
-| F23 | PARTLY | low | ext/FP | `fragment()` totalises whole levels to compute a boolean, on a memo that does not exist | --- |
+| F22 | PARTLY | low | ext/FP | Ext and ordinary rounds mint two deterministic names for the same (array, index) | deferred, reasoned |
+| F23 | PARTLY | low | ext/FP | `fragment()` totalises whole levels to compute a boolean, on a memo that does not exist | declined, measured |
 | F24 | PARTLY | low | ext/FP | Keep-alive pin set makes name reuse depend on GC, by convention at one call site | Part II |
 | F25 | CONFIRMED | high | relief | Whole-base semantic simplification welded to `rebuildEncodings` | **D3** |
-| F26 | PARTLY | low | relief | `everAssumedLits` not pruned on the extensionality route | --- |
+| F26 | PARTLY | low | relief | `everAssumedLits` not pruned on the extensionality route | **fixed** `bac4c110` |
 | F27 | REFUTED | none | relief | "Two parallel live-mass estimators; delete the cheap one" | Part II |
 | F28 | PARTLY | low | relief | `--incremental-profile` changes the relief schedule | **D6** |
 | F29 | PARTLY | low | relief | `baseEliminatedDefs` epoch-scoped state cleared behind four early returns | **D3b** |
@@ -2348,15 +2421,15 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F32 | CONFIRMED | low | frontend | `construct_counterexample_flag` made sticky, disabling the cache shortcut | **D9** |
 | F33 | PARTLY | med | frontend | Per-engaged-check work is O(base conjuncts) and O(levels²) | **D4** |
 | F34 | CONFIRMED | low | frontend | `canHandle()` is a no-op seam; model readers construct the driver to ask | **D11** |
-| F35 | PARTLY | low | sat | `SATSolver` as CaDiCaL option panel; no object owns an epoch's configuration | Part V.9 |
+| F35 | PARTLY | low | sat | `SATSolver` as CaDiCaL option panel; no object owns an epoch's configuration | Tier 4.3 |
 | F36 | PARTLY | low | sat | `--incremental-inprobing` silently disables three techniques, gated on one probe | Part III.4 |
 | F37 | REFUTED | low | sat | `enableTrailReuse`'s stated precondition does not exist | Part II |
-| F38 | PARTLY | low | sat | `suggestPhase` performs CaDiCaL's model-destroying variable declaration | --- |
+| F38 | PARTLY | low | sat | `suggestPhase` performs CaDiCaL's model-destroying variable declaration | **fixed** `bac4c110` |
 | F39 | PARTLY | low | sat | `supportsAssumptions` pairing is a runtime `exit(-1)` invariant | Part II |
-| F40 | PARTLY | low | complexity | Backend epoch is not an object: ~28 fields by hand, 4 triggers, 3 predicate copies | Part V.9 |
+| F40 | PARTLY | low | complexity | Backend epoch is not an object: ~28 fields by hand, 4 triggers, 3 predicate copies | Tier 4.3 |
 | F41 | CONFIRMED | med | complexity | `--incremental-profile` substitutes a different live-mass computation | **D6** |
 | F42 | PARTLY | low | complexity | Three push/pop trail implementations; the tested generic one is unused | **D11** |
-| F43 | PARTLY | low | complexity | Four re-implementations of the batch preprocessing prefix; three replay reps | Part V.9 |
+| F43 | PARTLY | low | complexity | Four re-implementations of the batch preprocessing prefix; three replay reps | Tier 4.6 |
 | F44 | PARTLY | low | complexity | ~20 fitted constants, 8 flags, the most intricate policy undocumented | Part III.4 |
 
 ### Findings recorded but not tracked as defects --- all now resolved
@@ -2617,6 +2690,10 @@ not as an implementation.
 | **2026-08-11** (reassessment) | after `00ea5c1e` | Added [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered), the measured conservatism D1's fix introduced (4 of 93 eliminations corpus-wide, 2 genuine, in one file), with the single-transaction fix and an explicit warning against the two-site prediction that caused D1. Work queue re-ordered into tiers: the ordering principle changed once no known soundness defect remained, from "fix the wrong answers" to "find the next one, then pay down cost". |
 | **2026-08-11** (fixes) | `e1229764`, `926bf48f`, and the regression/harness commit | **D1 and D2 fixed**; four regressions landed, each verified to fail against the pre-fix source before being kept; paired campaign mode now validates the candidate's models by default. Status board, work queue and Appendix A updated. No known soundness defect remains. |
 | **2026-08-11** (same day, later still) | **cross-checked with Bitwuzla, cvc5 and Z3** | **The four witnesses' expected answers no longer rest on STP alone: Bitwuzla `0.9.1-dev`, cvc5 `1.3.5.dev` and Z3 `5.0.0` agree with STP master on all 64 answers across the four files; the branch matches 60/64 and diverges on the final check of each. Recorded in Validation §1.** |
+
+| **2026-08-11** (untracked-findings pass) | `cd34049d`, `bac4c110`, `96f14b16`, `933a3b4b` | The seven ledger rows that were recorded and never tracked are closed: F16, F26, F38 and F9 fixed; F10 (adoption shrink gate) and F23 (`FpTotalise` root memo) built, measured and reverted --- the first because counting a pinning fact's DAG mass over-counts shared interned cones and refused an adoption the corpus pins, the second because it measured neutral; F22 deferred with its reason. |
+| **2026-08-11** (cross-check) | audit of this document against the tree | Found that two rows marked FIXED were fixed only at their headline, and that three ledger rows pointed at a "Part V.9" that does not exist. Added D7b/D8b tracking, [Tier 4.6](#46-findings-the-sweep-recorded-and-never-queued) to own the eight items that had no home, and corrected the status-board paragraph, nine stale work-queue headings, the Tier 4.4 test-suite figures and an `F36` cited as `D36`. |
+| **2026-08-11** (D7b/D8b) | `e438bbba`, `95014cd7` | **D7b fixed**: the CBP feed cap is charged what a level adds rather than the sum of level DAG sizes, the retention invariant is asserted, and a capacity refusal is released when the stack falls back below it; two regressions, both confirmed to fail against the old accounting, plus corrected counters in `incremental-profile.smt2`. **D8b closed, declined with measurement**: reproduced as one spurious relief rebuild and 646 of 6800 lemmas re-derived, with no time difference, at a valve setting 125x tighter than the default; the available remedy is the extreme the design rejected, and the right one would recreate D6. |
 
 **Working-tree note at time of writing:** the branch tip is local and unpushed.
 Untracked in the worktree: `HANDOVER.md`, `NEXT-SESSION-PROMPT.md`, build
