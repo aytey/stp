@@ -711,22 +711,14 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   {
     resetSolver();
 
-    // See incremental_from_start: pure QF_BV/QF_ABV retains the batch
-    // pipeline through solve 31. A targeted 107-session sweep found solve 32
-    // to be the best finite compromise: later/never engagement made common
-    // batch-friendly cases faster but lost incremental-friendly long
-    // sessions. FP and unmeasured/unknown logics retain solve 3. A
-    // nonnegative diagnostic threshold overrides this theory policy, while
-    // explicit --incremental deliberately overrides both.
-    int64_t engageAt = bm.UserFlags.incremental_auto_engage_at;
-    if (engageAt < 0)
-      engageAt = delayed_bv_auto_engagement ? 32 : 3;
-    const bool automaticEngagementReady =
-        engageAt > 0 &&
-        solves_run >= static_cast<size_t>(engageAt - 1);
+    // The policy itself lives on the driver, so this frontend and the C API
+    // cannot drift apart again; explicit --incremental overrides it.
+    const bool autoEngaged = IncrementalSolver::automaticEngagementReady(
+        bm.UserFlags.incremental_auto_engage_at, delayed_bv_auto_engagement,
+        solves_run);
     const bool use_incremental =
         session_incremental &&
-        (incremental_from_start || automaticEngagementReady) &&
+        (incremental_from_start || autoEngaged) &&
         GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
     const bool firstForcedIncrementalSolve =
         use_incremental && incremental_from_start && solves_run == 0;

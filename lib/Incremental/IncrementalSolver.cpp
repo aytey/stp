@@ -4856,6 +4856,23 @@ IncrementalSolver::~IncrementalSolver()
     impl->ce->setFpEncodingContext(NULL);
 }
 
+bool IncrementalSolver::automaticEngagementReady(int64_t configuredThreshold,
+                                                bool delayedBvLogic,
+                                                size_t solvesRun)
+{
+  // A targeted 107-session sweep found solve 32 the best finite compromise
+  // for pure QF_BV/QF_ABV: engaging later or never made common batch-friendly
+  // cases faster but lost incremental-friendly long sessions. Everything else
+  // -- floating point, arrays outside QF_ABV, unknown logics -- engages on the
+  // third, keeping two batch warm-ups.
+  int64_t engageAt = configuredThreshold;
+  if (engageAt < 0)
+    engageAt = delayedBvLogic ? 32 : 3;
+  if (engageAt <= 0)
+    return false;
+  return solvesRun >= static_cast<size_t>(engageAt - 1);
+}
+
 bool IncrementalSolver::canHandle(const ASTVec& assertionsSMT2)
 {
   // Every construct the SMT-LIB frontend can produce is covered: plain

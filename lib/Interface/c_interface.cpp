@@ -258,6 +258,11 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
       //Array-based Minisat has been replaced with normal MiniSat
       b->UserFlags.solver_to_use = stp::UserDefinedFlags::MINISAT_SOLVER;
       break;
+    case INCREMENTAL_AUTO_ENGAGE_AT:
+      // Same policy object the SMT-LIB2 reader drives with
+      // --incremental-auto-engage-at; this is the C API's way to reach it.
+      b->UserFlags.incremental_auto_engage_at = param_value;
+      break;
     case CADICAL:
       b->UserFlags.solver_to_use = stp::UserDefinedFlags::CADICAL_SOLVER;
       break;
@@ -800,15 +805,21 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
   // un-stacked _current_query. The driver populates the same
   // counterexample tables the batch path does, so the C API's model
   // contract (the counterexample belongs to the last query and survives
-  // the push/query/pop bracket) is untouched. The driver engages from the
-  // THIRD solve, matching the SMT-LIB2 frontend: the first solves keep
-  // the batch pipeline's whole-formula simplification, and a two-query
-  // session -- whose final solve can never repay the driver's persistent
-  // encoding -- stays batch throughout. vc_setFlags 'i' still forces the
-  // driver from the first.
+  // the push/query/pop bracket) is untouched. Engagement follows the same
+  // policy object as the SMT-LIB2 frontend: by default the third solve, so
+  // the first solves keep the batch pipeline's whole-formula simplification
+  // and a two-query session -- whose final solve can never repay the
+  // driver's persistent encoding -- stays batch throughout. There is no
+  // set-logic here, so the longer pure-QF_BV default is not claimed. This
+  // used to be a literal 3 that incremental_auto_engage_at could not reach:
+  // the override was documented and inert for every embedder.
+  // vc_setFlags 'i' still forces the driver from the first solve.
   const bool use_incremental =
       stp_i->sessionIncremental &&
-      (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 1);
+      (stp_i->incrementalFromStart ||
+       stp::IncrementalSolver::automaticEngagementReady(
+           stp_i->bm->UserFlags.incremental_auto_engage_at,
+           /*delayedBvLogic=*/false, stp_i->incrementalSolvesRun));
   const bool firstForcedIncrementalSolve =
       use_incremental && stp_i->incrementalFromStart &&
       stp_i->incrementalSolvesRun == 0;

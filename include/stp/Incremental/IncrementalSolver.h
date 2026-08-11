@@ -27,6 +27,7 @@ THE SOFTWARE.
 
 #include "stp/AST/AST.h"
 #include "stp/Globals/Globals.h"
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -70,6 +71,26 @@ public:
 
   IncrementalSolver(const IncrementalSolver&) = delete;
   IncrementalSolver& operator=(const IncrementalSolver&) = delete;
+
+  // Should a session that did NOT explicitly ask for the driver be using it
+  // by now? One policy, for every frontend: the SMT-LIB2 reader and the C
+  // API disagreed for as long as each carried its own copy, and the C API's
+  // copy was a literal that `--incremental-auto-engage-at` could not reach,
+  // so the documented override was inert for embedders.
+  //
+  // `configuredThreshold` is UserDefinedFlags::incremental_auto_engage_at:
+  // negative selects the measured per-logic default, 0 disables automatic
+  // engagement entirely, and N engages on the Nth real check. `solvesRun`
+  // is how many real checks this session has already made, so the Nth check
+  // asks with N-1. `delayedBvLogic` selects the longer default: pure
+  // QF_BV/QF_ABV repay the driver's persistent encoding later than other
+  // logics do, and a caller that cannot know its logic -- the C API has no
+  // set-logic -- passes false and gets the shorter one.
+  //
+  // Explicit forcing (--incremental, vc_setFlags 'i') bypasses this
+  // entirely; that is the caller's decision, not this policy's.
+  static bool automaticEngagementReady(int64_t configuredThreshold,
+                                       bool delayedBvLogic, size_t solvesRun);
 
   // Whether every assertion currently on the stack is inside the fragment
   // this driver encodes. Every construct the frontends can produce is
