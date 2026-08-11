@@ -2359,43 +2359,83 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F43 | PARTLY | low | complexity | Four re-implementations of the batch preprocessing prefix; three replay reps | Part V.9 |
 | F44 | PARTLY | low | complexity | ~20 fitted constants, 8 flags, the most intricate policy undocumented | Part III.4 |
 
-### Findings recorded but not yet tracked as work items
+### Findings recorded but not tracked as defects --- all now resolved
 
-- **F9** --- `preparePiece` applies `sigma0` *after* the granularity gate measured
+All seven were re-checked against the tree and every one still held. Four were
+fixed; three were measured and deliberately declined. Details below.
+
+- **F9 --- FIXED (`96f14b16`).** `preparePiece` applies `sigma0` *after* the granularity gate measured
   the pre-sigma0 piece, and then measures with `dagSizeUpTo(out, bigFormulaCap)`,
   which saturates at 20001; so for any piece sigma0 grows past ~20000 nodes,
   `budget` is a fixed 10000-node ceiling rather than half the actual input.
   `harvestSigma0` has **no** inlining cap, unlike `harvestPushed`'s
   `defInlineCap`. Fix: measure `before` unclipped, and decide deliberately whether
   base definitions deserve the same inline cap.
-- **F10** --- `cbpAdopt`'s shrink gate measures only the rewritten conjunct, not
+- **F10 --- DECLINED, measured.** `cbpAdopt`'s shrink gate measures only the rewritten conjunct, not
   the pinning facts it obliges, and facts are never discharged into each other the
   way the batch pass does. Fix: build one `fromTo` from the collected domains,
   emit each fact as `EQ(replaceChildren(domain, fromTo), k)`, drop facts folding
   to TRUE, stop the walk at an emitted domain, and include surviving facts' mass
   in the gate.
-- **F16** --- the no-progress guard fires on "no SAT call this round", which is
+- **F16 --- FIXED (`cd34049d`).** the no-progress guard fires on "no SAT call this round", which is
   strictly narrower than "no progress". Because the candidate-pair set is
   recomputed identically each round and a round exiting UNDECIDED has already put
   every pair's axiom into the solver, the loop is provably either one round or
   unbounded, re-encoding duplicate axioms each time. Fix: compare
   `submittedClauses()` across the round, or memoise emitted pairs in
   `applyAxiomsToSolver`.
-- **F22** --- in a session alternating extensionality and ordinary array rounds, a
+- **F22 --- DEFERRED, deliberately.** in a session alternating extensionality and ordinary array rounds, a
   SYMBOL-rooted read is abstracted twice (`@ext_read_k<A>_k<i>` and
   `@array_A_k<i>`) sharing nothing. Fix: one deterministic name keyed on
   `(array, index)` in both routes; the ext spelling generalises.
-- **F23** --- `fragment()` runs a full `FpTotalise::topLevel` solely to derive the
+- **F23 --- DECLINED, measured; comment corrected.** `fragment()` runs a full `FpTotalise::topLevel` solely to derive the
   `f.arrays` boolean, and the justifying comment is wrong: `FpTotalise` has no
   root-level input→output memo. Fix: decide `f.arrays` syntactically
   (`FP_TO_UBV`/`FP_TO_SBV` or an FP-indexed array access), and give `FpTotalise` a
   root-level memo.
-- **F26** --- `exactStackCheckSat`'s array-equality return bypasses the sole
+- **F26 --- FIXED (`bac4c110`).** `exactStackCheckSat`'s array-equality return bypasses the sole
   `retireStaleActivation()` call, so hint aging never runs in an all-ext session.
   Fix: move the call to just after `decideBVA`, which both routes pass.
-- **F38** --- drop the unnecessary `declareNewVariables()` from
+- **F38 --- FIXED (`bac4c110`).** drop the unnecessary `declareNewVariables()` from
   `Cadical::suggestPhase`; the early return already guards undeclared variables,
   and the call can leave CaDiCaL's SATISFIED state under `--cadical-factor`.
+
+
+#### Why three were declined
+
+**F10 (adoption's shrink gate ignores its pinning facts).** Implemented and
+reverted. Weighing the facts' DAG mass in the gate refused an adoption that
+`cbp-overlapping-protection-roots.smt2` pins, and that refusal was wrong: a
+fact's cone is a shared subgraph referenced by identity, and the work on D8
+established that re-emitting such a cone costs no clauses, because the
+equations are interned and the AIG is strashed. DAG size is simply not a proxy
+for encoding cost here. The finding's own verification had already narrowed
+the consequence to "a small constant overhead"; the corrected gate over-counts
+it. Discharging facts into each other and stopping the walk at an emitted
+domain remain available as tidiness, with no measured return.
+
+**F22 (two deterministic names for the same read).** Not attempted. Unifying
+them means making the ordinary route key on the array NODE and share the
+extensionality route's spelling, so the two routes produce the same
+abstraction variable. That is sound in principle -- both stand for the same
+read -- but it entangles a solve-local extensionality registry with the
+persistent lazy one and with the permanent congruence axioms over it, and the
+`--ackermanize` path takes a different `.symbol` again. The payoff is sharing
+in a session that interleaves equality and ordinary array rounds. That is not
+a change to make without the array-equality corpus to run it against; it is
+recorded for whoever has one.
+
+**F23 (`fragment()` totalises a whole level to compute a boolean).** The
+fix with no semantic risk -- a root-level memo in `FpTotalise` -- was built and
+measured neutral on a 200-conjunct floating-point session (23.6 s against
+23.6 s, interleaved), because SAT time dominates anything it could save. It
+was dropped rather than carry a per-root cache holding a copy of each call's
+array-equality rewrites for no return. Deciding `f.arrays` syntactically
+instead would remove the totalisation altogether, but that is the judgement
+the current code exists to get right -- classify on the raw conjunct and a
+read introduced by totalisation reaches the blaster with refinement skipped --
+so it is not worth risking for a cost that does not show. The misleading
+comment claiming the second call is a cache hit is corrected in place.
 
 ---
 

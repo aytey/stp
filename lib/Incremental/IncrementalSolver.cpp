@@ -3224,8 +3224,13 @@ struct IncrementalSolver::Impl
     // had no arrays at all. Judged on the raw conjunct, the introduced READ
     // reached the bit-blaster, and the refinement loop -- which is what
     // enforces congruence between unspecified results at equal indices --
-    // was skipped. prepare() is memoised in the session-long context, so
-    // rootLit's later call is a cache hit, not repeated work.
+    // was skipped. This costs a second totalisation of the node: the
+    // session-long context memoises each CHANGED subterm, so rootLit's later
+    // call re-uses those rewrites rather than re-deriving them, but it does
+    // re-walk the root to rebuild the spine and re-collect the rounding-mode
+    // side conditions. A root-level memo was tried and measured neutral --
+    // SAT time dominates every floating-point session it would help -- and
+    // was dropped rather than carry a per-root cache for nothing.
     ASTNode basis = n;
     if (f.fp)
       basis = fpContext()->prepare(n);
