@@ -46,6 +46,49 @@ enum class Walk
   Skip     // ignore it: already done, or the pass never looks at it
 };
 
+// Visit an immutable AST in left-to-right pre-order. `enter` is called once
+// for each occurrence the walk reaches and returns whether that occurrence's
+// children should be traversed. This lets a caller apply its own DAG memo or
+// prune at a kind-specific boundary.
+//
+// Keep only the current node inline and suspended ancestors in `parents`.
+// A wide node whose children are leaves or pruned needs no allocation, and
+// the auxiliary memory of every other shape is O(depth), not O(frontier).
+template <class Enter>
+void walkPreOrder(const ASTNode& top, Enter enter)
+{
+  if (!enter(top) || top.Degree() == 0)
+    return;
+
+  struct Frame
+  {
+    const ASTNode* node;
+    size_t nextChild = 0;
+  };
+
+  Frame current{&top};
+  std::vector<Frame> parents;
+
+  while (true)
+  {
+    if (current.nextChild < current.node->Degree())
+    {
+      const ASTNode* child = &(*current.node)[current.nextChild++];
+      if (!enter(*child) || child->Degree() == 0)
+        continue;
+
+      parents.push_back(current);
+      current = Frame{child};
+      continue;
+    }
+
+    if (parents.empty())
+      return;
+    current = parents.back();
+    parents.pop_back();
+  }
+}
+
 // Whether a pass whose memo is primed still nests with its input.
 //
 // That is the whole of what priming buys: the pass's calls on its operands

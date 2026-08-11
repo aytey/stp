@@ -28,7 +28,6 @@ THE SOFTWARE.
 #include "stp/Util/DagWalk.h"
 
 #include <string>
-#include <utility>
 
 namespace stp
 {
@@ -154,27 +153,16 @@ ASTNode FpTotalise::canonicalSourceBits(const ASTNode& value)
   return nf->CreateTerm(FP_TO_IEEE_BV, sort.packedWidth(), value);
 }
 
-// A stack rather than a call per level: how deeply a float expression nests
-// is the input's choice, and this walks the whole of one. See
-// DeepDag_Test.cpp.
-//
-// Children go on in reverse so they come off in order, and `seen` is tested
-// as a node comes off rather than as it goes on -- which is where the
-// recursion tested it, and what keeps this the same pre-order walk collecting
-// the same constraints in the same sequence.
+// A continuation stack rather than a call per level: how deeply a float
+// expression nests is the input's choice, and this walks the whole of one.
+// It preserves the recursion's pre-order while retaining only ancestors, not
+// every sibling in a wide frontier. See DeepDag_Test.cpp.
 void FpTotalise::collectRoundingModeTerms(const ASTNode& n, ASTNodeSet& seen,
                                           ASTVec& constraints)
 {
-  std::vector<ASTNode> todo;
-  todo.push_back(n);
-
-  while (!todo.empty())
-  {
-    const ASTNode m = std::move(todo.back());
-    todo.pop_back();
-
+  walkPreOrder(n, [&](const ASTNode& m) {
     if (!seen.insert(m).second)
-      continue;
+      return false;
 
     // Leaves are visited now, where they were skipped before: a declared
     // RoundingMode symbol is a leaf, and it is exactly as much in need of
@@ -183,15 +171,13 @@ void FpTotalise::collectRoundingModeTerms(const ASTNode& n, ASTNodeSet& seen,
     {
       if (bm->isRoundingModeSymbol(m))
         constraints.push_back(bm->roundingModeValidConstraint(m));
-      continue;
+      return false;
     }
 
     if (m.GetKind() == READ && bm->arrayHasRmElement(m[0]))
       constraints.push_back(bm->roundingModeValidConstraint(m));
-
-    for (size_t i = m.Degree(); i > 0; i--)
-      todo.push_back(m[i - 1]);
-  }
+    return true;
+  });
 }
 
 ASTNode FpTotalise::rebuild(const ASTNode& n, const ASTVec& children)

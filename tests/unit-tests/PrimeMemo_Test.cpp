@@ -121,6 +121,26 @@ Context& fresh()
   return *(new Context());
 }
 
+TEST(DagWalk, preorder_is_left_to_right_and_honours_pruning)
+{
+  Context& c = fresh();
+  const ASTNode a = c.mgr.CreateSymbol("preorder-a", 0, 4);
+  const ASTNode b = c.mgr.CreateSymbol("preorder-b", 0, 4);
+  const ASTNode d = c.mgr.CreateSymbol("preorder-d", 0, 4);
+  const ASTNode e = c.mgr.CreateSymbol("preorder-e", 0, 4);
+  const ASTNode left = c.hf->CreateTerm(BVCONCAT, 8, a, b);
+  const ASTNode pruned = c.hf->CreateTerm(BVCONCAT, 8, d, e);
+  const ASTNode top = c.hf->CreateTerm(BVCONCAT, 16, left, pruned);
+
+  ASTVec visited;
+  walkPreOrder(top, [&](const ASTNode& n) {
+    visited.push_back(n);
+    return n != pruned;
+  });
+
+  EXPECT_EQ((ASTVec{top, left, a, b, pruned}), visited);
+}
+
 TEST(PrimeMemo, non_owning_operand_views_preserve_postorder)
 {
   Context& c = fresh();

@@ -22,6 +22,7 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "stp/Simplifier/PropagateEqualities.h"
+#include "stp/Util/DagWalk.h"
 #include <string>
 #include <utility>
 #include <queue>
@@ -537,30 +538,21 @@ void PropagateEqualities::countToDo(ASTNode n)
   }
 }
 
-// The AND arm below is the only place this reaches another node, so the
-// spine of a conjunction is walked here rather than through the stack: a
-// formula nested as deeply as the input would otherwise take it with them.
-// Children are pushed in reverse, so they are still visited left to right.
-// See DeepDag_Test.cpp.
+// The AND arm below is the only place this reaches another node. Walk its
+// spine with suspended ancestors so both deeply nested and very wide
+// conjunctions have bounded auxiliary memory. See DeepDag_Test.cpp.
 void PropagateEqualities::buildCandidateList(const ASTNode& a)
 {
-  std::vector<ASTNode> toVisit;
-  toVisit.push_back(a);
-
-  while (!toVisit.empty())
-  {
-    const ASTNode current = std::move(toVisit.back());
-    toVisit.pop_back();
-    buildCandidateListNode(current, toVisit);
-  }
+  walkPreOrder(a, [&](const ASTNode& current) {
+    return buildCandidateListNode(current);
+  });
 }
 
-void PropagateEqualities::buildCandidateListNode(const ASTNode& a,
-                                                 std::vector<ASTNode>& toVisit)
+bool PropagateEqualities::buildCandidateListNode(const ASTNode& a)
 {
 
   if (!alreadyVisited.insert(a.GetNodeNum()).second)
-    return;
+    return false;
 
   const Kind k = a.GetKind();
 
@@ -658,11 +650,7 @@ void PropagateEqualities::buildCandidateListNode(const ASTNode& a,
     else if (SYMBOL == right.GetKind())
       addCandidate(right, left);
   }
-  else if (AND == k)
-  {
-    for (size_t i = a.Degree(); i > 0; i--)
-      toVisit.push_back(a[i - 1]);
-  }
+  return AND == k;
 }
 
 

@@ -45,6 +45,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/Rewriting.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/Util/DagWalk.h"
 #include <list>
 #include <deque>
 #include <vector>
@@ -77,33 +78,19 @@ namespace stp
   //
   // The walk is iterative because the input decides how deep it goes, and
   // deep inputs exist: a call per level of the DAG exhausts the stack. The
-  // stack holds pointers into each node's own child storage, which the node
-  // above keeps alive for the whole walk, so nothing is reference counted
-  // on the way down.
+  // continuation stack holds pointers into each node's own child storage,
+  // which the node above keeps alive for the whole walk. It stores suspended
+  // ancestors, not every sibling in a wide frontier.
   void Rewriting::buildShareCount(const ASTNode& n)
   {
-    std::vector<const ASTNode*> toVisit;
-    toVisit.push_back(&n);
-
-    while (!toVisit.empty())
-    {
-      const ASTNode& current = *toVisit.back();
-      toVisit.pop_back();
-
+    walkPreOrder(n, [&](const ASTNode& current) {
       if (current.Degree() == 0)
-        continue;
+        return false;
 
       if (shareCount[current.GetNodeNum()]++ > 0) // 0 first time, 1 second.
-        continue;
-
-      // Pushed in reverse so children are still visited left to right. The
-      // counts do not depend on the order -- every occurrence is counted
-      // once wherever it is reached from -- but keeping it makes the two
-      // implementations comparable node for node.
-      const ASTChildren children = current.GetChildren();
-      for (size_t i = children.size(); i > 0; i--)
-        toVisit.push_back(&children[i - 1]);
-    }
+        return false;
+      return true;
+    });
   }
 
   // Every sharing-aware rule, in order, applied to one node. Each rule

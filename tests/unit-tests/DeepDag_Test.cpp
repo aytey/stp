@@ -1462,6 +1462,89 @@ TEST(DeepDag, flatten_lazy_scratch_preserves_rebuild_and_dedup)
   EXPECT_EQ(1U, children.count(d));
 }
 
+TEST(DeepDag, wide_share_count_walks_preserve_shared_rewrite_guards)
+{
+  Context c;
+  const ASTNode three = c.mgr.CreateBVConst(3, 3);
+  const ASTNode two = c.mgr.CreateBVConst(3, 2);
+  const ASTNode x = c.mgr.CreateSymbol("wide-share-x", 0, 3);
+  const ASTNode y = c.mgr.CreateSymbol("wide-share-y", 0, 3);
+  const ASTNode plus = c.hf->CreateTerm(BVPLUS, 3, three, x);
+  const ASTNode guarded = c.hf->CreateNode(
+      NOT, c.hf->CreateNode(BVGT, two, plus));
+  const ASTNode otherUse = c.hf->CreateNode(EQ, y, plus);
+
+  ASTVec children{guarded, otherUse};
+  children.reserve(4098);
+  for (unsigned i = 0; i < 4096; ++i)
+  {
+    const std::string name = "wide-share-b" + std::to_string(i);
+    children.push_back(c.mgr.CreateSymbol(name.c_str(), 0, 0));
+  }
+  ASTNode input = c.hf->CreateNode(AND, children);
+  c.roots.push_back(input);
+
+  Rewriting rewriting(&c.mgr, c.nf);
+  ASTNode rewriteInput = input;
+  EXPECT_EQ(input, rewriting.topLevel(rewriteInput));
+
+  Flatten flattening(&c.mgr, c.nf);
+  ASTNode flattenInput = input;
+  EXPECT_EQ(input, flattening.topLevel(flattenInput));
+}
+
+TEST(DeepDag, wide_propagate_equalities_visits_every_conjunct)
+{
+  Context c;
+  c.mgr.UserFlags.propagate_equalities = true;
+  ASTVec symbols;
+  symbols.reserve(2048);
+  for (unsigned i = 0; i < 2048; ++i)
+  {
+    const std::string name = "wide-propagate-b" + std::to_string(i);
+    symbols.push_back(c.mgr.CreateSymbol(name.c_str(), 0, 0));
+  }
+  const ASTNode input = c.hf->CreateNode(AND, symbols);
+  c.roots.push_back(input);
+
+  SubstitutionMap substitutions(&c.mgr);
+  Simplifier simplifier(&c.mgr, &substitutions);
+  PropagateEqualities propagate(&simplifier, c.nf, &c.mgr);
+  EXPECT_EQ(c.mgr.ASTTrue, propagate.topLevel(input));
+}
+
+TEST(DeepDag, wide_fp_rounding_mode_walk_adds_every_constraint)
+{
+  Context c;
+  const ASTNode rne = c.mgr.CreateRMConst(
+      symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+  ASTVec clauses;
+  clauses.reserve(256);
+  for (unsigned i = 0; i < 256; ++i)
+  {
+    const std::string name = "wide-rounding-mode" + std::to_string(i);
+    const ASTNode rm =
+        c.mgr.CreateSourceSymbol(name.c_str(), SourceSort::roundingMode());
+    clauses.push_back(c.hf->CreateNode(EQ, rm, rne));
+  }
+  const ASTNode input = c.hf->CreateNode(AND, clauses);
+  c.roots.push_back(input);
+
+  FpTotalise totalise(&c.mgr);
+  const ASTNode result = totalise.topLevel(input);
+  c.roots.push_back(result);
+
+  size_t validityConstraints = 0;
+  ASTNodeSet seen;
+  walkPreOrder(result, [&](const ASTNode& n) {
+    if (!seen.insert(n).second)
+      return false;
+    validityConstraints += n.GetKind() == OR && n.Degree() == 5;
+    return true;
+  });
+  EXPECT_EQ(clauses.size(), validityConstraints);
+}
+
 TEST(DeepDag, shallow_substitution)
 {
   Context c;

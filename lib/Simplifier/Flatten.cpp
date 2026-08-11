@@ -22,6 +22,7 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "stp/Simplifier/Flatten.h"
+#include "stp/Util/DagWalk.h"
 #include <deque>
 #include <limits>
 #include <list>
@@ -60,29 +61,18 @@ namespace stp
   //
   // Iterative for the same reason as Rewriting::buildShareCount, which this
   // mirrors: the input decides the depth, so a call per level of the DAG
-  // exhausts the stack. The stack holds pointers into each node's own child
-  // storage, which the node above keeps alive for the whole walk.
+  // exhausts the stack. The continuation walk holds only suspended ancestors
+  // rather than every sibling in a wide frontier.
   void Flatten::buildShareCount(const ASTNode& n)
   {
-    std::vector<const ASTNode*> toVisit;
-    toVisit.push_back(&n);
-
-    while (!toVisit.empty())
-    {
-      const ASTNode& current = *toVisit.back();
-      toVisit.pop_back();
-
+    walkPreOrder(n, [&](const ASTNode& current) {
       if (current.Degree() == 0)
-        continue;
+        return false;
 
       if (shareCount[current.GetNodeNum()]++ > 0) // 0 first time, 1 second.
-        continue;
-
-      // Reverse, so children are still visited left to right.
-      const ASTChildren children = current.GetChildren();
-      for (size_t i = children.size(); i > 0; i--)
-        toVisit.push_back(&children[i - 1]);
-    }
+        return false;
+      return true;
+    });
   }
 
   // A leaf, or a node already flattened: answered without a frame, exactly
