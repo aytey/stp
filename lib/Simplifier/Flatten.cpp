@@ -22,8 +22,9 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "stp/Simplifier/Flatten.h"
-#include <list>
 #include <deque>
+#include <limits>
+#include <list>
 #include <vector>
 
 namespace stp
@@ -118,9 +119,12 @@ namespace stp
     unsigned it0 = 0; // original children consumed
     unsigned i = 0;   // position in nextChildren
 
-    ASTVec newChildren;
-    ASTVec nextChildren;
-    std::unordered_set<uint64_t> seen;
+    // The vectors and set are only needed after this node changes. Keeping
+    // an index here makes the common unchanged frame small; flatten() lends
+    // the actual storage from a LIFO scratch pool.
+    static constexpr unsigned noScratch =
+        std::numeric_limits<unsigned>::max();
+    unsigned scratch = noScratch;
 
     // Set while this node waits for a child's flatten() to come back.
     ASTNode pending;
@@ -138,6 +142,9 @@ namespace stp
 
   ASTNode Flatten::flatten(const ASTNode& n, bool top)
   {
+    static_assert(sizeof(Frame) <= 80,
+                  "Flatten frames must stay cheap at deep DAG depths");
+
     ASTNode result;
     if (alreadyKnown(n, result))
       return result;
@@ -147,14 +154,58 @@ namespace stp
     std::deque<Frame> stack;
     stack.emplace_back(n, top);
 
+    struct Scratch
+    {
+      ASTVec newChildren;
+      ASTVec nextChildren;
+      std::unordered_set<uint64_t> seen;
+
+      void clear()
+      {
+        newChildren.clear();
+        nextChildren.clear();
+        seen.clear();
+      }
+    };
+
+    // Scratch slots are acquired and released in traversal order: an active
+    // child's slot is always above its parent's. Reusing them retains vector
+    // and hash-table capacity without carrying that state in every frame.
+    std::vector<Scratch> scratches;
+    unsigned scratchesInUse = 0;
+
+    auto scratchFor = [&](Frame& f) -> Scratch&
+    {
+      if (f.scratch == Frame::noScratch)
+      {
+        assert(scratchesInUse <= scratches.size());
+        assert(scratchesInUse < Frame::noScratch);
+        f.scratch = scratchesInUse++;
+        if (f.scratch == scratches.size())
+          scratches.emplace_back();
+      }
+      return scratches[f.scratch];
+    };
+
+    auto releaseScratch = [&](Frame& f)
+    {
+      if (f.scratch == Frame::noScratch)
+        return;
+      assert(f.scratch + 1 == scratchesInUse);
+      scratches[f.scratch].clear();
+      --scratchesInUse;
+    };
+
     // Copy on write.
-    auto fill = [](Frame& f)
+    auto fill = [&](Frame& f)
     {
       assert(0 == f.i);
 
-      f.newChildren.reserve(f.children.size());
-      f.newChildren.insert(f.newChildren.end(), f.children.begin(),
-                           f.children.begin() + (f.it0 - 1));
+      Scratch& scratch = scratchFor(f);
+      scratch.newChildren.reserve(f.children.size());
+      scratch.newChildren.insert(scratch.newChildren.end(),
+                                 f.children.begin(),
+                                 f.children.begin() + (f.it0 - 1));
       f.changed = true;
     };
 
@@ -169,20 +220,22 @@ namespace stp
         if (result != current.pending && !current.changed)
           fill(current);
         if (current.changed)
-          current.newChildren.push_back(result);
+          scratches[current.scratch].newChildren.push_back(result);
         current.waiting = false;
       }
 
       bool descended = false;
 
       while (current.it0 < current.children.size() ||
-             current.i < current.nextChildren.size())
+             (current.scratch != Frame::noScratch &&
+              current.i < scratches[current.scratch].nextChildren.size()))
       {
         // By value: the flattening branch below appends to nextChildren,
         // which can move what a reference into it points at.
         const ASTNode c = (current.it0 < current.children.size())
                               ? current.children[current.it0++]
-                              : current.nextChildren[current.i++];
+                              : scratches[current.scratch]
+                                    .nextChildren[current.i++];
 
         if (current.flattenable && c.GetKind() == current.k &&
             (current.top || shareCount[c.GetNodeNum()] == 1))
@@ -190,6 +243,7 @@ namespace stp
           assert(c.Degree() > 1);
           if (!current.changed)
             fill(current);
+          Scratch& scratch = scratches[current.scratch];
 
           if (current.top)
             top_removed++;
@@ -201,10 +255,10 @@ namespace stp
             if (BVAND == current.k || AND == current.k || BVOR == current.k ||
                 OR == current.k)
             {
-              if (!current.seen.insert(e.GetNodeNum()).second)
+              if (!scratch.seen.insert(e.GetNodeNum()).second)
                 continue;
             }
-            current.nextChildren.push_back(e);
+            scratch.nextChildren.push_back(e);
           }
           shareCount[c.GetNodeNum()]--;
         }
@@ -216,7 +270,7 @@ namespace stp
             if (r != c && !current.changed)
               fill(current);
             if (current.changed)
-              current.newChildren.push_back(r);
+              scratches[current.scratch].newChildren.push_back(r);
             continue;
           }
 
@@ -238,14 +292,15 @@ namespace stp
 
       if (done.changed)
       {
-        assert(done.n.Degree() <= done.newChildren.size());
+        Scratch& scratch = scratches[done.scratch];
+        assert(done.n.Degree() <= scratch.newChildren.size());
 
         if (done.n.GetType() == BOOLEAN_TYPE)
-          result = nf->CreateNode(done.k, done.newChildren);
+          result = nf->CreateNode(done.k, scratch.newChildren);
         else
           result = nf->CreateArrayTerm(done.k, done.n.GetIndexWidth(),
                                        done.n.GetValueWidth(),
-                                       done.newChildren);
+                                       scratch.newChildren);
 
         shareCount[result.GetNodeNum()]++; // I'm guessing it's unusal, but we might make a node we already have.
       }
@@ -253,6 +308,7 @@ namespace stp
       if (shareCount[done.n.GetNodeNum()] > 1)
         fromTo.insert({done.n.GetNodeNum(), result});
 
+      releaseScratch(done);
       stack.pop_back();
       if (stack.empty())
         return result;

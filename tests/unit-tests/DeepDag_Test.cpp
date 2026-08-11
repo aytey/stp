@@ -1434,6 +1434,34 @@ TEST(DeepDag, shallow_flatten_share_count)
   EXPECT_TRUE(flattenShareCountOk(c, SHALLOW));
 }
 
+TEST(DeepDag, flatten_lazy_scratch_preserves_rebuild_and_dedup)
+{
+  Context c;
+  const ASTNode a = c.mgr.CreateSymbol("flatten-scratch-a", 0, 8);
+  const ASTNode b = c.mgr.CreateSymbol("flatten-scratch-b", 0, 8);
+  const ASTNode d = c.mgr.CreateSymbol("flatten-scratch-d", 0, 8);
+  const ASTNode other = c.mgr.CreateSymbol("flatten-scratch-other", 0, 8);
+  const ASTNode left = c.hf->CreateTerm(BVAND, 8, a, b);
+  const ASTNode right = c.hf->CreateTerm(BVAND, 8, b, d);
+  const ASTNode nested = c.hf->CreateTerm(BVAND, 8, left, right);
+  ASTNode input = c.hf->CreateNode(EQ, nested, other);
+  c.roots.push_back(input);
+
+  Flatten flattener(&c.mgr, c.nf);
+  const ASTNode result = flattener.topLevel(input);
+  c.roots.push_back(result);
+  const ASTNode flat = Context::childOfKind(result, BVAND);
+
+  ASSERT_EQ(EQ, result.GetKind());
+  ASSERT_EQ(BVAND, flat.GetKind());
+  EXPECT_EQ(3U, flat.Degree());
+  ASTNodeSet children(flat.begin(), flat.end());
+  EXPECT_EQ(3U, children.size());
+  EXPECT_EQ(1U, children.count(a));
+  EXPECT_EQ(1U, children.count(b));
+  EXPECT_EQ(1U, children.count(d));
+}
+
 TEST(DeepDag, shallow_substitution)
 {
   Context c;
