@@ -4997,6 +4997,36 @@ IncrementalSolver::~IncrementalSolver()
   // model is read (and model_valid already refuses stale reads).
   if (impl->fpCtx)
     impl->ce->setFpEncodingContext(NULL);
+
+  // Withdraw what this driver seeded into the batch Simplifier's SolverMap.
+  // That channel is shared and is never cleared between solves -- the batch
+  // pipeline owns entries of its own in it -- which is why
+  // seedEliminatedIntoModelChannel withdraws at the START of every solve: a
+  // stale entry from a popped branch SHADOWS a live one, because insert()
+  // does not overwrite. The protocol covered every transition except the
+  // last one, so this object could be destroyed leaving its entries in a map
+  // that outlives it.
+  //
+  // Be exact about what this is worth. No reachable wrong answer is being
+  // fixed: both frontends clear the map first -- reset() and
+  // resetAssertions() call resetSolver() before resetIncrementalSolver(),
+  // and ~STP() calls ClearAllTables() before deleteObjects() -- so in-tree
+  // the entries are already gone by the time we get here, and there is no
+  // test that can fail without this. It is here because IncrementalSolver is
+  // public API an embedder constructs and destroys directly, and a class
+  // whose invariant holds only because its caller tidies up first is one
+  // refactor away from not holding. Defence, not a fix.
+  //
+  // Ordering is safe on both teardown paths: deleteObjects() destroys this
+  // driver before it deletes the Simplifier, and resetIncrementalSolver()
+  // runs while the whole STP object is alive.
+  if (impl->batchSimp != NULL)
+  {
+    DenseNodeMap* channel = impl->batchSimp->Return_SolverMap();
+    for (const ASTNode& k : impl->seededModelKeys)
+      channel->erase(k);
+    impl->seededModelKeys.clear();
+  }
 }
 
 bool IncrementalSolver::forcedFirstSolve(bool forcedFromStart,

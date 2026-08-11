@@ -2053,7 +2053,7 @@ All seven are resolved --- F9 (`96f14b16`), F16 (`cd34049d`), F26 and F38
 (`bac4c110`) fixed; F10 and F23 built, measured and reverted; F22 deferred with
 its reason. See [Appendix B](#appendix-b--full-finding-ledger).
 
-### 4.6 Findings the sweep recorded and never queued
+### 4.6 Findings the sweep recorded and never queued --- 7 of 8 DONE
 
 Collected here because until now they pointed at a section that does not exist.
 None is a correctness item; each needs a decision rather than analysis.
@@ -2138,7 +2138,26 @@ None is a correctness item; each needs a decision rather than analysis.
   small-session loss, and it was never queued. A persistent worker, or an
   explicit acceptance.
 - **Model channel `SolverMap`** ([Part III.5](#5-layering-inventory), row 3) ---
-  correct today; the review never says whether not owning the map is accepted.
+  **accepted, and the protocol completed.** The map is `STP::substitutionMap`'s
+  `SolverMap`, reached through the shared `Simplifier*` the driver holds as
+  `batchSimp` and read on the model side by `CopySolverMap_To_CounterExample`.
+  Driver ownership was considered and declined: the counterexample object is
+  built once by `STP` and shared by both solve paths, so it needs a new
+  counterexample-side seam, and the change is behaviour-neutral only under the
+  assumption that the frontend cleared the shared map first --- the very
+  assumption the withdraw protocol exists in order not to make, since
+  `IncrementalSolver` is public API an embedder can drive with no frontend at
+  all.
+
+  What was missing was the last transition: `seedEliminatedIntoModelChannel`
+  withdraws at the start of every solve (a stale entry SHADOWS a live one ---
+  `insert()` does not overwrite), but the destructor withdrew nothing, so the
+  object could be destroyed leaving its keys in a map that outlives it. Now
+  closed. **No reachable wrong answer was fixed** and no test can fail without
+  it: both frontends clear the map before destroying the driver
+  (`resetSolver()` precedes `resetIncrementalSolver()`; `~STP()` calls
+  `ClearAllTables()` before `deleteObjects()`). It is defence for the embedder
+  path, recorded as such.
 
 ## Tier 5 — after the above
 
