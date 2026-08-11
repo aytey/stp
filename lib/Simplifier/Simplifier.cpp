@@ -1234,9 +1234,17 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
             f.outvec.push_back(f.t1);
             f.i = 2;
           }
-          if (f.i < f.b.Degree())
-            return want(f, Frame::AtomicFpOperand, f.b[f.i], false,
-                        Frame::TermJob);
+          while (f.i < f.b.Degree())
+          {
+            const StepResult requested =
+                want(f, Frame::AtomicFpOperand, f.b[f.i], false,
+                     Frame::TermJob);
+            if (requested == StepResult::Pushed)
+              return requested;
+            assert(requested == StepResult::Redispatch);
+            f.outvec.push_back(result);
+            ++f.i;
+          }
           output = nf->CreateNode(kind, f.outvec);
           if (f.pushNeg)
             output = nf->CreateNode(NOT, output);
@@ -1422,10 +1430,27 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         const ASTNode& operand = f.outvec[f.i];
         if (operand.GetType() == BITVECTOR_TYPE ||
             operand.GetType() == FLOATINGPOINT_TYPE)
-          return want(f, Frame::TermOperand, operand, false, Frame::TermJob);
+        {
+          const StepResult requested =
+              want(f, Frame::TermOperand, operand, false, Frame::TermJob);
+          if (requested == StepResult::Pushed)
+            return requested;
+          assert(requested == StepResult::Redispatch);
+          f.outvec[f.i] = result;
+          ++f.i;
+          continue;
+        }
         if (operand.GetType() == BOOLEAN_TYPE)
-          return want(f, Frame::TermOperand, operand, false,
-                      Frame::FormulaJob);
+        {
+          const StepResult requested =
+              want(f, Frame::TermOperand, operand, false, Frame::FormulaJob);
+          if (requested == StepResult::Pushed)
+            return requested;
+          assert(requested == StepResult::Redispatch);
+          f.outvec[f.i] = result;
+          ++f.i;
+          continue;
+        }
         ++f.i;
       }
 
@@ -1541,6 +1566,23 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       case AND:
       case OR:
       {
+        auto takeChild = [&](const ASTNode& child) {
+          if (child == f.output)
+            return false;
+
+          // A child that simplified to the output connective (typically via
+          // De Morgan) would otherwise leave a nested same-kind node, which
+          // the factory does not flatten. Splice its already-simplified
+          // operands in so the result stays flat -- without this
+          // SimplifyFormula is not idempotent.
+          if (child.GetKind() == f.outKind)
+            f.outvec.insert(f.outvec.end(), child.begin(), child.end());
+          else
+            f.outvec.push_back(child);
+          ++f.i;
+          return true;
+        };
+
         if (f.phase == Frame::Start)
         {
           const bool isAnd = (k == AND);
@@ -1554,25 +1596,20 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         }
         else
         {
-          const ASTNode child = result;
-
-          if (child == f.output)
+          if (!takeChild(result))
             return finish(f.output);
-
-          // A child that simplified to the output connective (typically via
-          // De Morgan) would otherwise leave a nested same-kind node, which
-          // the factory does not flatten. Splice its already-simplified
-          // operands in so the result stays flat -- without this
-          // SimplifyFormula is not idempotent.
-          if (child.GetKind() == f.outKind)
-            f.outvec.insert(f.outvec.end(), child.begin(), child.end());
-          else
-            f.outvec.push_back(child);
-          f.i++;
         }
 
-        if (f.i < f.a.Degree())
-          return want(f, Frame::AndOrOperand, f.a[f.i], f.pushNeg);
+        while (f.i < f.a.Degree())
+        {
+          const StepResult requested =
+              want(f, Frame::AndOrOperand, f.a[f.i], f.pushNeg);
+          if (requested == StepResult::Pushed)
+            return requested;
+          assert(requested == StepResult::Redispatch);
+          if (!takeChild(result))
+            return finish(f.output);
+        }
 
         // Hand the simplified children to the node factory. CreateSimpleAndOr
         // sorts them, drops identities, removes duplicates, detects
@@ -1623,11 +1660,19 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         if (f.phase == Frame::XorOperand)
         {
           f.outvec.push_back(result);
-          f.i++;
+          ++f.i;
         }
 
-        if (f.i < f.a.Degree())
-          return want(f, Frame::XorOperand, f.a[f.i], false);
+        while (f.i < f.a.Degree())
+        {
+          const StepResult requested =
+              want(f, Frame::XorOperand, f.a[f.i], false);
+          if (requested == StepResult::Pushed)
+            return requested;
+          assert(requested == StepResult::Redispatch);
+          f.outvec.push_back(result);
+          ++f.i;
+        }
 
         if (f.pushNeg)
           f.outvec[0] = nf->CreateNode(NOT, f.outvec[0]);

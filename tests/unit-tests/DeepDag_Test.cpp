@@ -755,8 +755,10 @@ bool simplifyReadyDescendantsOk(Context& c)
   const ASTNode zero = c.mgr.CreateZeroConst(8);
   const ASTNode x = c.mgr.CreateSymbol("ready-descendant-x", 0, 8);
   const ASTNode y = c.mgr.CreateSymbol("ready-descendant-y", 0, 8);
+  const ASTNode z = c.mgr.CreateSymbol("ready-descendant-z", 0, 8);
   const ASTNode left = c.hf->CreateTerm(BVXOR, 8, x, zero);
   const ASTNode right = c.hf->CreateTerm(BVXOR, 8, y, zero);
+  const ASTNode third = c.hf->CreateTerm(BVXOR, 8, z, zero);
   const ASTNode equality = c.hf->CreateNode(EQ, left, right);
   const ASTNode top = c.hf->CreateNode(AND, equality, c.mgr.ASTTrue);
   c.roots.push_back(top);
@@ -767,13 +769,51 @@ bool simplifyReadyDescendantsOk(Context& c)
 
   // Prime both term continuations and then the formula continuation. Every
   // child request made while simplifying `top` can now answer immediately.
-  simp.SimplifyTerm(left);
-  simp.SimplifyTerm(right);
+  const ASTNode simplifiedLeft = simp.SimplifyTerm(left);
+  const ASTNode simplifiedRight = simp.SimplifyTerm(right);
+  const ASTNode simplifiedThird = simp.SimplifyTerm(third);
   const ASTNode simplifiedEquality = simp.SimplifyFormula(equality, false);
   const ASTNode output = simp.SimplifyFormula(top, false);
+
+  // Pin the n-ary loops too: each answer is ready, but every position still
+  // has to be consumed exactly once before the parent is rebuilt.
+  const ASTNode wideTerm =
+      c.hf->CreateTerm(BVXOR, 8, ASTVec{left, right, third});
+  const ASTNode expectedTerm = c.nf->CreateTerm(
+      BVXOR, 8, ASTVec{simplifiedLeft, simplifiedRight, simplifiedThird});
+  const ASTNode termOutput = simp.SimplifyTerm(wideTerm);
+
+  const ASTNode p = c.mgr.CreateSymbol("ready-descendant-p", 0, 0);
+  const ASTNode q = c.mgr.CreateSymbol("ready-descendant-q", 0, 0);
+  const ASTNode r = c.mgr.CreateSymbol("ready-descendant-r", 0, 0);
+  const ASTNode wideAnd =
+      c.hf->CreateNode(AND, ASTVec{p, q, r, c.mgr.ASTTrue});
+  const ASTNode expectedAnd = c.nf->CreateNode(AND, ASTVec{p, q, r});
+  const ASTNode andOutput = simp.SimplifyFormula(wideAnd, false);
+
+  const ASTNode wideXor = c.hf->CreateNode(XOR, ASTVec{p, q, r});
+  const ASTNode expectedXor = c.nf->CreateNode(XOR, ASTVec{p, q, r});
+  const ASTNode xorOutput = simp.SimplifyFormula(wideXor, false);
+
+  // Unary floating-point predicates collect their term operands through the
+  // same ready-answer loop rather than the binary atomic-formula path.
+  const ASTNode fp = c.mgr.CreateSymbol("ready-descendant-fp", 0, 16);
+  fp.SetExpWidth(5);
+  fp.SetSigWidth(11);
+  simp.SimplifyTerm(fp);
+  const ASTNode fpPredicate = c.hf->CreateNode(FP_ISNAN, fp);
+  const ASTNode expectedFpPredicate = c.nf->CreateNode(FP_ISNAN, fp);
+  const ASTNode fpOutput = simp.SimplifyFormula(fpPredicate, false);
+
   c.roots.push_back(simplifiedEquality);
   c.roots.push_back(output);
-  return output == simplifiedEquality;
+  c.roots.push_back(termOutput);
+  c.roots.push_back(andOutput);
+  c.roots.push_back(xorOutput);
+  c.roots.push_back(fpOutput);
+  return output == simplifiedEquality && termOutput == expectedTerm &&
+         andOutput == expectedAnd && xorOutput == expectedXor &&
+         fpOutput == expectedFpPredicate;
 }
 
 // A term contains a formula which contains the preceding term, at every
