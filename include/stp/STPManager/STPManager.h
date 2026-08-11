@@ -597,9 +597,23 @@ public:
   // of the node(s) the variable stands for, so re-deriving the same thing
   // -- in a later solve, or a later incremental round -- yields the SAME
   // variable instead of a fresh one. Get-or-create by construction, since
-  // symbols are hash-consed by (name, widths); node numbers are unique for
-  // the manager's lifetime, so distinct keys can never share a name. The
-  // "_k" spelling keeps this namespace disjoint from the counter-named
+  // symbols are hash-consed by (name, widths).
+  //
+  // PRECONDITION, and it is the caller's: keep `key` alive for as long as the
+  // name derived from it means anything. Node numbers are unique among LIVE
+  // nodes, not for the manager's lifetime -- the ASTNode GC frees unreferenced
+  // interior nodes and re-mints their numbers -- so a key that dies can have
+  // its number handed to an unrelated node, and the next derivation under that
+  // number returns a variable already standing for something else. Nothing
+  // here can check it: the node is gone by the time it would matter.
+  //
+  // Callers whose key is a live map key hold it by construction. The one that
+  // does not is the incremental driver's per-round spine, which pins the raw,
+  // prepared and lowered forms in `exactStackKeepAlive` for exactly this
+  // reason. A new caller deriving a name from a node it does not otherwise
+  // retain owes the same pin.
+  //
+  // The "_k" spelling keeps this namespace disjoint from the counter-named
   // variables, whose suffix is digits only.
   ASTNode CreateDeterministicVariable(int indexWidth, int valueWidth,
                                       const std::string& prefix,

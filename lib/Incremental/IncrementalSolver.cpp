@@ -3690,6 +3690,13 @@ struct IncrementalSolver::Impl
     foldedRowsOf.clear();
     pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
+    // Symbol sets are a pure function of the node, so nothing here is ever
+    // stale and the memo was never cleared at all -- it held an entry for
+    // every node measured since the session began, including every popped
+    // level's. A rebuild is the point where most of those stop being
+    // reachable, so dropping it here is reclamation, not invalidation; what
+    // is still live is re-derived on the next solve that asks.
+    symbolsOfCache.clear();
     refinementMassOf.clear();
     currentRefinementClauseMass = 0;
     aigRootOf.clear();

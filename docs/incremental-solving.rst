@@ -200,6 +200,20 @@ so an elimination cache entry can be created after a conflicting node was
 popped and screened; re-pushing that node must still retire the now-non-private
 entry.
 
+The pass also retires itself, on two kinds of evidence, and the thresholds are
+fitted rather than derived. *Futility*: a stack divergence that adopted nothing
+lengthens a barren run, and one fresh adoption clears it; a session whose engine
+has never DERIVED a fixing retires after 8 barren divergences, while one that
+has derived fixings but not yet adopted any gets 64, because adoption can
+legitimately arrive late. A level's own assumed truth does not count as a
+derivation -- counting it made the short leash unreachable for exactly the
+pop-per-query sessions it was measured on. *Capacity*: the engine may retain
+``--incremental-cbp-feed-cap`` DAG nodes (200,000 by default) for the live
+stack. What is charged against that is what each level ADDS, since levels share
+subgraphs by identity and the engine visits a shared node once; the charge is
+refunded when a level pops, and so is the refusal, so a session that goes deep
+once and then works shallow is not retired for good.
+
 ``--incremental-cbp-reset`` retains the previous reset-and-prefix-re-feed
 behavior as a diagnostic oracle. It is intended for differential validation,
 not normal solving.
@@ -426,6 +440,20 @@ it (the option, like factor and trail reuse, only takes inside the backend's
 configuration window);
 ``off`` retires from the first driver solve; ``on`` never retires.
 Backends without the option simply never retire.
+
+Retirement turns off more than probing. The same rebuild also disables
+bounded variable elimination and learned-clause shrinking, and turns off
+lucky-phase probing. All three are recurring costs of the same kind on a
+persistent many-solve solver rather than one-off wins: elimination
+re-eliminates restored variables on every solve of a session whose content
+churns, because retractable encodings mention eliminated variables and
+CaDiCaL restores them on contact; shrinking taxes every conflict; lucky
+phases re-try trivial whole-assignment patterns over the entire clause
+database at every solve call. Each measured as a steady per-solve loss on
+exactly the sessions that retire probing, and their removal composes with
+it -- which is why they ride the same switch rather than having their own.
+The consequence worth knowing is that ``--incremental-inprobing on`` keeps
+all four, not just probing.
 
 Resource budgets are re-armed per check-sat rather than measured from the
 persistent solver's birth. The time deadline spans all refinement solves in
