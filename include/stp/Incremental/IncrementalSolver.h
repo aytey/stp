@@ -72,7 +72,9 @@ public:
   IncrementalSolver& operator=(const IncrementalSolver&) = delete;
 
   // Whether every assertion currently on the stack is inside the fragment
-  // this driver encodes. Verdicts are cached per assertion node.
+  // this driver encodes. Every construct the frontends can produce is
+  // covered, so this answers TRUE today and exists as the seam should a
+  // future one need excluding; it does no work and caches nothing.
   // `assertionsSMT2` is what Cpp_interface::checkSat receives: one
   // conjunction per assertion level, base level first.
   bool canHandle(const ASTVec& assertionsSMT2);

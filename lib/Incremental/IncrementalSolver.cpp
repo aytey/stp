@@ -1069,6 +1069,11 @@ struct IncrementalSolver::Impl
     size_t factsAdded;
     size_t fedBefore;
     bool fedArraysBefore;
+    // Trailed for completeness: feedLevel latches both, so an undo of that
+    // feed owes their restoration. The one call site happens to reassign them
+    // immediately afterwards, which makes the restore unobservable today --
+    // but a trail that only covers the state whose restoration is currently
+    // load-bearing is a trap for the next caller.
     bool offBefore;
     bool conflictBefore;
   };
@@ -2302,8 +2307,7 @@ struct IncrementalSolver::Impl
         trueVar(-1), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
         trailReuseAllowed(true), lastLevelCount(0), bvaDecided(false),
-        bvaWarned(false), encodesThisCall(0),
-        batchTablesSeeded(false)
+        bvaWarned(false), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
     // to know (CryptoMiniSat skips its startup simplification).
@@ -3082,7 +3086,6 @@ struct IncrementalSolver::Impl
       readsOfEncoded[key] = batchAT->touchedReads;
       myReads.swap(batchAT->arrayToIndexToRead);
       myAckPairs.swap(batchAT->ack_pair);
-      batchTablesSeeded = false;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();
 
@@ -3283,18 +3286,8 @@ struct IncrementalSolver::Impl
   std::map<ASTNode, std::vector<std::pair<ASTNode, ASTNode>>> foldedRowsOf;
   std::vector<ASTNode> pendingBaseSeed;
 
-  // Whether the batch-side tables still hold exactly what seedActiveReads
-  // last put there, and for which PUSHED keys (sorted by node number;
-  // base keys fold monotonically and need no fingerprint).
-  // Rebuilding the filtered tables costs a map lookup per registry row,
-  // every refinement-driven solve; sessions that check the same stack
-  // repeatedly -- the KLEE bracket pattern -- pay it for an identical
-  // result. Every write to the tables outside seedActiveReads clears the
-  // flag, and the key fingerprint catches stack changes; rows behind an
-  // unchanged key cannot change between rebuilds (they are recorded at
-  // encode time, and re-encoding only happens after a rebuild, which
-  // clears the flag too).
-  bool batchTablesSeeded;
+  // The PUSHED keys seedActiveReads last folded, sorted by node number; base
+  // keys fold monotonically and need no fingerprint.
   std::vector<ASTNode> lastSeededKeys;
 
   // Seed the batch-side read table with only the reads of the given
@@ -3405,7 +3398,6 @@ struct IncrementalSolver::Impl
     }
     batchAT->arrayToIndexToRead = fresh;
     lastSeededKeys.swap(sortedPushed);
-    batchTablesSeeded = true;
     if (profile.enabled)
       profile.readRowsLive = seededRowRef.size();
   }
@@ -3586,7 +3578,6 @@ struct IncrementalSolver::Impl
     rootLitOf.clear();
     actLitOf.clear();
     everAssumedLits.clear();
-    batchTablesSeeded = false;
     // Folding records describe readsOfEncoded from the OLD backend epoch.
     // Re-encoding can overwrite a key with a different row set (for example
     // after new permanent substitutions fold an index), so rebuild the
@@ -4514,7 +4505,6 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // the batch tables as usual.
   batchAT->arrayToIndexToRead.clear();
   batchAT->ack_pair.clear();
-  batchTablesSeeded = false;
 
   const bool arrayops = containsArrayOps(inputToSat, bm) || extActive;
   if (arrayops)

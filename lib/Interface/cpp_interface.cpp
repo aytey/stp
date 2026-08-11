@@ -993,7 +993,10 @@ void Cpp_interface::getValue(const ASTVec& v)
   }
 
   // The driver defers counterexample construction to the first reader.
-  if (GlobalSTP != NULL && GlobalSTP->getIncrementalSolver() != NULL)
+  // hasIncrementalSolver, not getIncrementalSolver: the latter constructs one
+  // on demand, so asking it whether a driver exists built a driver -- and a
+  // SAT backend with it -- in every batch session that printed a model.
+  if (GlobalSTP != NULL && GlobalSTP->hasIncrementalSolver())
     GlobalSTP->getIncrementalSolver()->materializePendingModel();
 
   std::ostringstream os;
@@ -1065,10 +1068,10 @@ void Cpp_interface::getUnsatAssumptions()
   // first solve and the extensionality rounds.
   std::vector<ASTNode> failed;
   bool granular = false;
-  if (GlobalSTP != NULL)
+  if (GlobalSTP != NULL && GlobalSTP->hasIncrementalSolver())
   {
     IncrementalSolver* inc = GlobalSTP->getIncrementalSolver();
-    if (inc != NULL && inc->lastSolveWasUnsat() &&
+    if (inc->lastSolveWasUnsat() &&
         inc->lastUnsatHasAssumptionGranularity())
     {
       failed = inc->lastUnsatAssumptionConjuncts();
@@ -1110,7 +1113,10 @@ void Cpp_interface::getModel()
   }
 
   // The driver defers counterexample construction to the first reader.
-  if (GlobalSTP != NULL && GlobalSTP->getIncrementalSolver() != NULL)
+  // hasIncrementalSolver, not getIncrementalSolver: the latter constructs one
+  // on demand, so asking it whether a driver exists built a driver -- and a
+  // SAT backend with it -- in every batch session that printed a model.
+  if (GlobalSTP != NULL && GlobalSTP->hasIncrementalSolver())
     GlobalSTP->getIncrementalSolver()->materializePendingModel();
 
   cout << "(" << std::endl;

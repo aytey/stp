@@ -55,12 +55,12 @@ mechanism is the part worth remembering.
 | [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | **FIXED** `e093b0d2` | yes | no (branch-only code) | reproduced: 18.3 ms → 2.1 ms | A semantic whole-base pass fired on all four rebuild reasons, the two pure SAT-config latches included |
 | [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **FIXED / closed** | yes | no (branch-only code) | ~4x; remainder measured flat | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
 | [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | **FIXED** `45504ef9` | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
-| [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | medium | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
+| [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | **FIXED** `635b3b04` | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
 | [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | **FIXED** `8ab75f81` | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
 | [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | **FIXED** `8ffd109f` | array logics | **loop is master's**, blowup is not | agent-verified | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode |
 | [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | **FIXED** `060cc34f` | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
 | [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | **FIXED** `0767b22a` | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
-| [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
+| [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | **FIXED** | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
 | [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | form | **closed** | array logics | no (branch-only code) | measured: no effect | Per-call cost is real but the call count is not; caching it and removing the copy both measured neutral. Contract fixed, optimisation declined. |
 | [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | **FIXED** | yes | n/a (introduced by `e1229764`) | eliminations restored; 1.5x faster | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
 
@@ -964,6 +964,21 @@ session became incremental" in `Cpp_interface`, as the C API already does with
 
 **Severity:** low. **Evidence:** verified by me (grep across the whole tree) and
 by agents.
+
+> **Disposition (done).** `Backtrack.h` and its test are deleted --- 383 lines,
+> no behaviour change, recoverable from history. The occurrence index added in
+> `00ea5c1e` is per-call rather than per-level, so it was not the consumer this
+> header was waiting for; if the assertion-journal work reintroduces it, it
+> should arrive with its first real consumer rather than ahead of one.
+> `batchTablesSeeded` is gone with its stale comment. `canHandle` is kept as
+> the documented seam, with its false "verdicts are cached" claim corrected,
+> and the three `Cpp_interface` model readers now ask `hasIncrementalSolver()`
+> so a batch session no longer builds a driver and a SAT backend as a side
+> effect of asking whether one exists. `CbpCallerCheckpoint::offBefore` and
+> `conflictBefore` are **kept**: `feedLevel` latches both, so an undo of that
+> feed owes their restoration, and a trail that covers only the state whose
+> restoration is currently load-bearing is a trap for the next caller. The
+> comment now says so.
 
 - **`include/stp/Incremental/Backtrack.h`** --- 273 lines: `BacktrackManager`,
   `Backtrackable`, and backtrackable `vector`/`unordered_map`/`unordered_set`,
