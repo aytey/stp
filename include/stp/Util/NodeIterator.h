@@ -61,14 +61,13 @@ class NodeIterator // not copyable
   const ASTNode& sentinel;
   uint8_t iteration;
 
-public:
-  NodeIterator(const ASTNode& n, const ASTNode& _sentinel, STPMgr& stpMgr)
-      : sentinel(_sentinel), iteration(stpMgr.getNextIteration())
-  {
-    path.emplace_back(n);
-  }
-
-  ASTNode next()
+protected:
+  // The generic iterator retains its historical virtual `ok` hook. Known
+  // built-in filters call this templated core directly, letting their
+  // predicate inline into the walk instead of paying an indirect call for
+  // every node.
+  template <typename Accept>
+  ASTNode nextIf(Accept&& accept)
   {
     while (!path.empty())
     {
@@ -78,7 +77,7 @@ public:
         frame.nextChild = frame.node.Degree();
         ASTNode result = frame.node;
 
-        if (!ok(result) || result.getIteration() == iteration)
+        if (!accept(result) || result.getIteration() == iteration)
         {
           path.pop_back();
           continue;
@@ -108,20 +107,37 @@ public:
     return sentinel;
   }
 
+public:
+  NodeIterator(const ASTNode& n, const ASTNode& _sentinel, STPMgr& stpMgr)
+      : sentinel(_sentinel), iteration(stpMgr.getNextIteration())
+  {
+    path.emplace_back(n);
+  }
+
+  ASTNode next()
+  {
+    return nextIf([this](const ASTNode& n) { return ok(n); });
+  }
+
   ASTNode end() { return sentinel; }
 
   virtual bool ok(const ASTNode& /*n*/) { return true; }
 };
 
 // Iterator that omits return atoms.
-class NonAtomIterator : public NodeIterator
+class NonAtomIterator final : public NodeIterator
 {
-  virtual bool ok(const ASTNode& n) { return !n.isAtom(); }
+  bool ok(const ASTNode& n) override { return !n.isAtom(); }
 
 public:
   NonAtomIterator(const ASTNode& n, const ASTNode& uf, STPMgr& stpMgr)
       : NodeIterator(n, uf, stpMgr)
   {
+  }
+
+  ASTNode next()
+  {
+    return nextIf([](const ASTNode& n) { return !n.isAtom(); });
   }
 };
 }

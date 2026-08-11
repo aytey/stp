@@ -938,6 +938,26 @@ bool nodeIteratorOrderOk(Context& c)
   return actual == expected;
 }
 
+bool nonAtomIteratorOrderOk(Context& c)
+{
+  const ASTNode condition =
+      c.mgr.CreateSymbol("non-atom-order-condition", 0, 0);
+  const ASTNode a = c.mgr.CreateSymbol("non-atom-order-a", 0, 8);
+  const ASTNode b = c.mgr.CreateSymbol("non-atom-order-b", 0, 8);
+  const ASTNode d = c.mgr.CreateSymbol("non-atom-order-d", 0, 8);
+  const ASTNode left = c.hf->CreateTerm(BVCONCAT, 16, a, b);
+  const ASTNode right = c.hf->CreateTerm(BVCONCAT, 16, b, d);
+  const ASTNode top = c.hf->CreateTerm(ITE, 16, condition, left, right);
+  c.roots.push_back(top);
+
+  const ASTVec expected{top, right, left};
+  ASTVec actual;
+  NonAtomIterator nodes(top, c.mgr.ASTUndefined, c.mgr);
+  for (ASTNode n = nodes.next(); n != nodes.end(); n = nodes.next())
+    actual.push_back(n);
+  return actual == expected;
+}
+
 // VariablesInExpression::getSymbol.
 bool varsInExpressionOk(Context& c, unsigned depth)
 {
@@ -1923,6 +1943,12 @@ TEST(DeepDag, node_iterator_preserves_lifo_dag_order)
 {
   Context c;
   EXPECT_TRUE(nodeIteratorOrderOk(c));
+}
+
+TEST(DeepDag, non_atom_iterator_preserves_filtered_lifo_order)
+{
+  Context c;
+  EXPECT_TRUE(nonAtomIteratorOrderOk(c));
 }
 
 TEST(DeepDag, shallow_node_iterator)
