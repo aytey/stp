@@ -3047,15 +3047,18 @@ struct IncrementalSolver::Impl
 
     if (frag.arrays)
     {
-      batchAT->arrayToIndexToRead = myReads;
-      batchAT->ack_pair = myAckPairs;
+      // Swap rather than copy: the registry is the session's, and on a long
+      // array session copying it in and back out again is a per-encode cost
+      // proportional to every read ever seen.
+      batchAT->arrayToIndexToRead.swap(myReads);
+      batchAT->ack_pair.swap(myAckPairs);
       batchAT->recordTouchedReads = true;
       batchAT->touchedReads.clear();
       toEncode = batchAT->TransformFormula_TopLevel(toEncode);
       batchAT->recordTouchedReads = false;
       readsOfEncoded[key] = batchAT->touchedReads;
-      myReads = batchAT->arrayToIndexToRead;
-      myAckPairs = batchAT->ack_pair;
+      myReads.swap(batchAT->arrayToIndexToRead);
+      myAckPairs.swap(batchAT->ack_pair);
       batchTablesSeeded = false;
       assert(!containsArrayOps(toEncode, bm));
       totalizeRegistrySymbols();

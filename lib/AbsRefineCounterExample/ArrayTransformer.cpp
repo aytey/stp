@@ -104,6 +104,19 @@ ASTNode ArrayTransformer::TransformFormula_TopLevel(const ASTNode& form)
       {
         const ASTNode& the_index = it->first;
 
+        // A row that already carries its anchor was bound when it was
+        // created, and its binding equation was conjoined onto whatever
+        // formula created it. Re-emitting it here would attach the whole
+        // table's anchors to every formula transformed afterwards -- which
+        // costs nothing in clauses, since the equations are interned and the
+        // AIG is strashed, but puts every row ever seen into every root's
+        // live cone. That is invisible in batch, where the table holds only
+        // the current query's rows and no row is ever seen already bound; it
+        // matters for a caller that keeps a registry across solves, whose
+        // relief valve then sees almost everything as live.
+        if (!it->second.index_symbol.IsNull())
+          continue;
+
         if (the_index.isConstant() ||
             (the_index.GetKind() == SYMBOL && !forceIndexAnchor))
         {
