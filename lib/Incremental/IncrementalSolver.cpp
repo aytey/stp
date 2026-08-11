@@ -4647,7 +4647,16 @@ IncrementalSolver::Impl::exactStackCheckSat(
     }
     else
     {
+      // The hybrid case: routed here for an array equality that simplified
+      // away, so ordinary read refinement runs and needs the same
+      // no-progress guard the equality-free path has. It had none.
+      const uint64_t submittedBefore = solver->submittedClauses();
       res = ce->SATBased_ArrayReadRefinement(*solver, semantic, tosat);
+      if (res == SOLVER_UNDECIDED &&
+          solver->submittedClauses() == submittedBefore)
+        FatalError("IncrementalSolver: an array-equality round fell back to "
+                   "read refinement, rejected the candidate and added no "
+                   "clause -- the encoding and model evaluation disagree");
     }
   }
 
@@ -6020,20 +6029,26 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     {
       refinementRounds++;
       // A candidate the model check rejects while every congruence axiom
-      // is satisfied cannot be repaired by this loop: the round adds no
-      // clause and never re-solves, the next round sees the same model,
-      // and the session would spin forever at full speed. That
-      // combination means the encoding and the word-level evaluation
-      // disagree somewhere -- a bug, and a FatalError names it where a
-      // livelock would just hang (the ext refinement driver has the same
-      // guard for its lemma channel).
-      const size_t solvesBefore = adapter->solveCount;
+      // is satisfied cannot be repaired by this loop: the next round
+      // recomputes the same candidate pairs, finds the same axioms already
+      // present, and the session spins forever at full speed. That means the
+      // encoding and the word-level evaluation disagree somewhere -- a bug,
+      // and a FatalError names it where a livelock would just hang.
+      //
+      // Progress is measured in CLAUSES, not in solve calls. A round that
+      // re-derives axioms the solver already holds re-encodes them as
+      // duplicates and re-solves, so it does advance the solve count while
+      // adding nothing: keying the guard on that count made it unable to
+      // fire in precisely the situation it names, leaving the livelock it
+      // was written to convert into an abort.
+      const uint64_t submittedBefore = impl->solver->submittedClauses();
       res = impl->ce->SATBased_ArrayReadRefinement(*impl->solver,
                                                    activeConjunction, adapter);
-      if (res == SOLVER_UNDECIDED && adapter->solveCount == solvesBefore)
+      if (res == SOLVER_UNDECIDED &&
+          impl->solver->submittedClauses() == submittedBefore)
         FatalError("IncrementalSolver: an array refinement round rejected "
-                   "the candidate but found no congruence axiom to add -- "
-                   "the encoding and model evaluation disagree");
+                   "the candidate but added no clause -- the encoding and "
+                   "model evaluation disagree");
     }
     adapter->setAssumptions(NULL);
 
