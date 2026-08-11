@@ -1718,6 +1718,21 @@ TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
   EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(array).count(index));
 }
 
+TEST(DeepDag, array_transformer_root_fast_paths_preserve_leaf_formulas)
+{
+  Context c;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer transformer(&c.mgr, &simp);
+  const ASTNode symbol = c.mgr.CreateSymbol("array-root-symbol", 0, 0);
+
+  EXPECT_EQ(c.mgr.ASTTrue,
+            transformer.TransformFormula_TopLevel(c.mgr.ASTTrue));
+  EXPECT_EQ(c.mgr.ASTFalse,
+            transformer.TransformFormula_TopLevel(c.mgr.ASTFalse));
+  EXPECT_EQ(symbol, transformer.TransformFormula_TopLevel(symbol));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only

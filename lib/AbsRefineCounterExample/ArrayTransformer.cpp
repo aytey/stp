@@ -347,14 +347,10 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 
   ASTNode result;
 
-  // A deque, so descending never moves the frames above it: the reference
-  // each step holds stays valid across a push.
-  std::deque<Frame> stack;
-
-  // Ask for the transform of `n`. Either the answer needs no frame -- it
-  // lands in `result`, exactly as the recursive version returned it without
-  // descending -- or a frame is pushed and the walk goes below it.
-  auto want = [&](const Frame::Job job, const ASTNode& n) -> bool {
+  // Decide whether transforming `n` needs a frame. A root which is already
+  // answered returns before the deque is constructed; descendant callers
+  // use the same checks before pushing a frame.
+  auto prepare = [&](const Frame::Job job, const ASTNode& n) -> bool {
     if (job == Frame::Read)
     {
       if (READ != n.GetKind())
@@ -370,7 +366,6 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
         return false;
       }
 
-      stack.emplace_back(Frame::Read, n);
       return true;
     }
 
@@ -405,7 +400,6 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (!transformableFormula(k))
         FatalError("TransformFormula: Illegal kind: ", ASTUndefined, k);
 
-      stack.emplace_back(Frame::Formula, n);
       return true;
     }
 
@@ -429,7 +423,24 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (k == WRITE)
       FatalError("TransformTerm: this kind is not supported", n);
 
-    stack.emplace_back(Frame::Term, n);
+    return true;
+  };
+
+  const Frame::Job rootJob = asFormula ? Frame::Formula : Frame::Term;
+  if (!prepare(rootJob, top))
+    return result;
+
+  // A deque, so descending never moves the frames above it: the reference
+  // each step holds stays valid across a push.
+  std::deque<Frame> stack;
+  stack.emplace_back(rootJob, top);
+
+  // Ask for the transform of a descendant. Either `prepare` leaves its
+  // immediate answer in `result`, or the walk goes below a new frame.
+  auto want = [&](const Frame::Job job, const ASTNode& n) -> bool {
+    if (!prepare(job, n))
+      return false;
+    stack.emplace_back(job, n);
     return true;
   };
 
@@ -919,9 +930,6 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     //(ITE cond (READ thn j) (READ els j))
     return finishRead(simp->CreateSimplifiedTermITE(f.cond, f.thn, result));
   };
-
-  if (!want(asFormula ? Frame::Formula : Frame::Term, top))
-    return result;
 
   while (true)
   {
