@@ -1759,72 +1759,15 @@ struct IncrementalSolver::Impl
     return elsewhere > 0;
   }
 
-  // Symbols a live pushed-definition entry can inject into a level DEEPER
-  // than `levelIdx`, and which therefore may not be eliminated there.
-  //
-  // Privacy is otherwise decided over the RAW stack, but deeper levels are
-  // not encoded from their raw conjunctions: each is rewritten through
-  // SubstitutionMap::replace under `ctx`. A deeper level that names a
-  // context KEY is encoded over that key's BODY, so every symbol of the body
-  // reaches the blaster even though no raw level mentions it. Eliminating
-  // such a symbol drops its defining equation while its occurrences remain,
-  // leaving it unconstrained -- sat where unsat lies that way.
-  //
-  // The re-join in checkSatOnCurrentStack usually repairs this by feeding an
-  // eliminated definition back into `ctx`, but it declines silently on an
-  // occurs-check or an oversized body, and nothing retracts the elimination
-  // when it does. Deciding eliminability over everything that can reach the
-  // encoder removes the dependency on that repair.
-  //
-  // Reachability is transitive: replace() expands context entries through
-  // each other, so a deeper level naming `u` also names whatever `ctx[u]`
-  // names, and so on. `ctx` holds tens of entries, so the fixpoint is cheap.
-  void collectCtxExportedSymbols(const ASTNodeMap& ctx, size_t levelIdx,
-                                 const ASTVec& stack, ASTNodeSet& out)
-  {
-    if (ctx.empty())
-      return;
-
-    ensureLevelOccurrences(stack);
-    std::vector<ASTNode> pending;
-    ASTNodeSet queued;
-    for (ASTNodeMap::const_iterator it = ctx.begin(); it != ctx.end(); ++it)
-    {
-      // Entries accumulate by level prefix, so an entry visible while
-      // `levelIdx` is prepared can only rewrite levels below it. The piece's
-      // own conjuncts are checked separately (see preparePiece's assert).
-      LevelOccurrenceMap::const_iterator use =
-          levelOccurrences.find(it->first);
-      if (use == levelOccurrences.end() || use->second.deepest <= levelIdx)
-        continue;
-      if (queued.insert(it->first).second)
-        pending.push_back(it->first);
-    }
-
-    while (!pending.empty())
-    {
-      const ASTNode key = pending.back();
-      pending.pop_back();
-      ASTNodeMap::const_iterator body = ctx.find(key);
-      if (body == ctx.end())
-        continue;
-      for (const ASTNode& s : symbolsOf(body->second))
-      {
-        out.insert(s);
-        if (ctx.find(s) != ctx.end() && queued.insert(s).second)
-          pending.push_back(s);
-      }
-    }
-  }
-
   // Whether `v` belongs to one conjunct of level `levelIdx` alone:
-  // mentioned by no base conjunct, no other live level's raw content, no
-  // live context body a deeper level can reach (see
-  // collectCtxExportedSymbols, whose result reaches this through
-  // `protectedSymbols`), at most ONE raw conjunct of its own level (its
-  // defining one -- the context is level-uniform, so a same-level use
-  // elsewhere would keep a reference to the variable), and never
-  // bit-blasted.
+  // mentioned by no base conjunct, no other live level's raw content, at
+  // most ONE raw conjunct of its own level (its defining one -- the context
+  // is level-uniform, so a same-level use elsewhere would keep a reference
+  // to the variable), and never bit-blasted.
+  //
+  // This is only half of eliminability. The other half -- that the context
+  // can be made to substitute the variable away in the levels below -- is
+  // ctxInlinable, and preparePiece requires both.
   bool levelPrivate(const ASTNode& v, size_t levelIdx, const ASTVec& stack,
                     const std::map<ASTNode, size_t>& conjunctCountOf,
                     const ASTNodeSet& protectedSymbols)
@@ -1853,10 +1796,52 @@ struct IncrementalSolver::Impl
     return bm->defaultNodeFactory->CreateNode(EQ, var, def);
   }
 
+  // Can this definition be inlined into the pushed-definition context, and
+  // what would go in?
+  //
+  // This is the OTHER half of eliminability, and it must be decided in the
+  // same place as privacy. Eliminating a definition deletes its equation and
+  // leaves the variable's occurrences to be substituted away by the context;
+  // if the context entry is then declined -- because expansion reintroduces
+  // the variable, or the body is too big to inline -- the occurrences in
+  // deeper levels stay and nothing constrains them. Deciding the two
+  // together makes "eliminated" mean "substituted away everywhere" by
+  // construction, which is what the encode-boundary assertion in rootLit
+  // checks.
+  //
+  // A variable the context already binds needs nothing further: its
+  // occurrences are already substituted away.
+  // `ctx` is not const because replace() canonicalises the map as it runs,
+  // expanding entries through each other; that is welcome and is what the
+  // re-join has always relied on.
+  bool ctxInlinable(const ASTNode& var, const ASTNode& def, ASTNodeMap& ctx,
+                    ASTNode& expandedOut)
+  {
+    if (ctx.find(var) != ctx.end())
+    {
+      expandedOut = ASTNode();
+      return true;
+    }
+    ASTNode expanded = def;
+    if (!ctx.empty())
+    {
+      ASTNodeMap cache;
+      expanded =
+          SubstitutionMap::replace(expanded, ctx, cache, bm->defaultNodeFactory);
+    }
+    if (expanded.GetKind() != TRUE && expanded.GetKind() != FALSE &&
+        bm->VarSeenInTerm(var, expanded))
+      return false;
+    if (dagSizeUpTo(expanded, defInlineCap) > defInlineCap)
+      return false;
+    expandedOut = expanded;
+    return true;
+  }
+
   const PreparedPiece&
   preparePiece(const ASTNode& replaced, size_t levelIdx, const ASTVec& stack,
                const std::map<ASTNode, size_t>& conjunctCountOf,
-               const ASTNodeSet& protectedSymbols)
+               const ASTNodeSet& protectedSymbols, ASTNodeMap& ctx)
   {
     ScopedProfileTimer preparationTimer(profile.enabled, profile.prepareNs);
     std::map<ASTNode, PreparedPiece>::iterator hit =
@@ -1869,6 +1854,9 @@ struct IncrementalSolver::Impl
       // however, and an entry eliminating one of their symbols may be
       // created after that first screening while the node is popped.  A
       // later re-push must not reuse that now-non-private elimination.
+      // Privacy only. Inlinability is settled by the caller, which needs the
+      // expansion anyway, so checking it here as well would pay for the same
+      // substitution twice on every cache hit.
       bool privateStill = true;
       for (const ASTNode& v : hit->second.eliminatedVars)
       {
@@ -1993,10 +1981,12 @@ struct IncrementalSolver::Impl
       // elimination is only sound if later uses are substituted away,
       // and substituting a big replacement destroys the sharing its
       // variable provides.
+      ASTNode inlined;
       if (var.GetKind() != SYMBOL || var.GetIndexWidth() != 0 ||
           !levelPrivate(var, levelIdx, stack, conjunctCountOf,
                         protectedSymbols) ||
-          dagSizeUpTo(def, defInlineCap) > defInlineCap)
+          dagSizeUpTo(def, defInlineCap) > defInlineCap ||
+          !ctxInlinable(var, def, ctx, inlined))
       {
         keep.push_back(definitionEquation(var, def));
         continue;
@@ -5516,11 +5506,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         }
         impl->addSymbolsOf(eligibleDomains, cbpProtectedSymbols);
       }
-      // Deeper levels are encoded from their ctx-substituted form, so every
-      // symbol a live context body can inject into one of them is off limits
-      // to this level's private elimination (see collectCtxExportedSymbols).
-      impl->collectCtxExportedSymbols(ctx, level, assertionsSMT2,
-                                      cbpProtectedSymbols);
       size_t cbpMemoIdx = 0;
       std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
@@ -5624,10 +5609,46 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             (levelHasFp ||
              (ctxHasFp && containsFloatingPointTheory(replaced, bm))))
           replaced = impl->fpContext()->prepare(replaced);
-        const auto& pp =
-            impl->preparePiece(replaced, level, assertionsSMT2, conjunctCountOf,
-                               cbpProtectedSymbols);
-        for (const ASTNode& pc : pp.conjuncts)
+        const Impl::PreparedPiece* pp =
+            &impl->preparePiece(replaced, level, assertionsSMT2,
+                                conjunctCountOf, cbpProtectedSymbols, ctx);
+        // The other half of the elimination decision, settled once. The
+        // expansion computed here is exactly what the join below installs,
+        // so deciding it at the point of use costs one substitution per
+        // definition per check rather than two. A CACHED piece was decided
+        // under whatever context it was first prepared under, which may no
+        // longer inline; re-preparing decides again under this one, and
+        // preparePiece's own creation-time check makes the retry inlinable
+        // by construction.
+        std::vector<std::pair<ASTNode, ASTNode>> ctxInlines;
+        bool inlinesHold = true;
+        for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
+        {
+          ASTNode expanded;
+          if (!impl->ctxInlinable(d.first, d.second, ctx, expanded))
+          {
+            inlinesHold = false;
+            break;
+          }
+          ctxInlines.push_back(std::make_pair(d.first, expanded));
+        }
+        if (!inlinesHold)
+        {
+          impl->dropPreparedLevel(replaced);
+          pp = &impl->preparePiece(replaced, level, assertionsSMT2,
+                                   conjunctCountOf, cbpProtectedSymbols, ctx);
+          ctxInlines.clear();
+          for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
+          {
+            ASTNode expanded;
+            const bool held =
+                impl->ctxInlinable(d.first, d.second, ctx, expanded);
+            assert(held && "a re-prepared piece refuses its own inlining");
+            (void)held;
+            ctxInlines.push_back(std::make_pair(d.first, expanded));
+          }
+        }
+        for (const ASTNode& pc : pp->conjuncts)
           conjuncts.push_back(pc);
         // Eliminated definitions are recorded for the model, and joined
         // onto the context so DEEPER levels' uses collapse under them --
@@ -5645,39 +5666,21 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // recursed until the worker stack died. The elimination itself
         // stays (it is sound for the piece and its replay); only the
         // context entry is withheld.
-        bool ctxGrew = false;
-        for (const std::pair<ASTNode, ASTNode>& d : pp.eliminatedDefs)
-        {
+        for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
           impl->recordActiveElimination(d.first, d.second);
-          if (ctx.find(d.first) != ctx.end())
+        for (const std::pair<ASTNode, ASTNode>& ci : ctxInlines)
+        {
+          // A null expansion means the context already binds the variable,
+          // so its occurrences are already substituted away.
+          if (ci.second.IsNull())
             continue;
-          ASTNode expanded = d.second;
-          if (!ctx.empty())
-          {
-            ASTNodeMap cache;
-            expanded = SubstitutionMap::replace(expanded, ctx, cache,
-                                                bm->defaultNodeFactory);
-          }
-          if (expanded.GetKind() != TRUE && expanded.GetKind() != FALSE &&
-              bm->VarSeenInTerm(d.first, expanded))
-            continue;
-          if (impl->dagSizeUpTo(expanded, Impl::defInlineCap) >
-              Impl::defInlineCap)
-            continue;
-          ctx[d.first] = expanded;
-          ctxGrew = true;
+          ctx[ci.first] = ci.second;
           if (impl->profile.enabled)
             impl->profile.contextDefinitions++;
           if (!ctxHasFp && bm->has_floating_point_theory &&
-              containsFloatingPointTheory(expanded, bm))
+              containsFloatingPointTheory(ci.second, bm))
             ctxHasFp = true;
         }
-        // A later piece of THIS level must see what the entries just added
-        // can inject into the levels below; the per-level pass above ran
-        // before they existed.
-        if (ctxGrew)
-          impl->collectCtxExportedSymbols(ctx, level, assertionsSMT2,
-                                          cbpProtectedSymbols);
       }
 
       // The pinning facts justifying this level's adoptions are its

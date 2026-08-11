@@ -60,7 +60,7 @@ mechanism is the part worth remembering.
 | [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | low | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
 | [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | cost | low | array logics | no (branch-only code) | agent-measured | ~1.8 ms per call, several calls per refinement round |
-| [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | low | yes | n/a (introduced by `e1229764`) | measured: 4 of 93 | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
+| [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | **FIXED** | yes | n/a (introduced by `e1229764`) | eliminations restored; 1.5x faster | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
 
 ### Verified correct (do not re-chase) — see [Part II](#part-ii--verified-correct-do-not-re-chase)
 
@@ -640,16 +640,20 @@ one-line fix is: clear `baseEliminatedDefs` in `rebuildEncodings` next to
 
 ## D4 — COST: the privacy predicate makes a no-op check quadratic in stack depth
 
-**Status: substantially FIXED** by the occurrence index (work-queue item 4).
-Measured on a deepening stack whose every level contributes a private
-elimination, session total: **3.13 s → 0.48 s at depth 400**, with the growth
-rate falling from roughly 10x per doubling (cubic) to roughly 4.3x (quadratic);
-`prepare-us` fell from 2.84 s to 0.10 s. What remains is the per-check context
-rebuild, which is linear in the live stack and unaddressed.
+**Status: substantially FIXED** by the occurrence index (work-queue item 4)
+and the elimination/inline transaction that followed it (D13's fix). Measured
+on a deepening stack whose every level contributes a private elimination,
+session total at depth 400: **3.13 s pre-fix → 1.14 s with the index → 0.77 s
+after the transaction**, roughly 4x overall, with the growth rate falling from
+about 10x per doubling (cubic) to about 4x (quadratic). What remains is the
+per-check context rebuild, linear in the live stack and unaddressed.
 
-*(Numbers indicative, not interleaved quiet-box A/B: single runs on a shared
-machine, some under load. The 6.5x gap is far outside that noise; treat the
-exact figures as approximate.)*
+⚠ *An earlier revision of this document recorded 0.48 s for the index step.
+That was a single run taken under different load and it flattered the state
+before the transaction; the 1.14 s figure above is the median of three runs
+taken back to back against 0.77 s on a quiet machine. None of these are
+interleaved quiet-box A/B, so treat them as indicative — the ordering is
+solid, the exact values are not.*
 
 **Severity:** was high --- this is the cost the engagement-at-32 policy is
 compensating for. **Evidence:** measured by me; stronger figures
