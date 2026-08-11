@@ -59,7 +59,7 @@ mechanism is the part worth remembering.
 | [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | low | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
 | [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | low | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
-| [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | cost | low | array logics | no (branch-only code) | agent-measured | ~1.8 ms per call, several calls per refinement round |
+| [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | form | **closed** | array logics | no (branch-only code) | measured: no effect | Per-call cost is real but the call count is not; caching it and removing the copy both measured neutral. Contract fixed, optimisation declined. |
 | [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | **FIXED** | yes | n/a (introduced by `e1229764`) | eliminations restored; 1.5x faster | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
 
 ### Verified correct (do not re-chase) — see [Part II](#part-ii--verified-correct-do-not-re-chase)
@@ -1028,10 +1028,33 @@ It is called twice per ordinary refinement round and **once per pending lemma**
 on the array-equality path, so the cost is Θ((rounds + lemmas) × all-session
 symbol-bits).
 
-**Fix:** maintain the symbol map incrementally --- the driver already knows
-exactly when a symbol acquires bits (`totalizeSymbol`, `ensureEncoded`) and when
-the epoch resets (`rebuildEncodings` clears `aigIdToVar`) --- and return the
-stored map by reference, as `ToSATAIG` does.
+**Status: CLOSED, optimisation declined.** Two candidate fixes were built and
+measured against interleaved baselines:
+
+- caching the built map behind a dirty flag invalidated at `setVarOfAig`,
+  `recordActiveElimination` and the per-solve reset --- **neutral** (3.66-3.75 s
+  against 3.74-3.84 s on a 300-query refinement session, identical refinement
+  rounds and answers);
+- passing it by `const&` instead of by value --- **neutral** on the same session
+  (3.80-3.88 s) and on a 2,500-symbol session built specifically to make the
+  symbol set dominate (20.0 s against 19.9 s).
+
+The per-call cost is real, but the call count is not: `SATVar_to_SymbolIndexMap`
+is reached twice per refinement round, and in every session I could construct
+the SAT search and `totalizeSymbol` dominate it (CaDiCaL propagation 21%,
+`totalizeSymbol` 16%, the map nowhere in the profile). Caching it would add an
+invalidation surface across three sites --- the shape that produced D1 --- for
+no measured return, so it was not shipped.
+
+What *was* shipped is the contract, not the optimisation: `ConstructCounterExample`
+only ever iterates the map, so it now takes `const&` and the call site no longer
+copies it. That is correct by inspection and costs nothing; it is not claimed as
+a speedup.
+
+⚠ **Measurement note.** An earlier reading made the cache look 1.45x *slower*.
+It was compared against a baseline taken minutes earlier on a quieter machine.
+Interleaving the two builds showed them identical. Do not compare timings on
+this branch across anything but back-to-back runs.
 
 ---
 
