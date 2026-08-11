@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <iostream>
 #include <vector>
 
@@ -400,6 +401,24 @@ protected:
   // through a callback or through a limit of its own. Backends that cannot
   // get a time limit enforced only between solve() calls.
   virtual bool canInterruptSearch() const { return false; }
+
+public:
+  // Per-instance side state for the array-refinement layer: which congruence
+  // axioms it has already emitted against THIS solver. Owned here, and
+  // deliberately so -- a clause set only ever goes away by destroying the
+  // solver (there is no reset on this interface, and submitted_clauses is
+  // monotone), so a memo that is a MEMBER is empty exactly when the clause set
+  // is. An external table keyed on SATSolver* would not be: the allocator
+  // hands the same address back, and a hit on a recycled pointer suppresses an
+  // axiom the new solver never received, which is a missing constraint and so
+  // a wrong answer. Ownership, not identity.
+  //
+  // Opaque here on purpose: the SAT layer keeps no dependency on the AST.
+  struct RefinementMemo
+  {
+    virtual ~RefinementMemo() {}
+  };
+  std::unique_ptr<RefinementMemo> refinementMemo;
 
 private:
   uint64_t submitted_clauses = 0;
