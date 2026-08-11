@@ -27,7 +27,6 @@ THE SOFTWARE.
 
 #include "stp/AST/ASTNode.h"
 #include "stp/STPManager/STPManager.h"
-#include <limits>
 #include <vector>
 
 namespace stp
@@ -37,26 +36,11 @@ namespace stp
 // wrong.
 class NodeIterator // not copyable
 {
-  struct Frame
-  {
-    ASTNode node;
-    // `unentered` means the node itself has not been returned yet. Once it
-    // has, this is the number of children still to visit, in reverse order
-    // to retain NodeIterator's historical LIFO traversal.
-    size_t nextChild = unentered;
-
-    static constexpr size_t unentered =
-        std::numeric_limits<size_t>::max();
-
-    explicit Frame(const ASTNode& n) : node(n) {}
-  };
-  static_assert(sizeof(Frame) <= 2 * sizeof(void*),
-                "NodeIterator frames must contain only traversal state");
-
-  // Continuations retain one frame per active ancestor. The former pending
-  // node stack retained every unvisited sibling along the frontier, which
-  // made a shallow, very wide node allocate in proportion to its degree.
-  std::vector<Frame> path;
+  // A contiguous LIFO frontier retains the historical traversal order while
+  // avoiding std::stack's deque blocks. It stores one AST handle per pending
+  // edge; the path-frame representation stored two words per active ancestor
+  // and repeatedly re-entered ancestors to discover their next child.
+  std::vector<ASTNode> toVisit;
 
   const ASTNode& sentinel;
   uint8_t iteration;
@@ -69,39 +53,23 @@ protected:
   template <typename Accept>
   ASTNode nextIf(Accept&& accept)
   {
-    while (!path.empty())
+    while (!toVisit.empty())
     {
-      Frame& frame = path.back();
-      if (frame.nextChild == Frame::unentered)
-      {
-        frame.nextChild = frame.node.Degree();
-        ASTNode result = frame.node;
-
-        if (!accept(result) || result.getIteration() == iteration)
-        {
-          path.pop_back();
-          continue;
-        }
-
-        if (result == sentinel)
-        {
-          path.pop_back();
-          return result;
-        }
-
-        result.setIteration(iteration);
-        return result;
-      }
-
-      if (frame.nextChild == 0)
-      {
-        path.pop_back();
+      ASTNode result = toVisit.back();
+      toVisit.pop_back();
+      if (!accept(result) || result.getIteration() == iteration)
         continue;
-      }
 
-      const ASTNode& child = frame.node[--frame.nextChild];
-      if (child.getIteration() != iteration)
-        path.emplace_back(child);
+      if (result == sentinel)
+        return result;
+
+      result.setIteration(iteration);
+      for (const ASTNode& child : result.GetChildren())
+      {
+        if (child.getIteration() != iteration)
+          toVisit.push_back(child);
+      }
+      return result;
     }
 
     return sentinel;
@@ -111,7 +79,7 @@ public:
   NodeIterator(const ASTNode& n, const ASTNode& _sentinel, STPMgr& stpMgr)
       : sentinel(_sentinel), iteration(stpMgr.getNextIteration())
   {
-    path.emplace_back(n);
+    toVisit.push_back(n);
   }
 
   ASTNode next()
