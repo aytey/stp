@@ -47,6 +47,7 @@ THE SOFTWARE.
 // would fold or reassociate them, and the DAG under test would no longer
 // be the deep one the test means to build.
 
+#include "stp/AST/MutableASTNode.h"
 #include "stp/NodeFactory/SimplifyingNodeFactory.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/Flatten.h"
@@ -570,6 +571,51 @@ bool simplifyAlternatingTermFormulaOk(Context& c, unsigned depth)
   return output.GetValueWidth() == 8;
 }
 
+// CreateSimpleEQ peels equal sides from two concat chains. Each peel used to
+// re-enter the simplifying node factory and consume another C++ frame.
+bool concatEqualityOk(Context& c, unsigned depth)
+{
+  ASTNode lhsBase = c.mgr.CreateSymbol("concat-lhs", 0, 1);
+  ASTNode rhsBase = c.mgr.CreateSymbol("concat-rhs", 0, 1);
+  ASTNode lhs = lhsBase;
+  ASTNode rhs = rhsBase;
+  for (unsigned i = 1; i < depth; ++i)
+  {
+    const std::string name = "concat-common-" + std::to_string(i);
+    const ASTNode common = c.mgr.CreateSymbol(name.c_str(), 0, 1);
+    lhs = c.hf->CreateTerm(BVCONCAT, i + 1, lhs, common);
+    rhs = c.hf->CreateTerm(BVCONCAT, i + 1, rhs, common);
+  }
+  c.roots.push_back(lhs);
+  c.roots.push_back(rhs);
+
+  const ASTNode expected = c.hf->CreateNode(EQ, lhsBase, rhsBase);
+  const ASTNode result = c.nf->CreateNode(EQ, lhs, rhs);
+  c.roots.push_back(result);
+  return result == expected;
+}
+
+// Constant equality takes both concat branches and rebuilds their two
+// equalities under AND, so it needs a real continuation frame rather than the
+// tail-peeling loop used by the shared-side case above.
+bool concatConstantEqualityOk(Context& c, unsigned depth)
+{
+  ASTNode concat = c.mgr.CreateSymbol("concat-constant-0", 0, 1);
+  for (unsigned i = 1; i < depth; ++i)
+  {
+    const std::string name = "concat-constant-" + std::to_string(i);
+    concat = c.hf->CreateTerm(
+        BVCONCAT, i + 1, concat,
+        c.mgr.CreateSymbol(name.c_str(), 0, 1));
+  }
+  c.roots.push_back(concat);
+
+  const ASTNode result =
+      c.nf->CreateNode(EQ, c.mgr.CreateZeroConst(depth), concat);
+  c.roots.push_back(result);
+  return result.GetType() == BOOLEAN_TYPE;
+}
+
 // UseITEContext::visit. Carries a context set down, so neither the walker
 // nor priming fits: the same node under two contexts has two answers.
 bool useITEContextOk(Context& c, unsigned depth)
@@ -651,6 +697,40 @@ bool removeUnconstrainedOk(Context& c, unsigned depth)
   const ASTNode result = ru.topLevel(f, &simp);
   c.roots.push_back(result);
   return result.GetKind() != UNDEFINED;
+}
+
+// The mutable graph has walks in both directions: invariant/variable scans
+// and dirty rebuilding go down, dirty propagation goes up, and detaching an
+// orphaned subtree tears it down in post-order. Exercise all of them on the
+// same chain so none can hide behind MutableASTNode::build's iterative walk.
+bool mutableDagWalksOk(Context& c, unsigned depth)
+{
+  const ASTNode input = c.chain(BVXOR, depth);
+  c.roots.push_back(input);
+  MutableASTNode* root = MutableASTNode::build(input);
+
+  bool ok = root->checkInvariant();
+  vector<MutableASTNode*> symbols;
+  std::unordered_set<MutableASTNode*> visited;
+  root->getAllVariablesRecursively(symbols, visited);
+  ok = ok && symbols.size() == depth;
+
+  MutableASTNode* leaf = root;
+  while (!leaf->isSymbol())
+    leaf = leaf->children[0];
+
+  vector<MutableASTNode*> variables;
+  leaf->replaceWithVar(c.mgr.CreateSymbol("mutable-leaf", 0, 8), variables);
+  const ASTNode rebuilt = root->toASTNode(&c.mgr);
+  c.roots.push_back(rebuilt);
+  ok = ok && rebuilt != input && !variables.empty();
+
+  // Replacing the root orphans the whole rebuilt chain. removeChildren must
+  // finish that teardown without using one call frame per level.
+  root->replaceWithVar(c.mgr.CreateSymbol("mutable-root", 0, 8), variables);
+  ok = ok && root->toASTNode(&c.mgr) == root->n && root->checkInvariant();
+  MutableASTNode::cleanup();
+  return ok;
 }
 
 // WorkList::addToWorklist, which seeds constant-bit propagation by walking
@@ -1102,6 +1182,24 @@ TEST(DeepDag, shallow_simplify_alternating_term_formula)
   EXPECT_TRUE(simplifyAlternatingTermFormulaOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_concat_equality)
+{
+  Context c;
+  EXPECT_TRUE(concatEqualityOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_concat_constant_equality)
+{
+  Context c;
+  EXPECT_TRUE(concatConstantEqualityOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_mutable_dag_walks)
+{
+  Context c;
+  EXPECT_TRUE(mutableDagWalksOk(c, SHALLOW));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
@@ -1200,6 +1298,18 @@ TEST(DeepDag, deep_simplify_term_substituted) { EXPECT_STACK_SAFE(simplifyTermSu
 TEST(DeepDag, deep_simplify_alternating_term_formula)
 {
   EXPECT_STACK_SAFE(simplifyAlternatingTermFormulaOk, 20000);
+}
+TEST(DeepDag, deep_concat_equality)
+{
+  EXPECT_STACK_SAFE(concatEqualityOk, 20000);
+}
+TEST(DeepDag, deep_concat_constant_equality)
+{
+  EXPECT_STACK_SAFE(concatConstantEqualityOk, 4000);
+}
+TEST(DeepDag, deep_mutable_dag_walks)
+{
+  EXPECT_STACK_SAFE(mutableDagWalksOk, 20000);
 }
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }

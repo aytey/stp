@@ -182,34 +182,61 @@ private:
 public:
   bool checkInvariant()
   {
-    // Symbols have no children.
-    if (n.GetKind() == SYMBOL)
+    struct CheckFrame
     {
-      assert(children.size() == 0);
-    }
+      MutableASTNode* node;
+      size_t nextChild = 0;
+      bool entered = false;
+      bool waitingForChild = false;
+    };
 
-    // all my parents have me as a child.
-    for (ParentsType::iterator it = parents.begin(); it != parents.end(); it++)
+    std::deque<CheckFrame> stack;
+    stack.push_back({this});
+    while (!stack.empty())
     {
-      vector<MutableASTNode*>::iterator it2 = (*it)->children.begin();
-      // Only consumed by the assert, which an NDEBUG build compiles out.
-      [[maybe_unused]] bool found = false;
-      for (; it2 != (*it)->children.end(); it2++)
+      CheckFrame& frame = stack.back();
+      MutableASTNode* current = frame.node;
+
+      if (!frame.entered)
       {
-        assert(*it2 != NULL);
-        if (*it2 == this)
-          found = true;
+        // Symbols have no children.
+        if (current->n.GetKind() == SYMBOL)
+          assert(current->children.empty());
+
+        // All my parents have me as a child.
+        for (MutableASTNode* parent : current->parents)
+        {
+          // Only consumed by the assert, which an NDEBUG build compiles out.
+          [[maybe_unused]] bool found = false;
+          for (MutableASTNode* child : parent->children)
+          {
+            assert(child != NULL);
+            if (child == current)
+              found = true;
+          }
+          assert(found);
+        }
+        frame.entered = true;
       }
-      assert(found);
-    }
 
-    for (size_t i = 0; i < children.size(); i++)
-    {
-      // call check on all the children.
-      children[i]->checkInvariant();
+      if (frame.waitingForChild)
+      {
+        [[maybe_unused]] MutableASTNode* child =
+            current->children[frame.nextChild];
+        assert(child->parents.find(current) != child->parents.end());
+        frame.nextChild++;
+        frame.waitingForChild = false;
+        continue;
+      }
 
-      // all my children have me as a parent.
-      assert(children[i]->parents.find(this) != children[i]->parents.end());
+      if (frame.nextChild < current->children.size())
+      {
+        frame.waitingForChild = true;
+        stack.push_back({current->children[frame.nextChild]});
+        continue;
+      }
+
+      stack.pop_back();
     }
 
     return true; // ignored.
@@ -226,37 +253,75 @@ public:
     if (!dirty)
       return n;
 
-    if (children.size() == 0)
+    if (children.empty())
       return n;
 
-    ASTVec newChildren;
-    for (size_t i = 0; i < children.size(); i++)
-      newChildren.push_back(children[i]->toASTNode(stpMgr));
-
-    // Don't use the simplifying node factory here. Imagine CreateNode simplified
-    // down,
-    // from (= 1 ite( x , 1,0)) to x (say). Then this node will become a symbol,
-    // but, this object will still have the equal's children. i.e. 1, and the
-    // ITE.
-    // So it becomes a SYMBOL with children...
-
-    if (n.GetType() == BOOLEAN_TYPE)
+    struct RebuildFrame
     {
-      n = stpMgr->hashingNodeFactory->CreateNode(n.GetKind(), newChildren);
-    }
-    else if (n.GetType() == BITVECTOR_TYPE)
-    {
-      n = stpMgr->hashingNodeFactory->CreateTerm(n.GetKind(), n.GetValueWidth(),
-                                                 newChildren);
-    }
-    else
-    {
-      n = stpMgr->hashingNodeFactory->CreateArrayTerm(
-          n.GetKind(), n.GetIndexWidth(), n.GetValueWidth(), newChildren);
-    }
+      MutableASTNode* node;
+      size_t nextChild = 0;
+      ASTVec newChildren;
 
-    dirty = false;
-    return n;
+      explicit RebuildFrame(MutableASTNode* n) : node(n)
+      {
+        newChildren.reserve(n->children.size());
+      }
+    };
+
+    std::deque<RebuildFrame> stack;
+    stack.emplace_back(this);
+    ASTNode result;
+
+    while (true)
+    {
+      RebuildFrame& frame = stack.back();
+      MutableASTNode* current = frame.node;
+
+      if (frame.nextChild < current->children.size())
+      {
+        MutableASTNode* child = current->children[frame.nextChild];
+        if (!child->dirty || child->children.empty())
+        {
+          frame.newChildren.push_back(child->n);
+          frame.nextChild++;
+          continue;
+        }
+
+        stack.emplace_back(child);
+        continue;
+      }
+
+      // Don't use the simplifying node factory here. Imagine CreateNode
+      // simplified (= 1 (ite x 1 0)) down to x. This object would become a
+      // symbol while retaining the equality's children.
+      if (current->n.GetType() == BOOLEAN_TYPE)
+      {
+        current->n = stpMgr->hashingNodeFactory->CreateNode(
+            current->n.GetKind(), frame.newChildren);
+      }
+      else if (current->n.GetType() == BITVECTOR_TYPE)
+      {
+        current->n = stpMgr->hashingNodeFactory->CreateTerm(
+            current->n.GetKind(), current->n.GetValueWidth(),
+            frame.newChildren);
+      }
+      else
+      {
+        current->n = stpMgr->hashingNodeFactory->CreateArrayTerm(
+            current->n.GetKind(), current->n.GetIndexWidth(),
+            current->n.GetValueWidth(), frame.newChildren);
+      }
+
+      current->dirty = false;
+      result = current->n;
+      stack.pop_back();
+      if (stack.empty())
+        return result;
+
+      RebuildFrame& parent = stack.back();
+      parent.newChildren.push_back(result);
+      parent.nextChild++;
+    }
   }
 
   ASTNode n;
@@ -287,12 +352,18 @@ public:
 
   void propagateUpDirty()
   {
-    if (dirty)
-      return;
+    vector<MutableASTNode*> pending(1, this);
+    while (!pending.empty())
+    {
+      MutableASTNode* current = pending.back();
+      pending.pop_back();
+      if (current->dirty)
+        continue;
 
-    dirty = true;
-    for (ParentsType::iterator it = parents.begin(); it != parents.end(); it++)
-      (*it)->propagateUpDirty();
+      current->dirty = true;
+      pending.insert(pending.end(), current->parents.begin(),
+                     current->parents.end());
+    }
   }
 
   void replaceWithAnotherNode(MutableASTNode* newN)
@@ -325,21 +396,37 @@ public:
 
   void removeChildren(vector<MutableASTNode*>& variables)
   {
-    for (unsigned i = 0; i < children.size(); i++)
+    struct RemoveFrame
     {
-      MutableASTNode* child = children[i];
-      ParentsType& children_parents = child->parents;
-      children_parents.erase(this);
+      MutableASTNode* node;
+      size_t nextChild = 0;
+      MutableASTNode* returningChild = NULL;
+    };
 
-      if (children_parents.size() == 0)
+    std::deque<RemoveFrame> stack;
+    stack.push_back({this});
+    while (!stack.empty())
+    {
+      RemoveFrame& frame = stack.back();
+      if (frame.returningChild != NULL)
       {
-        child->removeChildren(variables);
+        if (frame.returningChild->isUnconstrained())
+          variables.push_back(frame.returningChild);
+        frame.returningChild = NULL;
+        continue;
       }
 
-      if (child->isUnconstrained())
+      if (frame.nextChild == frame.node->children.size())
       {
-        variables.push_back(child);
+        stack.pop_back();
+        continue;
       }
+
+      MutableASTNode* child = frame.node->children[frame.nextChild++];
+      child->parents.erase(frame.node);
+      frame.returningChild = child;
+      if (child->parents.empty())
+        stack.push_back({child});
     }
   }
 
@@ -360,14 +447,21 @@ public:
   void getAllVariablesRecursively(vector<MutableASTNode*>& result,
                                   std::unordered_set<MutableASTNode*>& visited)
   {
-    if (!visited.insert(this).second)
-      return;
-    if (isSymbol())
-      result.push_back(this);
-    const int size = children.size();
-    for (int i = 0; i < size; i++)
+    vector<MutableASTNode*> pending(1, this);
+    while (!pending.empty())
     {
-      children[i]->getAllVariablesRecursively(result, visited);
+      MutableASTNode* current = pending.back();
+      pending.pop_back();
+      if (!visited.insert(current).second)
+        continue;
+
+      if (current->isSymbol())
+        result.push_back(current);
+
+      // A LIFO worklist needs the children in reverse to retain the original
+      // left-to-right depth-first order (and therefore result order).
+      for (size_t i = current->children.size(); i > 0; --i)
+        pending.push_back(current->children[i - 1]);
     }
   }
 

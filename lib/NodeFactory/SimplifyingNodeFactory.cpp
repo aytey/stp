@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/Simplifier.h"
 #include <cassert>
 #include <cmath>
+#include <deque>
 
 using stp::Kind;
 
@@ -1057,33 +1058,38 @@ ASTNode SimplifyingNodeFactory::CreateSimpleEQ(const ASTVec& children)
       (in2 == bm.CreateZeroConst(width)))
     return NodeFactory::CreateNode(stp::BVGT, in1[1], in1[0]);
 
-  // split the constant to equal each part of the concat.
+  // Split the constant to equal each part of the concat. A concat can itself
+  // be one of those parts, so the old pair of CreateNode(EQ, ...) calls made
+  // this recurse once per concat level.
   if (BVCONCAT == k2 && stp::BVCONST == k1)
-  {
-    int low_b = 0;
-    int high_b = (int)in2[1].GetValueWidth() - 1;
-    int low_t = in2[1].GetValueWidth();
-    int high_t = width - 1;
-
-    ASTNode c0 = NodeFactory::CreateTerm(BVEXTRACT, in2[1].GetValueWidth(), in1,
-                                         bm.CreateBVConst(32, high_b),
-                                         bm.CreateBVConst(32, low_b));
-    ASTNode c1 = NodeFactory::CreateTerm(BVEXTRACT, in2[0].GetValueWidth(), in1,
-                                         bm.CreateBVConst(32, high_t),
-                                         bm.CreateBVConst(32, low_t));
-
-    ASTNode a = NodeFactory::CreateNode(EQ, in2[1], c0);
-    ASTNode b = NodeFactory::CreateNode(EQ, in2[0], c1);
-    return NodeFactory::CreateNode(stp::AND, a, b);
-  }
+    return CreateSimpleEQConstConcat(in1, in2);
 
   // (a ++ b) = (a ++ c) <=> b = c, and (a ++ c) = (b ++ c) <=> a = b.
-  // Sharing a side pins the widths of the other sides to match.
-  if (BVCONCAT == k1 && BVCONCAT == k2 && in1[0] == in2[0])
-    return NodeFactory::CreateNode(EQ, in1[1], in2[1]);
-
-  if (BVCONCAT == k1 && BVCONCAT == k2 && in1[1] == in2[1])
-    return NodeFactory::CreateNode(EQ, in1[0], in2[0]);
+  // Sharing a side pins the widths of the other sides to match. Peel an
+  // entire run here before re-entering the factory, so a nested concat chain
+  // consumes one C++ frame rather than one frame per equality rewrite.
+  if (BVCONCAT == k1 && BVCONCAT == k2 &&
+      (in1[0] == in2[0] || in1[1] == in2[1]))
+  {
+    ASTNode lhs = in1;
+    ASTNode rhs = in2;
+    while (lhs.GetKind() == BVCONCAT && rhs.GetKind() == BVCONCAT)
+    {
+      if (lhs[0] == rhs[0])
+      {
+        lhs = lhs[1];
+        rhs = rhs[1];
+      }
+      else if (lhs[1] == rhs[1])
+      {
+        lhs = lhs[0];
+        rhs = rhs[0];
+      }
+      else
+        break;
+    }
+    return NodeFactory::CreateNode(EQ, lhs, rhs);
+  }
 
   // Sign extension keeps the value, so the equality only needs the wider
   // of the two originals' widths: drop the extension of the wider side,
@@ -1260,6 +1266,75 @@ ASTNode SimplifyingNodeFactory::CreateSimpleEQ(const ASTVec& children)
 
   // last resort is to CreateNode
   return hashing.CreateNode(EQ, children);
+}
+
+ASTNode SimplifyingNodeFactory::CreateSimpleEQConstConcat(
+    const ASTNode& constant, const ASTNode& concat)
+{
+  struct Frame
+  {
+    enum Phase
+    {
+      Start,
+      LowDone,
+      HighDone
+    };
+
+    ASTNode constant;
+    ASTNode term;
+    ASTNode lowConstant;
+    ASTNode highConstant;
+    ASTNode lowEquality;
+    Phase phase = Start;
+
+    Frame(const ASTNode& c, const ASTNode& t) : constant(c), term(t) {}
+  };
+
+  std::deque<Frame> stack;
+  stack.emplace_back(constant, concat);
+  ASTNode result;
+
+  while (true)
+  {
+    Frame& frame = stack.back();
+    if (frame.phase == Frame::Start)
+    {
+      if (frame.term.GetKind() != BVCONCAT)
+      {
+        result = NodeFactory::CreateNode(EQ, frame.term, frame.constant);
+        stack.pop_back();
+        if (stack.empty())
+          return result;
+        continue;
+      }
+
+      const unsigned lowWidth = frame.term[1].GetValueWidth();
+      const unsigned width = frame.term.GetValueWidth();
+      frame.lowConstant = NodeFactory::CreateTerm(
+          BVEXTRACT, lowWidth, frame.constant,
+          bm.CreateBVConst(32, lowWidth - 1), bm.CreateZeroConst(32));
+      frame.highConstant = NodeFactory::CreateTerm(
+          BVEXTRACT, frame.term[0].GetValueWidth(), frame.constant,
+          bm.CreateBVConst(32, width - 1), bm.CreateBVConst(32, lowWidth));
+
+      frame.phase = Frame::LowDone;
+      stack.emplace_back(frame.lowConstant, frame.term[1]);
+      continue;
+    }
+
+    if (frame.phase == Frame::LowDone)
+    {
+      frame.lowEquality = result;
+      frame.phase = Frame::HighDone;
+      stack.emplace_back(frame.highConstant, frame.term[0]);
+      continue;
+    }
+
+    result = NodeFactory::CreateNode(stp::AND, frame.lowEquality, result);
+    stack.pop_back();
+    if (stack.empty())
+      return result;
+  }
 }
 
 // Constant children are accumulated in "accumconst".
