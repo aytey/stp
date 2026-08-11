@@ -3811,6 +3811,28 @@ struct IncrementalSolver::Impl
                 << ", " << eliminated << " eliminated" << std::endl;
   }
 
+  // What one run of the scoped block pass produced, so a repeated stack does
+  // not run it again -- and, more importantly, does not get a DIFFERENT
+  // answer when it does.
+  //
+  // The pass is not a function of its input node: RemoveUnconstrained names
+  // its stand-in variables from a counter, so whenever one survives into the
+  // output an identical re-pushed stack lowers to a fresh node, misses the
+  // block cache keyed on that node, and re-encodes the whole formula. That is
+  // unbounded growth on exactly the repeat-a-query workload this path exists
+  // for, and it silently contradicts the reuse the design promises. Memoising
+  // by input node restores the function property; the eliminations are
+  // recorded alongside because they are the only other thing the pass emits,
+  // and they are per-solve state that must be replayed on a hit.
+  struct ScopedBlockResult
+  {
+    ASTNode output;
+    std::vector<std::pair<ASTNode, ASTNode>> eliminated;
+    size_t eliminatedSymbols = 0;
+    bool accepted = true;
+  };
+  std::map<std::pair<ASTNode, bool>, ScopedBlockResult> scopedBlockOf;
+
   // The exact-stack path encodes the COMPLETE active stack as one
   // assumption-guarded block. Whole-formula simplification is therefore
   // scoped to exactly the same lifetime as the block: unlike ordinary
@@ -3833,6 +3855,23 @@ struct IncrementalSolver::Impl
       return input;
     }
 
+    // `requireCollapse` is part of the key: it changes both the acceptance
+    // rule and the size gate, so the two callers must not share an entry.
+    const std::pair<ASTNode, bool> memoKey(input, requireCollapse);
+    std::map<std::pair<ASTNode, bool>, ScopedBlockResult>::const_iterator
+        memo = scopedBlockOf.find(memoKey);
+    if (memo != scopedBlockOf.end())
+    {
+      const ScopedBlockResult& done = memo->second;
+      for (const std::pair<ASTNode, ASTNode>& d : done.eliminated)
+        recordActiveElimination(d.first, d.second);
+      if (accepted != NULL)
+        *accepted = done.accepted;
+      if (eliminatedCount != NULL)
+        *eliminatedCount = done.eliminatedSymbols;
+      return done.output;
+    }
+
     size_t before = 0;
     if (requireCollapse)
     {
@@ -3841,6 +3880,9 @@ struct IncrementalSolver::Impl
       {
         if (accepted != NULL)
           *accepted = false;
+        ScopedBlockResult& rejected = scopedBlockOf[memoKey];
+        rejected.output = input;
+        rejected.accepted = false;
         return input;
       }
       before = dagSizeUpTo(input, std::numeric_limits<size_t>::max());
@@ -3892,9 +3934,18 @@ struct IncrementalSolver::Impl
     {
       if (accepted != NULL)
         *accepted = false;
+      // A rejected trial commits no definitions (they would be model state
+      // for a formula that is not being encoded), so the entry records only
+      // the refusal.
+      ScopedBlockResult& rejected = scopedBlockOf[memoKey];
+      rejected.output = input;
+      rejected.accepted = false;
       return input;
     }
 
+    ScopedBlockResult& done = scopedBlockOf[memoKey];
+    done.output = out;
+    done.accepted = true;
     const ASTNodeSet retainedSymbols = symbolsOf(out);
     for (DenseNodeMap::const_iterator it = scoped.Return_SolverMap()->begin();
          it != scoped.Return_SolverMap()->end(); ++it)
@@ -3903,9 +3954,12 @@ struct IncrementalSolver::Impl
           retainedSymbols.find(it->first) != retainedSymbols.end())
         continue;
       recordActiveElimination(it->first, it->second);
-      if (eliminatedCount != NULL && it->first.GetKind() == SYMBOL)
-        (*eliminatedCount)++;
+      done.eliminated.push_back(std::make_pair(it->first, it->second));
+      if (it->first.GetKind() == SYMBOL)
+        done.eliminatedSymbols++;
     }
+    if (eliminatedCount != NULL)
+      *eliminatedCount = done.eliminatedSymbols;
     bm->ASTNodeStats("Incremental exact stack after preprocessing: ", out);
     return out;
   }
