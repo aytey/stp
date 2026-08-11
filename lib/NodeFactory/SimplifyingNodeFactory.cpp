@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include "stp/AST/AST.h"
 #include "stp/AST/ASTKind.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
+#include "stp/FloatBlaster/rounding_modes.h"
 #include "stp/Simplifier/Simplifier.h"
 #include <cassert>
 #include <cmath>
@@ -110,16 +111,30 @@ static int fpConstPlusMinusOne(const stp::ASTNode& c)
   return CONSTANTBV::BitVector_bit_test(bits, eb + sb - 1) ? -1 : 1;
 }
 
+// True for a constant that carries a plausible packed floating-point format:
+// the guard every classifier below applies before reading fields. A real IEEE
+// format has eb, sb >= 2, and the packed width must be eb + sb for the bit
+// indices to be in range. (A rounding-mode constant is also kind BVCONST but
+// carries no format, so it fails here.)
+static bool fpFormattedConst(const stp::ASTNode& c)
+{
+  if (c.GetKind() != stp::BVCONST)
+    return false;
+  const unsigned eb = c.GetExpWidth();
+  const unsigned sb = c.GetSigWidth();
+  return eb >= 2 && sb >= 2 && c.GetValueWidth() == eb + sb;
+}
+
 // True for a packed floating-point constant that is NaN: exponent field
 // (bits [sb-1 .. sb+eb-2]) all ones and stored significand (bits
 // [0 .. sb-2]) nonzero. Interning canonicalises every NaN literal to one
 // pattern, but classify from the bits rather than lean on that.
 static bool fpConstIsNaN(const stp::ASTNode& c)
 {
-  assert(c.GetKind() == stp::BVCONST);
+  if (!fpFormattedConst(c))
+    return false;
   const unsigned eb = c.GetExpWidth();
   const unsigned sb = c.GetSigWidth();
-  assert(eb >= 2 && sb >= 2 && c.GetValueWidth() == eb + sb);
   stp::CBV bits = c.GetBVConst();
   for (unsigned i = sb - 1; i < sb + eb - 1; i++)
     if (!CONSTANTBV::BitVector_bit_test(bits, i))
@@ -128,6 +143,24 @@ static bool fpConstIsNaN(const stp::ASTNode& c)
     if (CONSTANTBV::BitVector_bit_test(bits, i))
       return true;
   return false;
+}
+
+// The infinities: exponent field all ones, stored significand zero. Returns
+// +1 for +oo, -1 for -oo, and 0 for everything else.
+static int fpConstInfSign(const stp::ASTNode& c)
+{
+  if (!fpFormattedConst(c))
+    return 0;
+  const unsigned eb = c.GetExpWidth();
+  const unsigned sb = c.GetSigWidth();
+  stp::CBV bits = c.GetBVConst();
+  for (unsigned i = sb - 1; i < sb + eb - 1; i++)
+    if (!CONSTANTBV::BitVector_bit_test(bits, i))
+      return 0;
+  for (unsigned i = 0; i + 1 < sb; i++)
+    if (CONSTANTBV::BitVector_bit_test(bits, i))
+      return 0;
+  return CONSTANTBV::BitVector_bit_test(bits, eb + sb - 1) ? -1 : 1;
 }
 
 // True for a packed floating-point constant that is +0 or -0: everything
@@ -140,6 +173,103 @@ static bool fpConstIsZero(const stp::ASTNode& c)
     if (CONSTANTBV::BitVector_bit_test(bits, i))
       return false;
   return true;
+}
+
+// The signed zeros: returns +1 for +0, -1 for -0, and 0 for everything else.
+static int fpConstZeroSign(const stp::ASTNode& c)
+{
+  if (!fpFormattedConst(c) || !fpConstIsZero(c))
+    return 0;
+  return CONSTANTBV::BitVector_bit_test(c.GetBVConst(), c.GetValueWidth() - 1)
+             ? -1
+             : 1;
+}
+
+// The sign bit of any formatted constant: +1 clear, -1 set, 0 not one.
+static int fpConstSign(const stp::ASTNode& c)
+{
+  if (!fpFormattedConst(c))
+    return 0;
+  return CONSTANTBV::BitVector_bit_test(c.GetBVConst(), c.GetValueWidth() - 1)
+             ? -1
+             : 1;
+}
+
+// The literal rounding mode in an arithmetic operation's first child, as a
+// symbolic_fp::rounding_modes value -- or 0 when the mode is symbolic or not
+// a legal one-hot encoding. (Both spellings of a literal mode -- the parser's
+// plain 5-bit constant and the API's ASTRMConst -- are kind BVCONST.)
+static unsigned fpConstRoundingMode(const stp::ASTNode& rm)
+{
+  if (rm.GetKind() != stp::BVCONST || rm.GetValueWidth() != 5)
+    return 0;
+  unsigned v = 0;
+  for (unsigned i = 0; i < 5; i++)
+    if (CONSTANTBV::BitVector_bit_test(rm.GetBVConst(), i))
+      v |= 1u << i;
+  return (v != 0 && (v & (v - 1)) == 0) ? v : 0;
+}
+
+// Whether adding the signed zero `zeroSign` (+1 for +0, -1 for -0) to any
+// float returns that float exactly, under the literal mode `mode` (0 = not
+// literal, never an identity). The sum of the two opposite zeros is the one
+// input that can see the zero operand: it is +0 under every mode except
+// round-toward-negative, where it is -0. So y + (-0) = y unless the mode is
+// RTN, and y + (+0) = y only there.
+static bool fpZeroIsAdditiveIdentity(int zeroSign, unsigned mode)
+{
+  if (mode == 0 || zeroSign == 0)
+    return false;
+  const bool rtn = (mode == stp::symbolic_fp::ROUND_TOWARD_NEGATIVE);
+  return (zeroSign < 0) != rtn;
+}
+
+// Nonpositive constant: a zero of either sign, or sign bit set -- NaN
+// excluded. The strict variant excludes the zeros too.
+static bool fpConstIsNonpositive(const stp::ASTNode& c)
+{
+  if (!fpFormattedConst(c) || fpConstIsNaN(c))
+    return false;
+  return fpConstSign(c) < 0 || fpConstIsZero(c);
+}
+static bool fpConstIsNegativeNonzero(const stp::ASTNode& c)
+{
+  if (!fpFormattedConst(c) || fpConstIsNaN(c))
+    return false;
+  return fpConstSign(c) < 0 && !fpConstIsZero(c);
+}
+
+// A term whose value is never below zero -- at the very least -0, or NaN:
+// fp.abs of anything; fp.sqrt of anything (a negative operand gives NaN, and
+// sqrt(-0) is -0); and a self-product t*t (the operand's sign cancels with
+// itself, and the invalid 0*oo needs distinct operands). The comparison
+// rules below only rely on "never strictly below -0".
+static bool fpTermNeverNegative(const stp::ASTNode& n)
+{
+  const stp::Kind k = n.GetKind();
+  return (k == stp::FP_ABS && n.Degree() == 1) ||
+         (k == stp::FP_SQRT && n.Degree() == 2) ||
+         (k == stp::FP_MUL && n.Degree() == 3 && n[1] == n[2]);
+}
+
+// The shapes the classification predicates can look through (beyond the
+// abs/neg peel): t + t is NaN, zero, negative or positive exactly when t is
+// (equal signs cannot cancel, doubling cannot underflow, overflow keeps the
+// sign); t * t is NaN exactly when t is and never negative; fp.sqrt keeps
+// zeroness and positivity (a negative operand maps to NaN, which no
+// classification counts); fp.roundToIntegral keeps NaN, infinity and sign,
+// and its result -- integral, zero, infinite or NaN -- is never subnormal.
+static bool fpIsSelfSum(const stp::ASTNode& n)
+{
+  return n.GetKind() == stp::FP_ADD && n.Degree() == 3 && n[1] == n[2];
+}
+static bool fpIsSelfProduct(const stp::ASTNode& n)
+{
+  return n.GetKind() == stp::FP_MUL && n.Degree() == 3 && n[1] == n[2];
+}
+static bool fpIsRoundToIntegral(const stp::ASTNode& n)
+{
+  return n.GetKind() == stp::FP_ROUNDTOINTEGRAL && n.Degree() == 2;
 }
 
 bool SimplifyingNodeFactory::children_all_constants(
@@ -186,6 +316,27 @@ ASTNode SimplifyingNodeFactory::foldFPSign(const ASTNode& fpConst, bool flip)
 
   return bm.CreateFPConst(bm.CreateBVConst(bits, width),
                           fpConst.GetExpWidth(), fpConst.GetSigWidth());
+}
+
+ASTNode SimplifyingNodeFactory::makeFPNaN(unsigned eb, unsigned sb)
+{
+  const unsigned width = eb + sb;
+  stp::CBV bits = CONSTANTBV::BitVector_Create(width, true);
+  for (unsigned i = sb - 1; i < width - 1; i++) // exponent field all ones
+    CONSTANTBV::BitVector_Bit_On(bits, i);
+  // Any nonzero stored significand: CreateFPConst canonicalises the payload.
+  CONSTANTBV::BitVector_Bit_On(bits, 0);
+  return bm.CreateFPConst(bm.CreateBVConst(bits, width), eb, sb);
+}
+
+ASTNode SimplifyingNodeFactory::makeFPZero(unsigned eb, unsigned sb,
+                                           bool negative)
+{
+  const unsigned width = eb + sb;
+  stp::CBV bits = CONSTANTBV::BitVector_Create(width, true);
+  if (negative)
+    CONSTANTBV::BitVector_Bit_On(bits, width - 1);
+  return bm.CreateFPConst(bm.CreateBVConst(bits, width), eb, sb);
 }
 
 ASTNode SimplifyingNodeFactory::create_gt_node(const ASTVec& children)
@@ -636,18 +787,65 @@ ASTNode SimplifyingNodeFactory::CreateNode(Kind kind, const ASTVec& children)
     // the blaster, which is why the FP kinds bypass the constant-fold path
     // above.
 
-    // Classification ignores the sign, so a wrapping abs or neg can be peeled
-    // off. isPositive and isNegative are deliberately excluded: they are the
-    // two predicates that do depend on the sign.
+    // Classification ignores the sign, so a wrapping abs or neg is peeled
+    // off; past that, each predicate looks through the shapes that preserve
+    // what it tests (see the fpIsSelfSum group above). The recursive create
+    // re-simplifies, so the rules compose through nested wrappers.
     case stp::FP_ISNORMAL:
     case stp::FP_ISSUBNORMAL:
     case stp::FP_ISZERO:
     case stp::FP_ISINFINITE:
     case stp::FP_ISNAN:
-      if (children[0].GetKind() == stp::FP_ABS ||
-          children[0].GetKind() == stp::FP_NEG)
-        result = NodeFactory::CreateNode(kind, children[0][0]);
+    {
+      const ASTNode& t = children[0];
+      if (t.GetKind() == stp::FP_ABS || t.GetKind() == stp::FP_NEG)
+        result = NodeFactory::CreateNode(kind, t[0]);
+      else if (kind == stp::FP_ISNAN &&
+               (fpIsRoundToIntegral(t) || fpIsSelfSum(t) || fpIsSelfProduct(t)))
+        result = NodeFactory::CreateNode(kind, t[1]);
+      else if (kind == stp::FP_ISZERO &&
+               ((t.GetKind() == stp::FP_SQRT && t.Degree() == 2) ||
+                fpIsSelfSum(t)))
+        result = NodeFactory::CreateNode(kind, t[1]);
+      else if (kind == stp::FP_ISINFINITE && fpIsRoundToIntegral(t))
+        result = NodeFactory::CreateNode(kind, t[1]);
+      else if (kind == stp::FP_ISSUBNORMAL && fpIsRoundToIntegral(t))
+        result = ASTFalse;
       break;
+    }
+
+    // The sign predicates. An abs is never negative, and positive exactly
+    // when it is not NaN (both count the zeros: fp.isPositive(+0) holds); a
+    // neg swaps the two predicates (NaN stays NaN, failing both); t + t and
+    // fp.roundToIntegral keep the sign; sqrt keeps positivity (a negative
+    // operand gives NaN, counted by neither); t * t is an abs in disguise.
+    case stp::FP_ISNEGATIVE:
+    {
+      const ASTNode& t = children[0];
+      if (t.GetKind() == stp::FP_ABS || fpIsSelfProduct(t))
+        result = ASTFalse;
+      else if (t.GetKind() == stp::FP_NEG)
+        result = NodeFactory::CreateNode(stp::FP_ISPOSITIVE, t[0]);
+      else if (fpIsRoundToIntegral(t) || fpIsSelfSum(t))
+        result = NodeFactory::CreateNode(kind, t[1]);
+      break;
+    }
+    case stp::FP_ISPOSITIVE:
+    {
+      const ASTNode& t = children[0];
+      if (t.GetKind() == stp::FP_ABS)
+        result = NodeFactory::CreateNode(
+            stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, t[0]));
+      else if (fpIsSelfProduct(t))
+        result = NodeFactory::CreateNode(
+            stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, t[1]));
+      else if (t.GetKind() == stp::FP_NEG)
+        result = NodeFactory::CreateNode(stp::FP_ISNEGATIVE, t[0]);
+      else if ((t.GetKind() == stp::FP_SQRT && t.Degree() == 2) ||
+               fpIsRoundToIntegral(t) || fpIsSelfSum(t))
+        result = NodeFactory::CreateNode(kind, t[1]);
+      break;
+    }
 
     // Mirror the less-thans onto the greater-thans, as the bit-vector
     // comparisons are above (BVLT -> BVGT): fp.lt(a, b) is fp.gt(b, a)
@@ -668,17 +866,70 @@ ASTNode SimplifyingNodeFactory::CreateNode(Kind kind, const ASTVec& children)
             NodeFactory::CreateNode(stp::FP_GEQ, children[1], children[0]);
       break;
 
-    // x > x is false, NaN included.
+    // x > x is false, NaN included. So is any comparison against a NaN
+    // constant (NaN is unordered against everything), and the two
+    // impossible strict comparisons against the extremes: -oo > x and
+    // x > +oo hold for no x. (The mirrored fp.lt forms arrive here already
+    // swapped, so these rules cover both spellings.) A term that is never
+    // below zero (abs, sqrt, a self-product) cannot be under a nonpositive
+    // constant, and is over a strictly negative one exactly when it is
+    // ordered; and t > |t| never holds, since t <= |t| whenever ordered.
     case stp::FP_GT:
-      if (children.size() == 2 && children[0] == children[1])
-        result = ASTFalse;
+      if (children.size() == 2)
+      {
+        if (children[0] == children[1] || fpConstIsNaN(children[0]) ||
+            fpConstIsNaN(children[1]) || fpConstInfSign(children[0]) == -1 ||
+            fpConstInfSign(children[1]) == 1)
+          result = ASTFalse;
+        else if (children[1].GetKind() == stp::FP_ABS &&
+                 children[1][0] == children[0])
+          result = ASTFalse;
+        else if (fpTermNeverNegative(children[1]) &&
+                 fpConstIsNonpositive(children[0]))
+          result = ASTFalse;
+        else if (fpTermNeverNegative(children[0]) &&
+                 fpConstIsNegativeNonzero(children[1]))
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[0]));
+      }
       break;
 
-    // x >= x holds exactly when x is not NaN.
+    // x >= x holds exactly when x is not NaN -- and so do +oo >= x and
+    // x >= -oo, since only a NaN is unordered against an extreme. Against a
+    // NaN constant the comparison is simply false. The never-below-zero
+    // terms compare against constants as in FP_GT (non-strict, so the zeros
+    // change sides: N >= any nonpositive constant whenever ordered, and a
+    // zero >= N squeezes N onto the zeros). |t| >= t whenever ordered.
     case stp::FP_GEQ:
-      if (children.size() == 2 && children[0] == children[1])
-        result = NodeFactory::CreateNode(
-            stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[0]));
+      if (children.size() == 2)
+      {
+        if (fpConstIsNaN(children[0]) || fpConstIsNaN(children[1]))
+          result = ASTFalse;
+        else if (children[0] == children[1])
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[0]));
+        else if (fpConstInfSign(children[0]) == 1)
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[1]));
+        else if (fpConstInfSign(children[1]) == -1)
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[0]));
+        else if (children[0].GetKind() == stp::FP_ABS &&
+                 children[0][0] == children[1])
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[1]));
+        else if (fpTermNeverNegative(children[0]) &&
+                 fpConstIsNonpositive(children[1]))
+          result = NodeFactory::CreateNode(
+              stp::NOT, NodeFactory::CreateNode(stp::FP_ISNAN, children[0]));
+        else if (fpTermNeverNegative(children[1]))
+        {
+          if (fpConstIsNegativeNonzero(children[0]))
+            result = ASTFalse;
+          else if (fpConstZeroSign(children[0]) != 0)
+            result = NodeFactory::CreateNode(stp::FP_ISZERO, children[1]);
+        }
+      }
       break;
 
     case stp::FP_EQ:
@@ -729,6 +980,25 @@ ASTNode SimplifyingNodeFactory::CreateNode(Kind kind, const ASTVec& children)
               result = NodeFactory::CreateNode(stp::FP_SMT_EQ, x, c);
             break;
           }
+        }
+
+        // (= t NaN) is exactly (fp.isNaN t): SMT-LIB has a single NaN
+        // value. Rewritten only when t is NOT a bare symbol --
+        // PropagateEqualities substitutes through a `=` with a symbol on
+        // one side and a constant on the other (x := NaN everywhere), which
+        // is strictly stronger than holding the smaller predicate; a
+        // compound t offers no substitution to lose, and the isNaN may
+        // then simplify further (it peels abs/neg and looks through the
+        // NaN-transparent shapes).
+        if (kind == stp::FP_SMT_EQ)
+        {
+          for (unsigned k = 0; result.IsNull() && k <= 1; k++)
+            if (fpConstIsNaN(children[k]) &&
+                children[1 - k].GetKind() != stp::SYMBOL)
+              result =
+                  NodeFactory::CreateNode(stp::FP_ISNAN, children[1 - k]);
+          if (!result.IsNull())
+            break;
         }
 
         // Both float equalities are symmetric. Order the operands so that
@@ -1816,8 +2086,94 @@ ASTNode SimplifyingNodeFactory::handle_bvxor(unsigned int width, const ASTVec& i
 
 
 
+
+// The conjuncts a BVAND constrains, descending through nested BVANDs, since
+// (a & (b & c)) constrains exactly a, b and c. A nested BVAND is recorded as
+// a conjunct in its own right as well as being descended into: what gets
+// negated may be the nested node rather than one of its leaves.
+//
+// Each conjunct is recorded the way the node numbering already pairs a node
+// with its negation: uids step by two, and the odd slot above an operand's
+// uid is where boolean NOT sits (see ASTInterior's constructor). BVNOT is
+// not numbered that way, so it is recorded that way here instead -- x as its
+// uid, ~x as uid(x)+1 -- and sorting brings a literal and its negation next
+// to each other. Only boolean NOT nodes occupy odd uids, and none can be a
+// BVAND conjunct, so recorded values collide only for equal conjuncts. That
+// is the same shape as the adjacency test the duplicate removal below uses.
+//
+// The buffer is a fixed array rather than a set or a vector. This runs on
+// every BVAND that has a BVAND child, 1.9M times over the hard QF_BV
+// problems, to hold six conjuncts on average; at that size the allocation
+// would cost more than everything else here put together.
+//
+// Bounded by how many conjuncts have been gathered, not by how deep the walk
+// went, and the figure comes from measuring rather than guessing.
+// Instrumenting this function over the 4661 hard problems: of those 1.9M
+// walks, 65 found a complementary pair, and the shallowest depth at which
+// that pair was reachable was
+//
+//   depth 1: 35   depth 2: 27   depth 3: 1   depth 7: 1   depth 8: 1
+//
+// So 95% are within two levels, but the tail runs to eight, while the
+// nesting itself reaches sixty. A depth limit would have to be set at eight
+// to lose nothing, and eight is not a number with any meaning -- it is just
+// the deepest pair this corpus happens to contain. Bounding the conjuncts
+// bounds the cost directly instead, and since every BVAND has at least two
+// children it bounds the recursion too; sixty-four is comfortably past every
+// pair seen.
+//
+// Stopping early costs a rewrite that does not fire, never a wrong answer.
+static const size_t MAX_CONJUNCTS = 64;
+
+static void collectConjuncts(const ASTNode& n, uint64_t* out, size_t& count)
+{
+  if (count >= MAX_CONJUNCTS)
+    return;
+
+  out[count++] = (n.GetKind() == BVNOT) ? n[0].GetNodeNum() + 1
+                                        : n.GetNodeNum();
+
+  if (n.GetKind() == stp::BVAND)
+    for (size_t i = 0; i < n.Degree(); i++)
+      collectConjuncts(n[i], out, count);
+}
+
 ASTNode SimplifyingNodeFactory::handle_bvand(unsigned int width, const ASTVec& new_children) 
 {
+
+
+  // x & ~x is zero however the two are nested: (~x & (x & y)) and
+  // (x & (~x & ~y)) are both zero, and the scan below only ever compares
+  // immediate children, so it sees neither. Only worth walking when a nested
+  // BVAND is actually present -- and this can only ever return the
+  // annihilator, so a node it does not fire on is left exactly as it was.
+  {
+    bool nested = false;
+    for (size_t i = 0; i < new_children.size(); i++)
+      if (new_children[i].GetKind() == stp::BVAND)
+      {
+        nested = true;
+        break;
+      }
+
+    if (nested)
+    {
+      uint64_t conjuncts[MAX_CONJUNCTS];
+      size_t count = 0;
+      for (size_t i = 0; i < new_children.size(); i++)
+        collectConjuncts(new_children[i], conjuncts, count);
+
+      std::sort(conjuncts, conjuncts + count);
+
+      // x is recorded as its even uid and ~x as the odd uid above it, so a
+      // pair is two consecutive values with the even one first. Equal
+      // neighbours are duplicates, not a pair.
+      for (size_t i = 1; i < count; i++)
+        if (conjuncts[i] == conjuncts[i - 1] + 1 &&
+            (conjuncts[i - 1] & 1) == 0)
+          return bm.CreateZeroConst(width);
+    }
+  }
 
   ASTVec flat_children(new_children);
   SortByExprNum(flat_children); // We want duplicates to be adjacent.
@@ -3257,13 +3613,29 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
     // ----- Cheap floating-point rewrites, applied before bit-blasting. -----
     // See the matching block in CreateNode.
 
-    // min(x, x) = max(x, x) = x. The two float operands are children 0 and 1;
-    // the totalising pass may append a choice-of-zero child, but it runs after
-    // this, and the identity holds whether or not it is present.
+    // min(x, x) = max(x, x) = x. A NaN operand is ignored -- fp.min/fp.max
+    // return the other operand -- and the matching order extreme absorbs:
+    // min(x, -oo) = -oo and max(x, +oo) = +oo for every x, NaN included.
+    // All three are sound for either of the totalising pass's zero choices:
+    // the choice only matters when the operands are the two opposite zeros,
+    // which an equal, NaN or infinite operand precludes. The two float
+    // operands are children 0 and 1; the choice child, if the pass has
+    // already appended one, is irrelevant to these.
     case stp::FP_MIN:
     case stp::FP_MAX:
-      if (children.size() >= 2 && children[0] == children[1])
-        result = children[0];
+      if (children.size() >= 2)
+      {
+        if (children[0] == children[1])
+          result = children[0];
+        for (unsigned k = 0; result.IsNull() && k <= 1; k++)
+        {
+          if (fpConstIsNaN(children[k]))
+            result = children[1 - k];
+          else if (fpConstInfSign(children[k]) ==
+                   (kind == stp::FP_MIN ? -1 : 1))
+            result = children[k];
+        }
+      }
       break;
 
     // abs(abs x) = abs(neg x) = abs x. On a constant, fold at construction --
@@ -3278,6 +3650,20 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
         result = NodeFactory::CreateTerm(stp::FP_ABS, width, children[0][0]);
       else if (children[0].GetKind() == stp::BVCONST)
         result = foldFPSign(children[0], /*flip=*/false);
+      // abs(t * t) = t * t: a self-product is never negative, and -0 (the
+      // one nonnegative value abs does change) cannot arise from it.
+      else if (fpIsSelfProduct(children[0]))
+        result = children[0];
+      break;
+
+    // Rounding an already-integral value -- and roundToIntegral yields
+    // nothing else: an integral, a zero, an infinity or NaN -- is exact
+    // under EVERY mode, so a second roundToIntegral is dropped whatever its
+    // own rounding mode.
+    case stp::FP_ROUNDTOINTEGRAL:
+      if (children.size() == 2 &&
+          children[1].GetKind() == stp::FP_ROUNDTOINTEGRAL)
+        result = children[1];
       break;
 
     // neg(neg x) = x.
@@ -3299,17 +3685,32 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
             NodeFactory::CreateTerm(stp::FP_NEG, width, children[2]));
       break;
 
-    // fp.add is commutative in its two float operands (child 0 is the rounding
-    // mode). Order them so x + y and y + x share a node.
+    // fp.add: a NaN operand absorbs -- NaN + x is NaN for every x and mode --
+    // and a signed-zero operand whose addition is exact for the literal
+    // rounding mode is dropped: x + (-0) = x under every mode except
+    // round-toward-negative, x + (+0) = x only there. Otherwise fp.add is
+    // commutative in its two float operands (child 0 is the rounding mode):
+    // order them so x + y and y + x share a node.
     case stp::FP_ADD:
-      if (children.size() == 3 &&
-          children[1].GetNodeNum() > children[2].GetNodeNum())
+      if (children.size() == 3)
       {
-        ASTVec reordered;
-        reordered.push_back(children[0]);
-        reordered.push_back(children[2]);
-        reordered.push_back(children[1]);
-        result = hashing.CreateTerm(stp::FP_ADD, width, reordered);
+        for (unsigned k = 1; result.IsNull() && k <= 2; k++)
+        {
+          if (fpConstIsNaN(children[k]))
+            result = children[k];
+          else if (fpZeroIsAdditiveIdentity(fpConstZeroSign(children[k]),
+                                            fpConstRoundingMode(children[0])))
+            result = children[3 - k];
+        }
+        if (result.IsNull() &&
+            children[1].GetNodeNum() > children[2].GetNodeNum())
+        {
+          ASTVec reordered;
+          reordered.push_back(children[0]);
+          reordered.push_back(children[2]);
+          reordered.push_back(children[1]);
+          result = hashing.CreateTerm(stp::FP_ADD, width, reordered);
+        }
       }
       break;
 
@@ -3317,13 +3718,19 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
     // and x * -1.0 = -x, for every value and every rounding mode. 1.0 is the
     // multiplicative identity and -1.0 its negation, so the product is exactly
     // x or -x and no rounding happens (NaN, the infinities and the signed zeros
-    // all carry through). Either float operand (child 1 or 2) may be the
-    // constant; child 0 is the rounding mode.
+    // all carry through). A NaN operand absorbs the whole product. Either
+    // float operand (child 1 or 2) may be the constant; child 0 is the
+    // rounding mode.
     case stp::FP_MUL:
       if (children.size() == 3)
       {
         for (unsigned k = 1; result.IsNull() && k <= 2; k++)
         {
+          if (fpConstIsNaN(children[k]))
+          {
+            result = children[k];
+            continue;
+          }
           const int pm = fpConstPlusMinusOne(children[k]);
           if (pm == 1)
             result = children[3 - k];
@@ -3344,27 +3751,76 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
       }
       break;
 
-    // fp.div by 1.0 is exact: x / 1.0 = x. Only the divisor (child 2) folds --
-    // 1.0 / x is not x -- so the dividend is left alone. (-1.0 is deliberately
-    // not handled here; x / -1.0 -> -x could be added the same way.)
+    // fp.div: a NaN operand absorbs, and the exact divisors fold -- x / 1.0
+    // = x and x / -1.0 = -x for every value and mode. Only the divisor
+    // (child 2) has identities: 1.0 / x is not x, so the dividend is
+    // otherwise left alone.
     case stp::FP_DIV:
-      if (children.size() == 3 && fpConstPlusMinusOne(children[2]) == 1)
-        result = children[1];
+      if (children.size() == 3)
+      {
+        if (fpConstIsNaN(children[1]))
+          result = children[1];
+        else if (fpConstIsNaN(children[2]))
+          result = children[2];
+        else if (fpConstPlusMinusOne(children[2]) == 1)
+          result = children[1];
+        else if (fpConstPlusMinusOne(children[2]) == -1)
+          result = NodeFactory::CreateTerm(stp::FP_NEG, width, children[1]);
+      }
       break;
 
-    // fp.fma(rm, x, y, z) computes round(x*y + z); the two multiplicands x
-    // and y (children 1 and 2) are symmetric, so order them, keeping the
-    // rounding mode (child 0) and the addend (child 3) in place.
+    // fp.fma(rm, x, y, z) computes round(x*y + z), rounding once. A NaN in
+    // any float operand absorbs. When the product x*y is exact the single
+    // rounding is the addition's, so the fma IS an fp.add of the product:
+    // a multiplicand of +-1.0 gives round(+-y + z), and two constant
+    // multiplicands with a zero among them give either the invalid 0 * oo
+    // (NaN) or the xor-signed zero. The created fp.add re-simplifies, so
+    // its own NaN and signed-zero rules finish the job. Otherwise the two
+    // multiplicands (children 1 and 2) are symmetric: order them, keeping
+    // the rounding mode (child 0) and the addend (child 3) in place.
     case stp::FP_FMA:
-      if (children.size() == 4 &&
-          children[1].GetNodeNum() > children[2].GetNodeNum())
+      if (children.size() == 4)
       {
-        ASTVec reordered;
-        reordered.push_back(children[0]);
-        reordered.push_back(children[2]);
-        reordered.push_back(children[1]);
-        reordered.push_back(children[3]);
-        result = hashing.CreateTerm(stp::FP_FMA, width, reordered);
+        for (unsigned k = 1; result.IsNull() && k <= 3; k++)
+          if (fpConstIsNaN(children[k]))
+            result = children[k];
+
+        for (unsigned k = 1; result.IsNull() && k <= 2; k++)
+        {
+          const ASTNode& other = children[3 - k];
+          const int pm = fpConstPlusMinusOne(children[k]);
+          const int zs = fpConstZeroSign(children[k]);
+          if (pm != 0)
+            result = NodeFactory::CreateTerm(
+                stp::FP_ADD, width, children[0],
+                pm == 1 ? other
+                        : NodeFactory::CreateTerm(stp::FP_NEG, width, other),
+                children[3]);
+          else if (zs != 0 && fpFormattedConst(other))
+          {
+            if (fpConstInfSign(other) != 0)
+              result = makeFPNaN(children[k].GetExpWidth(),
+                                 children[k].GetSigWidth());
+            else
+              result = NodeFactory::CreateTerm(
+                  stp::FP_ADD, width, children[0],
+                  makeFPZero(children[k].GetExpWidth(),
+                             children[k].GetSigWidth(),
+                             (zs < 0) != (fpConstSign(other) < 0)),
+                  children[3]);
+          }
+        }
+
+        if (result.IsNull() &&
+            children[1].GetNodeNum() > children[2].GetNodeNum())
+        {
+          ASTVec reordered;
+          reordered.push_back(children[0]);
+          reordered.push_back(children[2]);
+          reordered.push_back(children[1]);
+          reordered.push_back(children[3]);
+          result = hashing.CreateTerm(stp::FP_FMA, width, reordered);
+        }
       }
       break;
 
@@ -3393,6 +3849,19 @@ ASTNode SimplifyingNodeFactory::CreateTerm(Kind kind, unsigned int width,
               stp::FP_NEG, width,
               NodeFactory::CreateTerm(stp::FP_REM, width, children[0][0],
                                       children[1]));
+        // The invalid operands: rem is NaN whenever the dividend is NaN or
+        // infinite, or the divisor is NaN or zero -- whatever the other
+        // operand is.
+        else if (fpConstIsNaN(children[0]))
+          result = children[0];
+        else if (fpConstIsNaN(children[1]))
+          result = children[1];
+        else if (fpConstInfSign(children[0]) != 0)
+          result = makeFPNaN(children[0].GetExpWidth(),
+                             children[0].GetSigWidth());
+        else if (fpConstZeroSign(children[1]) != 0)
+          result = makeFPNaN(children[1].GetExpWidth(),
+                             children[1].GetSigWidth());
       }
       break;
 
