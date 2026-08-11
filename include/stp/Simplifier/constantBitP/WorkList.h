@@ -85,9 +85,8 @@ private:
     auto enter = [&](const stp::ASTNode& n) {
       if (n.isConstant())
         return;
-      if (visited.find(n) != visited.end())
+      if (!visited.insert(n).second)
         return;
-      visited.insert(n);
       stack.push_back(Frame(n));
     };
 

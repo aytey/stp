@@ -1466,6 +1466,34 @@ TEST(DeepDag, flat_flatten_kind_preserves_children)
   EXPECT_EQ(expected, FlattenKind(BVPLUS, holder.GetChildren()));
 }
 
+TEST(DeepDag, duplicate_flatten_kind_does_not_reserve_discarded_edges)
+{
+  Context c;
+  const ASTNode a = c.mgr.CreateSymbol("flat-shared-a", 0, 8);
+  const ASTNode b = c.mgr.CreateSymbol("flat-shared-b", 0, 8);
+  const ASTNode shared = c.hf->CreateTerm(BVAND, 8, a, b);
+  const ASTNode holder = c.hf->CreateTerm(BVXOR, 8, ASTVec(4096, shared));
+
+  const ASTVec flat = FlattenKind(BVAND, holder.GetChildren());
+  EXPECT_EQ(toASTVec(shared.GetChildren()), flat);
+  EXPECT_LT(flat.capacity(), holder.Degree());
+}
+
+TEST(DeepDag, work_list_shared_edges_are_visited_once)
+{
+  Context c;
+  const ASTNode symbol = c.mgr.CreateSymbol("work-list-shared", 0, 8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode dependsOnConstant = c.hf->CreateTerm(BVXOR, 8, symbol, one);
+  const ASTNode shared = c.hf->CreateTerm(BVNOT, 8, dependsOnConstant);
+  const ASTNode top = c.hf->CreateTerm(BVXOR, 8, shared, shared);
+
+  simplifier::constantBitP::WorkList workList(top);
+  ASSERT_EQ(1, workList.size());
+  EXPECT_EQ(dependsOnConstant, workList.pop());
+  EXPECT_TRUE(workList.isEmpty());
+}
+
 TEST(DeepDag, shallow_strength_reduction)
 {
   Context c;

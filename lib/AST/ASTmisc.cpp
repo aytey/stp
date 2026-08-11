@@ -488,14 +488,34 @@ void FlattenKind(const Kind k, const ASTChildren& children, ASTVec& flat_childre
 ASTVec FlattenKind(Kind k, const ASTChildren& children, int maxDepth)
 {
   ASTVec flat_children;
-  flat_children.reserve(children.size());
   if (k == OR || k == BVOR || k == BVAND || k == AND)
   {
+    bool nested = false;
+    for (const ASTNode& child : children)
+      if (child.GetKind() == k)
+      {
+        nested = true;
+        break;
+      }
+
+    // The overwhelmingly common flat case needs neither the traversal nor
+    // its deduplication set. Range assignment sizes the vector exactly once.
+    if (!nested)
+    {
+      flat_children.assign(children.begin(), children.end());
+      return flat_children;
+    }
+
     ASTNodeSet alreadyFlattened;
     FlattenKindNoDuplicates(k, children, flat_children, alreadyFlattened);
   }
   else
   {
+    // This form never discards repeated same-kind subtrees, so its output has
+    // at least the input's arity. The deduplicating form above can turn a
+    // very wide list of repeated edges into only a few operands; reserving
+    // the input's full width there retains memory for operands it discarded.
+    flat_children.reserve(children.size());
     FlattenKind(k, children, flat_children, maxDepth);
   }
 
