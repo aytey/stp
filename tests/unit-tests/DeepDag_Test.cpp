@@ -2072,6 +2072,42 @@ TEST(DeepDag, counterexample_prechecked_heads_preserve_model_values)
   EXPECT_EQ(one, ce.Expand_ReadOverWrite_UsingModel(read, false));
 }
 
+TEST(DeepDag, counterexample_consumes_ready_descendants_in_place)
+{
+  Context c;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer transformer(&c.mgr, &simp);
+  AbsRefine_CounterExample ce(&c.mgr, &simp, &transformer);
+
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode x = c.mgr.CreateSymbol("ce-ready-x", 0, 8);
+  const ASTNode y = c.mgr.CreateSymbol("ce-ready-y", 0, 8);
+  ce.InsertIntoCounterExampleMap(x, one);
+  ce.InsertIntoCounterExampleMap(y, zero);
+
+  // Both term operands are immediate model-map hits. The containing formula
+  // then consumes the completed term without suspending either job.
+  const ASTNode sum = c.hf->CreateTerm(BVPLUS, 8, x, y);
+  const ASTNode equality = c.hf->CreateNode(EQ, sum, one);
+  EXPECT_EQ(c.mgr.ASTTrue, ce.ModelValueOfFormula(equality));
+
+  // A formula memo hit follows the same continuation path.
+  const ASTNode p = c.mgr.CreateSymbol("ce-ready-p", 0, 0);
+  ce.InsertIntoCounterExampleMap(p, c.mgr.ASTTrue);
+  EXPECT_EQ(c.mgr.ASTTrue, ce.ModelValueOfFormula(p));
+  EXPECT_EQ(c.mgr.ASTTrue,
+            ce.ModelValueOfFormula(c.hf->CreateNode(AND, p, p)));
+
+  // The read-over-write expander consumes constant indexes and the selected
+  // value directly as well.
+  const ASTNode array = c.mgr.CreateSymbol("ce-ready-array", 8, 8);
+  const ASTNode write = c.hf->CreateArrayTerm(WRITE, 8, 8, array, zero, one);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, write, zero);
+  EXPECT_EQ(one, ce.Expand_ReadOverWrite_UsingModel(read, false));
+}
+
 TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
 {
   Context c;

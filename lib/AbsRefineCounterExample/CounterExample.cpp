@@ -29,7 +29,7 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/Printer/printers.h"
 #include "stp/ToSat/ToSATAIG.h"
-#include <deque>
+#include <vector>
 
 const bool debug_counterexample = false;
 
@@ -520,31 +520,40 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   if (!prepare(job, top, first))
     return result;
 
-  // A deque, so descending never moves the frames above it: the reference
-  // each step holds stays valid across a push. It is deliberately constructed
-  // only after the root head proves that a walk is needed.
-  std::deque<Frame> stack;
+  // Most model expressions are shallow. Keep their frontier contiguous and
+  // preallocate the common case; a push may move the current frame, so every
+  // step returns immediately after one.
+  std::vector<Frame> stack;
+  stack.reserve(8);
   stack.push_back(std::move(first));
 
+  enum class StepResult
+  {
+    Finished,
+    Pushed,
+    Redispatch
+  };
+
   // Ask for the value of `n`, and suspend this frame until it is known: it
-  // picks up at `resume` with the answer in `result`. Either way this returns
-  // true, so the caller stops -- the frame is resumed by the main loop with
-  // `result` already holding the answer when there was nothing to push.
+  // picks up at `resume` with the answer in `result`. An immediate head answer
+  // is redispatched within the same job; only a real child reaches the outer
+  // worklist loop.
   auto want = [&](Frame& f, const Frame::Phase resume, const Job j,
-                  const ASTNode& n, const bool flag = true) -> bool {
+                  const ASTNode& n,
+                  const bool flag = true) -> StepResult {
     f.phase = resume;
     Frame below(j, n, flag);
     if (!prepare(j, n, below))
-      return true;
+      return StepResult::Redispatch;
     stack.push_back(std::move(below));
-    return true;
+    return StepResult::Pushed;
   };
 
   /* One step of ComputeFormulaUsingModel, which accepts a non-constant
    * formula and checks if the formula is ASTTrue or ASTFalse w.r.t to a
    * model.
    */
-  auto stepFormula = [&](Frame& f) -> bool {
+  auto stepFormula = [&](Frame& f) -> StepResult {
     const ASTNode& form = f.n;
     const Kind k = form.GetKind();
 
@@ -554,7 +563,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
       assert(output.isConstant());
       ComputeFormulaMap[form] = output;
       result = output;
-      return false;
+      return StepResult::Finished;
     };
 
     // Unlike the term arm (TermToConstTermUsingModel), floating-point
@@ -785,7 +794,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   /* One step of TermToConstTermUsingModel, which accepts a non-constant term
    * and returns the corresponding constant term with respect to a model.
    */
-  auto stepTerm = [&](Frame& f) -> bool {
+  auto stepTerm = [&](Frame& f) -> StepResult {
     const ASTNode& term = f.n;
     const Kind k = term.GetKind();
     const bool ArrayReadFlag = f.ArrayReadFlag;
@@ -815,14 +824,12 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
 
       // cerr << "Output to TermToConstTermUsingModel: " << output << endl;
       result = output;
-      return false;
+      return StepResult::Finished;
     };
 
     if (f.phase == Frame::TermRecordedValueStart)
-    {
       return want(f, Frame::TermRecordedValue, EvalTerm, f.entry,
                   ArrayReadFlag);
-    }
 
     if (f.phase == Frame::Start && fpEncodedEvaluationDepth == 0 &&
         (is_FP_kind(k) || isFpIndexedArrayAccess(term)))
@@ -862,7 +869,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
     // The value the model already records for this term is the answer, and
     // the map already holds it.
     if (f.phase == Frame::TermRecordedValue)
-      return false;
+      return StepResult::Finished;
 
     if (f.phase == Frame::TermEncoded)
     {
@@ -870,7 +877,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
       if (term != value)
         CounterExampleMap[term] = value;
       result = value;
-      return false;
+      return StepResult::Finished;
     }
 
     switch (k)
@@ -882,7 +889,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
         if (term.GetType() == ARRAY_TYPE)
         {
           result = term;
-          return false;
+          return StepResult::Finished;
         }
         // Has been simplified out and can take any value. A RoundingMode's
         // 5-bit representation has 27 junk patterns, though, so complete that
@@ -930,7 +937,8 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
             return want(f, Frame::TermCellIndex, EvalTerm, index, false);
 
           if (WRITE == arrName.GetKind()) // READ over a WRITE
-            return want(f, Frame::TermExpand, EvalExpand, term, ArrayReadFlag);
+            return want(f, Frame::TermExpand, EvalExpand, term,
+                        ArrayReadFlag);
 
           if (ITE == arrName.GetKind()) // READ over an ITE
             return want(f, Frame::TermReadIteIndex, EvalTerm, index,
@@ -946,7 +954,8 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
           }
           // index does not have a const value in the
           // CounterExampleMap. compute it.
-          return want(f, Frame::TermReadIndex, EvalTerm, index, ArrayReadFlag);
+          return want(f, Frame::TermReadIndex, EvalTerm, index,
+                      ArrayReadFlag);
         }
 
         // The walk down an owned array for the cell the model gives it. Every
@@ -956,7 +965,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
             f.phase == Frame::TermCellWritten)
         {
           CounterExampleMap[term] = result;
-          return false;
+          return StepResult::Finished;
         }
 
         if (f.phase == Frame::TermCellIndex ||
@@ -998,7 +1007,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
               return want(f, Frame::TermCellValue, EvalTerm, val, false);
             CounterExampleMap[term] = val;
             result = val;
-            return false;
+            return StepResult::Finished;
           }
           if (WRITE == f.cursor.GetKind())
             return want(f, Frame::TermCellWriteIndex, EvalTerm, f.cursor[1],
@@ -1010,7 +1019,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
           const ASTNode val = defaultCellValue(f.cursor);
           CounterExampleMap[term] = val;
           result = val;
-          return false;
+          return StepResult::Finished;
         }
 
         if (f.phase == Frame::TermExpand)
@@ -1022,13 +1031,14 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
                        "into an ITE",
                        term);
           }
-          return want(f, Frame::TermExpanded, EvalTerm, result, ArrayReadFlag);
+          return want(f, Frame::TermExpanded, EvalTerm, result,
+                      ArrayReadFlag);
         }
 
         if (f.phase == Frame::TermExpanded)
         {
           assert(ArrayReadFlag || (BVCONST == result.GetKind()));
-          return false;
+          return StepResult::Finished;
         }
 
         if (f.phase == Frame::TermReadIteIndex)
@@ -1061,7 +1071,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
         if (f.phase == Frame::TermReadIteBranch)
         {
           assert(ArrayReadFlag || (BVCONST == result.GetKind()));
-          return false;
+          return StepResult::Finished;
         }
 
         if (f.phase == Frame::TermReadIndex)
@@ -1161,7 +1171,8 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
         // evaluator (which cannot read arrays and would abort on the array
         // symbol).
         if (f.phase == Frame::TermOperand && BVCONST != result.GetKind())
-          return want(f, Frame::TermOperandStrict, EvalTerm, term[f.i], false);
+          return want(f, Frame::TermOperandStrict, EvalTerm, term[f.i],
+                      false);
 
         if (f.phase == Frame::TermOperand ||
             f.phase == Frame::TermOperandStrict)
@@ -1198,7 +1209,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   // read-over-write by evaluating (readIndex=writeIndex) for every writeindex
   // until, either it evaluates to TRUE or all (readIndex=writeIndex) evaluate
   // to FALSE.
-  auto stepExpand = [&](Frame& f) -> bool {
+  auto stepExpand = [&](Frame& f) -> StepResult {
     const ASTNode& term = f.n;
     const bool arrayread_flag = f.ArrayReadFlag;
 
@@ -1206,14 +1217,12 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
     auto finish = [&](const ASTNode& output) {
       CounterExampleMap[term] = output;
       result = output;
-      return false;
+      return StepResult::Finished;
     };
 
     if (f.phase == Frame::ExpandRecordedValueStart)
-    {
       return want(f, Frame::ExpandRecordedValue, EvalTerm, f.entry,
                   arrayread_flag);
-    }
 
     if (f.phase == Frame::Start)
       return want(f, Frame::ExpandReadIndex, EvalTerm, term[1], false);
@@ -1221,7 +1230,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
     // The value the model already records for this read is the answer, and
     // the map already holds it.
     if (f.phase == Frame::ExpandRecordedValue)
-      return false;
+      return StepResult::Finished;
 
     if (f.phase == Frame::ExpandWritten || f.phase == Frame::ExpandPushedIn)
       return finish(result);
@@ -1258,22 +1267,29 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
   {
     Frame& current = stack.back();
 
-    bool descended = false;
+    StepResult stepResult = StepResult::Finished;
     switch (current.job)
     {
       case EvalFormula:
-        descended = stepFormula(current);
+        do
+          stepResult = stepFormula(current);
+        while (stepResult == StepResult::Redispatch);
         break;
       case EvalTerm:
-        descended = stepTerm(current);
+        do
+          stepResult = stepTerm(current);
+        while (stepResult == StepResult::Redispatch);
         break;
       case EvalExpand:
-        descended = stepExpand(current);
+        do
+          stepResult = stepExpand(current);
+        while (stepResult == StepResult::Redispatch);
         break;
     }
 
-    if (descended)
+    if (stepResult == StepResult::Pushed)
       continue;
+    assert(stepResult == StepResult::Finished);
 
     // Dropping the frame is what lowers a float encoding's evaluation depth,
     // so it happens before the answer is handed up -- exactly where the scope
