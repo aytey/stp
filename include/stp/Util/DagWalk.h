@@ -31,6 +31,7 @@ THE SOFTWARE.
 #include <deque>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -313,9 +314,71 @@ struct PrimeMemoReady
 {
 };
 
-template <class Classify, class Operands, class Visit>
-void primeMemo(const ASTNode& top, Classify classify, Operands operands,
-               Visit visit)
+namespace detail
+{
+template <class Frame, bool InlineFirst> class PrimeMemoParents;
+
+template <class Frame> class PrimeMemoParents<Frame, false>
+{
+  std::vector<Frame> frames;
+
+public:
+  void push(Frame&& frame) { frames.push_back(std::move(frame)); }
+  bool empty() const { return frames.empty(); }
+
+  Frame pop()
+  {
+    Frame result = std::move(frames.back());
+    frames.pop_back();
+    return result;
+  }
+};
+
+template <class Frame> class PrimeMemoParents<Frame, true>
+{
+  // After a pop the optional remains engaged with the moved-from frame, so a
+  // later sibling descent can reuse its storage. hasFirst says whether that
+  // slot currently holds a suspended parent.
+  std::optional<Frame> first;
+  bool hasFirst = false;
+  std::vector<Frame> rest;
+
+public:
+  void push(Frame&& frame)
+  {
+    if (!hasFirst)
+    {
+      if (first)
+        *first = std::move(frame);
+      else
+        first.emplace(std::move(frame));
+      hasFirst = true;
+    }
+    else
+      rest.push_back(std::move(frame));
+  }
+
+  bool empty() const { return !hasFirst; }
+
+  Frame pop()
+  {
+    if (!rest.empty())
+    {
+      Frame result = std::move(rest.back());
+      rest.pop_back();
+      return result;
+    }
+
+    Frame result = std::move(*first);
+    hasFirst = false;
+    return result;
+  }
+};
+} // namespace detail
+
+template <bool InlineFirstParent, class Classify, class Operands, class Visit>
+void primeMemoImpl(const ASTNode& top, Classify classify, Operands operands,
+                   Visit visit)
 {
   if (classify(top) != Walk::Descend)
     return; // the caller does it: there is nothing below to get ahead of.
@@ -334,11 +397,8 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
 
   auto open = [&](const ASTNode& n) { return Frame(n, operands(n)); };
 
-  // Keep the current frame inline. The parent vector is not allocated at all
-  // when the root's operands are leaves or memo hits, which is the common
-  // shallow case; deep input still grows geometrically on the heap.
   Frame current = open(top);
-  std::vector<Frame> parents;
+  detail::PrimeMemoParents<Frame, InlineFirstParent> parents;
 
   while (true)
   {
@@ -349,7 +409,7 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
       switch (classify(child))
       {
         case Walk::Descend:
-          parents.push_back(std::move(current));
+          parents.push(std::move(current));
           current = open(child);
           break;
         case Walk::Visit:
@@ -361,14 +421,29 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
       continue;
     }
 
-    // Operands are all answered, so this returns after one level.
     visit(current.n, PrimeMemoReady{});
     if (parents.empty())
       return;
 
-    current = std::move(parents.back());
-    parents.pop_back();
+    current = parents.pop();
   }
+}
+
+template <class Classify, class Operands, class Visit>
+void primeMemo(const ASTNode& top, Classify classify, Operands operands,
+               Visit visit)
+{
+  primeMemoImpl<false>(top, classify, operands, visit);
+}
+
+// Metadata derivations commonly suspend exactly one parent. Keep that frame
+// inline for those hot accessors while leaving larger primed passes on the
+// compact vector-only implementation above.
+template <class Classify, class Operands, class Visit>
+void primeMemoInlineParent(const ASTNode& top, Classify classify,
+                           Operands operands, Visit visit)
+{
+  primeMemoImpl<true>(top, classify, operands, visit);
 }
 
 // The usual case: a pass recurses into a node's own children.

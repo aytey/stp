@@ -1957,6 +1957,30 @@ TEST(DeepDag, shallow_node_iterator)
   EXPECT_TRUE(nodeIteratorOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_fp_format_ite)
+{
+  Context c;
+  EXPECT_TRUE(fpFormatIteChainOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_fp_format_store)
+{
+  Context c;
+  EXPECT_TRUE(fpFormatStoreChainOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_source_sort_ite)
+{
+  Context c;
+  EXPECT_TRUE(sourceSortIteChainOk(c, SHALLOW));
+}
+
+TEST(DeepDag, shallow_source_sort_store)
+{
+  Context c;
+  EXPECT_TRUE(sourceSortStoreChainOk(c, SHALLOW));
+}
+
 TEST(DeepDag, array_read_count_is_strict_and_deduplicates_the_dag)
 {
   Context c;

@@ -248,9 +248,9 @@ static const uint32_t FP_NOT_A_FLOAT = 0xFFFFFFFFu;
 // GetType, so a query deep enough could not be asked its type at all, from
 // anywhere.
 //
-// So the formats underneath are filled from the bottom up first, and the
-// derivation then finds every operand it reads already answered and stops one
-// level down. See DagWalk.h, and DeepDag_Test.cpp for the depths.
+// So primeMemo fills the dependency suffix bottom up, and the derivation then
+// finds every operand it reads already answered and stops one level down. See
+// DagWalk.h, and DeepDag_Test.cpp for the depths.
 void ASTNode::cacheFPFormat() const
 {
   const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
@@ -306,7 +306,7 @@ void ASTNode::cacheFPFormat() const
     return;
   }
 
-  primeMemo(
+  primeMemoInlineParent(
       *this, [&](const ASTNode& child)
       { return settled(child) ? Walk::Skip : Walk::Descend; },
       [](const ASTNode& n)
@@ -515,7 +515,7 @@ SourceSort ASTNode::GetSourceSort() const
     fill = !settled((*this)[i]);
 
   if (fill && prime)
-    primeMemo(
+    primeMemoInlineParent(
         *this, [&](const ASTNode& child)
         { return settled(child) ? Walk::Skip : Walk::Descend; },
         [](const ASTNode& n)
