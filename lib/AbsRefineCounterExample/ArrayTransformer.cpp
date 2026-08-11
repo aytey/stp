@@ -320,19 +320,22 @@ struct ArrayTransformer::Frame
   Phase phase = Start;
   ASTNode n;
 
-  size_t partsBegin = 0; // this frame's operands in the shared LIFO arena
-  size_t i = 0;          // the operand being worked on
+  // Formula and ordinary-term frames use storage for the beginning of their
+  // operands in the shared arena. Read frames use it for their state slots in
+  // that same arena; those jobs never need both meanings.
+  size_t storage = 0;
+  size_t i = 0;         // the operand being worked on
   bool waiting = false; // an operand is being transformed below
 
-  // Locals that outlive one of their function's suspension points.
-  ASTNode readIndex;
-  ASTNode writeIndex;
-  ASTNode writeVal;
+  // Term ITEs and reads share these. The rest of a slow-path read's
+  // continuation lives in the shared arena so every formula and ordinary
+  // term does not carry it.
   ASTNode cond;
   ASTNode thn;
-  ASTNode els;
 
-  Frame(Job j, ASTNode node) : job(j), n(std::move(node)) {}
+  Frame(Job j, ASTNode node) : job(j), n(std::move(node))
+  {
+  }
 };
 
 // TransformFormula, TransformTerm and TransformArrayRead, walked together
@@ -345,6 +348,8 @@ struct ArrayTransformer::Frame
 ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 {
   assert(TransformMap != NULL);
+  static_assert(sizeof(Frame) <= 56,
+                "common array-transform frames must remain compact");
 
   ASTNode result;
 
@@ -436,42 +441,70 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
   // Most transforms are shallow. Keep their continuations in one compact
   // allocation instead of a deque's map and fixed-size blocks. A push may
   // move every frame, so a step must return without touching its Frame after
-  // a successful call to want.
+  // a request helper descends.
   std::vector<Frame> stack;
   // One allocation covers the common formula -> term -> read alternation and
   // avoids moving these comparatively large frames while it remains shallow.
   stack.reserve(8);
   stack.emplace_back(rootJob, top);
 
-  // Operands accumulated by every suspended formula/term frame. A child
-  // owns the suffix beginning at partsBegin; completing it removes that
-  // suffix before its single result is appended to its parent. This avoids
-  // one separately allocated ASTVec in every continuation, and Read frames
-  // no longer carry an operand vector they never use.
+  // Continuation storage shared by every suspended job. Formula and term
+  // frames append their operands; a Read frame reserves four ASTNode slots.
+  // Each child owns the suffix beginning at storage and removes it before
+  // its result is appended to its parent.
   ASTVec activeParts;
 
+  enum ReadStateSlot : size_t
+  {
+    ReadIndexSlot,
+    WriteIndexSlot,
+    WriteValueSlot,
+    ElseReadSlot,
+    ReadStateSlots
+  };
   auto partsFor = [&](const Frame& f) -> ASTChildren {
     // prepare() resolves every leaf without pushing a frame, so a frame
     // reaching reconstruction always owns at least one arena element.
     assert(f.n.Degree() > 0);
-    assert(activeParts.size() - f.partsBegin == f.n.Degree());
-    return ASTChildren(activeParts.data() + f.partsBegin,
-                       activeParts.size() - f.partsBegin);
+    assert(activeParts.size() - f.storage == f.n.Degree());
+    return ASTChildren(activeParts.data() + f.storage,
+                       activeParts.size() - f.storage);
   };
 
-  // Ask for the transform of a descendant. Either `prepare` leaves its
-  // immediate answer in `result`, or the walk goes below a new frame.
-  auto want = [&](const Frame::Job job, const ASTNode& n,
-                  Frame* waitingParent = nullptr) -> bool {
-    if (!prepare(job, n))
+  // Ask for a formula descendant. Either `prepare` leaves its immediate
+  // answer in `result`, or the walk goes below a new frame. Formula and term
+  // requests stay separate so their hot paths do not redispatch on Job.
+  auto wantFormula = [&](const ASTNode& n,
+                         Frame* waitingParent = nullptr) -> bool {
+    if (!prepare(Frame::Formula, n))
       return false;
-    // Own the requested node before vector growth invalidates a reference
-    // which may point into the current frame. Constructing in place then
-    // moves only this handle, not an entire large Frame, on every descent.
     ASTNode owned = n;
     if (waitingParent != nullptr)
       waitingParent->waiting = true;
-    stack.emplace_back(job, std::move(owned));
+    stack.emplace_back(Frame::Formula, std::move(owned));
+    return true;
+  };
+
+  // The term counterpart. Own the requested node before vector growth
+  // invalidates a reference which may point into the current frame.
+  auto wantTerm = [&](const ASTNode& n,
+                      Frame* waitingParent = nullptr) -> bool {
+    if (!prepare(Frame::Term, n))
+      return false;
+    ASTNode owned = n;
+    if (waitingParent != nullptr)
+      waitingParent->waiting = true;
+    stack.emplace_back(Frame::Term, std::move(owned));
+    return true;
+  };
+
+  // Read is requested from one place only. Keep its uncommon state-allocation
+  // path out of the formula and term helpers used for every operand.
+  auto wantRead = [&](const ASTNode& n) -> bool {
+    if (!prepare(Frame::Read, n))
+      return false;
+    ASTNode owned = n;
+    stack.emplace_back(Frame::Read, std::move(owned));
     return true;
   };
 
@@ -480,7 +513,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (f.phase == Frame::Start)
     {
       f.phase = Frame::Operands;
-      f.partsBegin = activeParts.size();
+      f.storage = activeParts.size();
     }
 
     if (f.waiting)
@@ -502,10 +535,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
         continue;
       }
 
-      // want installs the continuation only when it will push, and does so
-      // before vector growth can move `f`.
-      if (want(op == OperandFormula ? Frame::Formula : Frame::Term, f.n[i],
-               &f))
+      // The request helper installs the continuation only when it will push,
+      // and does so before vector growth can move `f`.
+      const bool descended = op == OperandFormula
+                                 ? wantFormula(f.n[i], &f)
+                                 : wantTerm(f.n[i], &f);
+      if (descended)
         return true;
       activeParts.push_back(result);
     }
@@ -515,7 +550,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       result = simp->CreateSimplifiedEQ(parts[0], parts[1]);
     else
       result = nf->CreateNode(k, parts);
-    activeParts.resize(f.partsBegin);
+    activeParts.resize(f.storage);
 
     assert(!result.IsNull());
     if (f.n.Degree() > 0)
@@ -534,7 +569,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (f.phase == Frame::Start)
       {
         f.phase = Frame::TermRead;
-        if (want(Frame::Read, f.n))
+        if (wantRead(f.n))
           return true;
       }
       result = finishTransformTerm(f.n, result);
@@ -546,7 +581,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (f.phase == Frame::Start)
       {
         f.phase = Frame::TermIteCond;
-        if (want(Frame::Formula, f.n[0]))
+        if (wantFormula(f.n[0]))
           return true;
       }
 
@@ -562,13 +597,13 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
             ext->noteEliminatedReadSubtree(takeThen ? f.n[2] : f.n[1]);
 
           f.phase = Frame::TermIteOnly;
-          if (want(Frame::Term, takeThen ? f.n[1] : f.n[2]))
+          if (wantTerm(takeThen ? f.n[1] : f.n[2]))
             return true;
         }
         else
         {
           f.phase = Frame::TermIteThen;
-          if (want(Frame::Term, f.n[1]))
+          if (wantTerm(f.n[1]))
             return true;
         }
       }
@@ -584,7 +619,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       {
         f.thn = result;
         f.phase = Frame::TermIteElse;
-        if (want(Frame::Term, f.n[2]))
+        if (wantTerm(f.n[2]))
           return true;
       }
 
@@ -602,7 +637,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (f.phase == Frame::Start)
     {
       f.phase = Frame::Operands;
-      f.partsBegin = activeParts.size();
+      f.storage = activeParts.size();
     }
 
     if (f.waiting)
@@ -615,9 +650,9 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     {
       const ASTNode& child = f.n[f.i++];
 
-      // want installs the continuation only when it will push, and does so
-      // before vector growth can move `f`.
-      if (want(Frame::Term, child, &f))
+      // The request helper installs the continuation only when it will push,
+      // and does so before vector growth can move `f`.
+      if (wantTerm(child, &f))
         return true;
       activeParts.push_back(result);
     }
@@ -629,7 +664,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
                                    parts);
     else
       result = f.n;
-    activeParts.resize(f.partsBegin);
+    activeParts.resize(f.storage);
 
     result = finishTransformTerm(f.n, result);
     return false;
@@ -645,8 +680,17 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
    *
    * ITE(i=j,v1,v2)
    *
-   */
+  */
   auto stepRead = [&](Frame& f) -> bool {
+    ASTNode* state = nullptr;
+    // A Read allocates persistent slots only when it advances beyond the
+    // index phase into a WRITE or ITE continuation. The phase therefore
+    // records the presence of state without another flag or sentinel store.
+    if (f.phase > Frame::ReadIndex)
+    {
+      assert(f.storage + ReadStateSlots <= activeParts.size());
+      state = activeParts.data() + f.storage;
+    }
     const ASTNode& term = f.n;
     const unsigned int width = term.GetValueWidth();
 
@@ -665,13 +709,16 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (f.phase == Frame::Start)
     {
       f.phase = Frame::ReadIndex;
-      if (want(Frame::Term, term[1]))
+      if (wantTerm(term[1]))
         return true;
     }
 
     if (f.phase == Frame::ReadIndex)
     {
-      f.readIndex = result;
+      // SYMBOL reads and the whole-graph array-equality path finish in this
+      // phase, so keep their index local. Allocate persistent Read state only
+      // for the WRITE/ITE paths which actually suspend again.
+      const ASTNode readIndex = result;
 
       // With array equality active, every read takes the direct
       // read-abstraction path: mint or reuse the fresh variable for the
@@ -702,14 +749,14 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
               arrayToIndexToRead.end())
           {
             std::map<ASTNode, ArrayRead>::const_iterator it2;
-            if ((it2 = it->second.find(f.readIndex)) != it->second.end())
+            if ((it2 = it->second.find(readIndex)) != it->second.end())
             {
               if (it2->second.ite != it2->second.symbol)
                 FatalError("array-equality: a whole-graph read reused a legacy "
                            "nested-ITE transformer row",
                            term);
               result = it2->second.ite;
-              ext->noteAbstractedRead(term, f.readIndex, it2->second.symbol);
+              ext->noteAbstractedRead(term, readIndex, it2->second.symbol);
               (*TransformMap)[term] = result;
               return false;
             }
@@ -728,8 +775,8 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 
           result = CurrentSymbol;
           arrayToIndexToRead[arrName].insert(
-              make_pair(f.readIndex, ArrayRead(result, CurrentSymbol)));
-          ext->noteAbstractedRead(term, f.readIndex, CurrentSymbol);
+              make_pair(readIndex, ArrayRead(result, CurrentSymbol)));
+          ext->noteAbstractedRead(term, readIndex, CurrentSymbol);
           (*TransformMap)[term] = result;
           return false;
         }
@@ -754,7 +801,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
                 arrayToIndexToRead.end())
             {
               std::map<ASTNode, ArrayRead>::const_iterator it2;
-              if ((it2 = it->second.find(f.readIndex)) != it->second.end())
+              if ((it2 = it->second.find(readIndex)) != it->second.end())
                 return finishRead(it2->second.ite);
             }
           }
@@ -797,7 +844,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
             for (; it2 != it2end; it2++)
             {
               ASTNode cond =
-                  simp->CreateSimplifiedEQ(f.readIndex, it2->first);
+                  simp->CreateSimplifiedEQ(readIndex, it2->first);
               if (ASTFalse == cond)
                 continue;
 
@@ -811,12 +858,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
             }
 
             ack_pair[arrName].push_back(
-                make_pair(f.readIndex, CurrentSymbol));
+                make_pair(readIndex, CurrentSymbol));
           }
 
           assert(arrName.GetType() == ARRAY_TYPE);
           arrayToIndexToRead[arrName].insert(
-              make_pair(f.readIndex, ArrayRead(symbolResult, CurrentSymbol)));
+              make_pair(readIndex, ArrayRead(symbolResult, CurrentSymbol)));
           return finishRead(symbolResult);
         }
         case WRITE:
@@ -838,8 +885,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
            * 5. arrName[2] is the WRITE value i.e. val (val can inturn
            *    be an array read)
            */
+          f.storage = activeParts.size();
+          activeParts.resize(f.storage + ReadStateSlots);
+          state = activeParts.data() + f.storage;
+          state[ReadIndexSlot] = readIndex;
           f.phase = Frame::ReadWriteIndex;
-          if (want(Frame::Term, arrName[1]))
+          if (wantTerm(arrName[1]))
             return true;
           break;
         }
@@ -855,8 +906,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
           // pull out the ite from the read // pushes the read through.
 
           //(ITE cond thn els)
+          f.storage = activeParts.size();
+          activeParts.resize(f.storage + ReadStateSlots);
+          state = activeParts.data() + f.storage;
+          state[ReadIndexSlot] = readIndex;
           f.phase = Frame::ReadIteCond;
-          if (want(Frame::Formula, arrName[0]))
+          if (wantFormula(arrName[0]))
             return true;
           break;
         }
@@ -868,41 +923,43 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       }
     }
 
+    assert(state != nullptr);
     if (f.phase == Frame::ReadWriteIndex)
     {
       // Both operands are transformed before the condition is built, as
       // they were: the factory sees them in that order.
-      f.writeIndex = result;
+      state[WriteIndexSlot] = result;
       f.phase = Frame::ReadWriteVal;
-      if (want(Frame::Term, arrName[2]))
+      if (wantTerm(arrName[2]))
         return true;
     }
 
     if (f.phase == Frame::ReadWriteVal)
     {
-      f.writeVal = result;
+      state[WriteValueSlot] = result;
 
       if (ARRAY_TYPE != arrName[0].GetType())
         FatalError("TransformArray: "
                    "An array write is being attempted on a non-array:",
                    term);
 
-      f.cond = simp->CreateSimplifiedEQ(f.writeIndex, f.readIndex);
+      f.cond = simp->CreateSimplifiedEQ(state[WriteIndexSlot],
+                                        state[ReadIndexSlot]);
       assert(BVTypeCheck(f.cond));
 
       // If the condition is true, it saves iteratively transforming through
       // all the (possibly nested) arrays.
       if (ASTTrue == f.cond)
-        return finishRead(f.writeVal);
+        return finishRead(state[WriteValueSlot]);
 
       ASTNode readTerm =
-          nf->CreateTerm(READ, width, arrName[0], f.readIndex);
+          nf->CreateTerm(READ, width, arrName[0], state[ReadIndexSlot]);
       assert(BVTypeCheck(readTerm));
 
       // The simplifying node factory may have produced
       // something that's not a READ.
       f.phase = Frame::ReadPushedIn;
-      if (want(Frame::Term, readTerm))
+      if (wantTerm(readTerm))
         return true;
     }
 
@@ -910,8 +967,8 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     {
       const ASTNode readPushedIn = result;
       assert(BVTypeCheck(const_cast<ASTNode&>(readPushedIn)));
-      return finishRead(
-          simp->CreateSimplifiedTermITE(f.cond, f.writeVal, readPushedIn));
+      return finishRead(simp->CreateSimplifiedTermITE(
+          f.cond, state[WriteValueSlot], readPushedIn));
     }
 
     if (f.phase == Frame::ReadIteCond)
@@ -922,11 +979,13 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       const ASTNode& els = arrName[2];
 
       //(READ thn j)
-      ASTNode thnRead = nf->CreateTerm(READ, width, thn, f.readIndex);
+      ASTNode thnRead =
+          nf->CreateTerm(READ, width, thn, state[ReadIndexSlot]);
       assert(BVTypeCheck(thnRead));
 
       //(READ els j)
-      ASTNode elsRead = nf->CreateTerm(READ, width, els, f.readIndex);
+      ASTNode elsRead =
+          nf->CreateTerm(READ, width, els, state[ReadIndexSlot]);
       assert(BVTypeCheck(elsRead));
 
       /* We try to call TransformTerm only if necessary, because it
@@ -936,14 +995,15 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (ASTTrue == f.cond || ASTFalse == f.cond)
       {
         f.phase = Frame::ReadIteOnly;
-        if (want(Frame::Term, (ASTTrue == f.cond) ? thnRead : elsRead))
+        if (wantTerm((ASTTrue == f.cond) ? thnRead : elsRead))
           return true;
       }
       else
       {
-        f.els = elsRead; // built now, transformed after the then-read.
+        // Built now, transformed after the then-read.
+        state[ElseReadSlot] = elsRead;
         f.phase = Frame::ReadIteThen;
-        if (want(Frame::Term, thnRead))
+        if (wantTerm(thnRead))
           return true;
       }
     }
@@ -955,12 +1015,13 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     {
       f.thn = result;
       f.phase = Frame::ReadIteElse;
-      if (want(Frame::Term, f.els))
+      if (wantTerm(state[ElseReadSlot]))
         return true;
     }
 
     //(ITE cond (READ thn j) (READ els j))
-    return finishRead(simp->CreateSimplifiedTermITE(f.cond, f.thn, result));
+    return finishRead(
+        simp->CreateSimplifiedTermITE(f.cond, f.thn, result));
   };
 
   while (true)
@@ -984,6 +1045,14 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (descended)
       continue;
 
+    if (current.job == Frame::Read)
+    {
+      if (current.phase > Frame::ReadIndex)
+      {
+        assert(current.storage + ReadStateSlots == activeParts.size());
+        activeParts.resize(current.storage);
+      }
+    }
     stack.pop_back();
     if (stack.empty())
       return result;

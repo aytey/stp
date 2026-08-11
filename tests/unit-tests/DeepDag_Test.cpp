@@ -2232,6 +2232,50 @@ TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
   EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(array).count(index));
 }
 
+TEST(DeepDag, array_transformer_read_state_survives_nested_arena_growth)
+{
+  Context c;
+  const ASTNode cond = c.mgr.CreateSymbol("read-state-cond", 0, 0);
+  const ASTNode thnArray = c.mgr.CreateSymbol("read-state-thn", 8, 8);
+  const ASTNode elsArray = c.mgr.CreateSymbol("read-state-els", 8, 8);
+  const ASTNode index = c.mgr.CreateSymbol("read-state-index", 0, 8);
+  const ASTNode arrayIte = c.hf->CreateArrayTerm(
+      ITE, 8, 8, cond, thnArray, elsArray);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, arrayIte, index);
+  const ASTNode input = c.hf->CreateNode(
+      EQ, read, c.mgr.CreateSymbol("read-state-rhs", 0, 8));
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer transformer(&c.mgr, &simp);
+  const ASTNode result = transformer.TransformFormula_TopLevel(input);
+
+  // Transforming each ITE arm pushes another Read frame. The outer frame's
+  // condition and pending else-read must survive growth of the shared
+  // continuation arena.
+  bool sawIte = false;
+  bool sawRead = false;
+  ASTNodeSet visited;
+  ASTVec pending{result};
+  while (!pending.empty())
+  {
+    const ASTNode n = pending.back();
+    pending.pop_back();
+    if (!visited.insert(n).second)
+      continue;
+    sawIte |= n.GetKind() == ITE;
+    sawRead |= n.GetKind() == READ;
+    pending.insert(pending.end(), n.begin(), n.end());
+  }
+
+  EXPECT_TRUE(sawIte);
+  EXPECT_FALSE(sawRead);
+  ASSERT_EQ(1U, transformer.arrayToIndexToRead.count(thnArray));
+  ASSERT_EQ(1U, transformer.arrayToIndexToRead.count(elsArray));
+  EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(thnArray).count(index));
+  EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(elsArray).count(index));
+}
+
 TEST(DeepDag, array_transformer_root_fast_paths_preserve_leaf_formulas)
 {
   Context c;
