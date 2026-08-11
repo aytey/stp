@@ -123,6 +123,15 @@ public:
   // test without a hundred-thousand-node file.
   int64_t incremental_cbp_feed_cap = 200000;
 
+  // A relief rebuild re-derives the whole base semantically -- equality
+  // propagation, substitution and constant-bit propagation over every base
+  // conjunct at once -- before re-encoding it. That is worth doing on a base
+  // the pass can actually digest and is unbounded work on one it cannot, so
+  // it is skipped once the base passes this many DAG nodes; the raw base is
+  // re-encoded instead, exactly as it is for array bases and for the three
+  // rebuild reasons that are not about size. 0 skips it always.
+  int64_t incremental_base_resimplify_limit = 100000;
+
   // The persistent encoding grows monotonically; when the solver's variable
   // count passes this limit AND most encodings belong to popped,
   // never-returning content, the solver is rebuilt from the live stack

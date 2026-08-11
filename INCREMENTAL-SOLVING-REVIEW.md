@@ -1638,6 +1638,16 @@ re-encoding everything anyway and the size gate makes it rare, but it is not
 closed: nothing bounds the pass against the rebuild it is part of. Re-open if a
 workload is ever seen taking relief rebuilds on a large base.
 
+**Budgeted (`--incremental-base-resimplify-limit`, default 100,000 DAG nodes).**
+The pass is an optimisation, so a base too large to digest is now re-encoded
+raw --- the path an array base and the three non-size rebuild reasons already
+take --- and the size is what triggers it, which is what the rebuild itself
+still lacks. The budget measures the base CONJUNCTION, not the sum over
+conjuncts, because base conjuncts share structure. Pinned by
+`relief-base-resimplify-budget.smt2`, which takes real relief rebuilds and
+checks the answers against both the unbudgeted pass and the batch pipeline;
+it fails with the budget removed.
+
 ## Tier 1 — before any measurement or tuning is trusted
 
 ### 1.1 Fix D6 --- make the profiler behaviour-neutral --- DONE, `635b3b04`

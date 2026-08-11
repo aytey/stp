@@ -3830,14 +3830,38 @@ struct IncrementalSolver::Impl
         return;
     }
 
+    ASTNode conj = base.size() == 1
+                       ? base[0]
+                       : bm->defaultNodeFactory->CreateNode(AND, base);
+
+    // Budget it. This is the same PropagateEqualities + applySubstitutionMap
+    // + constant-bit propagation the trial path runs, and the trial path is
+    // gated on cost; here it was not gated at all, and the rebuild it belongs
+    // to has no budget of its own either. Measured at 9.4 s on a
+    // 23,294-conjunct base -- a base that size is exactly the one the pass
+    // cannot digest, and skipping it re-encodes the raw base, which is the
+    // path an array base and the three non-size rebuild reasons already take.
+    // Measure the conjunction, not the sum over conjuncts: base conjuncts
+    // share structure, and summing their sizes bills a shared cone once per
+    // conjunct that mentions it.
+    const int64_t configuredLimit =
+        bm->UserFlags.incremental_base_resimplify_limit;
+    const size_t resimplifyLimit =
+        configuredLimit < 0 ? 0 : static_cast<size_t>(configuredLimit);
+    if (dagSizeUpToMemo(conj, resimplifyLimit, dagSizeBigMemo) >
+        resimplifyLimit)
+    {
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "Incremental: base re-simplification skipped (base over "
+                  << resimplifyLimit << " nodes)" << std::endl;
+      return;
+    }
+
     // This pass re-derives the complete raw base. Discard witness/model
     // choices made by an earlier backend epoch; anything still eliminable is
     // recorded again below, while anything retained now gets real SAT bits.
     baseEliminatedDefs.clear();
 
-    ASTNode conj = base.size() == 1
-                       ? base[0]
-                       : bm->defaultNodeFactory->CreateNode(AND, base);
     if (fragment(conj).fp)
       conj = fpContext()->prepare(conj);
 

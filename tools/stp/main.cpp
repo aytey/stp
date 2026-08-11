@@ -480,6 +480,13 @@ void ExtraMain::create_options()
             "refunded when a level pops.",
             misc_group);
 
+  int64_arg("--incremental-base-resimplify-limit",
+            bm->UserFlags.incremental_base_resimplify_limit,
+            "skip the whole-base semantic pass a relief rebuild runs when "
+            "the base exceeds this many DAG nodes; the raw base is "
+            "re-encoded instead. 0 always skips it.",
+            misc_group);
+
   int64_arg("--incremental-reencode-limit",
             bm->UserFlags.incremental_reencode_limit,
             "rebuild the incremental solver from the live assertion stack "
@@ -807,6 +814,13 @@ int ExtraMain::parse_options(int argc, char** argv)
   if (bm->UserFlags.timeout_max_time < -1)
   {
     cerr << "ERROR: --max-time must be -1 (no limit) or greater" << endl;
+    std::exit(-1);
+  }
+
+  if (bm->UserFlags.incremental_base_resimplify_limit < 0)
+  {
+    cerr << "ERROR: --incremental-base-resimplify-limit must be 0 or greater"
+         << endl;
     std::exit(-1);
   }
 
