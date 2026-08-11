@@ -30,7 +30,6 @@ THE SOFTWARE.
 #include "stp/Printer/printers.h"
 #include "stp/ToSat/ToSATAIG.h"
 #include <deque>
-#include <memory>
 
 const bool debug_counterexample = false;
 
@@ -82,19 +81,52 @@ static ASTNode plainModelCarrier(STPMgr* bm, const ASTNode& value)
 class ScopedFpEncodedEvaluation final
 {
 public:
-  explicit ScopedFpEncodedEvaluation(unsigned int& depth_) : depth(depth_)
+  ScopedFpEncodedEvaluation() = default;
+
+  explicit ScopedFpEncodedEvaluation(unsigned int& depth_) { activate(depth_); }
+
+  ScopedFpEncodedEvaluation(const ScopedFpEncodedEvaluation&) = delete;
+  ScopedFpEncodedEvaluation&
+  operator=(const ScopedFpEncodedEvaluation&) = delete;
+
+  ScopedFpEncodedEvaluation(ScopedFpEncodedEvaluation&& other) noexcept
+      : depth(other.depth)
   {
-    ++depth;
+    other.depth = NULL;
   }
 
-  ~ScopedFpEncodedEvaluation()
+  ScopedFpEncodedEvaluation&
+  operator=(ScopedFpEncodedEvaluation&& other) noexcept
   {
-    assert(depth > 0);
-    --depth;
+    if (this != &other)
+    {
+      deactivate();
+      depth = other.depth;
+      other.depth = NULL;
+    }
+    return *this;
+  }
+
+  ~ScopedFpEncodedEvaluation() { deactivate(); }
+
+  void activate(unsigned int& depth_)
+  {
+    assert(depth == NULL);
+    depth = &depth_;
+    ++*depth;
   }
 
 private:
-  unsigned int& depth;
+  void deactivate()
+  {
+    if (depth == NULL)
+      return;
+    assert(*depth > 0);
+    --*depth;
+    depth = NULL;
+  }
+
+  unsigned int* depth = NULL;
 };
 
 FpEncodingContext&
@@ -339,7 +371,7 @@ struct AbsRefine_CounterExample::Frame
   // lowered when this frame is dropped, which is where the scope guard the
   // recursive version held across the sub-evaluation used to end. Getting
   // this wrong changes float model values rather than crashing.
-  std::unique_ptr<ScopedFpEncodedEvaluation> fpScope;
+  ScopedFpEncodedEvaluation fpScope;
 
   Frame(Job j, const ASTNode& node, bool flag)
       : job(j), n(node), ArrayReadFlag(flag)
@@ -822,8 +854,7 @@ ASTNode AbsRefine_CounterExample::evaluate(const Job job, const ASTNode& top,
         // source boundary and canonicalise it repeatedly. The scope ends
         // when this frame is dropped, which is where the guard the recursive
         // version held across the call to itself ended.
-        f.fpScope.reset(
-            new ScopedFpEncodedEvaluation(fpEncodedEvaluationDepth));
+        f.fpScope.activate(fpEncodedEvaluationDepth);
         return want(f, Frame::TermEncoded, EvalTerm, encoded, ArrayReadFlag);
       }
     }
@@ -1548,9 +1579,9 @@ bool AbsRefine_CounterExample::ArraysEqualUsingModel(const ASTNode& left,
       encode ? requireFpEncodingContext().encodeForModel(left) : left;
   const ASTNode lowered_right =
       encode ? requireFpEncodingContext().encodeForModel(right) : right;
-  std::unique_ptr<ScopedFpEncodedEvaluation> evaluating;
+  ScopedFpEncodedEvaluation evaluating;
   if (encode)
-    evaluating.reset(new ScopedFpEncodedEvaluation(fpEncodedEvaluationDepth));
+    evaluating.activate(fpEncodedEvaluationDepth);
   if (lowered_left == lowered_right)
     return true;
 
