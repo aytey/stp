@@ -29,7 +29,6 @@ THE SOFTWARE.
 #include "stp/AST/AST.h"
 #include "stp/NodeFactory/SimplifyingNodeFactory.h"
 #include "stp/STPManager/STPManager.h"
-#include "stp/Util/DagWalk.h"
 
 namespace stp
 {
@@ -157,28 +156,6 @@ public:
 
   ASTNode SimplifyTerm(const ASTNode& inputterm);
 
-  // SimplifyTerm reaches a term's operands by calling itself, so a deeply
-  // nested input exhausts the stack. Fill the map from the bottom up first.
-  // See DeepDag_Test.cpp.
-  void primeTerms(const ASTNode& n);
-  bool primingTerms = false;
-
-  // Debug-only: how deeply SimplifyTerm nests once primeTerms has run. Empty
-  // and free in a build with NDEBUG. See stp/Util/DagWalk.h.
-  //
-  // The number is a ratchet on measured behaviour rather than a claim of
-  // safety, and it is this large because of one shape: priming answers the
-  // calls the pass makes on the *input*, but not the ones it makes on the
-  // terms it builds itself, which do not exist when the walk runs. The float
-  // arm builds a deep one -- fp-tests/rem-exponent-width-boundary.smt2, four
-  // lines and three levels of input, reaches 8,215 -- and the pass walks down
-  // it a frame at a time. That is on the list beside SimplifyTerm in
-  // scripts/ast-recursion-allowlist.txt.
-  //
-  // If this fires, something got deeper. Measure what, and either fix it or
-  // move the number knowing why.
-  PrimeAudit termAudit{"SimplifyTerm", 9000};
-
   ASTNode SimplifyFormula(const ASTNode& a, bool pushNeg);
 
   ASTNode CreateSimplifiedEQ(const ASTNode& t1, const ASTNode& t2);
@@ -234,6 +211,18 @@ public:
   }
 
 private:
+  enum class SimplifyJob
+  {
+    Formula,
+    Term,
+    Array
+  };
+
+  // Formulae, bit-vector/floating-point terms, and the array terms reached by
+  // READ all share one continuation stack. A generated rewrite is scheduled
+  // on that stack just like an input child, so neither input depth nor rewrite
+  // depth becomes C++ call depth.
+  ASTNode simplifyNode(const ASTNode& n, bool pushNeg, SimplifyJob job);
 
   void checkIfInSimplifyMap(const ASTNode& n, ASTNodeSet visited);
 
@@ -251,9 +240,7 @@ private:
 
   ASTNode SimplifyFormula_NoRemoveWrites(const ASTNode& a, bool pushNeg);
 
-  ASTNode SimplifyAtomicFormula(const ASTNode& a, bool pushNeg);
-
-  ASTNode ITEOpt_InEqs(const ASTNode& in1);
+  ASTNode ITEOpt_InEqs(const ASTNode& in1, ASTNode& conditionToNegate);
 
   ASTNode PullUpITE(const ASTNode& in);
 
@@ -272,7 +259,8 @@ private:
   ASTNode CombineLikeTerms(const ASTNode& a);
   ASTNode CombineLikeTerms(const ASTVec& a);
 
-  ASTNode LhsMinusRhs(const ASTNode& eq);
+  ASTNode LhsMinusRhsTerm(const ASTNode& eq,
+                          const ASTNode& simplifiedNegatedRhs);
 
   ASTNode DistributeMultOverPlus(const ASTNode& a,
                                  bool startdistribution = false);

@@ -510,17 +510,9 @@ bool bitBlastOk(Context& c, unsigned depth)
   return nm.totalNumberOfNodes() >= depth;
 }
 
-// The passes below are still recursive. Each case here was confirmed to
-// fail on a wall of the frames named in its comment, and is enabled by the
-// commit that converts that pass.
-// Simplifier::SimplifyTerm -- dies in simplify_term_switch.
-//
-// Priming will not do: for BVAND, BVOR and BVPLUS it simplifies a FLATTENED
-// operand list, so the intermediate nodes that flattening pulls apart are
-// never simplified at all. Filling the map from the bottom would simplify
-// them, building nodes that do not otherwise exist. It needs either a
-// primeMemo that takes the pass's own notion of a node's operands, or a
-// state machine.
+// Simplifier's term side. The job machine must use the same flattened operand
+// policy as the old recursive code; simplifying intermediate BVAND/BVOR/
+// BVPLUS nodes would change which nodes the pass constructs.
 bool simplifyTermOk(Context& c, unsigned depth)
 {
   const ASTNode t = c.chain(BVXOR, depth);
@@ -552,6 +544,30 @@ bool simplifyTermSubstitutedOk(Context& c, unsigned depth)
       c.hf->CreateTerm(BVMULT, 8, s, c.mgr.CreateSymbol("y0", 0, 8));
   c.roots.push_back(t);
   return simp.SimplifyTerm(t).GetValueWidth() == 8;
+}
+
+// A term contains a formula which contains the preceding term, at every
+// level. Separate iterative formula and term drivers are insufficient for
+// this shape: calling from one driver into the other still makes one C++
+// frame per alternation.
+bool simplifyAlternatingTermFormulaOk(Context& c, unsigned depth)
+{
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  ASTNode term = c.mgr.CreateSymbol("alternating", 0, 8);
+  for (unsigned i = 0; i < depth; ++i)
+  {
+    const ASTNode condition = c.hf->CreateNode(EQ, term, zero);
+    term = c.hf->CreateTerm(ITE, 8, condition, one, zero);
+  }
+  c.roots.push_back(term);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode output = simp.SimplifyTerm(term);
+  c.roots.push_back(output);
+  return output.GetValueWidth() == 8;
 }
 
 // UseITEContext::visit. Carries a context set down, so neither the walker
@@ -1080,6 +1096,12 @@ TEST(DeepDag, shallow_bit_blast_nested)
   EXPECT_TRUE(bitBlastNestedOk(c, SHALLOW));
 }
 
+TEST(DeepDag, shallow_simplify_alternating_term_formula)
+{
+  Context c;
+  EXPECT_TRUE(simplifyAlternatingTermFormulaOk(c, SHALLOW));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
@@ -1175,6 +1197,10 @@ TEST(DeepDag, deep_work_list)          { EXPECT_STACK_SAFE(workListOk, 20000); }
 TEST(DeepDag, deep_remove_unconstrained) { EXPECT_STACK_SAFE(removeUnconstrainedOk, 20000); }
 TEST(DeepDag, deep_simplify_term)      { EXPECT_STACK_SAFE(simplifyTermOk, 20000); }
 TEST(DeepDag, deep_simplify_term_substituted) { EXPECT_STACK_SAFE(simplifyTermSubstitutedOk, 20000); }
+TEST(DeepDag, deep_simplify_alternating_term_formula)
+{
+  EXPECT_STACK_SAFE(simplifyAlternatingTermFormulaOk, 20000);
+}
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
 TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }
