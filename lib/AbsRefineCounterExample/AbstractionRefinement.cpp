@@ -24,8 +24,6 @@ THE SOFTWARE.
 
 #include "stp/AST/AST.h"
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
-#include "stp/AbsRefineCounterExample/AxiomMemo.h"
-#include <map>
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/STPManager/STPManager.h"
 #include <cassert>
@@ -226,6 +224,24 @@ uint32_t getEquals(SATSolver& SatSolver, const ASTNode& a, const ASTNode& b,
  * it compares with other approaches (e.g., one false axiom at a
  * time or all the false axioms each time).
  *****************************************************************/
+struct AxiomToBe
+{
+  AxiomToBe(ASTNode i0, ASTNode i1, ASTNode v0, ASTNode v1)
+  {
+    index0 = i0;
+    index1 = i1;
+    value0 = v0;
+    value1 = v1;
+  }
+  ASTNode index0, index1;
+  ASTNode value0, value1;
+
+  int numberOfConstants() const
+  {
+    return ((index0.isConstant() ? 1 : 0) + (index1.isConstant() ? 1 : 0) +
+            (index0.isConstant() ? 1 : 0) + (index1.isConstant() ? 1 : 0));
+  }
+};
 
 void applyAxiomToSAT(SATSolver& SatSolver, AxiomToBe& toBe,
                      ToSATBase::ASTNodeToSATVar& satVar)
@@ -240,111 +256,14 @@ void applyAxiomToSAT(SATSolver& SatSolver, AxiomToBe& toBe,
   SatSolver.addClause(satSolverClause);
 }
 
-// Axioms already emitted against one solver, so that re-deriving them costs
-// nothing. This is not a micro-optimisation: getEquals mints a FRESH
-// comparison circuit on every call -- a new variable per index bit plus the
-// clauses tying it to the operands -- so a round that re-derives a pair the
-// solver already constrains does not submit a duplicate clause, it submits an
-// entirely new circuit encoding a constraint that is already there. Left
-// alone, a refinement loop that keeps re-deriving the same pairs grows the
-// solver without bound and no clause- or variable-based progress measure can
-// tell that apart from real work, which is why the no-progress guard could
-// never fire.
-//
-// The key is the ORDERED quadruple, held as nodes rather than as node numbers.
-// The GC re-mints the numbers of unreferenced nodes -- the same hazard the
-// deterministic-name factory documents -- so the map holds the nodes alive and
-// its keys stay distinct. (index0,index1,value0,value1) and
-// (index1,index0,value1,value0) denote the same axiom, but swapping ONE pair
-// denotes a different one, so nothing is canonicalised here: a missed dedup
-// costs a circuit, a wrong one costs a constraint.
-//
-// The value is what the four leaves mapped to when the axiom was emitted, and
-// checking it is what makes this safe rather than merely plausible. The
-// node->variable map is rebuilt per solve and omits symbols the driver has
-// eliminated for THIS solve; when a leaf is missing, getSatVariables mints
-// throwaway variables and the axiom lands on nothing. A later solve can have
-// the same leaf back with real variables, and a memo that only remembered
-// "emitted" would suppress the real axiom in favour of the vacuous one -- a
-// dropped congruence, i.e. sat on an unsat query. So a hit is honoured only
-// while every leaf still maps to exactly the variables it had; otherwise the
-// axiom is emitted again.
-namespace
+void applyAxiomsToSolver(ToSATBase::ASTNodeToSATVar& satVar,
+                         vector<AxiomToBe>& toBe, SATSolver& SatSolver)
 {
-struct QuadLess
-{
-  bool operator()(const std::vector<ASTNode>& a,
-                  const std::vector<ASTNode>& b) const
-  {
-    for (size_t i = 0; i < 4; i++)
-      if (a[i].GetNodeNum() != b[i].GetNodeNum())
-        return a[i].GetNodeNum() < b[i].GetNodeNum();
-    return false;
-  }
-};
-
-struct EmittedAxioms : public SATSolver::RefinementMemo
-{
-  std::map<std::vector<ASTNode>, std::vector<std::vector<unsigned>>, QuadLess>
-      emitted;
-};
-
-std::vector<ASTNode> axiomKey(const AxiomToBe& toBe)
-{
-  std::vector<ASTNode> k;
-  k.push_back(toBe.index0);
-  k.push_back(toBe.index1);
-  k.push_back(toBe.value0);
-  k.push_back(toBe.value1);
-  return k;
-}
-
-// The leaves' CURRENT variables, looked up without minting anything: a
-// constant, or a symbol the map does not carry, simply yields an empty vector.
-std::vector<std::vector<unsigned>>
-currentVars(const std::vector<ASTNode>& key,
-            ToSATBase::ASTNodeToSATVar& satVar)
-{
-  std::vector<std::vector<unsigned>> v(4);
-  for (size_t i = 0; i < 4; i++)
-  {
-    ToSATBase::ASTNodeToSATVar::const_iterator it = satVar.find(key[i]);
-    if (it != satVar.end())
-      v[i] = it->second;
-  }
-  return v;
-}
-} // namespace
-
-// Returns how many axioms were actually emitted. The callers re-solve only on
-// a non-zero count: a round that emits nothing has changed nothing, and
-// solving again would burn a search before the caller's no-progress guard
-// could notice.
-size_t applyAxiomsToSolver(ToSATBase::ASTNodeToSATVar& satVar,
-                           std::vector<AxiomToBe>& toBe, SATSolver& SatSolver)
-{
-  if (SatSolver.refinementMemo.get() == NULL)
-    SatSolver.refinementMemo.reset(new EmittedAxioms);
-  EmittedAxioms& memo =
-      *static_cast<EmittedAxioms*>(SatSolver.refinementMemo.get());
-
-  size_t emitted = 0;
   for (size_t i = 0; i < toBe.size(); i++)
   {
-    const std::vector<ASTNode> key = axiomKey(toBe[i]);
-    const std::vector<std::vector<unsigned>> now = currentVars(key, satVar);
-    std::map<std::vector<ASTNode>, std::vector<std::vector<unsigned>>,
-             QuadLess>::iterator hit = memo.emitted.find(key);
-    if (hit != memo.emitted.end() && hit->second == now)
-      continue;
     applyAxiomToSAT(SatSolver, toBe[i], satVar);
-    emitted++;
-    // Re-read: applyAxiomToSAT may have minted variables for a leaf that had
-    // none, and it is the post-emission mapping the next round must match.
-    memo.emitted[key] = currentVars(key, satVar);
   }
   toBe.clear();
-  return emitted;
 }
 
 bool sortBySize(const pair<ASTNode, ArrayTransformer::arrTypeMap>& a,
@@ -489,26 +408,17 @@ AbsRefine_CounterExample::SATBased_ArrayReadRefinement(
       if (FalseAxiomsVec.size() > 0)
       {
         ToSATBase::ASTNodeToSATVar& satVar = tosat->SATVar_to_SymbolIndexMap();
-        const size_t wanted = FalseAxiomsVec.size();
-        const size_t sent =
-            applyAxiomsToSolver(satVar, FalseAxiomsVec, SatSolver);
-        if (bm->UserFlags.stats_flag && sent < wanted)
-          std::cerr << "Array refinement: " << (wanted - sent) << " of "
-                    << wanted << " violated axioms already emitted"
-                    << std::endl;
+        applyAxiomsToSolver(satVar, FalseAxiomsVec, SatSolver);
 
-        if (sent > 0)
-        {
-          SOLVER_RETURN_TYPE res2;
-          bm->GetRunTimes()->stop(RunTimes::ArrayReadRefinement);
-          res2 = CallSAT_ResultCheck(SatSolver, ASTTrue, original_input,
-                                     original_input, tosat,
-                                     true);
+        SOLVER_RETURN_TYPE res2;
+        bm->GetRunTimes()->stop(RunTimes::ArrayReadRefinement);
+        res2 = CallSAT_ResultCheck(SatSolver, ASTTrue, original_input,
+                                   original_input, tosat,
+                                   true);
 
-          if (SOLVER_UNDECIDED != res2)
-            return res2;
-          bm->GetRunTimes()->start(RunTimes::ArrayReadRefinement);
-        }
+        if (SOLVER_UNDECIDED != res2)
+          return res2;
+        bm->GetRunTimes()->start(RunTimes::ArrayReadRefinement);
       }
     }
   }
@@ -521,21 +431,11 @@ AbsRefine_CounterExample::SATBased_ArrayReadRefinement(
                 << " read axioms " << std::endl;
     }
     ToSATBase::ASTNodeToSATVar& satVar = tosat->SATVar_to_SymbolIndexMap();
-    const size_t wanted = RemainingAxiomsVec.size();
-    const size_t sent = applyAxiomsToSolver(satVar, RemainingAxiomsVec,
-                                            SatSolver);
-    if (bm->UserFlags.stats_flag && sent < wanted)
-      std::cerr << "Array refinement: " << (wanted - sent) << " of " << wanted
-                << " remaining axioms already emitted" << std::endl;
+    applyAxiomsToSolver(satVar, RemainingAxiomsVec, SatSolver);
 
     bm->GetRunTimes()->stop(RunTimes::ArrayReadRefinement);
-    if (sent > 0)
-      return CallSAT_ResultCheck(SatSolver, ASTTrue, original_input,
-                                 original_input, tosat, true);
-    // Nothing new: the state is exactly what the last solve already rejected,
-    // so re-solving would return the same answer. Say so, and let the caller's
-    // no-progress guard convert the livelock into a diagnosis.
-    return SOLVER_UNDECIDED;
+    return CallSAT_ResultCheck(SatSolver, ASTTrue, original_input,
+                               original_input, tosat, true);
   }
 // For difficult problems, I suspec this is a better way to do it.
 // However because it can cause an extra three SAT solver calls, it slows down

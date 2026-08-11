@@ -2797,7 +2797,7 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F13 | PARTLY | low | cbp | Engine/caller/memo triple kept aligned by asserts + repair fallback; two dead fields | **D11** |
 | F14 | PARTLY | low | cbp | Session-wide retirement from prefix-scoped, double-counted evidence | **D7b** |
 | F15 | PARTLY | med | arrays | Every array encode seeds the whole registry; anchors for every read ever seen | **D8** |
-| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | memo landed; guard unproven |
+| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | partly; still open |
 | F17 | PARTLY | low | arrays | Active-read liveness is a refcount shadow; `batchTablesSeeded` dead | **D11** |
 | F18 | CONFIRMED | low | arrays | Adapter rebuilds an O(all session symbols) map per call | **D12** |
 | F19 | PARTLY | low | arrays | Congruence lemmas "permanent" but charged to a per-stack owner key | **D8b** |
@@ -2845,7 +2845,7 @@ fixed; three were measured and deliberately declined. Details below.
   emit each fact as `EQ(replaceChildren(domain, fromTo), k)`, drop facts folding
   to TRUE, stop the walk at an emitted domain, and include surviving facts' mass
   in the gate.
-- **F16 --- the memo is DONE; the guard is still not proven to fire.** `cd34049d` changed the
+- **F16 --- PARTLY, and the headline claim was wrong.** `cd34049d` changed the
   refinement no-progress guard from counting solve calls to counting submitted
   clauses, and the commit said that keying on the solve count "made it unable
   to fire in precisely the situation it names". The new measure has the same
@@ -2856,35 +2856,12 @@ fixed; three were measured and deliberately declined. Details below.
   counters. The livelock the guard exists to convert into an abort is still a
   hang.
 
-  **The memo is landed**, and it turned out to matter for a stronger reason
-  than the row records: `getEquals` mints a FRESH comparison circuit on every
-  call --- a variable per index bit plus its defining clauses --- so a
-  re-derived axiom is not a duplicate clause at all. It is a new circuit
-  encoding a constraint that is already present, which is why no clause- or
-  variable-based measure could ever have distinguished it from progress.
-
-  The memo is owned by the `SATSolver` object, so its lifetime is exactly the
-  clause set's --- a replaced solver starts empty by construction. An external
-  table keyed on `SATSolver*` would NOT be safe: the allocator hands the same
-  address back, and a hit on a recycled pointer suppresses an axiom the new
-  solver never received. It is keyed on the ordered node quadruple, held as
-  nodes rather than node numbers (the GC re-mints those --- the same hazard the
-  deterministic-name factory documents), and a hit is honoured only while every
-  leaf still maps to the variables it had at emission. That last check is
-  load-bearing: the node-to-variable map is rebuilt per solve and omits symbols
-  eliminated for that solve, so a leaf can be absent once --- its axiom landing
-  on throwaway variables --- and present later with real ones. Without the
-  check, the memo would suppress the real axiom in favour of the vacuous one
-  and drop a congruence.
-
-  **What is NOT claimed.** No file in the 461-file query corpus reaches the
-  memo: instrumented, suppression is zero everywhere, and answers are
-  byte-identical before and after across all of them. So the guard is not
-  demonstrated to fire --- the case it targets is one where the encoding and
-  the word-level evaluation already disagree, which cannot be induced without
-  fault injection. Four unit tests cover the mechanism directly, since nothing
-  else can: suppression of a repeat, non-suppression of a different axiom,
-  re-emission when the mapping changes, and an empty memo on a fresh solver.
+  **Still open**, with the remedy the finding itself named as its second
+  option: memoise emitted `(index0,index1,value0,value1)` pairs in
+  `applyAxiomsToSolver` (`AbstractionRefinement.cpp:259-267`), so a round that
+  adds nothing new submits nothing and the guard trips. That is shared batch
+  code, and the guard only matters once the encoding and the word-level
+  evaluation already disagree, so it is recorded rather than rushed.
 
   What `cd34049d` did buy, and this part stands: the same guard now exists on
   the array-equality hybrid fallback branch, which had none at all, and a
