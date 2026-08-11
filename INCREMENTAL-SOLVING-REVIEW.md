@@ -30,9 +30,11 @@ what must not be re-chased, and what to do next.
 
 ## Status board
 
-**D1 and D2 are FIXED** (commits `e1229764`, `926bf48f`), with all four
+**All twelve tracked defects are now FIXED or closed**, and D13 with them.
+D1 and D2 (`e1229764`, `926bf48f`) were silent wrong answers, with all four
 witnesses landed as regressions and the campaign harness hardened so a run of
-its kind would catch them (see [Part V](#part-v--work-queue) item 3). Both were silent wrong
+its kind would catch them (see [Part V](#part-v--work-queue)). D3 and the
+D4 remainder are the only substantive items left open. Both were silent wrong
 answers (`sat` on an `unsat` query) reachable with **no non-default flags at
 all**, on logics STP is built for. Everything still open on this list is
 quality, cost, or maintainability --- **no known soundness defect remains**.
@@ -52,12 +54,12 @@ mechanism is the part worth remembering.
 | [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **FIXED** `926bf48f` | yes | no (branch-only code) | fixed + regression | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
 | [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | high | yes | no (branch-only code) | agent-measured | A semantic whole-base pass fires on all four rebuild reasons, unbudgeted (9.4 s measured) |
 | [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **mostly fixed** | yes | no (branch-only code) | measured 6.5x | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
-| [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | medium | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
+| [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | **FIXED** `45504ef9` | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
 | [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | medium | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
-| [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | medium | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
-| [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | medium | array logics | **loop is master's**, blowup is not | agent-verified | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode |
-| [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | low | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
-| [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | low | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
+| [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | **FIXED** `8ab75f81` | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
+| [D8](#d8--cost-every-array-encode-installs-and-copies-back-the-whole-session-registry) | cost | **FIXED** `8ffd109f` | array logics | **loop is master's**, blowup is not | agent-verified | Anchors re-conjoined for every read ever seen; registry deep-copied twice per encode |
+| [D9](#d9--contract-construct_counterexample_flag-was-made-sticky) | contract | **FIXED** `060cc34f` | yes | **no --- branch deleted master's reset** | agent-reproduced | One array round or `:produce-models` permanently disables the documented unchanged-stack cache shortcut |
+| [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | **FIXED** `0767b22a` | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
 | [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | form | **closed** | array logics | no (branch-only code) | measured: no effect | Per-call cost is real but the call count is not; caching it and removing the copy both measured neutral. Contract fixed, optimisation declined. |
 | [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | **FIXED** | yes | n/a (introduced by `e1229764`) | eliminations restored; 1.5x faster | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
