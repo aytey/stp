@@ -283,6 +283,10 @@ class BitBlaster
   void updateForm(const ASTNode& n, BBNode& bb, BBNodeSet& support);
 
   const BBNode BBForm(const ASTNode& form, BBNodeSet& support);
+  const BBNode BBForm(const ASTNode& form, BBNodeSet& support,
+                      bool knownMissing);
+  const BBNodeVec BBTerm(const ASTNode& term, BBNodeSet& support,
+                         bool knownMissing);
 
   // BBForm and BBTerm both blast a node's operands by calling themselves, so
   // input nested deeply enough takes the stack with it. This fills both
@@ -325,7 +329,7 @@ public:
   // bitvector term.  Result is a ref to a vector of formula nodes
   // representing the boolean formula.
   const BBNodeVec BBTerm(const ASTNode& term, BBNodeSet& support);
-  
+
   std::unordered_map<ASTNode, BBNodeVec, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>::iterator
   simplify_during_bb(ASTNode& term, BBNodeSet& support);
 

@@ -59,6 +59,7 @@ ArrayTransformer::assertTransformPostConditions: off-path: its one call site is 
 BVTypeCheckRecursive: off-path: nothing in the library calls it. The type check a solve runs is BVTypeCheck, which is one node -- 143 call sites, neither of its two helpers descends. This one is reached only from four asserts in tools/rewrite_rule_gen, which needs BUILD_EXTRA_TOOLS (default OFF) and is compiled out under NDEBUG anyway. Dies at 300,000 if called directly
 BitBlaster::BBForm: bounded: both memos primed by one walk before either runs (primeMemos)
 BitBlaster::BBTerm: bounded: both memos primed by one walk before either runs (primeMemos)
+BitBlaster::BBForm <-> BitBlaster::BBOverflow <-> BitBlaster::BBTerm <-> BitBlaster::BBclassifyFP <-> BitBlaster::BBcompare <-> BitBlaster::BBeqFP <-> BitBlaster::BBfpAdd <-> BitBlaster::BBfpMul <-> BitBlaster::BBfpToFp <-> BitBlaster::simplify_during_bb: bounded: BBForm and BBTerm prime both memos with one cross-sort walk; every helper back-edge therefore reaches an operand already settled by that walk
 BitBlaster::buildAdditionNetworkResult: safe: two overloads sharing a name. The one that looks recursive loops over the bit width calling the other, so it is bounded by the word size and not by the input
 BitBlaster::updateTerm: safe: recurses to a fixed point on one node, not down the DAG
 CommonSubSum::rebuild: off-path: behind --enable-common-subsum (UserFlags.enable_common_subsum, default false). DeepDag's deep_common_sub_sum runs the pass at 20,000 and passes

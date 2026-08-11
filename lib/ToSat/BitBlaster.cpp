@@ -739,8 +739,13 @@ BitBlaster::simplify_during_bb(ASTNode& term,
   return BBTermMemo.end();
 }
 
-const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
-                                   BBNodeSet& support)
+const BBNodeVec BitBlaster::BBTerm(const ASTNode& term, BBNodeSet& support)
+{
+  return BBTerm(term, support, false);
+}
+
+const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
+                                   const bool knownMissing)
 {
   ASTNode term = _term; // mutable local copy.
 
@@ -750,12 +755,16 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
   const bool prime = uf != NULL && uf->prime_memos;
   PrimeAudit::Running running(memoAudit, term, prime);
 
-  auto it = BBTermMemo.find(term);
-  if (it != BBTermMemo.end())
+  auto it = BBTermMemo.end();
+  if (!knownMissing)
   {
-    // Constant bit propagation may have updated something.
-    updateTerm(term, it->second, support);
-    return it->second;
+    it = BBTermMemo.find(term);
+    if (it != BBTermMemo.end())
+    {
+      // Constant bit propagation may have updated something.
+      updateTerm(term, it->second, support);
+      return it->second;
+    }
   }
 
   if (!priming && prime)
@@ -1268,15 +1277,13 @@ const BBNode BitBlaster::BBForm(const ASTNode& form)
 // blast fp.lt(a,b) BBcompareFP treats it as fp.gt(b,a) and blasts b first.
 // A walk that primed them left to right would build the same nodes in the
 // other order, and the CNF with them.
-static bool bbOperands(const ASTNode& n, ASTVec& out)
+static WalkOperands bbOperands(const ASTNode& n)
 {
   const Kind k = n.GetKind();
   if (k != FP_LT && k != FP_LEQ)
-    return false; // its own children, which the walk reads in place.
+    return WalkOperands::all(n);
 
-  out.push_back(n[1]);
-  out.push_back(n[0]);
-  return true;
+  return WalkOperands::reversed(n);
 }
 
 // Blast everything below `n` before `n` itself, so that the calls the
@@ -1306,7 +1313,8 @@ void BitBlaster::primeMemos(const ASTNode& n, BBNodeSet& support)
 {
   primeMemo(
       n,
-      [this](const ASTNode& node) {
+      [this](const ASTNode& node)
+      {
         if (node.GetType() == BOOLEAN_TYPE)
         {
           // Ahead of the constant test below, because BBForm memoises TRUE
@@ -1325,28 +1333,38 @@ void BitBlaster::primeMemos(const ASTNode& n, BBNodeSet& support)
         return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
       },
       bbOperands,
-      [this, &support](const ASTNode& node) {
+      [this, &support](const ASTNode& node, PrimeMemoReady)
+      {
         if (node.GetType() == BOOLEAN_TYPE)
-          BBForm(node, support);
+          BBForm(node, support, true);
         else
-          BBTerm(node, support);
+          BBTerm(node, support, true);
       });
 }
 
 // bit blast a formula (boolean term).  Result is one bit wide,
-const BBNode BitBlaster::BBForm(const ASTNode& form,
-                                BBNodeSet& support)
+const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support)
+{
+  return BBForm(form, support, false);
+}
+
+const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
+                                const bool knownMissing)
 {
   // The other half of the audit above: the two memos are primed by one walk,
   // so the walk is held to both functions at once.
   const bool prime = uf != NULL && uf->prime_memos;
   PrimeAudit::Running running(memoAudit, form, prime);
 
-  auto it = BBFormMemo.find(form);
-  if (it != BBFormMemo.end())
+  auto it = BBFormMemo.end();
+  if (!knownMissing)
   {
-    // already there.  Just return it.
-    return it->second;
+    it = BBFormMemo.find(form);
+    if (it != BBFormMemo.end())
+    {
+      // already there.  Just return it.
+      return it->second;
+    }
   }
 
   if (!priming && prime)

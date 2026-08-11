@@ -419,19 +419,29 @@ namespace stp
   {
     primeMemo(
         n,
-        [this](const ASTNode& node) {
+        [this](const ASTNode& node)
+        {
           if (toFixedBits.find(node) != toFixedBits.end())
             return Walk::Skip; // buildMap would answer from the map.
           return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
         },
-        [this](const ASTNode& node) { buildMap(node); });
+        [this](const ASTNode& node, PrimeMemoReady) { buildMap(node, true); });
   }
 
   NodeDomainAnalysis::DomainInfo NodeDomainAnalysis::buildMap(const ASTNode& n)
   {
+    return buildMap(n, false);
+  }
+
+  NodeDomainAnalysis::DomainInfo
+  NodeDomainAnalysis::buildMap(const ASTNode& n, const bool knownMissing)
+  {
     const bool prime = bm.UserFlags.prime_memos;
     PrimeAudit::Running running(mapAudit, n, prime);
 
+    // primeMaps' classifier already established the miss. Domain analysis of
+    // a descendant only records that descendant, never an ancestor.
+    if (!knownMissing)
     {
       auto it = toFixedBits.find(n);
       if (it != toFixedBits.end())

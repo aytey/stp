@@ -96,6 +96,10 @@ public:
     ValueSet* set;
   };
 
+private:
+  DomainInfo buildMap(const ASTNode& n, bool knownMissing);
+
+public:
   NodeDomainAnalysis(STPMgr* _bm)
       : bm(*_bm), intervalAnalysis(*_bm), valueSetAnalysis(*_bm)
   {

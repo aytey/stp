@@ -114,6 +114,48 @@ Context& fresh()
   return *(new Context());
 }
 
+TEST(PrimeMemo, non_owning_operand_views_preserve_postorder)
+{
+  Context& c = fresh();
+  const ASTNode a = c.mgr.CreateSymbol("view-a", 0, 0);
+  const ASTNode b = c.mgr.CreateSymbol("view-b", 0, 0);
+  const ASTNode d = c.mgr.CreateSymbol("view-d", 0, 0);
+  const ASTNode e = c.mgr.CreateSymbol("view-e", 0, 0);
+  const ASTNode inner = c.hf->CreateNode(OR, ASTVec{a, b, d});
+  const ASTNode top = c.hf->CreateNode(AND, ASTVec{inner, e});
+
+  ASTVec visited;
+  primeMemo(
+      top, [](const ASTNode& n)
+      { return n.Degree() == 0 ? Walk::Visit : Walk::Descend; },
+      [&](const ASTNode& n)
+      {
+        if (n == top)
+          return WalkOperands::reversed(n);
+        if (n == inner)
+          return WalkOperands::range(1, n.Degree());
+        return WalkOperands::all(n);
+      },
+      [&](const ASTNode& n, PrimeMemoReady) { visited.push_back(n); });
+
+  ASTVec expected;
+  for (size_t i = top.Degree(); i != 0; --i)
+  {
+    const ASTNode child = top[i - 1];
+    if (child == inner)
+    {
+      for (size_t j = 1; j < inner.Degree(); ++j)
+        expected.push_back(inner[j]);
+      expected.push_back(inner);
+    }
+    else
+      expected.push_back(child);
+  }
+  expected.push_back(top);
+
+  EXPECT_EQ(expected, visited);
+}
+
 #ifndef NDEBUG
 
 // A pass, played by hand: it runs a node, asks for the nodes the test says it

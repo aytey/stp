@@ -124,7 +124,7 @@ private:
   // The pass proper, for one node whose children visit() has already
   // answered. Split out so that visit() can fill those answers from the
   // bottom up rather than by calling itself once per level.
-  ASTNode totalise(const ASTNode& n);
+  ASTNode totalise(const ASTNode& n, bool knownMissing = false);
 
   // The canonical form of an index over a float-indexed array whose index
   // format is (exp_width, sig_width): constants re-intern through the

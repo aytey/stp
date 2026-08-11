@@ -307,18 +307,15 @@ void ASTNode::cacheFPFormat() const
   }
 
   primeMemo(
-      *this,
-      [&](const ASTNode& child) {
-        return settled(child) ? Walk::Skip : Walk::Descend;
-      },
-      [](const ASTNode& n, ASTVec& out) {
+      *this, [&](const ASTNode& child)
+      { return settled(child) ? Walk::Skip : Walk::Descend; },
+      [](const ASTNode& n)
+      {
         size_t f, t;
         fpFormatOperands(n, f, t);
-        for (size_t i = f; i < t; i++)
-          out.push_back(n[i]);
-        return true;
+        return WalkOperands::range(f, t);
       },
-      store);
+      [&](const ASTNode& n, PrimeMemoReady) { store(n); });
 }
 
 unsigned int ASTNode::GetExpWidth() const
@@ -519,18 +516,15 @@ SourceSort ASTNode::GetSourceSort() const
 
   if (fill && prime)
     primeMemo(
-        *this,
-        [&](const ASTNode& child) {
-          return settled(child) ? Walk::Skip : Walk::Descend;
-        },
-        [](const ASTNode& n, ASTVec& out) {
+        *this, [&](const ASTNode& child)
+        { return settled(child) ? Walk::Skip : Walk::Descend; },
+        [](const ASTNode& n)
+        {
           size_t f, t;
           sourceSortOperands(n, f, t);
-          for (size_t i = f; i < t; i++)
-            out.push_back(n[i]);
-          return true;
+          return WalkOperands::range(f, t);
         },
-        store);
+        [&](const ASTNode& n, PrimeMemoReady) { store(n); });
   else
     store(*this);
 

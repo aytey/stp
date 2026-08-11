@@ -58,19 +58,30 @@ void VariablesInExpression::primeSymbols(const ASTNode& n)
 {
   primeMemo(
       n,
-      [this](const ASTNode& node) {
+      [this](const ASTNode& node)
+      {
         if (symbol_graph.find(node.GetNodeNum()) != symbol_graph.end())
           return Walk::Skip; // getSymbol would answer from the graph.
         return node.Degree() == 0 ? Walk::Visit : Walk::Descend;
       },
-      [this](const ASTNode& node) { getSymbol(node); });
+      [this](const ASTNode& node, PrimeMemoReady) { getSymbol(node, true); });
 }
 
 Symbols* VariablesInExpression::getSymbol(const ASTNode& n)
 {
+  return getSymbol(n, false);
+}
+
+Symbols* VariablesInExpression::getSymbol(const ASTNode& n,
+                                          const bool knownMissing)
+{
   const bool prime = uf == nullptr || uf->prime_memos;
   PrimeAudit::Running running(symbolAudit, n, prime);
 
+  // primeSymbols' classifier already made this lookup. Its ready token is a
+  // known miss because building a descendant cannot insert an ancestor into
+  // this bottom-up graph.
+  if (!knownMissing)
   {
     const ASTNodeToNodes::const_iterator it = symbol_graph.find(n.GetNodeNum());
     if (it != symbol_graph.end())

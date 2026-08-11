@@ -347,27 +347,30 @@ ASTNode FpTotalise::visit(const ASTNode& n)
   // records is that one.
   ASTNode answer;
   primeMemo(
-      n,
-      [&](const ASTNode& child) {
-        return settled(child) ? Walk::Skip : Walk::Descend;
-      },
-      [&](const ASTNode& m) { answer = totalise(m); });
+      n, [&](const ASTNode& child)
+      { return settled(child) ? Walk::Skip : Walk::Descend; },
+      [&](const ASTNode& m, PrimeMemoReady) { answer = totalise(m, true); });
   return answer;
 }
 
 // One node, with its children already totalised -- which is what the walk
 // below arranges, and what its own calls on those children then find.
-ASTNode FpTotalise::totalise(const ASTNode& n)
+ASTNode FpTotalise::totalise(const ASTNode& n, const bool knownMissing)
 {
   if (n.Degree() == 0)
     return n;
 
-  const ASTNodeMap::const_iterator persistent = persistent_cache.find(n);
-  if (persistent != persistent_cache.end())
-    return persistent->second;
-  const ASTNodeMap::const_iterator current = traversal_cache.find(n);
-  if (current != traversal_cache.end())
-    return current->second;
+  // visit's classifier already checked both caches for primed nodes. Neither
+  // totalising a descendant nor rebuilding it can cache its ancestor.
+  if (!knownMissing)
+  {
+    const ASTNodeMap::const_iterator persistent = persistent_cache.find(n);
+    if (persistent != persistent_cache.end())
+      return persistent->second;
+    const ASTNodeMap::const_iterator current = traversal_cache.find(n);
+    if (current != traversal_cache.end())
+      return current->second;
+  }
 
   ASTVec children;
   children.reserve(n.Degree() + 1);

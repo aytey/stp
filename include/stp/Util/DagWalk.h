@@ -209,18 +209,65 @@ public:
 // float arm builds a term thousands of levels deep and walks down it: see the
 // note on Simplifier::termAudit, and the depth check below, which is what
 // found it.
-// `operands(n, out)` lets a pass say that the nodes it will recurse into are
-// not n's children. Return false -- what the three-argument form below does
-// for every node -- and the walk uses n's own children, which costs nothing:
-// they are already a contiguous run and are not copied. Return true after
-// filling `out`, and the walk uses that instead.
+// A pass normally recurses into all of a node's children, in order. The few
+// exceptions in STP recurse into a contiguous subrange, or into all children
+// in reverse order. WalkOperands describes those cases without copying an
+// ASTNode or allocating an operand vector. `operands(n)` returns the view for
+// n; the three-argument primeMemo below supplies WalkOperands::all(n).
+class WalkOperands
+{
+  uint32_t first_ = 0;
+  uint32_t count_ = 0;
+  bool reversed_ = false;
+
+  WalkOperands(const size_t first, const size_t count, const bool reversed)
+      : first_(static_cast<uint32_t>(first)),
+        count_(static_cast<uint32_t>(count)), reversed_(reversed)
+  {
+    assert(first == first_ && count == count_);
+  }
+
+public:
+  static WalkOperands all(const ASTNode& n) { return range(0, n.Degree()); }
+
+  static WalkOperands range(const size_t first, const size_t pastLast)
+  {
+    assert(first <= pastLast);
+    return WalkOperands(first, pastLast - first, false);
+  }
+
+  static WalkOperands reversed(const ASTNode& n)
+  {
+    return reversedRange(0, n.Degree());
+  }
+
+  static WalkOperands reversedRange(const size_t first, const size_t pastLast)
+  {
+    assert(first <= pastLast);
+    return WalkOperands(first, pastLast - first, true);
+  }
+
+  size_t size() const { return count_; }
+
+  ASTNode at(const ASTNode& n, const size_t i) const
+  {
+    assert(i < count_ && static_cast<size_t>(first_) + count_ <= n.Degree());
+    return n[first_ + (reversed_ ? count_ - 1 - i : i)];
+  }
+};
+
+// Proof supplied to visit that classify admitted this node. A memoised pass
+// may use it as a known-miss token when (as all current primed passes do) its
+// classifier returns Visit or Descend only after finding no memo entry. That
+// removes the otherwise duplicate lookup at the pass's first line.
 //
-// `out` is a buffer the walk lends and takes back, one per nesting level of
-// nodes that answer true, so the pass fills a vector that already has its
-// capacity rather than building one. After the first few nodes it allocates
-// nothing at all, which is the point: an operand list built per node would
-// cost an allocation and a reference count on every node in the DAG, and
-// this runs on shallow input far more often than deep.
+// The contract is deliberately explicit: processing descendants must not
+// memoise an ancestor as a side effect. A bottom-up pass over an acyclic AST
+// normally only records the node it was handed, which is exactly that case.
+struct PrimeMemoReady
+{
+};
+
 template <class Classify, class Operands, class Visit>
 void primeMemo(const ASTNode& top, Classify classify, Operands operands,
                Visit visit)
@@ -228,61 +275,40 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
   if (classify(top) != Walk::Descend)
     return; // the caller does it: there is nothing below to get ahead of.
 
-  constexpr uint32_t OWN_CHILDREN = UINT32_MAX;
-
   struct Frame
   {
     ASTNode n;
-    size_t i = 0;
-    uint32_t operandSlot = OWN_CHILDREN;
-  };
+    WalkOperands operands;
+    uint32_t i = 0;
 
-  // Lent out to the frames whose operands are not their children, and taken
-  // back when they finish: this grows to the deepest nesting of those, not
-  // to the size of the DAG.
-  std::vector<ASTVec> lent;
-  uint32_t lentInUse = 0;
-
-  auto open = [&](const ASTNode& n) {
-    Frame f;
-    f.n = n;
-
-    if (lentInUse == lent.size())
-      lent.emplace_back();
-    ASTVec& buffer = lent[lentInUse];
-    buffer.clear(); // keeps the capacity it already had.
-
-    if (operands(n, buffer))
-      f.operandSlot = lentInUse++;
-
-    return f;
-  };
-
-  // A deque, so descending never moves the frame being worked on.
-  std::deque<Frame> stack;
-  stack.push_back(open(top));
-
-  while (!stack.empty())
-  {
-    Frame& current = stack.back();
-
-    const bool ownChildren = current.operandSlot == OWN_CHILDREN;
-    const size_t degree =
-        ownChildren ? current.n.Degree() : lent[current.operandSlot].size();
-
-    if (current.i < degree)
+    Frame(const ASTNode& node, const WalkOperands view)
+        : n(node), operands(view)
     {
-      const ASTNode child = ownChildren ? current.n[current.i]
-                                        : lent[current.operandSlot][current.i];
-      current.i++;
+    }
+  };
+
+  auto open = [&](const ASTNode& n) { return Frame(n, operands(n)); };
+
+  // Keep the current frame inline. The parent vector is not allocated at all
+  // when the root's operands are leaves or memo hits, which is the common
+  // shallow case; deep input still grows geometrically on the heap.
+  Frame current = open(top);
+  std::vector<Frame> parents;
+
+  while (true)
+  {
+    if (current.i < current.operands.size())
+    {
+      const ASTNode child = current.operands.at(current.n, current.i++);
 
       switch (classify(child))
       {
         case Walk::Descend:
-          stack.push_back(open(child));
+          parents.push_back(std::move(current));
+          current = open(child);
           break;
         case Walk::Visit:
-          visit(child);
+          visit(child, PrimeMemoReady{});
           break;
         case Walk::Skip:
           break;
@@ -291,13 +317,12 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
     }
 
     // Operands are all answered, so this returns after one level.
-    visit(current.n);
-    if (!ownChildren)
-    {
-      assert(current.operandSlot + 1 == lentInUse); // frames finish in order.
-      lentInUse--;
-    }
-    stack.pop_back();
+    visit(current.n, PrimeMemoReady{});
+    if (parents.empty())
+      return;
+
+    current = std::move(parents.back());
+    parents.pop_back();
   }
 }
 
@@ -305,8 +330,9 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
 template <class Classify, class Visit>
 void primeMemo(const ASTNode& top, Classify classify, Visit visit)
 {
-  primeMemo(top, classify, [](const ASTNode&, ASTVec&) { return false; },
-            visit);
+  primeMemo(
+      top, classify, [](const ASTNode& n) { return WalkOperands::all(n); },
+      visit);
 }
 
 // Rebuild a DAG bottom up, without putting the walk on the call stack.
