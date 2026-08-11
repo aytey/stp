@@ -2,6 +2,7 @@
 ; clause delta is small, but the live block reuses the complete earlier cone.
 ; The relief valve's lazy full-cone guard must therefore prevent a rebuild.
 ; RUN: %solver --incremental --array-equality --incremental-reencode-limit 1 -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --array-equality --incremental-reencode-limit 1 -s %s 2>&1 | %OutputCheck %s
 ; CHECK-NOT-L: re-encoded from scratch
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 4) (_ BitVec 8)))

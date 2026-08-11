@@ -13,6 +13,7 @@
 ; The tiny re-encode limit forces the valve into range; the point is that it
 ; fires at all, not how often.
 ; RUN: %solver --incremental -s --incremental-reencode-limit 2000 %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 -s --incremental-reencode-limit 2000 %s 2>&1 | %OutputCheck %s
 ; CHECK: re-encoded from scratch
 (set-logic QF_ABV)
 (declare-fun A () (Array (_ BitVec 8) (_ BitVec 8)))

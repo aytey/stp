@@ -12,6 +12,7 @@
 ; REQUIRES: floating-point
 ; RUN: %solver --array-equality --check-sanity %s | %OutputCheck %s
 ; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --check-sanity %s | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-cbp-reset --check-sanity %s | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-profile --check-sanity %s 2>&1 | %OutputCheck --check-prefix=PROFILE %s
 (set-logic QF_FP)

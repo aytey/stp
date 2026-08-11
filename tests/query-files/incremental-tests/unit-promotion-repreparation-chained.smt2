@@ -14,6 +14,7 @@
 ; whichever other mechanism happens to be masking it.
 ; REQUIRES: floating-point
 ; RUN: %solver --incremental --disable-cbitp %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --disable-cbitp %s | %OutputCheck %s
 ; RUN: %solver --incremental --disable-cbitp --check-sanity %s | %OutputCheck %s
 (set-logic QF_BVFP)
 (declare-fun f () Float32)

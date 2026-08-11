@@ -17,6 +17,7 @@
 ; The answers are covered elsewhere; stdout and stderr interleave unreliably
 ; under a pipe, so this pins only the reuse decision, which is on stderr.
 ; RUN: %solver --array-equality --incremental -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --array-equality --incremental-auto-engage-at 1 -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun A () (Array (_ BitVec 8) (_ BitVec 8)))
 (declare-fun B () (Array (_ BitVec 8) (_ BitVec 8)))

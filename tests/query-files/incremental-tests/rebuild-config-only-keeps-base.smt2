@@ -16,6 +16,7 @@
 ; that rebuild must not mention re-simplifying anything.
 ; REQUIRES: floating-point
 ; RUN: %solver --incremental -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 -s %s 2>&1 | %OutputCheck %s
 ; CHECK: inprobing retired
 ; CHECK-NOT: base re-simplified at rebuild
 (set-logic QF_BVFP)

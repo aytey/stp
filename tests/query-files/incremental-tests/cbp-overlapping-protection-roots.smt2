@@ -5,6 +5,7 @@
 ; This is a small semantic canary for the first-engagement path which appears
 ; at much larger scale in CPAchecker QF_BV queries.
 ; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --check-sanity %s | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-profile --check-sanity %s 2>&1 | %OutputCheck --check-prefix=PROFILE %s
 ; RUN: %solver --incremental --incremental-profile --incremental-cbp-bootstrap-limit 1 --check-sanity %s 2>&1 | %OutputCheck --check-prefix=DEFER %s
 (set-logic QF_BV)

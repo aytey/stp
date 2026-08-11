@@ -3,6 +3,7 @@
 ; like nine live clauses even though all four multiplier cones are live. The
 ; lazy whole-cone guard must recover that sharing before authorizing relief.
 ; RUN: %solver --incremental --incremental-reencode-limit 1 -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --incremental-reencode-limit 1 -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x0 () (_ BitVec 8))
 (declare-fun x1 () (_ BitVec 8))

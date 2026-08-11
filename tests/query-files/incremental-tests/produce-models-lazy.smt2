@@ -3,6 +3,7 @@
 ; defers construction to the first reader. Each get-value below is what
 ; triggers materialisation (the --stats lines), and the values must be
 ; the models' own.
+; Deliberately not run with --check-sanity: this test exists to check that a model is built only when asked; --check-sanity always asks.
 ; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_BV)

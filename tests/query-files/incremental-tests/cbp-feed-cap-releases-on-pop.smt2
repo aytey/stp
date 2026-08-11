@@ -14,6 +14,7 @@
 ; second, which would be the ninth.
 ; After the pop there is room again, and the replacement level must be fed.
 ; RUN: %solver --incremental --incremental-profile --incremental-cbp-feed-cap 8 -s --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --incremental-profile --incremental-cbp-feed-cap 8 -s --check-sanity %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 8))
 (declare-fun b () (_ BitVec 8))

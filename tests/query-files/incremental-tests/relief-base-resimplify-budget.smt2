@@ -16,6 +16,7 @@
 ; skipped; the answers must not move -- against the unbudgeted pass, and
 ; against the batch pipeline, both checked here.
 ; RUN: %solver --incremental -s --incremental-reencode-limit 500 --incremental-base-resimplify-limit 10 %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 -s --incremental-reencode-limit 500 --incremental-base-resimplify-limit 10 %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-reencode-limit 500 --incremental-base-resimplify-limit 10 --check-sanity %s | %OutputCheck --check-prefix=ANSWERS %s
 ; RUN: %solver --incremental --incremental-reencode-limit 500 --check-sanity %s | %OutputCheck --check-prefix=ANSWERS %s
 ; RUN: %solver --check-sanity %s | %OutputCheck --check-prefix=ANSWERS %s

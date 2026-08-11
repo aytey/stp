@@ -6,6 +6,7 @@
 ; asserted, so refusing only costs rewriting. All three cyclic shapes
 ; below crashed before that check existed.
 ; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 %s | %OutputCheck %s
 (set-logic QF_BV)
 ; a pushed definition against a base one: base b = k+1, pushed k = b
 ; composes to k -> k+1 in the merged map

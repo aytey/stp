@@ -9,6 +9,7 @@
 ; entry (it is erased with the level), and the final check really solves,
 ; satisfiably.
 ; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (declare-fun p () Bool)

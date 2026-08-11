@@ -14,7 +14,8 @@
 ; 3. Re-pushing an OPPOSITE definition after a pop answers from the live
 ;    branch: the model channel's seeds are withdrawn per solve, and a
 ;    stale seeding from the popped branch must not shadow the new one.
-; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 --check-sanity %s 2>&1 | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 4) (_ BitVec 8)))

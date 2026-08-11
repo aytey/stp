@@ -5,6 +5,7 @@
 ; reused outright, while a changed stack still shares every unchanged
 ; subcircuit through the recycled names.
 ; RUN: %solver --incremental --array-equality -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --array-equality -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 4) (_ BitVec 8)))
 (declare-fun b () (Array (_ BitVec 4) (_ BitVec 8)))

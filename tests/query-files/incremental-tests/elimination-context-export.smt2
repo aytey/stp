@@ -19,6 +19,7 @@
 ; multiplications keep constant-bit propagation from refuting the query on
 ; its own, which would mask the defect.
 ; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 %s | %OutputCheck %s
 ; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun v () (_ BitVec 8))

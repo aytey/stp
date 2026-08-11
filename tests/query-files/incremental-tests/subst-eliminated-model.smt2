@@ -1,7 +1,8 @@
 ; Base-level definitional chains are substituted through before encoding --
 ; the variables may never reach the SAT solver at all -- but get-value must
 ; still answer for them, by evaluating their definitions.
-; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --check-sanity %s | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))

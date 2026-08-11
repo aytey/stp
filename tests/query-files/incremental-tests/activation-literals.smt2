@@ -3,6 +3,7 @@
 ; so the assumption set scales with the stack depth, not the conjunct
 ; count, and identical level content reuses its literal and clauses.
 ; RUN: %solver --incremental -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (declare-fun y () (_ BitVec 8))

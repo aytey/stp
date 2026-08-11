@@ -1,6 +1,6 @@
 ; Models with arrays in the incremental driver: values of scalars pinned
 ; through array constraints, across rounds.
-; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental --check-sanity %s | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 8) (_ BitVec 8)))

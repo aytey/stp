@@ -1847,18 +1847,40 @@ and one `EpochPolicy::decide(...)`. Latch `configuration_closed` in the
 `SATSolver::addClause` facade so the configuration window is a checked invariant
 rather than a call-ordering convention backed by a third-party `abort()`.
 
-### 4.4 Rebalance the test suite
+### 4.4 Rebalance the test suite --- DONE
 
-84 of 101 RUN lines across 78 files force `--incremental`; production runs
-automatic engagement. Nine files run without it, of which
-`engagement-default-bv.smt2`, `engagement-default-abv.smt2` and
-`elimination-context-export-default-engagement.smt2` drive 32 default-flag
-checks and so actually reach the QF_BV/QF_ABV engagement ordinal. (An earlier
-revision of this item said the last of those was the only such test and quoted
-73 of 87; both were wrong when written --- the first two were added by `06dbdccf`,
-two commits before this review began.) The gap that is real: the automatic path
-is exercised by nine files out of seventy-eight, and few model-producing
-incremental RUN lines carry `--check-sanity`.
+**DONE.** The complaint was that production engages the driver automatically
+while the suite almost always forced it, and that models mostly went
+unvalidated. Both are addressed; the figures below are current.
+
+Before: 78 files, 101 RUN lines, 84 forcing `--incremental`, **9 files**
+touching the automatic path, 23 carrying `--check-sanity`. (An earlier revision
+of this item quoted 73 of 87 and called
+`elimination-context-export-default-engagement.smt2` the only test reaching
+engagement-at-32; both were wrong when written --- `engagement-default-bv.smt2`
+and `engagement-default-abv.smt2` were added by `06dbdccf`, two commits before
+this review began.)
+
+After: 81 files, 139 RUN lines, **43 files** touching the automatic path and
+**33** carrying `--check-sanity`.
+
+The automatic coverage came from a second RUN line on 32 behaviour-critical
+tests, substituting `--incremental-auto-engage-at 1` for `--incremental`. That
+is not a cosmetic difference: it engages through the automatic predicate
+instead of `incremental_from_start`, so `firstForcedIncrementalSolve` is false
+and the forced-first recovery family (F3) is not taken --- exactly the shape
+production runs at solve 32. All 32 passed unmodified. A sweep of all 72
+force-`--incremental` files found 71 give byte-identical answers on the
+automatic path; the one that differs,
+`ackermanize-model-cache.smt2`, differs only in **which** satisfying assignment
+it reports, and the automatic path agrees with the batch pipeline while the
+forced path does not.
+
+Two files are deliberately left without `--check-sanity`, with the reason
+recorded in each: `produce-models-lazy.smt2` exists to check that a model is
+built only when asked, and the flag always asks; `ackermanize-model-cache.smt2`
+pins the values the model cache returns, and the flag reconstructs and can pick
+a different assignment.
 
 ### 4.5 The untracked findings --- DONE
 

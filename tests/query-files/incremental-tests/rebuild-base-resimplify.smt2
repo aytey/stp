@@ -14,7 +14,8 @@
 ;    is seen), while a variable the unconstrained pass dropped gets its
 ;    ORIGINAL conjunct back, not the witness value the model replay
 ;    uses -- new content may pick any value the original allows.
-; RUN: %solver -s --incremental --incremental-reencode-limit 1 %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental --incremental-reencode-limit 1 --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 --incremental-reencode-limit 1 --check-sanity %s 2>&1 | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 8))

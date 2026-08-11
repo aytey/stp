@@ -4,6 +4,7 @@
 ; (the same bug class as judging arrayness before totalisation). The
 ; equation still constrains normally; only the rewrite is declined.
 ; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 %s | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun a () (Array (_ BitVec 8) (_ BitVec 8)))
 (declare-fun x () (_ BitVec 8))

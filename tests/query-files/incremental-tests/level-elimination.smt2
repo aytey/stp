@@ -13,7 +13,8 @@
 ; 3. The freeze rule survives at level granularity: a variable that ever
 ;    reached the solver is never eliminated, its equation is asserted
 ;    and feeds the deeper levels' context.
-; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 --check-sanity %s 2>&1 | %OutputCheck %s
 (set-option :produce-models true)
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 8))

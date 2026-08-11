@@ -3,6 +3,7 @@
 ; away under its own substitution -- the equation has to constrain the
 ; existing bits. A driver that eliminated it would answer sat here.
 ; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 %s | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun y () (_ BitVec 8))
 (declare-fun z () (_ BitVec 8))

@@ -5,6 +5,7 @@
 ; before and after the rebuild must be right. The tiny limit forces the
 ; rebuild mid-file.
 ; RUN: %solver --incremental --incremental-reencode-limit 60 -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --incremental-reencode-limit 60 -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (declare-fun a () (_ BitVec 8))

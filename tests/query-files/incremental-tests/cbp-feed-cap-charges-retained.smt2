@@ -13,6 +13,7 @@
 ; does not. Under the old accounting the deeper levels are refused and CBP
 ; goes off, so the last check reports no fed level at all.
 ; RUN: %solver --incremental --incremental-profile --incremental-cbp-feed-cap 20 --check-sanity %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --incremental-profile --incremental-cbp-feed-cap 20 --check-sanity %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 8))
 (declare-fun b () (_ BitVec 8))

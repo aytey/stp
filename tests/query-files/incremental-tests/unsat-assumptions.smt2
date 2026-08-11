@@ -3,6 +3,7 @@
 ; name exactly the assumptions the refutation used. Terms print in their
 ; parsed, factory-rewritten form, the same convention get-value uses.
 ; RUN: %solver --incremental %s | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 %s | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (declare-fun p () Bool)

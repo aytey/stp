@@ -10,6 +10,7 @@
 ; every fold derived from it -- the final block is satisfiable only
 ; with the flag the other way.
 ; RUN: %solver --incremental --check-sanity -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --check-sanity -s %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-cbp-reset --check-sanity -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun A () (Array (_ BitVec 8) (_ BitVec 8)))

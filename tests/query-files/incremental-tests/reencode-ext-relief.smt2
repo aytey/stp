@@ -3,6 +3,7 @@
 ; their retained clauses and eventually rebuild. The final equality conflict
 ; checks refinement correctness across that rebuild.
 ; RUN: %solver --incremental --array-equality --incremental-reencode-limit 1 -s %s > %t 2>&1
+; RUN: %solver --incremental-auto-engage-at 1 --array-equality --incremental-reencode-limit 1 -s %s > %t 2>&1
 ; RUN: %OutputCheck %s < %t
 ; RUN: %OutputCheck --check-prefix=REBUILD %s < %t
 ; REBUILD-L: re-encoded from scratch

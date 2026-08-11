@@ -15,6 +15,7 @@
 ; retires the trail from the first solve, exactly like the sessions
 ; promotion exists for.
 ; RUN: %solver -s --incremental %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 %s 2>&1 | %OutputCheck %s
 (set-logic QF_BVFP)
 (declare-fun x () (_ BitVec 8))
 (declare-fun y () (_ BitVec 8))

@@ -13,6 +13,7 @@
 ; Nothing here is derivable: the levels constrain b and c only through a
 ; disjunction, and no bit of any symbol is ever fixed.
 ; RUN: %solver --incremental -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 -s %s 2>&1 | %OutputCheck %s
 ; CHECK: cbp retired for the session \(8 adoption-free stack divergences\)
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 8))

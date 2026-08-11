@@ -6,6 +6,7 @@
 ; which makes model checking reject a candidate with no axiom available.
 ;
 ; RUN: %solver -s --incremental --incremental-reencode-limit 1 %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 --incremental-reencode-limit 1 %s 2>&1 | %OutputCheck %s
 (set-logic QF_ABV)
 (declare-fun A () (Array (_ BitVec 4) (_ BitVec 8)))
 (declare-fun i () (_ BitVec 4))

@@ -8,6 +8,7 @@
 ; re-pushing the contradiction later must derive the conflict again. (The
 ; intervening replacement trimmed that suffix's memo entry.)
 ; RUN: %solver --incremental --check-sanity -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental-auto-engage-at 1 --check-sanity -s %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --incremental --incremental-cbp-reset --check-sanity -s %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun flag () Bool)

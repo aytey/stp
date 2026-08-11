@@ -6,6 +6,7 @@
 ; holds. The size floor is set absurdly low to prove the mass ratio is
 ; what does the protecting.
 ; RUN: %solver -s --incremental --incremental-reencode-limit 60 %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --incremental-auto-engage-at 1 --incremental-reencode-limit 60 %s 2>&1 | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun x () (_ BitVec 8))
 (declare-fun y () (_ BitVec 8))
