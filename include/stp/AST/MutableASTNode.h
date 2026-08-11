@@ -429,7 +429,15 @@ public:
       }
 
       MutableASTNode* child = frame.node->children[frame.nextChild++];
-      child->parents.erase(frame.node);
+      // `parents` records unique parents, not edge multiplicity. If this
+      // parent names the same child more than once, the first edge removes
+      // the whole parent relationship. Following a later duplicate merely
+      // because the child's parent set is already empty would tear the same
+      // orphaned DAG down once per path -- exponentially for a layered DAG
+      // whose nodes use the same child twice.
+      if (child->parents.erase(frame.node) == 0)
+        continue;
+
       frame.returningChild = child;
       if (child->parents.empty())
         stack.push_back({child});

@@ -911,6 +911,36 @@ bool mutableDagRootFastPathsOk(Context& c)
   return ok;
 }
 
+// Mutable parents are a set, so two edges from one parent represent one
+// parent relationship. Detaching such a DAG must likewise process that
+// relationship once. Otherwise every duplicate edge revisits an already
+// orphaned child: n[i] = xor(n[i-1], n[i-1]) takes 2^i work, and a symbol
+// retained by another parent is reported once per path.
+bool mutableDagRepeatedEdgesOk(Context& c)
+{
+  const ASTNode shared = c.mgr.CreateSymbol("mutable-shared", 0, 8);
+  ASTNode repeated = shared;
+  for (unsigned i = 0; i < 12; ++i)
+    repeated = c.hf->CreateTerm(BVXOR, 8, repeated, repeated);
+
+  const ASTNode keeper = c.hf->CreateTerm(
+      BVXOR, 8, shared,
+      c.mgr.CreateSymbol("mutable-keeper-child", 0, 8));
+  const ASTNode top = c.hf->CreateTerm(BVPLUS, 8, repeated, keeper);
+  c.roots.push_back(top);
+
+  std::unordered_map<uint64_t, MutableASTNode*> nodes;
+  MutableASTNode::build(top, nodes);
+  MutableASTNode* repeatedMutable = nodes.at(repeated.GetNodeNum());
+
+  vector<MutableASTNode*> variables;
+  repeatedMutable->removeChildren(variables);
+  const bool ok = variables.size() == 1 && variables[0]->n == shared &&
+                  variables[0]->parents.size() == 1;
+  MutableASTNode::cleanup();
+  return ok;
+}
+
 // WorkList::addToWorklist, which seeds constant-bit propagation by walking
 // the whole input. A constant somewhere in the chain is what puts nodes on
 // the worklist at all, so the chain is built with one.
@@ -1400,6 +1430,12 @@ TEST(DeepDag, mutable_dag_root_fast_paths_preserve_no_ops)
 {
   Context c;
   EXPECT_TRUE(mutableDagRootFastPathsOk(c));
+}
+
+TEST(DeepDag, mutable_dag_repeated_edges_are_detached_once)
+{
+  Context c;
+  EXPECT_TRUE(mutableDagRepeatedEdgesOk(c));
 }
 
 /* The same properties on inputs deeper than the call stack can hold.
