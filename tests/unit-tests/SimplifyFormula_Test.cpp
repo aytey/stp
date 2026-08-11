@@ -829,6 +829,19 @@ TEST(SimplifyArms, xor_pushneg_sound)
   c.checkSoundNegated(c.Xor(a, b));
 }
 
+TEST(SimplifyArms, xor_nary_preserves_all_operands)
+{
+  Context c;
+  ASTNode a = c.boolean(), b = c.boolean(), d = c.boolean();
+  ASTNode input = c.hf->CreateNode(XOR, ASTVec{a, b, d});
+  ASTNode out = c.run(input);
+
+  EXPECT_EQ(XOR, out.GetKind());
+  EXPECT_EQ(3U, out.Degree());
+  c.checkEquivalent(input, out);
+  c.checkSoundNegated(input);
+}
+
 // NAND and NOR, whose implicit negation cancels with the caller's.
 TEST(SimplifyArms, nand_of_true_is_the_negated_other)
 {

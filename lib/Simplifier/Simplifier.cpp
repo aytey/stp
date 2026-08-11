@@ -1204,6 +1204,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         case FP_ISNEGATIVE:
         case FP_ISPOSITIVE:
         case FP_SMT_EQ:
+          if (f.outvec.empty())
+            f.outvec.reserve(f.b.Degree());
           if (f.outvec.empty() && f.b.Degree() == 2)
           {
             f.outvec.push_back(f.t0);
@@ -1373,9 +1375,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         f.valueWidth = f.a.GetValueWidth();
         if (k != SYMBOL)
         {
-          f.outvec = toASTVec(f.b.GetChildren());
           if (k == BVAND || k == BVOR || k == BVPLUS)
-            f.outvec = FlattenKind(k, f.outvec, 15);
+            f.outvec = FlattenKind(k, f.b.GetChildren(), 15);
+          else
+            f.outvec = toASTVec(f.b.GetChildren());
         }
       }
       else if (f.phase == Frame::TermOperand)
@@ -1582,6 +1585,9 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         if (f.a.Degree() == 1)
           return finish(f.a[0]);
 
+        if (f.phase == Frame::Start)
+          f.outvec.reserve(f.a.Degree());
+
         if (f.phase == Frame::XorOperand)
         {
           f.outvec.push_back(result);
@@ -1591,22 +1597,21 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         if (f.i < f.a.Degree())
           return want(f, Frame::XorOperand, f.a[f.i], false);
 
-        ASTVec newC = f.outvec;
         if (f.pushNeg)
-          newC[0] = nf->CreateNode(NOT, newC[0]);
+          f.outvec[0] = nf->CreateNode(NOT, f.outvec[0]);
 
         if (f.a.Degree() == 2)
         {
-          ASTNode output = nf->CreateNode(XOR, newC[0], newC[1]);
-          if (newC[0] == newC[1])
+          ASTNode output = nf->CreateNode(XOR, f.outvec[0], f.outvec[1]);
+          if (f.outvec[0] == f.outvec[1])
             output = ASTFalse;
-          else if ((newC[0] == ASTTrue && newC[1] == ASTFalse) ||
-                   (newC[0] == ASTFalse && newC[1] == ASTTrue))
+          else if ((f.outvec[0] == ASTTrue && f.outvec[1] == ASTFalse) ||
+                   (f.outvec[0] == ASTFalse && f.outvec[1] == ASTTrue))
             output = ASTTrue;
           return finish(output);
         }
 
-        return finish(nf->CreateNode(XOR, newC));
+        return finish(nf->CreateNode(XOR, f.outvec));
       }
 
       case NAND:
