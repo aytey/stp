@@ -860,7 +860,6 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // AND, OR and XOR collect their operands.
     ASTVec outvec;
     size_t i = 0;
-    ASTNode annihilator;
     Kind outKind = UNDEFINED;
 
     // The operands an arm has to keep across a suspension: what a NOT has
@@ -868,10 +867,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // if-then-else.
     ASTNode t0, t1, t2;
 
-    // Term jobs keep the operands selected by SimplifyTerm's pre-order
-    // policy separately from their simplified answers. `output` is also used
-    // by atomic jobs while they wait for an internally generated term.
-    ASTVec operands;
+    // Term jobs simplify their selected operands in `outvec` itself. `output`
+    // is also scratch storage for atomic jobs and for the AND/OR annihilator;
+    // those jobs are mutually exclusive, so carrying another ASTNode in every
+    // frame would only make the explicit stack larger.
     ASTNode output;
     unsigned valueWidth = 0;
 
@@ -1298,30 +1297,28 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         f.valueWidth = f.a.GetValueWidth();
         if (k != SYMBOL)
         {
-          f.operands = toASTVec(f.b.GetChildren());
+          f.outvec = toASTVec(f.b.GetChildren());
           if (k == BVAND || k == BVOR || k == BVPLUS)
-            f.operands = FlattenKind(k, f.operands, 15);
-          f.outvec.reserve(f.operands.size());
+            f.outvec = FlattenKind(k, f.outvec, 15);
         }
       }
       else if (f.phase == Frame::TermOperand)
       {
-        f.outvec.push_back(result);
+        f.outvec[f.i] = result;
         ++f.i;
       }
 
       // Simplify the selected operands left-to-right. Array operands are
       // deliberately carried through here; READ schedules its array as an
       // ArrayJob below, matching the old split between the two functions.
-      while (f.a.GetKind() != SYMBOL && f.i < f.operands.size())
+      while (f.a.GetKind() != SYMBOL && f.i < f.outvec.size())
       {
-        const ASTNode operand = f.operands[f.i];
+        const ASTNode operand = f.outvec[f.i];
         if (operand.GetType() == BITVECTOR_TYPE ||
             operand.GetType() == FLOATINGPOINT_TYPE)
           return want(f, Frame::TermOperand, operand, false, Frame::TermJob);
         if (operand.GetType() == BOOLEAN_TYPE)
           return want(f, Frame::TermOperand, operand, false, Frame::FormulaJob);
-        f.outvec.push_back(operand);
         ++f.i;
       }
 
@@ -1449,8 +1446,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
           // Under pushNeg we are simplifying NOT(a): De Morgan flips the
           // connective, and a child that simplifies to the annihilator
           // collapses the whole node.
-          f.annihilator = isAnd ? (f.pushNeg ? ASTTrue : ASTFalse)
-                                : (f.pushNeg ? ASTFalse : ASTTrue);
+          f.output = isAnd ? (f.pushNeg ? ASTTrue : ASTFalse)
+                           : (f.pushNeg ? ASTFalse : ASTTrue);
           f.outKind = (isAnd == !f.pushNeg) ? AND : OR;
           f.outvec.reserve(f.a.Degree());
         }
@@ -1458,8 +1455,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         {
           const ASTNode child = result;
 
-          if (child == f.annihilator)
-            return finish(f.annihilator);
+          if (child == f.output)
+            return finish(f.output);
 
           // A child that simplified to the output connective (typically via
           // De Morgan) would otherwise leave a nested same-kind node, which

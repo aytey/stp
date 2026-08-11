@@ -594,6 +594,34 @@ bool simplifyTermSubstitutedOk(Context& c, unsigned depth)
   return simp.SimplifyTerm(t).GetValueWidth() == 8;
 }
 
+// The term work frame uses one operand buffer for both the inputs and their
+// answers. Exercise every way an entry can be handled: a boolean operand is a
+// formula job, a bit-vector operand is a term job, and an array operand stays
+// in place until READ schedules its separate array job.
+bool simplifyMixedTermOperandsOk(Context& c)
+{
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode index = c.mgr.CreateBVConst(8, 3);
+  const ASTNode stored = c.mgr.CreateBVConst(8, 0x2a);
+  const ASTNode array = c.mgr.CreateSymbol("operand-array", 8, 8);
+
+  const ASTNode write =
+      c.hf->CreateArrayTerm(WRITE, 8, 8, array, index, stored);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, write, index);
+  const ASTNode condition = c.hf->CreateNode(EQ, zero, one);
+  const ASTNode selected = c.hf->CreateTerm(ITE, 8, condition, one, zero);
+  const ASTNode input = c.hf->CreateTerm(BVXOR, 8, selected, read);
+  c.roots.push_back(input);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode output = simp.SimplifyTerm(input);
+  c.roots.push_back(output);
+  return output == stored;
+}
+
 // A term contains a formula which contains the preceding term, at every
 // level. Separate iterative formula and term drivers are insufficient for
 // this shape: calling from one driver into the other still makes one C++
@@ -1272,6 +1300,12 @@ TEST(DeepDag, shallow_bit_blast_nested)
 {
   Context c;
   EXPECT_TRUE(bitBlastNestedOk(c, SHALLOW));
+}
+
+TEST(DeepDag, simplify_term_preserves_mixed_operand_positions)
+{
+  Context c;
+  EXPECT_TRUE(simplifyMixedTermOperandsOk(c));
 }
 
 TEST(DeepDag, shallow_simplify_alternating_term_formula)
