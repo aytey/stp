@@ -89,6 +89,12 @@ ASTInterior* STPMgr::LookupOrCreateInterior(Kind kind, const ASTVec& children)
   return insertOrReuseProbe(std::move(probe));
 }
 
+ASTInterior* STPMgr::LookupOrCreateInterior(Kind kind, ASTChildren children)
+{
+  ASTInterior probe(this, kind, children);
+  return insertOrReuseProbe(std::move(probe));
+}
+
 ASTInterior* STPMgr::LookupOrCreateInterior(Kind kind, ASTVec&& children)
 {
   ASTInterior probe(this, kind, std::move(children));

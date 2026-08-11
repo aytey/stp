@@ -34,7 +34,6 @@ THE SOFTWARE.
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#include <iterator>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -450,17 +449,14 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
   // one separately allocated ASTVec in every continuation, and Read frames
   // no longer carry an operand vector they never use.
   ASTVec activeParts;
-  ASTVec finishedParts;
 
-  auto takeParts = [&](const Frame& f) -> const ASTVec& {
+  auto partsFor = [&](const Frame& f) -> ASTChildren {
+    // prepare() resolves every leaf without pushing a frame, so a frame
+    // reaching reconstruction always owns at least one arena element.
+    assert(f.n.Degree() > 0);
     assert(activeParts.size() - f.partsBegin == f.n.Degree());
-    finishedParts.clear();
-    finishedParts.insert(
-        finishedParts.end(),
-        std::make_move_iterator(activeParts.begin() + f.partsBegin),
-        std::make_move_iterator(activeParts.end()));
-    activeParts.resize(f.partsBegin);
-    return finishedParts;
+    return ASTChildren(activeParts.data() + f.partsBegin,
+                       activeParts.size() - f.partsBegin);
   };
 
   // Ask for the transform of a descendant. Either `prepare` leaves its
@@ -514,12 +510,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       activeParts.push_back(result);
     }
 
-    const ASTVec& parts = takeParts(f);
+    const ASTChildren parts = partsFor(f);
     if (k == EQ && bm->UserFlags.optimize_flag)
       result = simp->CreateSimplifiedEQ(parts[0], parts[1]);
     else
       result = nf->CreateNode(k, parts);
-    finishedParts.clear();
+    activeParts.resize(f.partsBegin);
 
     assert(!result.IsNull());
     if (f.n.Degree() > 0)
@@ -626,14 +622,14 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       activeParts.push_back(result);
     }
 
-    const ASTVec& parts = takeParts(f);
+    const ASTChildren parts = partsFor(f);
     const ASTChildren c = f.n.GetChildren();
     if (c != parts)
       result = nf->CreateArrayTerm(k, f.n.GetIndexWidth(), f.n.GetValueWidth(),
                                    parts);
     else
       result = f.n;
-    finishedParts.clear();
+    activeParts.resize(f.partsBegin);
 
     result = finishTransformTerm(f.n, result);
     return false;

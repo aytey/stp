@@ -35,9 +35,13 @@ public:
   HashingNodeFactory(STPMgr& bm_) : NodeFactory(bm_) {}
   virtual ~HashingNodeFactory();
 
-  ASTNode CreateNode(const Kind kind, const ASTVec& back_children);
+  using NodeFactory::CreateArrayTerm;
+  using NodeFactory::CreateNode;
+  using NodeFactory::CreateTerm;
+
+  ASTNode CreateNode(Kind kind, ASTChildren back_children) override;
   ASTNode CreateTerm(Kind kind, unsigned int width,
-                                const ASTVec& children);
+                     ASTChildren children) override;
 
   virtual std::string getName() { return "hashing"; }
 };

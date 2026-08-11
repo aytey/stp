@@ -35,7 +35,7 @@ HashingNodeFactory::~HashingNodeFactory()
 
 // Get structurally hashed version of the node.
 ASTNode HashingNodeFactory::CreateNode(const Kind kind,
-                                       const ASTVec& back_children)
+                                       const ASTChildren back_children)
 {
   // We can't create NOT(NOT (..)) nodes because of how the numbering scheme we
   // use works. So you can't trust the hashing node factory even to return
@@ -95,7 +95,7 @@ ASTNode HashingNodeFactory::CreateNode(const Kind kind,
       return ASTNode(bm.LookupOrCreateInterior(kind, back_children));
     }
 
-    ASTVec sorted_children = back_children;
+    ASTVec sorted_children(back_children.begin(), back_children.end());
     SortByExprNum(sorted_children);
     return ASTNode(bm.LookupOrCreateInterior(kind, std::move(sorted_children)));
   }
@@ -108,7 +108,7 @@ ASTNode HashingNodeFactory::CreateNode(const Kind kind,
       return ASTNode(bm.LookupOrCreateInterior(kind, back_children));
     }
 
-    ASTVec children(back_children);
+    ASTVec children(back_children.begin(), back_children.end());
     // The Bitvector solver seems to expect constants on the RHS, variables on the
     // LHS.
     SortByArith(children);
@@ -119,7 +119,7 @@ ASTNode HashingNodeFactory::CreateNode(const Kind kind,
 
 // Create and return an ASTNode for a term
 ASTNode HashingNodeFactory::CreateTerm(Kind kind, unsigned int width,
-                                       const ASTVec& children)
+                                       const ASTChildren children)
 {
   ASTNode n = CreateNode(kind, children);
   n.SetValueWidth(width);

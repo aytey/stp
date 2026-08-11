@@ -46,9 +46,8 @@ class ASTInterior : public ASTInternal
   friend class STPMgr;
   friend class ASTNodeHasher;
   friend class ASTNodeEqual;
-  friend stp::ASTNode
-  HashingNodeFactory::CreateNode(const Kind kind,
-                                 const stp::ASTVec& back_children);
+  friend stp::ASTNode HashingNodeFactory::CreateNode(
+      Kind kind, stp::ASTChildren back_children);
 
   // The vector of children
   ASTVec _children;
@@ -160,6 +159,17 @@ class ASTInterior : public ASTInternal
 public:
   ASTInterior(STPMgr* mgr, Kind kind, const ASTVec& children)
       : ASTInternal(mgr, kind), _children(children), _value_width(0),
+        _index_width(0), _sig_width(0), _exp_width(0),
+        _source_sort_cache(NULL)
+  {
+    is_simplified = false;
+    if (kind == NOT)
+      node_uid = children[0].GetNodeNum() + 1;
+  }
+
+  ASTInterior(STPMgr* mgr, Kind kind, ASTChildren children)
+      : ASTInternal(mgr, kind),
+        _children(children.begin(), children.end()), _value_width(0),
         _index_width(0), _sig_width(0), _exp_width(0),
         _source_sort_cache(NULL)
   {
