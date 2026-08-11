@@ -949,6 +949,23 @@ struct IncrementalSolver::Impl
   size_t cbpEpochAdopted = 0;
   size_t cbpBarrenDivergences = 0;
   bool cbpEverFixed = false;
+
+  // Whether the engine has ever DERIVED a fixing, as opposed to recording the
+  // truth of a conjunct that was fed to it.
+  //
+  // Every fed level is asserted, so its conjunction and each of its top-level
+  // conjuncts are fixed to TRUE by assumption alone -- and a Boolean symbol
+  // asserted bare is both a fed conjunct and a symbol. Counting those made the
+  // flag true after the first array-free feed, before the engine had derived
+  // anything, which inverted the retirement tiers: the short leash for a
+  // session whose fixing map stays empty became unreachable for exactly the
+  // pop-per-query sessions it was measured on, and they served out the long
+  // one instead.
+  void noteEngineDerivedFixing(const ASTNode& n)
+  {
+    if (callCbpFedConjuncts.find(n) == callCbpFedConjuncts.end())
+      cbpEverFixed = true;
+  }
   bool cbpFedArrays = false;
   bool callCbpOff = false;
   bool callCbpConflict = false;
@@ -1355,7 +1372,7 @@ struct IncrementalSolver::Impl
           continue;
         callCbpDeferred.push_back(std::make_pair(n, k));
         feedSymbols.insert(n);
-        cbpEverFixed = true;
+        noteEngineDerivedFixing(n);
       }
       for (const ASTNode& n : feedDelta)
       {
@@ -1373,7 +1390,7 @@ struct IncrementalSolver::Impl
           callCbpDeferred.push_back(std::make_pair(n, k));
         else
           cbpAssignSubstitution(n, k);
-        cbpEverFixed = true;
+        noteEngineDerivedFixing(n);
       }
 
       for (const ASTNode& c : fed)
