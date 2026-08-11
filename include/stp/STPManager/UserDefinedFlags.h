@@ -115,6 +115,14 @@ public:
   // real check. 0 disables the deferral.
   int64_t incremental_cbp_bootstrap_limit = 100000;
 
+  // How many DAG nodes the cross-level CBP engine may retain for the live
+  // stack before it stops accepting levels. Charged against what the engine
+  // actually holds -- levels share subgraphs by identity, so this is the
+  // union over live levels, not the sum of their sizes. The default is the
+  // measured policy; the override exists so the cap can be reached in a
+  // test without a hundred-thousand-node file.
+  int64_t incremental_cbp_feed_cap = 200000;
+
   // The persistent encoding grows monotonically; when the solver's variable
   // count passes this limit AND most encodings belong to popped,
   // never-returning content, the solver is rebuilt from the live stack

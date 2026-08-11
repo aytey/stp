@@ -474,6 +474,12 @@ void ExtraMain::create_options()
             "this many DAG nodes. 0 disables the deferral.",
             misc_group);
 
+  int64_arg("--incremental-cbp-feed-cap", bm->UserFlags.incremental_cbp_feed_cap,
+            "how many DAG nodes the cross-level CBP engine may retain for "
+            "the live stack before it stops accepting levels; the charge is "
+            "refunded when a level pops.",
+            misc_group);
+
   int64_arg("--incremental-reencode-limit",
             bm->UserFlags.incremental_reencode_limit,
             "rebuild the incremental solver from the live assertion stack "
@@ -801,6 +807,12 @@ int ExtraMain::parse_options(int argc, char** argv)
   if (bm->UserFlags.timeout_max_time < -1)
   {
     cerr << "ERROR: --max-time must be -1 (no limit) or greater" << endl;
+    std::exit(-1);
+  }
+
+  if (bm->UserFlags.incremental_cbp_feed_cap < 1)
+  {
+    cerr << "ERROR: --incremental-cbp-feed-cap must be at least 1" << endl;
     std::exit(-1);
   }
 

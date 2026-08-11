@@ -204,6 +204,35 @@ void IncrementalCBP::extendParentMap(const ASTNode& root)
   }
 }
 
+size_t IncrementalCBP::freshNodeCount(const ASTNode& root, size_t budget) const
+{
+  ASTNodeSet fresh;
+  std::vector<ASTNode> stack;
+  stack.push_back(root);
+
+  while (!stack.empty())
+  {
+    const ASTNode n = stack.back();
+    stack.pop_back();
+
+    if (n.isConstant())
+      continue;
+    // Already in the graph. extendParentMap stops here too, and it stopped
+    // here on the feed that first visited it, so the whole subgraph beneath
+    // is present and none of it is new.
+    if (depsVisited.find(n) != depsVisited.end())
+      continue;
+    if (!fresh.insert(n).second)
+      continue;
+    if (fresh.size() > budget)
+      return fresh.size();
+
+    for (unsigned i = 0; i < n.Degree(); i++)
+      stack.push_back(n[i]);
+  }
+  return fresh.size();
+}
+
 void IncrementalCBP::pushWork(const ASTNode& n)
 {
   if (n.isConstant())

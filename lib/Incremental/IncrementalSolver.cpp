@@ -871,16 +871,16 @@ struct IncrementalSolver::Impl
     return visited.size();
   }
 
-  // The two fixed-cap measurements recur for the same nodes on every
-  // call of a deep session (every level's granularity is re-judged
-  // per check-sat, and the reset-mode oracle re-walks the whole stack's
-  // feeds);
-  // nodes are immutable, so the clipped count is a permanent fact.
+  // The granularity measurement recurs for the same nodes on every call
+  // of a deep session (every level's granularity is re-judged per
+  // check-sat); nodes are immutable, so the clipped count is a permanent
+  // fact. The CBP feed does NOT measure sizes -- it asks the engine what a
+  // level would add to what it already holds, which no per-node size can
+  // answer.
   typedef std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
                              ASTNode::ASTNodeEqual>
       NodeSizeMemo;
   NodeSizeMemo dagSizeBigMemo;
-  NodeSizeMemo dagSizeFeedMemo;
 
   size_t dagSizeUpToMemo(const ASTNode& n, size_t cap, NodeSizeMemo& memo)
   {
@@ -996,6 +996,16 @@ struct IncrementalSolver::Impl
   // barren run; a session with fixings but no adoption yet gets a
   // leash long enough that a pop-bounded session cannot exhaust it.
   bool cbpSessionRetired = false;
+  // Refusing a level for want of capacity is NOT that judgement. The cap
+  // measures the live stack, and the charge against it is refunded when a
+  // level pops (cbpRollbackCallerTo), so a retirement keyed on it must be
+  // refunded too: otherwise one deep excursion turns the pass off for a
+  // session that spends the rest of its life at depth two. Latched at the
+  // fed-level count that was refused, and released once the stack falls
+  // back below it.
+  static const size_t noFeedCapRefusal = std::numeric_limits<size_t>::max();
+  size_t cbpOverFeedCapAt = noFeedCapRefusal;
+  bool cbpOverFeedCap() const { return cbpOverFeedCapAt != noFeedCapRefusal; }
   static const size_t cbpRetireBarrenNeverFixed = 8;
   static const size_t cbpRetireBarrenFixed = 64;
   // The substitution stays small: it exists for the cross-level few
@@ -1008,8 +1018,13 @@ struct IncrementalSolver::Impl
   // The engine's fed content is bounded; raw word-level stacks are
   // parse-folded and small (the target family's whole stack is under
   // five thousand nodes), so a stack past this size is the deep
-  // KLEE-class session the cap exists to protect.
-  static const size_t cbpFeedCap = 200000;
+  // KLEE-class session the cap exists to protect. What is charged against
+  // it is what the engine RETAINS for the live stack -- see cbpFeedLevel.
+  size_t cbpFeedCap() const
+  {
+    const int64_t configured = bm->UserFlags.incremental_cbp_feed_cap;
+    return configured < 1 ? 1 : static_cast<size_t>(configured);
+  }
 
   // ── Cross-call reuse ──────────────────────────────────────────────
   //
@@ -1195,6 +1210,12 @@ struct IncrementalSolver::Impl
       callCbpOff = checkpoint.offBefore;
       callCbpConflict = checkpoint.conflictBefore;
     }
+    // The refused level is gone, and its would-be charge with it, so the
+    // capacity judgement that refused it no longer describes this stack.
+    // Rolling back TO the refusal depth leaves the same stack that was
+    // refused, so only a strictly shallower one releases it.
+    if (cbpOverFeedCap() && levels < cbpOverFeedCapAt)
+      cbpOverFeedCapAt = noFeedCapRefusal;
     cbpSubstTrailedThisLevel.clear();
     cbpCallerLevelOpen = false;
     callCbpDeferred.clear();
@@ -1217,6 +1238,7 @@ struct IncrementalSolver::Impl
     cbpSubstTrailedThisLevel.clear();
     cbpCallerLevelOpen = false;
     callCbpFed = 0;
+    cbpOverFeedCapAt = noFeedCapRefusal;
     cbpFedArrays = false;
   }
 
@@ -1278,21 +1300,30 @@ struct IncrementalSolver::Impl
     if (!callCbp)
       callCbp.reset(new IncrementalCBP(bm, bm->defaultNodeFactory));
 
-    const size_t levelNodes =
-        dagSizeUpToMemo(levelConjunction, cbpFeedCap, dagSizeFeedMemo);
+    // Charge the cap what this level ADDS, not what it spans. Levels share
+    // subgraphs by identity -- a pushed level is usually a small delta over
+    // the cone its parent already established -- and the engine visits a
+    // shared node once, ever: extendParentMap stops at depsVisited, and the
+    // parent map, the fixed-bits map and the undo trail all key on the node.
+    // Summing per-level DAG sizes therefore charged one shared cone once per
+    // level that mentions it, and a stack of twenty such levels read as
+    // twenty times the mass the engine was actually holding. It is the same
+    // over-count that makes DAG size the wrong measure for adoption's shrink
+    // gate: interned structure is not paid for twice.
+    const size_t cap = cbpFeedCap();
+    const size_t levelNodes = callCbp->freshNodeCount(levelConjunction, cap);
     const size_t fedBefore = callCbpFed;
-    assert(callCbpFed <= cbpFeedCap);
-    if (levelNodes > cbpFeedCap - callCbpFed)
+    assert(callCbpFed <= cap);
+    if (levelNodes > cap - callCbpFed)
     {
       if (profile.enabled)
         profile.cbpFeedRejected++;
       feedClassTimer.retarget(profile.enabled, profile.cbpRejectedFeedNs);
       callCbpOff = true;
-      cbpSessionRetired = true;
+      cbpOverFeedCapAt = level;
       if (bm->UserFlags.stats_flag)
-        std::cerr << "Incremental: cbp retired for the session (stack "
-                     "over the feed cap)"
-                  << std::endl;
+        std::cerr << "Incremental: cbp off at level " << level
+                  << " (stack over the feed cap)" << std::endl;
       return;
     }
     callCbpFed += levelNodes;
@@ -1320,11 +1351,20 @@ struct IncrementalSolver::Impl
       cbpInsertFedConjunct(c);
 
     bool consistent;
+    const bool wasInConflict = callCbp->inConflict();
     {
       ScopedProfileTimer propagationTimer(profile.enabled,
                                           profile.cbpPropagateNs);
       consistent = callCbp->feedLevel(levelConjunction);
     }
+    // The charge IS the retained mass. freshNodeCount and extendParentMap
+    // walk the same graph under the same stopping rule, so an accepted feed
+    // grows the engine's dependency set by exactly what was charged -- the
+    // invariant the old per-level sum could not state, let alone check. A
+    // feed onto an already-conflicting engine returns before extending the
+    // graph at all, and is the one case that owes nothing.
+    assert(wasInConflict || callCbpFed == callCbp->retainedNodes());
+    (void)wasInConflict;
     assert(callCbp->levelCount() == cbpCallerCheckpoints.size());
     if (!consistent)
     {
@@ -5310,7 +5350,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
-  impl->callCbpOff = impl->cbpSessionRetired || cbpBootstrapDeferred;
+  impl->callCbpOff = impl->cbpSessionRetired || cbpBootstrapDeferred ||
+                     impl->cbpOverFeedCap();
   impl->callCbpConflict = false;
 
   // Base level: every conjunct becomes a permanent unit clause, once. The

@@ -108,6 +108,20 @@ public:
 
   size_t levelCount() const { return checkpoints.size(); }
 
+  /// How many DISTINCT nodes `root` would ADD to the dependency graph this
+  /// engine already holds. Levels share subgraphs by identity, so the sum of
+  /// the live levels' DAG sizes is NOT the size of what is retained: one cone
+  /// under twenty levels is charged twenty times by that measure and once by
+  /// this one. The walk mirrors extendParentMap -- it stops at constants and
+  /// at nodes already visited, because nothing beneath those is new either --
+  /// so it costs the delta, not the level. It saturates just past `budget`
+  /// rather than finishing a walk whose answer cannot change the decision.
+  size_t freshNodeCount(const ASTNode& root, size_t budget) const;
+
+  /// Nodes retained for the live stack. Rolled back with the levels, so this
+  /// is the union over levels currently fed, never a session total.
+  size_t retainedNodes() const { return depsVisited.size(); }
+
   /// Nodes that became fully determined during the last feedLevel call
   /// (cleared by the call itself). Constants excluded.
   const std::vector<ASTNode>& takeNewlyFixed() const { return newlyFixed; }
