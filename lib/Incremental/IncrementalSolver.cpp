@@ -1679,11 +1679,74 @@ struct IncrementalSolver::Impl
     preparedPieceOf.erase(it);
   }
 
+  // Symbols a live pushed-definition entry can inject into a level DEEPER
+  // than `levelIdx`, and which therefore may not be eliminated there.
+  //
+  // Privacy is otherwise decided over the RAW stack, but deeper levels are
+  // not encoded from their raw conjunctions: each is rewritten through
+  // SubstitutionMap::replace under `ctx`. A deeper level that names a
+  // context KEY is encoded over that key's BODY, so every symbol of the body
+  // reaches the blaster even though no raw level mentions it. Eliminating
+  // such a symbol drops its defining equation while its occurrences remain,
+  // leaving it unconstrained -- sat where unsat lies that way.
+  //
+  // The re-join in checkSatOnCurrentStack usually repairs this by feeding an
+  // eliminated definition back into `ctx`, but it declines silently on an
+  // occurs-check or an oversized body, and nothing retracts the elimination
+  // when it does. Deciding eliminability over everything that can reach the
+  // encoder removes the dependency on that repair.
+  //
+  // Reachability is transitive: replace() expands context entries through
+  // each other, so a deeper level naming `u` also names whatever `ctx[u]`
+  // names, and so on. `ctx` holds tens of entries, so the fixpoint is cheap.
+  void collectCtxExportedSymbols(const ASTNodeMap& ctx, size_t levelIdx,
+                                 const ASTVec& stack, ASTNodeSet& out)
+  {
+    if (ctx.empty())
+      return;
+
+    std::vector<ASTNode> pending;
+    ASTNodeSet queued;
+    for (ASTNodeMap::const_iterator it = ctx.begin(); it != ctx.end(); ++it)
+    {
+      // Entries accumulate by level prefix, so an entry visible while
+      // `levelIdx` is prepared can only rewrite levels below it. The piece's
+      // own conjuncts are checked separately (see preparePiece's assert).
+      for (size_t j = levelIdx + 1; j < stack.size(); j++)
+      {
+        const ASTNodeSet& syms = symbolsOf(stack[j]);
+        if (syms.find(it->first) == syms.end())
+          continue;
+        if (queued.insert(it->first).second)
+          pending.push_back(it->first);
+        break;
+      }
+    }
+
+    while (!pending.empty())
+    {
+      const ASTNode key = pending.back();
+      pending.pop_back();
+      ASTNodeMap::const_iterator body = ctx.find(key);
+      if (body == ctx.end())
+        continue;
+      for (const ASTNode& s : symbolsOf(body->second))
+      {
+        out.insert(s);
+        if (ctx.find(s) != ctx.end() && queued.insert(s).second)
+          pending.push_back(s);
+      }
+    }
+  }
+
   // Whether `v` belongs to one conjunct of level `levelIdx` alone:
-  // mentioned by no base conjunct, no other live level's raw content, at
-  // most ONE raw conjunct of its own level (its defining one -- the
-  // context is level-uniform, so a same-level use elsewhere would keep a
-  // reference to the variable), and never bit-blasted.
+  // mentioned by no base conjunct, no other live level's raw content, no
+  // live context body a deeper level can reach (see
+  // collectCtxExportedSymbols, whose result reaches this through
+  // `protectedSymbols`), at most ONE raw conjunct of its own level (its
+  // defining one -- the context is level-uniform, so a same-level use
+  // elsewhere would keep a reference to the variable), and never
+  // bit-blasted.
   bool levelPrivate(const ASTNode& v, size_t levelIdx, const ASTVec& stack,
                     const std::map<ASTNode, size_t>& conjunctCountOf,
                     const ASTNodeSet& protectedSymbols)
@@ -2962,6 +3025,17 @@ struct IncrementalSolver::Impl
   // variables are canonical for the session.
   int rootLit(const ASTNode& conjunct)
   {
+#ifndef NDEBUG
+    // The encode boundary is where the elimination invariant is finally
+    // observable: a variable whose defining equation this solve dropped must
+    // not appear in anything the solve encodes. Checked here rather than only
+    // inside preparePiece because the hazard is a DEEPER level -- rewritten
+    // through the pushed-definition context -- naming a variable an earlier
+    // level eliminated, which the per-piece check cannot see.
+    for (const ASTNode& s : symbolsOf(conjunct))
+      assert(activeEliminatedVars.find(s) == activeEliminatedVars.end() &&
+             "encoding a conjunct over an eliminated variable");
+#endif
     NodeToLitMap::const_iterator it = rootLitOf.find(conjunct);
     if (it != rootLitOf.end())
     {
@@ -5273,6 +5347,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         }
         impl->addSymbolsOf(eligibleDomains, cbpProtectedSymbols);
       }
+      // Deeper levels are encoded from their ctx-substituted form, so every
+      // symbol a live context body can inject into one of them is off limits
+      // to this level's private elimination (see collectCtxExportedSymbols).
+      impl->collectCtxExportedSymbols(ctx, level, assertionsSMT2,
+                                      cbpProtectedSymbols);
       size_t cbpMemoIdx = 0;
       std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
@@ -5397,6 +5476,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // recursed until the worker stack died. The elimination itself
         // stays (it is sound for the piece and its replay); only the
         // context entry is withheld.
+        bool ctxGrew = false;
         for (const std::pair<ASTNode, ASTNode>& d : pp.eliminatedDefs)
         {
           impl->recordActiveElimination(d.first, d.second);
@@ -5416,12 +5496,19 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               Impl::defInlineCap)
             continue;
           ctx[d.first] = expanded;
+          ctxGrew = true;
           if (impl->profile.enabled)
             impl->profile.contextDefinitions++;
           if (!ctxHasFp && bm->has_floating_point_theory &&
               containsFloatingPointTheory(expanded, bm))
             ctxHasFp = true;
         }
+        // A later piece of THIS level must see what the entries just added
+        // can inject into the levels below; the per-level pass above ran
+        // before they existed.
+        if (ctxGrew)
+          impl->collectCtxExportedSymbols(ctx, level, assertionsSMT2,
+                                          cbpProtectedSymbols);
       }
 
       // The pinning facts justifying this level's adoptions are its
