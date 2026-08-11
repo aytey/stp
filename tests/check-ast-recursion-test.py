@@ -127,6 +127,18 @@ std::function<ASTNode(const ASTNode&)> lambda =
         sources = CHECKER.read_sources([str(self.root)])
         self.assertNotIn("ASTNode", CHECKER.parse_functions(sources))
 
+    def test_finds_named_recursive_std_function_lambda(self):
+        self.write("lambda.cpp", r"""
+void owner(const ASTNode& root)
+{
+  std::function<void(const ASTNode&)> descend =
+      [&](const ASTNode& node) { descend(node[0]); };
+  descend(root);
+}
+""")
+
+        self.assertEqual({"<lambda descend>"}, set(self.scan(self.root)))
+
     def test_scc_analysis_does_not_recurse_on_the_python_stack(self):
         size = 5000
         edges = {str(i): {str(i + 1)} for i in range(size - 1)}

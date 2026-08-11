@@ -114,7 +114,6 @@ VariablesInExpression::VarSeenInTerm: safe: overload forwarding; the Symbols wal
 VariablesInExpression::getSymbol: bounded: graph primed before it runs (primeSymbols)
 buildListOfSymbols: off-path: collects the symbols a print-back has to declare; its callers are print_STPInput_Back and the SMT-LIB1 and SMT-LIB2 print-backs
 collectArrayIndexSorts: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2, same as SMTLIB_Print1
-collectDag: on-path: array equality walks the graph it owns one frame per level, guarded by a visited set. Depth not measured
 collectRoundingModeUses: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2
 evaluateMemoised: on-path: folds a constant expression child-first, memoised, reached from the node-taking NonMemberBVConstEvaluator. Its depth is the constant expression's, which the simplifier builds rather than the input. Not measured
 getConstantBit: on-path: reads one bit of a constant, descending the first child of a BVCONCAT chain. Depth not measured; it is called only where the simplifier has already established a constant of that shape

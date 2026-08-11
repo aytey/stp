@@ -28,10 +28,11 @@ THE SOFTWARE.
 #include "stp/STPManager/STPManager.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/ToSat/ToSATBase.h"
+#include "stp/Util/DagWalk.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <functional>
+#include <limits>
 
 namespace stp
 {
@@ -108,13 +109,14 @@ ASTNode canonicalQuietNaN(STPMgr* bm, unsigned eb, unsigned sb)
   return bm->CreateBVConst(bits, w);
 }
 
-// Postorder DAG collection of every node beneath (and including) n.
+// Collect every node beneath (and including) n. The input chooses the DAG's
+// depth, so retain suspended ancestors on the heap rather than recursing once
+// per level.
 void collectDag(const ASTNode& n, ASTNodeSet& visited)
 {
-  if (!visited.insert(n).second)
-    return;
-  for (unsigned k = 0; k < n.Degree(); k++)
-    collectDag(n[k], visited);
+  walkPreOrder(n, [&](const ASTNode& current) {
+    return visited.insert(current).second;
+  });
 }
 
 // The current form of an equality operand, read back from its witness
@@ -520,52 +522,173 @@ ASTNode ExtensionalityContext::lowerArrayEqualities(
 
   ASTNodeMap cache;
   NodeFactory* hf = bm->hashingNodeFactory;
-  std::function<ASTNode(const ASTNode&)> lower = [&](const ASTNode& n) {
-    ASTNodeMap::const_iterator found = cache.find(n);
+
+  // Lower the DAG in the same left-to-right post-order as the former
+  // recursive std::function. That function consumed one native call frame
+  // per input level (and made a type-erased call per edge); a sufficiently
+  // deep write operand therefore exhausted the stack before ordinary STP
+  // preprocessing began.
+  //
+  // Most nodes do not contain ARRAY_EQ and come back unchanged. Keep the
+  // current node's original children in its immutable storage and acquire an
+  // owned vector only after one child changes. Scratch slots are nested and
+  // released in traversal order, so unchanged frames stay compact while a
+  // changed ancestor can retain its prefix across a changed descendant.
+  struct Frame
+  {
+    enum : unsigned
+    {
+      noScratch = std::numeric_limits<unsigned>::max()
+    };
+
+    const ASTNode* node;
+    size_t nextChild = 0;
+    unsigned scratch = noScratch;
+    bool waiting = false;
+
+    explicit Frame(const ASTNode* n) : node(n) {}
+  };
+  static_assert(sizeof(Frame) <= 32,
+                "array-equality lowering frames must stay compact");
+
+  ASTNode result;
+
+  // The recursive form cached leaves too. Settle them without allocating a
+  // frame, at the same point in the traversal at which their call returned.
+  auto settled = [&](const ASTNode& n) -> bool {
+    const ASTNodeMap::const_iterator found = cache.find(n);
     if (found != cache.end())
-      return found->second;
-
-    const ASTChildren children = n.GetChildren();
-    ASTVec loweredChildren;
-    bool changed = false;
-    loweredChildren.reserve(children.size());
-    for (const ASTNode& originalChild : children)
     {
-      const ASTNode child = lower(originalChild);
-      loweredChildren.push_back(child);
-      changed = changed || child != originalChild;
+      result = found->second;
+      return true;
     }
-
-    ASTNode result;
-    if (n.GetKind() == ARRAY_EQ)
-    {
-      assert(loweredChildren.size() == 2);
-      result = makeEquality(loweredChildren[0], loweredChildren[1]);
-      currentLowerings[n] = result;
-    }
-    else if (!changed)
-    {
-      result = n;
-    }
-    else if (n.GetValueWidth() == 0)
-    {
-      result = hf->CreateNode(n.GetKind(), loweredChildren);
-    }
-    else if (n.GetIndexWidth() > 0)
-    {
-      result = hf->CreateArrayTerm(n.GetKind(), n.GetIndexWidth(),
-                                   n.GetValueWidth(), loweredChildren);
-    }
-    else
-    {
-      result = hf->CreateTerm(n.GetKind(), n.GetValueWidth(), loweredChildren);
-    }
-
+    if (n.Degree() != 0)
+      return false;
+    result = n;
     cache.insert(std::make_pair(n, result));
-    return result;
+    return true;
   };
 
-  const ASTNode lowered = lower(root);
+  ASTNode lowered;
+  if (settled(root))
+  {
+    lowered = result;
+  }
+  else
+  {
+    std::vector<Frame> stack;
+    stack.emplace_back(&root);
+
+    std::vector<ASTVec> scratches;
+    unsigned scratchesInUse = 0;
+
+    auto scratchFor = [&](Frame& frame) -> ASTVec& {
+      if (frame.scratch == Frame::noScratch)
+      {
+        assert(scratchesInUse < Frame::noScratch);
+        frame.scratch = scratchesInUse++;
+        if (frame.scratch == scratches.size())
+          scratches.emplace_back();
+      }
+      return scratches[frame.scratch];
+    };
+
+    auto releaseScratch = [&](Frame& frame) {
+      if (frame.scratch == Frame::noScratch)
+        return;
+      assert(frame.scratch + 1 == scratchesInUse);
+      scratches[frame.scratch].clear();
+      --scratchesInUse;
+    };
+
+    // Consume the answer for frame.nextChild, copying the original prefix
+    // only when this is the first child that changed.
+    auto acceptChild = [&](Frame& frame) {
+      const ASTChildren original = frame.node->GetChildren();
+      assert(frame.nextChild < original.size());
+      if (result != original[frame.nextChild] &&
+          frame.scratch == Frame::noScratch)
+      {
+        ASTVec& changed = scratchFor(frame);
+        changed.reserve(original.size());
+        changed.insert(changed.end(), original.begin(),
+                       original.begin() + frame.nextChild);
+      }
+      if (frame.scratch != Frame::noScratch)
+        scratches[frame.scratch].push_back(result);
+      ++frame.nextChild;
+    };
+
+    while (true)
+    {
+      Frame& current = stack.back();
+
+      if (current.waiting)
+      {
+        current.waiting = false;
+        acceptChild(current);
+      }
+
+      bool descended = false;
+      while (current.nextChild < current.node->Degree())
+      {
+        const ASTNode* child = &(*current.node)[current.nextChild];
+        if (settled(*child))
+        {
+          acceptChild(current);
+          continue;
+        }
+
+        current.waiting = true;
+        stack.emplace_back(child);
+        descended = true;
+        break;
+      }
+      if (descended)
+        continue;
+
+      const ASTNode& n = *current.node;
+      const ASTVec* changed =
+          current.scratch == Frame::noScratch
+              ? NULL
+              : &scratches[current.scratch];
+
+      if (n.GetKind() == ARRAY_EQ)
+      {
+        assert(n.Degree() == 2);
+        const ASTNode& left = changed == NULL ? n[0] : (*changed)[0];
+        const ASTNode& right = changed == NULL ? n[1] : (*changed)[1];
+        result = makeEquality(left, right);
+        currentLowerings[n] = result;
+      }
+      else if (changed == NULL)
+      {
+        result = n;
+      }
+      else if (n.GetValueWidth() == 0)
+      {
+        result = hf->CreateNode(n.GetKind(), *changed);
+      }
+      else if (n.GetIndexWidth() > 0)
+      {
+        result = hf->CreateArrayTerm(n.GetKind(), n.GetIndexWidth(),
+                                     n.GetValueWidth(), *changed);
+      }
+      else
+      {
+        result = hf->CreateTerm(n.GetKind(), n.GetValueWidth(), *changed);
+      }
+
+      cache.insert(std::make_pair(n, result));
+      releaseScratch(current);
+      stack.pop_back();
+      if (stack.empty())
+      {
+        lowered = result;
+        break;
+      }
+    }
+  }
 
   // FpTotalise runs before this pass. If it changed an operand of an opaque
   // equality, the public expression handle still names the original node

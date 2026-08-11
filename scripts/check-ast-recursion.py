@@ -47,6 +47,12 @@ them no longer mentions ASTNode in its own signature.
 This remains a review tripwire, not a proof: overload forwarding and bounded
 recursion look like walks and are deliberately reported. That is why every
 allowlist entry carries a status and a reason rather than merely a name.
+
+Named std::function lambdas are checked separately. They do not have a C++
+function definition for the ordinary call graph to name, but a lambda which
+calls the variable holding itself is the same input-depth recursion -- with
+an additional indirect call at every level -- and must not sit outside the
+audit merely because its body is local to another function.
 """
 
 import os
@@ -309,6 +315,61 @@ def parse_functions(sources):
     return functions
 
 
+def recursive_graph_lambdas(sources, graph_types):
+    """Named std::function lambdas which call themselves on an AST type."""
+    graph_pattern = re.compile(
+        r'\b(?:' + "|".join(re.escape(t) for t in sorted(graph_types)) + r')\b')
+    found = {}
+
+    for root, path, src, _ in sources:
+        at = 0
+        marker = "std::function"
+        while True:
+            begin = src.find(marker, at)
+            if begin < 0:
+                break
+            at = begin + len(marker)
+
+            angle = src.find("<", at)
+            if angle < 0:
+                continue
+            depth = 0
+            close = -1
+            for i in range(angle, len(src)):
+                if src[i] == "<":
+                    depth += 1
+                elif src[i] == ">":
+                    depth -= 1
+                    if depth == 0:
+                        close = i
+                        break
+            if close < 0:
+                continue
+
+            signature = src[angle + 1:close]
+            if not graph_pattern.search(signature):
+                at = close + 1
+                continue
+
+            declaration = re.match(r'\s*([A-Za-z_]\w*)\s*=\s*',
+                                   src[close + 1:])
+            if declaration is None:
+                at = close + 1
+                continue
+            name = declaration.group(1)
+            initializer = close + 1 + declaration.end()
+            extent = body_extent_after(src, initializer)
+            if extent is None:
+                at = initializer
+                continue
+            body = src[extent[0]:extent[1]]
+            if re.search(r'\b' + re.escape(name) + r'\s*\(', body):
+                found["<lambda %s>" % name] = os.path.relpath(path, root)
+            at = extent[1] + 1
+
+    return found
+
+
 def graph_parameter_names(signatures, graph_types):
     """Names of parameters whose declared type is AST-shaped."""
     type_pattern = re.compile(
@@ -491,6 +552,7 @@ def recursive_ast_walkers(roots):
             graph_functions.add(label)
 
     found = {}
+    found.update(recursive_graph_lambdas(sources, graph_types))
     # Preserve the original audit's direct-recursion coverage. It is
     # intentionally syntactic and therefore also catches overload forwarding.
     for label in graph_functions:

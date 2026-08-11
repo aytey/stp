@@ -57,6 +57,7 @@ THE SOFTWARE.
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
 #include "stp/FloatBlaster/FpTotalise.h"
+#include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/Printer/printers.h"
 #include "stp/Simplifier/CommonSubSum.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -1173,6 +1174,31 @@ bool arrayWriteChainOk(Context& c, unsigned depth)
   return result.GetKind() != UNDEFINED;
 }
 
+// Solve-boundary array equality lowering used a recursive std::function for
+// this post-order rebuild. A write chain is unchanged below the equality but
+// still drove that function one native frame per write; at 5,000 writes it
+// dies under a 512 KiB stack before any ordinary preprocessing runs.
+bool arrayEqualityLoweringOk(Context& c, unsigned depth)
+{
+  c.mgr.UserFlags.enable_array_equality = true;
+  ASTNode chain = c.mgr.CreateSymbol("lower-array-a", 16, 8);
+  const ASTNode other = c.mgr.CreateSymbol("lower-array-b", 16, 8);
+  const ASTNode index = c.mgr.CreateSymbol("lower-array-i", 0, 16);
+  const ASTNode value = c.mgr.CreateSymbol("lower-array-v", 0, 8);
+  for (unsigned i = 0; i < depth; ++i)
+    chain = c.hf->CreateArrayTerm(WRITE, 16, 8, chain, index, value);
+
+  const ASTNode opaque = c.hf->CreateNode(EQ, chain, other);
+  c.roots.push_back(opaque);
+
+  ExtensionalityContext ext(&c.mgr);
+  ext.beginSolve();
+  const ASTNode lowered = ext.lowerArrayEqualities(opaque);
+  c.roots.push_back(lowered);
+  return lowered.GetKind() == SYMBOL && ext.getRecords().size() == 1 &&
+         ext.getActiveRecordCount() == 1;
+}
+
 // TransformFormula's own spine. A conjunction reaches this pass flat in
 // ordinary use, because the simplifier collapses it first -- but that is the
 // simplifier's doing, not a property of this pass, and the pass is reachable
@@ -1966,6 +1992,10 @@ TEST(DeepDag, deep_propagate_equalities) { EXPECT_STACK_SAFE(propagateEqualities
 TEST(DeepDag, deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }
 TEST(DeepDag, deep_array_read_chain)   { EXPECT_STACK_SAFE(arrayReadChainOk, 20000); }
 TEST(DeepDag, deep_array_write_chain)  { EXPECT_STACK_SAFE(arrayWriteChainOk, 20000); }
+TEST(DeepDag, deep_array_equality_lowering)
+{
+  EXPECT_STACK_SAFE(arrayEqualityLoweringOk, 20000);
+}
 TEST(DeepDag, deep_transform_formula_spine) { EXPECT_STACK_SAFE(transformFormulaSpineOk, 20000); }
 TEST(DeepDag, deep_fp_totalise)        { EXPECT_STACK_SAFE(fpTotaliseChainOk, 20000); }
 TEST(DeepDag, deep_printer_lisp)       { EXPECT_STACK_SAFE(printerLispOk, 20000); }
