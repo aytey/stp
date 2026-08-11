@@ -96,7 +96,7 @@ private:
   // destructor per level and run off the stack; ASTInterior::CleanUp drains
   // this instead. See DeepDag_Test.cpp.
   std::vector<ASTInterior*> _pending_deletion;
-  bool _deleting_interiors = false;
+  uint8_t _interior_deletion_depth = 0;
 
   // Table for variable names, let names etc.
   ASTSymbolSet _symbol_unique_table;

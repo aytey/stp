@@ -416,6 +416,32 @@ bool teardownOk(Context& c, unsigned depth)
   return true;
 }
 
+// Two independently owned chains die under the same root. Both reach the
+// direct-deletion cap while that root is still being destroyed, so the
+// outermost cleanup has more than one spill frontier to drain.
+bool teardownSpillFrontiersOk(Context& c, unsigned depth)
+{
+  auto chain = [&](const char* side) {
+    const std::string first = std::string(side) + "0";
+    ASTNode n = c.mgr.CreateSymbol(first.c_str(), 0, 8);
+    for (unsigned i = 1; i < depth; ++i)
+    {
+      const std::string name = std::string(side) + std::to_string(i);
+      n = c.hf->CreateTerm(BVXOR, 8, n,
+                           c.mgr.CreateSymbol(name.c_str(), 0, 8));
+    }
+    return n;
+  };
+
+  {
+    const ASTNode top =
+        c.hf->CreateTerm(BVPLUS, 8, chain("delete-left-"),
+                         chain("delete-right-"));
+    (void)top;
+  }
+  return true;
+}
+
 // StrengthReduction::visit, which rebuilds the DAG applying whatever the
 // domain analyses prove about each node.
 bool strengthReductionOk(Context& c, unsigned depth)
@@ -1785,6 +1811,12 @@ TEST(DeepDag, shallow_teardown)
 {
   Context c;
   EXPECT_TRUE(teardownOk(c, SHALLOW));
+}
+
+TEST(DeepDag, teardown_drains_multiple_spill_frontiers)
+{
+  Context c;
+  EXPECT_TRUE(teardownSpillFrontiersOk(c, SHALLOW));
 }
 
 TEST(DeepDag, shallow_flatten_kind_no_duplicates)

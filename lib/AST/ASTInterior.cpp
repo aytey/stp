@@ -36,15 +36,18 @@ namespace stp
 // Deleting an interior node releases its children, and a child that loses
 // its last reference is deleted in turn. Left to nest, that is one set of
 // destructor frames per level of the DAG, so releasing a deeply nested
-// formula runs off the stack -- the depth is the input's, not ours. So only
-// the outermost node deletes: anything that dies underneath it is queued on
-// the manager and deleted by the loop below, which keeps the whole teardown
-// at one frame.
+// formula runs off the stack -- the depth is the input's, not ours. A short,
+// fixed prefix is still cheaper to release directly. Once that bound is
+// reached, anything else that dies is queued on the manager; the outermost
+// cleanup drains that queue with the same bounded prefix for each entry.
 void ASTInterior::CleanUp()
 {
   nodeManager->_interior_unique_table.erase(this);
 
-  if (nodeManager->_deleting_interiors)
+  // Thirty-two nested deletes are small even on the test suite's 1 MiB stack
+  // and cover ordinary shallow ASTs without one queue push and pop per node.
+  static constexpr uint8_t directDeletionDepth = 32;
+  if (nodeManager->_interior_deletion_depth >= directDeletionDepth)
   {
     nodeManager->_pending_deletion.push_back(this);
     return;
@@ -54,27 +57,30 @@ void ASTInterior::CleanUp()
   // one of its members.
   STPMgr* const mgr = nodeManager;
 
-  // Lowered by the guard rather than by the line after the loop. A destructor
-  // that threw would otherwise leave the flag raised for the rest of the
-  // process, and every node released after that would queue on a drain that
-  // never runs again -- a leak of the whole DAG rather than a crash, which is
-  // the harder of the two to notice.
-  struct Draining
+  const bool outermost = mgr->_interior_deletion_depth == 0;
+
+  // Restored by the guard rather than by the line after delete. A destructor
+  // that threw would otherwise leave later cleanups starting at the wrong
+  // depth and queueing nodes on a drain that may never run again.
+  struct DeletionDepth
   {
     STPMgr* mgr;
-    Draining(STPMgr* m) : mgr(m) { mgr->_deleting_interiors = true; }
-    ~Draining() { mgr->_deleting_interiors = false; }
-  } draining(mgr);
+    DeletionDepth(STPMgr* m) : mgr(m) { ++mgr->_interior_deletion_depth; }
+    ~DeletionDepth() { --mgr->_interior_deletion_depth; }
+  } deletionDepth(mgr);
 
-  ASTInterior* node = this;
-  while (true)
+  delete this;
+
+  // A nested direct deletion returns to the destructor which released it.
+  // The outermost cleanup alone owns the spill queue.
+  if (!outermost)
+    return;
+
+  while (!mgr->_pending_deletion.empty())
   {
-    delete node; // releases its children; any that die queue up above.
-
-    if (mgr->_pending_deletion.empty())
-      break;
-    node = mgr->_pending_deletion.back();
+    ASTInterior* const node = mgr->_pending_deletion.back();
     mgr->_pending_deletion.pop_back();
+    delete node; // releases up to another bounded prefix of descendants.
   }
 }
 
