@@ -120,7 +120,6 @@ getConstantBit: on-path: reads one bit of a constant, descending the first child
 intersection: on-path: PropagateEqualities runs by default and this walks for the variables under a node, one frame per level, guarded by a visited set. Depth not measured
 mostSignificantConstants: on-path: counts leading constant bits down the first child of a BVCONCAT chain, one frame per level. Depth not measured
 noteRoundingMode: off-path: SMTLIB2_PrintBack, behind --print-back-SMTLIB2; recurses through an if-then-else over rounding modes
-numberOfReadsLessThan: on-path: the flagged overload forwards, but the walk it calls counts array reads over the whole input one frame per level, and STP.cpp asks it on every array solve that is not using array equality. It stops early once the limit is passed, which a bit-vector-only chain never does. Measured to die between 80,000 and 100,000 at 8 MiB, and at 20,000 at 1 MiB -- roughly ten times the deepest corpus input
 outputFloatingPointSMTLIB2: safe: overload forwarding. It is on the model-printing path, but the flagged overload only reads the format off the term and calls the other
 primeMemo: safe: the walk that replaces these recursions; it is iterative
 tagNodes: on-path: PropagateEqualities again, tagging shared nodes one frame per level, guarded by a memo. Depth not measured

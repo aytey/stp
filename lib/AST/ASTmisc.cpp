@@ -89,35 +89,68 @@ bool arithless(const ASTNode& n1, const ASTNode& n2)
   }
 }
 
-// counts the number of reads. Shortcut when we get to the limit.
-void numberOfReadsLessThan(const ASTNode& n, std::unordered_set<uint64_t>& visited,
-                           int& soFar, const int limit)
-{
-  if (n.isAtom())
-    return;
-
-  if (visited.find(n.GetNodeNum()) != visited.end())
-    return;
-
-  if (n.GetKind() == READ)
-    soFar++;
-
-  if (soFar > limit)
-    return;
-
-  visited.insert(n.GetNodeNum());
-
-  for (size_t i = 0; i < n.Degree(); i++)
-    numberOfReadsLessThan(n[i], visited, soFar, limit);
-}
-
 // True if the number of reads in "n" is less than "limit"
 bool numberOfReadsLessThan(const ASTNode& n, int limit)
 {
+  if (limit <= 0)
+    return false;
+
   std::unordered_set<uint64_t> visited;
   int reads = 0;
-  numberOfReadsLessThan(n, visited, reads, limit);
-  return reads < limit;
+
+  // Admit a node once and say whether its children need walking. Atoms were
+  // deliberately absent from the old memo and remain so here.
+  auto descend = [&](const ASTNode& current) {
+    if (current.isAtom() || !visited.insert(current.GetNodeNum()).second)
+      return false;
+
+    if (current.GetKind() == READ)
+      reads++;
+    return current.Degree() != 0;
+  };
+
+  if (!descend(n))
+    return reads < limit;
+  if (reads >= limit)
+    return false;
+
+  struct Frame
+  {
+    const ASTNode* node;
+    size_t nextChild = 0;
+  };
+  static_assert(sizeof(Frame) <= 2 * sizeof(void*),
+                "read-count frames must contain only traversal state");
+
+  // Keep only suspended ancestors. More importantly, return globally as
+  // soon as the strict bound is reached: unwinding the rest of the walk is
+  // unnecessary, and may itself be a large untouched subtree.
+  Frame current{&n};
+  std::vector<Frame> parents;
+  while (true)
+  {
+    if (current.nextChild < current.node->Degree())
+    {
+      const ASTNode* child = &(*current.node)[current.nextChild++];
+      if (!descend(*child))
+      {
+        if (reads >= limit)
+          return false;
+        continue;
+      }
+      if (reads >= limit)
+        return false;
+
+      parents.push_back(current);
+      current = Frame{child};
+      continue;
+    }
+
+    if (parents.empty())
+      return true;
+    current = parents.back();
+    parents.pop_back();
+  }
 }
 
 // See the declaration for why this exists: constants of one value need

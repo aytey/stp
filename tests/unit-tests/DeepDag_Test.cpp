@@ -1225,6 +1225,24 @@ bool arrayReadChainOk(Context& c, unsigned depth)
   return result.GetKind() != UNDEFINED;
 }
 
+// The read-count heuristic must traverse a read-free deep term without C++
+// recursion. Once its strict limit is reached, it must also stop the whole
+// traversal rather than continuing into a later deep sibling.
+bool numberOfReadsWalkOk(Context& c, unsigned depth)
+{
+  const ASTNode deep = c.chain(BVXOR, depth);
+  c.roots.push_back(deep);
+  if (!numberOfReadsLessThan(deep, 1))
+    return false;
+
+  const ASTNode array = c.mgr.CreateSymbol("read-count-array", 8, 8);
+  const ASTNode index = c.mgr.CreateSymbol("read-count-index", 0, 8);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, array, index);
+  const ASTNode earlyStop = c.hf->CreateTerm(BVCONCAT, 16, read, deep);
+  c.roots.push_back(earlyStop);
+  return !numberOfReadsLessThan(earlyStop, 1);
+}
+
 // A chain of writes under one read. The read is pushed under the writes one
 // at a time, each step building a new read over the array below it and
 // transforming that -- so the walk descends the write chain, which is again
@@ -1840,6 +1858,31 @@ TEST(DeepDag, shallow_node_iterator)
   EXPECT_TRUE(nodeIteratorOk(c, SHALLOW));
 }
 
+TEST(DeepDag, array_read_count_is_strict_and_deduplicates_the_dag)
+{
+  Context c;
+  const ASTNode array = c.mgr.CreateSymbol("read-count-shared-array", 8, 8);
+  const ASTNode i = c.mgr.CreateSymbol("read-count-shared-i", 0, 8);
+  const ASTNode j = c.mgr.CreateSymbol("read-count-shared-j", 0, 8);
+  const ASTNode first = c.hf->CreateTerm(READ, 8, array, i);
+  const ASTNode second = c.hf->CreateTerm(READ, 8, array, j);
+  const ASTNode top =
+      c.hf->CreateTerm(BVXOR, 8, ASTVec{first, first, second});
+  c.roots.push_back(top);
+
+  EXPECT_TRUE(numberOfReadsLessThan(top, 3));
+  EXPECT_FALSE(numberOfReadsLessThan(top, 2));
+  EXPECT_FALSE(numberOfReadsLessThan(first, 1));
+  EXPECT_TRUE(numberOfReadsLessThan(first, 2));
+  EXPECT_FALSE(numberOfReadsLessThan(top, 0));
+}
+
+TEST(DeepDag, shallow_array_read_count_walk)
+{
+  Context c;
+  EXPECT_TRUE(numberOfReadsWalkOk(c, SHALLOW));
+}
+
 TEST(DeepDag, mutable_dag_root_fast_paths_preserve_no_ops)
 {
   Context c;
@@ -2087,6 +2130,10 @@ TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 2
 TEST(DeepDag, deep_propagate_equalities) { EXPECT_STACK_SAFE(propagateEqualitiesOk, 20000); }
 TEST(DeepDag, deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }
 TEST(DeepDag, deep_array_read_chain)   { EXPECT_STACK_SAFE(arrayReadChainOk, 20000); }
+TEST(DeepDag, deep_array_read_count_walk)
+{
+  EXPECT_STACK_SAFE(numberOfReadsWalkOk, 20000);
+}
 TEST(DeepDag, deep_array_write_chain)  { EXPECT_STACK_SAFE(arrayWriteChainOk, 20000); }
 TEST(DeepDag, deep_array_equality_lowering)
 {
