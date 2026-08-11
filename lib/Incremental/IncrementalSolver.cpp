@@ -656,7 +656,13 @@ struct IncrementalSolver::Impl
   ASTNodeSet baseSymbols;
 
   // Per-node symbol sets, memoised; the keys hold their nodes.
-  std::map<ASTNode, ASTNodeSet> symbolsOfCache;
+  // Looked up by node and never iterated, so it wants hashing rather than
+  // the ordered comparison an std::map would do on every probe -- and it is
+  // probed once per candidate per piece per check.
+  typedef std::unordered_map<ASTNode, ASTNodeSet, ASTNode::ASTNodeHasher,
+                             ASTNode::ASTNodeEqual>
+      NodeSymbolsMap;
+  NodeSymbolsMap symbolsOfCache;
 
   // Allocation-free scratch marks for symbol DAG walks. Node ids are
   // process-thread-wide rather than manager-local, so use lazily allocated
@@ -1567,7 +1573,7 @@ struct IncrementalSolver::Impl
 
   const ASTNodeSet& symbolsOf(const ASTNode& n)
   {
-    std::map<ASTNode, ASTNodeSet>::iterator hit = symbolsOfCache.find(n);
+    NodeSymbolsMap::iterator hit = symbolsOfCache.find(n);
     if (hit != symbolsOfCache.end())
       return hit->second;
 
@@ -1719,12 +1725,21 @@ struct IncrementalSolver::Impl
       LevelOccurrenceMap;
   LevelOccurrenceMap levelOccurrences;
   bool levelOccurrencesBuilt = false;
+  // The level currently being asked about, and its symbol set: every
+  // candidate of a level repeats the same lookup otherwise.
+  const ASTNodeSet* ownLevelSymbols = NULL;
+  size_t ownLevelSymbolsIdx = std::numeric_limits<size_t>::max();
 
   // Built on first use rather than per solve: a stack whose preparations
   // harvest no definition and whose context stays empty never asks either
   // question, and the pass is proportional to the live levels' symbol sets,
   // which is not free on a symbol-rich stack.
-  void invalidateLevelOccurrences() { levelOccurrencesBuilt = false; }
+  void invalidateLevelOccurrences()
+  {
+    levelOccurrencesBuilt = false;
+    ownLevelSymbols = NULL;
+    ownLevelSymbolsIdx = std::numeric_limits<size_t>::max();
+  }
 
   void ensureLevelOccurrences(const ASTVec& stack)
   {
@@ -1752,8 +1767,12 @@ struct IncrementalSolver::Impl
     size_t elsewhere = it->second.levels;
     if (levelIdx < stack.size())
     {
-      const ASTNodeSet& own = symbolsOf(stack[levelIdx]);
-      if (own.find(v) != own.end())
+      if (levelIdx != ownLevelSymbolsIdx)
+      {
+        ownLevelSymbols = &symbolsOf(stack[levelIdx]);
+        ownLevelSymbolsIdx = levelIdx;
+      }
+      if (ownLevelSymbols->find(v) != ownLevelSymbols->end())
         elsewhere--;
     }
     return elsewhere > 0;
