@@ -648,6 +648,32 @@ bool simplifyPrecheckedSubstitutionOk(Context& c)
   return output == three;
 }
 
+// The NOT frame delegates an atomic child to AtomicJob. The child job owns
+// the pushed-negation memo entry, while the returning NOT frame owns its
+// outer entry; removing duplicate probes and writes must preserve both keys.
+bool simplifyNotAtomicMemoOk(Context& c)
+{
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode x = c.mgr.CreateSymbol("memo-not-atomic", 0, 8);
+  const ASTNode term = c.hf->CreateTerm(BVXOR, 8, x, zero);
+  const ASTNode atomic = c.hf->CreateNode(EQ, term, zero);
+  const ASTNode input = c.hf->CreateNode(NOT, atomic);
+  c.roots.push_back(input);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  const ASTNode output = simp.SimplifyFormula(input, false);
+  c.roots.push_back(output);
+
+  ASTNode atomicCached;
+  ASTNode inputCached;
+  return simp.CheckSimplifyMap(atomic, atomicCached, true) &&
+         simp.CheckSimplifyMap(input, inputCached, false) &&
+         atomicCached == output && inputCached == output &&
+         simp.SimplifyFormula(input, false) == output;
+}
+
 // A term contains a formula which contains the preceding term, at every
 // level. Separate iterative formula and term drivers are insufficient for
 // this shape: calling from one driver into the other still makes one C++
@@ -1394,6 +1420,12 @@ TEST(DeepDag, simplify_term_preserves_prechecked_substitution)
 {
   Context c;
   EXPECT_TRUE(simplifyPrecheckedSubstitutionOk(c));
+}
+
+TEST(DeepDag, simplify_not_atomic_preserves_memo_edges)
+{
+  Context c;
+  EXPECT_TRUE(simplifyNotAtomicMemoOk(c));
 }
 
 TEST(DeepDag, shallow_simplify_alternating_term_formula)

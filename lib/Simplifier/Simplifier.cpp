@@ -875,9 +875,6 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // frame would only make the explicit stack larger.
     ASTNode output;
     unsigned valueWidth = 0;
-
-    // The parity a NOT starts again from.
-    bool pn = false;
   };
 
   // A deque, so descending never moves the frames above it.
@@ -1436,21 +1433,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         return want(f, Frame::TermOutput, f.output, false, Frame::TermJob);
       return finishTermTail(f.output);
     }
-    // SimplifyFormula's tail, for an answer that did not come from an arm:
-    // record it against the node as it arrived, and against the PullUpITE'd
-    // one if that is a different node.
-    auto finishOuter = [&](const ASTNode& output) {
-      UpdateSimplifyMap(f.b, output, f.pushNeg);
-      if (f.a != f.b)
-        UpdateSimplifyMap(f.a, output, f.pushNeg);
-      result = output;
-      return false;
-    };
-
-    // The whole tail: the arm's own memoise, then SimplifyFormula's. Two
-    // writes rather than the three the two functions made between them --
-    // the tail's `if (a != b) write a` cannot reach a key the arm's own write
-    // has not just set to the same value.
+    // The formula arms implemented in this frame share their memoisation
+    // tail: record the PullUpITE result and, when distinct, the input. The
+    // separately scheduled AtomicJob owns its own first entry and bypasses
+    // this tail when it returns below.
     auto finish = [&](const ASTNode& output) {
       UpdateSimplifyMap(f.a, output, f.pushNeg);
       if (f.b != f.a)
@@ -1509,10 +1495,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       case NOT:
       {
         if (f.phase == Frame::NotBody)
-        {
-          UpdateSimplifyMap(f.t0, result, f.pn);
           return finish(result);
-        }
 
         if (!(f.a.Degree() == 1 && NOT == f.a.GetKind()))
           FatalError("SimplifyNotFormula: input vector with more than 1 node",
@@ -1529,22 +1512,13 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         }
 
         // pushnegation if there are odd number of NOTs
-        f.pn = (NotCount % 2 == 0) ? false : true;
-        f.t0 = o;
+        const bool pn = (NotCount % 2 == 0) ? false : true;
 
-        ASTNode cached;
-        if (CheckSimplifyMap(o, cached, f.pn))
-          return finishOuter(cached);
-
-        if (ASTTrue == o || ASTFalse == o)
-        {
-          const ASTNode output = (ASTTrue == o) ? (f.pn ? ASTFalse : ASTTrue)
-                                                : (f.pn ? ASTTrue : ASTFalse);
-          UpdateSimplifyMap(o, output, f.pn);
-          return finish(output);
-        }
-
-        return want(f, Frame::NotBody, o, f.pn);
+        // `want` owns the child shortcut and memo probe. If it schedules a
+        // child frame, that frame records `o`; if it answers immediately,
+        // the entry either already exists or `o` is a leaf that is never
+        // memoised. The returning NOT frame therefore only records itself.
+        return want(f, Frame::NotBody, o, pn);
       }
 
       case XOR:
@@ -1716,7 +1690,13 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         // Atomic predicates do not stop the walk: their term operands and any
         // terms they manufacture are jobs on this same continuation stack.
         if (f.phase == Frame::FormulaAtomic)
-          return finish(result);
+        {
+          // AtomicJob has already recorded `f.a`. Only the pre-PullUpITE key
+          // can remain for this formula frame to record.
+          if (f.b != f.a)
+            UpdateSimplifyMap(f.b, result, f.pushNeg);
+          return false;
+        }
         return want(f, Frame::FormulaAtomic, f.a, f.pushNeg,
                     Frame::AtomicJob);
     }
