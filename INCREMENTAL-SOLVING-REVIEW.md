@@ -52,8 +52,8 @@ mechanism is the part worth remembering.
 |---|---|---|---|---|---|---|
 | [D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack) | soundness | **FIXED** `e1229764` | yes | no (branch-only code) | fixed + regression | `levelPrivate` decides eliminability over the *raw* stack; levels are encoded from the *ctx-substituted* stack |
 | [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **FIXED** `926bf48f` | yes | no (branch-only code) | fixed + regression | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
-| [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | high | yes | no (branch-only code) | agent-measured | A semantic whole-base pass fires on all four rebuild reasons, unbudgeted (9.4 s measured) |
-| [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **mostly fixed** | yes | no (branch-only code) | measured 6.5x | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
+| [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | **FIXED** `e093b0d2` | yes | no (branch-only code) | reproduced: 18.3 ms → 2.1 ms | A semantic whole-base pass fired on all four rebuild reasons, the two pure SAT-config latches included |
+| [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **FIXED / closed** | yes | no (branch-only code) | ~4x; remainder measured flat | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
 | [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | **FIXED** `45504ef9` | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
 | [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | medium | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
 | [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | **FIXED** `8ab75f81` | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
@@ -1596,7 +1596,7 @@ together --- which restores determinism *and* makes a repeated stack O(1) above
 the transform --- or give the stand-ins deterministic names via the branch's own
 `CreateDeterministicVariable`.
 
-### 0.3 Fix D3 --- unbudgeted whole-base pass welded to `rebuildEncodings`
+### 0.3 Fix D3 --- unbudgeted whole-base pass welded to `rebuildEncodings` --- DONE, `e093b0d2`
 
 A semantic pass over the entire base --- constant-bit propagation, equality
 propagation, simplification, unconstrained elimination --- fires on **all four**
@@ -1659,14 +1659,22 @@ a registry by reference and emit anchors only for `touchedReads`, which the
 driver already collects. Charge theory lemmas to their registry rows rather than
 to a whole-stack owner key (D8b).
 
-### 2.3 Finish D4 --- the remaining linear term
+### 2.3 Finish D4 --- the remaining linear term --- CLOSED, measured
 
-The occurrence index is rebuilt per solve rather than maintained against the
-previous stack by longest common prefix, and the per-check context rebuild
-(`splitConjuncts` + `harvestPushed` over every level, plus the fresh `ctx`) is
-untouched. Memoise the harvested-definition set per level node; skip the base
-split when the base conjunction is unchanged, using the pointer-equality trick
-`updateStackStability` already uses.
+Both things this item named were profiled and neither dominates. On a
+400-level stack with one elimination per level the driver is semantic-bound
+(653 ms of 809 ms) but the profile is **flat**: the largest single entry is
+6.9%, and `ensureLevelOccurrences` --- the per-solve index rebuild that
+longest-common-prefix maintenance would remove --- does not reach 3%. Neither
+LCP-maintaining the index nor restructuring the per-check context rebuild is
+worth its risk on that evidence. Re-open only if a real workload's profile says
+otherwise.
+
+What the profile *did* justify was taken (`46f2af21`): `symbolsOfCache` hashed
+rather than ordered --- probed once per candidate per piece per check, never
+iterated --- and the level's own symbol set hoisted out of the per-candidate
+loop in `namedByAnotherLevel`. About 9%: medians 830 ms → 757 ms, ahead in all
+six rounds of an interleaved A/B between saved binaries.
 
 ### 2.4 Fix D13 --- one transaction for elimination and context inlining
 
