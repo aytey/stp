@@ -2102,14 +2102,46 @@ struct IncrementalSolver::Impl
   size_t promotedDepth = 0;
   size_t promoteAfterSolves = 8;
 
+  // What promotion actually pinned, per promoted level.
+  //
+  // A level's raw conjunction is NOT a fingerprint of the units promotion
+  // emitted: those come from its PREPARED form, which can legitimately
+  // change while the raw node stays identical -- a private elimination
+  // retracted by later content, or a different constant-bit adoption. The
+  // stale units stay sound (a prepared form is a consequence of its live
+  // raw level) but they are weaker than what the level now says, and the
+  // stronger form was being dropped by the promoted-level skip. Recording
+  // the pinned conjuncts is what makes that detectable.
+  std::map<size_t, ASTVec> promotedConjunctsOf;
+  // Set when a promoted level was found to have drifted. The level is
+  // assumed for the rest of that solve, which restores the missing
+  // strength immediately; the epoch is replaced at the next call boundary,
+  // where a rebuild is safe, to reclaim the superseded units.
+  bool promotionDriftPending = false;
+
+  bool promotedConjunctsChanged(size_t level, const ASTVec& conjuncts) const
+  {
+    std::map<size_t, ASTVec>::const_iterator it =
+        promotedConjunctsOf.find(level);
+    if (it == promotedConjunctsOf.end())
+      return true;
+    if (it->second.size() != conjuncts.size())
+      return true;
+    for (size_t i = 0; i < conjuncts.size(); i++)
+      if (!(it->second[i] == conjuncts[i]))
+        return true;
+    return false;
+  }
+
   // Track per-level stability against the last call's stack, and start
   // the solver over if a PROMOTED level changed or vanished -- its
   // units no longer describe the stack. Runs before any routing, so
   // extensionality rounds see a coherent solver too.
   void updateStackStability(const ASTVec& assertionsSMT2)
   {
-    bool demote = false;
-    for (size_t i = 1; i <= promotedDepth; i++)
+    bool demote = promotionDriftPending;
+    promotionDriftPending = false;
+    for (size_t i = 1; !demote && i <= promotedDepth; i++)
     {
       if (i >= assertionsSMT2.size() || i >= lastStackSeen.size() ||
           !(assertionsSMT2[i] == lastStackSeen[i]))
@@ -3426,8 +3458,9 @@ struct IncrementalSolver::Impl
       }
     }
     // The fresh solver has no promoted units; a still-stable prefix
-    // re-promotes on the next call's tail.
+    // re-promotes on the next call's tail, recording what it pins then.
     promotedDepth = 0;
+    promotedConjunctsOf.clear();
 
     retiredClauseSubmissions =
         addMass(retiredClauseSubmissions, solver->submittedClauses());
@@ -5571,8 +5604,26 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // A level inside the promoted prefix is already asserted as units;
     // nothing to assume. (Its preparation above still ran: deeper
     // levels need its definitions in the context either way.)
+    //
+    // Only while it still prepares to what promotion pinned, though. The
+    // raw conjunction updateStackStability compares is unchanged in the
+    // case that matters: later content retracts a private elimination, the
+    // level re-prepares with its defining equation restored -- and skipping
+    // here would encode that stronger form and then drop it, leaving the
+    // variable unconstrained behind the older, weaker units. Fall through
+    // instead, so this solve assumes what the level now says, and hand the
+    // epoch to the next call's maintenance block, which can rebuild safely.
     if (level <= impl->promotedDepth)
-      continue;
+    {
+      if (!impl->promotedConjunctsChanged(level, conjuncts))
+        continue;
+      impl->promotionDriftPending = true;
+      if (uf.stats_flag)
+        std::cerr << "Incremental: promoted level " << level
+                  << " re-prepared differently, assumed for this solve "
+                     "and demoted at the next"
+                  << std::endl;
+    }
 
     // Promote the next prefix level once it has sat identical long
     // enough. Never the deepest level: it is the churn point, and
@@ -5604,6 +5655,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       for (const ASTNode& c : conjuncts)
         impl->recordPermanentRoot(c);
       impl->promotedDepth = level;
+      // Remember the form that was pinned, not just how deep promotion
+      // reached: the skip above is only sound while the level still
+      // prepares to exactly this.
+      impl->promotedConjunctsOf[level] = conjuncts;
       if (uf.stats_flag)
         std::cerr << "Incremental: promoted level " << level << " ("
                   << levelRoots.size() << " conjuncts) to units after "
