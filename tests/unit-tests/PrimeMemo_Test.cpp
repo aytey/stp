@@ -45,12 +45,19 @@ THE SOFTWARE.
 #include "stp/Util/DagWalk.h"
 #include <gtest/gtest.h>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 
 using namespace stp;
 
 namespace
 {
+
+using WalkOperandResult = decltype(std::declval<const WalkOperands&>().at(
+    std::declval<const ASTNode&>(), size_t{0}));
+static_assert(std::is_same<WalkOperandResult, const ASTNode&>::value,
+              "operand views must not increment AST reference counts");
 
 struct Context
 {

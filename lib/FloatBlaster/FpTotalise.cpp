@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "stp/Util/DagWalk.h"
 
 #include <string>
+#include <utility>
 
 namespace stp
 {
@@ -169,7 +170,7 @@ void FpTotalise::collectRoundingModeTerms(const ASTNode& n, ASTNodeSet& seen,
 
   while (!todo.empty())
   {
-    const ASTNode m = todo.back();
+    const ASTNode m = std::move(todo.back());
     todo.pop_back();
 
     if (!seen.insert(m).second)

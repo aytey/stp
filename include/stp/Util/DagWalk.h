@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace stp
@@ -249,7 +250,7 @@ public:
 
   size_t size() const { return count_; }
 
-  ASTNode at(const ASTNode& n, const size_t i) const
+  const ASTNode& at(const ASTNode& n, const size_t i) const
   {
     assert(i < count_ && static_cast<size_t>(first_) + count_ <= n.Degree());
     return n[first_ + (reversed_ ? count_ - 1 - i : i)];
@@ -299,7 +300,7 @@ void primeMemo(const ASTNode& top, Classify classify, Operands operands,
   {
     if (current.i < current.operands.size())
     {
-      const ASTNode child = current.operands.at(current.n, current.i++);
+      const ASTNode& child = current.operands.at(current.n, current.i++);
 
       switch (classify(child))
       {

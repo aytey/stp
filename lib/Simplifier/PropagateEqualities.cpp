@@ -549,7 +549,7 @@ void PropagateEqualities::buildCandidateList(const ASTNode& a)
 
   while (!toVisit.empty())
   {
-    const ASTNode current = toVisit.back();
+    const ASTNode current = std::move(toVisit.back());
     toVisit.pop_back();
     buildCandidateListNode(current, toVisit);
   }

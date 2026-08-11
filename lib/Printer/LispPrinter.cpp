@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 #include "stp/Printer/printers.h"
 #include <deque>
+#include <utility>
 
 namespace printer
 {
@@ -62,7 +63,7 @@ ostream& Lisp_Print1(ostream& os, const ASTNode& n, int indentation)
 
   while (!stack.empty())
   {
-    const Item item = stack.back();
+    const Item item = std::move(stack.back());
     stack.pop_back();
 
     if (item.literal != nullptr)

@@ -581,7 +581,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 
     while (f.i < f.n.Degree())
     {
-      const ASTNode child = f.n[f.i++];
+      const ASTNode& child = f.n[f.i++];
 
       // Nothing above may be read after this push.
       if (want(Frame::Term, child))

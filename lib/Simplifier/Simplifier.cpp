@@ -1392,7 +1392,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       // ArrayJob below, matching the old split between the two functions.
       while (f.a.GetKind() != SYMBOL && f.i < f.outvec.size())
       {
-        const ASTNode operand = f.outvec[f.i];
+        const ASTNode& operand = f.outvec[f.i];
         if (operand.GetType() == BITVECTOR_TYPE ||
             operand.GetType() == FLOATINGPOINT_TYPE)
           return want(f, Frame::TermOperand, operand, false, Frame::TermJob);
