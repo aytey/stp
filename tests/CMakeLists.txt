@@ -244,10 +244,18 @@ endif()
 
 # -----------------------------------------------------------------------------
 
-# A pass that calls itself once per level of the input runs out of stack on
-# input deep enough. Ten did. This lists the ones that remain and fails when
-# a new one appears without a reason beside it.
+# A recursive call cycle taken once per input level runs out of stack on deep
+# enough input. Ten did. This audits direct and mutual cycles over ASTs and
+# AST-derived graphs, and fails when a new one appears without a reason.
 if(PYTHON_EXECUTABLE)
+    add_test(
+      NAME ast-recursion-checker-tests
+      COMMAND ${PYTHON_EXECUTABLE}
+              ${PROJECT_SOURCE_DIR}/tests/check-ast-recursion-test.py
+              ${PROJECT_SOURCE_DIR}/scripts/check-ast-recursion.py
+    )
+    set_tests_properties(ast-recursion-checker-tests PROPERTIES TIMEOUT 60)
+
     add_test(
       NAME ast-recursion-allowlist
       COMMAND ${PYTHON_EXECUTABLE}

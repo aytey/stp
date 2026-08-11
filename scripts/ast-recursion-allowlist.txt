@@ -1,5 +1,8 @@
-# Functions that take an AST node and call themselves, which is how a pass
-# ends up using call stack in proportion to how deeply the input nests.
+# Recursive call cycles that walk an AST-shaped graph, which is how a pass
+# ends up using call stack in proportion to how deeply the input nests. This
+# includes indirect and mutual recursion, AST containers, and self-linked
+# mutable graphs derived from an AST even when their walkers no longer take
+# an ASTNode parameter.
 # scripts/check-ast-recursion.py fails when one appears that is not listed
 # here, so that adding a recursive walk is a decision someone made rather
 # than one that slipped through.
@@ -28,7 +31,7 @@
 #   unaudited  predates this check. Nobody has looked.
 #
 # Being on this list is NOT a claim that a function is safe. Nothing is
-# "unaudited" any more, but 18 are "on-path", which means someone looked and
+# "unaudited" any more, but 19 are "on-path", which means someone looked and
 # found a recursion a solve can reach and did not convert it. Read the
 # status, not the presence of the name.
 #
@@ -69,10 +72,13 @@ FloatBlast::asPacked: on-path: float lowering, one frame per level of a float ex
 FloatBlast::asUnpacked: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
 FloatBlast::comparisonLeaf: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
 FloatBlast::lower: on-path: as FloatBlast::asPacked -- same pass, same unmeasured reason
+FloatBlast::asPacked <-> FloatBlast::asUnpacked <-> FloatBlast::canonicalPacked <-> FloatBlast::comparisonLeaf <-> FloatBlast::lower <-> FloatBlast::lowerFpTerminal <-> FloatBlast::nativeClassificationSurvivor <-> FloatBlast::nativeComparisonSurvivor: on-path: the mutually recursive float-lowering network containing the four individually reported input-depth walkers above; its helper edges carry the same generated float expression and do not impose a separate depth bound
 FloatBlaster::canonicalBits: safe: overload forwarding, not a walk
 FloatBlaster::operandFormat: safe: overload forwarding; the walk it calls looks at one node's children
+FpTotalise::totalise <-> FpTotalise::visit: bounded: visit primes nodes child-first and records each result before totalise asks for child totalisations, so the apparent back-edge only reads already-settled cache entries
 GDL_Print: off-path: the GDL printer, behind --print-back-GDL (UserFlags.print_STPinput_back_GDL_flag)
 GDL_Print1: off-path: the same printer, same flag
+FlattenKind: safe: ASTChildren-to-ASTVec overload forwarding; the overload it calls flattens with an explicit worklist
 HashingNodeFactory::CreateNode: safe: overload forwarding, not a walk
 LetMgr::LetExprMgr: safe: overload forwarding, not a walk
 LetizeNode: off-path: names shared subterms for the CVC and SMT-LIB1 printers, which are behind --print-back and --print-back-CVC
@@ -82,6 +88,7 @@ NodeFactory::CreateArrayTerm: safe: overload forwarding, not a walk
 NodeFactory::CreateNode: safe: overload forwarding, not a walk
 NodeFactory::CreateTerm: safe: overload forwarding, not a walk
 NonMemberBVConstEvaluator: safe: overload forwarding. The flagged overload takes a node and hands its kind and children to the (kind, args, width) form, which evaluates one operation
+NonMemberBVConstEvaluator <-> evaluateMemoised: on-path: the node-taking evaluator enters the memoised child-first constant-expression walk, which calls the kind-and-children evaluator after its children; overload collapsing exposes the complete call cycle
 PL_Print1: off-path: the CVC printer, behind --print-back-CVC (UserFlags.print_STPinput_back_CVC_flag)
 PropagateEqualities::isSymbol: on-path: PropagateEqualities runs by default and this descends a chain of BVUMINUS, BVNOT or multiply-by-an-odd-constant looking for the symbol underneath, one frame per level. Depth not measured; the chain has to be of those three kinds alone, which no corpus query is
 SMTLIB_Print1: by-choice: input-depth recursive, opt-in (--print-back-SMTLIB2); DeepDag_Test.cpp has a disabled case
