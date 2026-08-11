@@ -6314,12 +6314,23 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // encoding and the word-level evaluation disagree somewhere -- a bug,
       // and a FatalError names it where a livelock would just hang.
       //
-      // Progress is measured in CLAUSES, not in solve calls. A round that
-      // re-derives axioms the solver already holds re-encodes them as
-      // duplicates and re-solves, so it does advance the solve count while
-      // adding nothing: keying the guard on that count made it unable to
-      // fire in precisely the situation it names, leaving the livelock it
-      // was written to convert into an abort.
+      // Progress is measured in CLAUSES rather than in solve calls -- but be
+      // clear that on the legacy read-refinement path the two are the same
+      // predicate, and this guard STILL cannot fire in the case it names.
+      // Every applyAxiomsToSolver site in SATBased_ArrayReadRefinement is
+      // immediately followed by a solve, and SATSolver::addClause counts
+      // every submission including a duplicate, so a round that re-derives
+      // only axioms the solver already holds re-submits them, re-solves, and
+      // advances both counters. applyAxiomsToSolver has no memo of what it
+      // has emitted. Closing that needs the memo -- emitted
+      // (index0,index1,value0,value1) pairs skipped -- in the batch
+      // refinement code both pipelines share, which is why it is recorded as
+      // open rather than done here.
+      //
+      // What the clause measure does buy: it cannot produce a SPURIOUS abort
+      // if a future path ever submits without re-solving, and the same guard
+      // now exists on the array-equality hybrid fallback branch, which had
+      // none at all. The livelock remains a hang on this path.
       const uint64_t submittedBefore = impl->solver->submittedClauses();
       res = impl->ce->SATBased_ArrayReadRefinement(*impl->solver,
                                                    activeConjunction, adapter);

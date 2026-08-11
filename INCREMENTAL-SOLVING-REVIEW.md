@@ -47,8 +47,9 @@ its siblings enforce. One did not, and the gap was a wrong answer. The sweep
 that produced this document had classified that area as cost-and-clarity. So
 "no known soundness defect remains" is the honest status and has already been
 wrong once; it is a statement about what has been looked for, not about what is
-there. The relief-rebuild path is where all three of the last defects lived and
-where the test suite is thinnest --- 11 of 82 files reach a rebuild at all, and
+there. All three soundness defects lived on paths the suite barely reaches --- D1 and
+D2 in preparation and promotion, D14 in the relief rebuild --- and the relief
+path is where the suite is thinnest --- 11 of 82 files reach a rebuild at all, and
 every one of them has to force `--incremental-reencode-limit` to get there.
 
 Two tracked rows were fixed only at their headline, and their sub-items are
@@ -330,7 +331,7 @@ done
 |---|---|
 | Branch | `incremental-solving`, tip `278552ce` ("Merge upstream/master into incremental-solving") |
 | Base | `master`; diff base `master...HEAD` = 103 commits, 133 files, +18,185 lines |
-| Builds used | `build/` (Release + assertions, CaDiCaL 3.0.1, FP, LibBF) and `bd-dbg/` (RelWithDebInfo + assertions). Both were current with the tip at review time. |
+| Builds used | `build/` (Release, assertions FORCED OFF, CaDiCaL 3.0.1, FP, LibBF) and `bd-dbg/` (RelWithDebInfo + assertions). Both were current with the tip at review time. |
 | Date | 2026-08-11 |
 
 The previous review (2026-08-07/08) covered solver code through `ee8685bb`. The
@@ -1171,7 +1172,13 @@ supersedes with a concrete mechanism.
 **Status: FIXED, `87a77ac2`.** Class: soundness (`sat` on an `unsat` query).
 Flags: none on the path itself; the session must take a relief rebuild.
 In master: no --- `resimplifyBaseAtRebuild` is branch-only code.
-Pre-existing on this branch: **yes**, reproduced identically at `933a3b4b`.
+Pre-existing on this branch: reproduced identically at `933a3b4b`, so it
+predates every commit from `e438bbba` on. Note what that does and does not
+establish: `933a3b4b` is *after* the review's own fixes, `e093b0d2` included,
+and that commit changed this very pass. It can only have REDUCED reachability
+--- before it, the pass ran on all four rebuild reasons rather than relief
+alone --- so the defect is older still; but that last step is reasoning, not a
+second build.
 
 Sites: `lib/Incremental/IncrementalSolver.cpp:3833` (`resimplifyBaseAtRebuild`),
 `:3898` (`untouch` construction), `:3976` (`RemoveUnconstrained`), `:3993` (the
@@ -1655,7 +1662,7 @@ Two secondary problems with the ordinal as implemented:
 
 ## My measurements (this review)
 
-All on `build/` (Release + assertions), tip `278552ce`. Indicative only --- not
+All on `build/` (Release, assertions FORCED OFF), tip `278552ce`. Indicative only --- not
 interleaved quiet-box A/B.
 
 **Fixed per-check cost, toy stack** (`incremental-profile.smt2`, 3 levels, 9
@@ -2034,12 +2041,19 @@ tests, substituting `--incremental-auto-engage-at 1` for `--incremental`. That
 is not a cosmetic difference: it engages through the automatic predicate
 instead of `incremental_from_start`, so `firstForcedIncrementalSolve` is false
 and the forced-first recovery family (F3) is not taken --- exactly the shape
-production runs at solve 32. All 32 passed unmodified. A sweep of all 72
-force-`--incremental` files found 71 give byte-identical answers on the
-automatic path; the one that differs,
+production runs at solve 32. All 32 passed unmodified --- though **three of them contain no `(push`**
+(`reencode-ext-liveness-guard`, `subst-frozen-after-encode`,
+`unsat-assumptions`), and `Cpp_interface` only sets `session_incremental` in
+`push()`, so for two of those the added line runs the BATCH pipeline and adds
+no automatic-path coverage at all. Count the real gain as 29 files, not 32;
+`unsat-assumptions` engages by another route (`check-sat-assuming`).
+
+A sweep of all 72 force-`--incremental` files found 71 give byte-identical
+answers on the automatic path. The one that differs,
 `ackermanize-model-cache.smt2`, differs only in **which** satisfying assignment
-it reports, and the automatic path agrees with the batch pipeline while the
-forced path does not.
+it reports --- but the reason first recorded here was wrong: that file has no
+`(push` either, so the automatic run never engaged the driver and was simply
+the batch pipeline. It agrees with batch because it *is* batch.
 
 Two files are deliberately left without `--check-sanity`, with the reason
 recorded in each: `produce-models-lazy.smt2` exists to check that a model is
@@ -2055,7 +2069,9 @@ its reason. See [Appendix B](#appendix-b--full-finding-ledger).
 
 ### 4.6 Findings the sweep recorded and never queued
 
-**Seven of the eight are done**; only the F43 docs table remains.
+**Six of the eight are done.** Two remain: F43's docs table, and per-check
+thread creation. A third, F16, was reopened after `cd34049d` was found to have
+measured the right quantity without changing the outcome --- see Appendix B.
 
 Collected here because until now they pointed at a section that does not exist.
 None is a correctness item; each needs a decision rather than analysis.
@@ -2781,7 +2797,7 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F13 | PARTLY | low | cbp | Engine/caller/memo triple kept aligned by asserts + repair fallback; two dead fields | **D11** |
 | F14 | PARTLY | low | cbp | Session-wide retirement from prefix-scoped, double-counted evidence | **D7b** |
 | F15 | PARTLY | med | arrays | Every array encode seeds the whole registry; anchors for every read ever seen | **D8** |
-| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | **fixed** `cd34049d` |
+| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | partly; still open |
 | F17 | PARTLY | low | arrays | Active-read liveness is a refcount shadow; `batchTablesSeeded` dead | **D11** |
 | F18 | CONFIRMED | low | arrays | Adapter rebuilds an O(all session symbols) map per call | **D12** |
 | F19 | PARTLY | low | arrays | Congruence lemmas "permanent" but charged to a per-stack owner key | **D8b** |
@@ -2829,13 +2845,30 @@ fixed; three were measured and deliberately declined. Details below.
   emit each fact as `EQ(replaceChildren(domain, fromTo), k)`, drop facts folding
   to TRUE, stop the walk at an emitted domain, and include surviving facts' mass
   in the gate.
-- **F16 --- FIXED (`cd34049d`).** the no-progress guard fires on "no SAT call this round", which is
-  strictly narrower than "no progress". Because the candidate-pair set is
-  recomputed identically each round and a round exiting UNDECIDED has already put
-  every pair's axiom into the solver, the loop is provably either one round or
-  unbounded, re-encoding duplicate axioms each time. Fix: compare
-  `submittedClauses()` across the round, or memoise emitted pairs in
-  `applyAxiomsToSolver`.
+- **F16 --- PARTLY, and the headline claim was wrong.** `cd34049d` changed the
+  refinement no-progress guard from counting solve calls to counting submitted
+  clauses, and the commit said that keying on the solve count "made it unable
+  to fire in precisely the situation it names". The new measure has the same
+  blind spot. On the legacy read-refinement path every `applyAxiomsToSolver`
+  site is immediately followed by a solve, and `SATSolver::addClause` counts
+  every submission including a duplicate, so a round that re-derives only
+  axioms the solver already holds re-submits them, re-solves, and advances both
+  counters. The livelock the guard exists to convert into an abort is still a
+  hang.
+
+  **Still open**, with the remedy the finding itself named as its second
+  option: memoise emitted `(index0,index1,value0,value1)` pairs in
+  `applyAxiomsToSolver` (`AbstractionRefinement.cpp:259-267`), so a round that
+  adds nothing new submits nothing and the guard trips. That is shared batch
+  code, and the guard only matters once the encoding and the word-level
+  evaluation already disagree, so it is recorded rather than rushed.
+
+  What `cd34049d` did buy, and this part stands: the same guard now exists on
+  the array-equality hybrid fallback branch, which had none at all, and a
+  clause-based measure cannot raise a spurious abort if a future path ever
+  submits without re-solving. The in-tree comment now says all of this instead
+  of claiming the fix.
+
 - **F22 --- DEFERRED, deliberately.** in a session alternating extensionality and ordinary array rounds, a
   SYMBOL-rooted read is abstracted twice (`@ext_read_k<A>_k<i>` and
   `@array_A_k<i>`) sharing nothing. Fix: one deterministic name keyed on
@@ -2893,7 +2926,7 @@ comment claiming the second call is a cache hit is corrected in place.
 
 # APPENDIX C — REPRODUCTION COMMAND REFERENCE
 
-Binaries used: `build/stp` (Release + assertions) and `bd-dbg/stp`
+Binaries used: `build/stp` (Release, assertions forced off) and `bd-dbg/stp`
 (RelWithDebInfo + assertions). `libstp.so` is linked **dynamically** --- a saved
 binary alone is not an A/B arm; use a separate worktree build.
 
