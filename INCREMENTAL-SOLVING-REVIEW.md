@@ -1653,7 +1653,7 @@ regime. Compute one live value for the decision on both paths; let profiling add
 reporting only. If the exact walk is affordable every solve it is the right
 production estimator and roughly 80 lines plus 4 fields can be deleted.
 
-### 1.2 Re-derive the engagement ordinal
+### 1.2 Re-derive the engagement ordinal --- seam DONE `60e83767`; ordinal MEASURED, unchanged
 
 **Newly worth doing, and potentially the largest single win.** QF_BV/QF_ABV
 sessions are held on the batch pipeline until their **32nd** solve, a threshold
@@ -1661,10 +1661,48 @@ fitted to a per-check reconstruction cost that `00ea5c1e` has now substantially
 reduced. The number may simply be wrong now, and every solve before it is a
 session not getting the feature.
 
-Re-measure, then move the decision behind an
-`IncrementalSolver::worthEngaging(stack, solvesRun)` seam so the driver owns the
-cost judgement and the C API --- which hard-codes 3 and cannot see
-`--incremental-auto-engage-at` --- gets the same policy.
+**The seam is done (`60e83767`).** `IncrementalSolver::automaticEngagementReady`
+is the single policy; both frontends call it, and `INCREMENTAL_AUTO_ENGAGE_AT`
+gives `vc_setInterfaceFlags` a way to reach the ordinal, which no C API client
+previously had. Five unit tests and four C API tests pin it.
+
+**The ordinal was re-measured and is unchanged, deliberately.** The 32 was
+fitted on a 107-session corpus that is not available here, so it cannot be
+re-fitted against the same evidence; what follows is a synthetic sweep, and it
+is reported as such. Sixteen QF_BV variables, a six-conjunct base, then N
+rounds of push/assert/assert/check --- once popping each round, once monotone.
+Interleaved, medians of three, times in ms:
+
+| session | at=0 (batch) | at=1 | at=3 | at=8 | at=16 | at=32 |
+|---|---|---|---|---|---|---|
+| popping-8 | **25** | 52 | 50 | 33 | 25 | 25 |
+| popping-16 | **33** | 154 | 167 | 101 | 45 | 33 |
+| popping-32 | **39** | 363 | 355 | 303 | 186 | 52 |
+| popping-64 | **64** | 1107 | 1056 | 989 | 710 | 463 |
+| monotone-8 | 58 | 65 | 62 | 69 | 58 | **58** |
+| monotone-16 | 262 | **196** | 206 | 212 | 315 | 272 |
+| monotone-32 | 234 | 188 | **160** | 211 | 258 | 226 |
+| monotone-64 | **81** | 81 | 84 | 94 | 81 | 81 |
+
+This reproduces exactly the tension the fitting commit described, and it says
+something the ordinal cannot act on: **the discriminator is the session's
+shape, not its length.** A monotone session that engages at 1--3 beats the
+same session at 32 by about 1.4x (196 against 272; 160 against 226) --- that is
+the win being left on the table. A pop-per-query session loses by 7x at depth
+64 (463 against 64) and would lose by 17x if it engaged at 1. No single ordinal
+separates those, because they differ in whether retained encoding can ever be
+reused, not in when.
+
+So the ordinal is not the thing to tune, and lowering it on this evidence would
+trade a measured 1.4x gain on one shape for a measured 7x loss on the other.
+What the seam now makes possible is the real fix: `automaticEngagementReady`
+takes the session's solve count today, and a `worthEngaging(stack, solvesRun)`
+that also sees whether the session has ever popped --- retained encoding is
+dead the moment it does --- can hold pop-per-query sessions on batch
+indefinitely while engaging monotone ones almost immediately. **Do not land
+that on synthetic sessions.** Re-run this table on the 107-session corpus
+first; if it shows the same shape split, the ordinal should be replaced rather
+than re-fitted.
 
 ## Tier 2 — real costs, no correctness exposure
 
