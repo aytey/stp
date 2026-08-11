@@ -170,16 +170,13 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
     bool waiting = false;
   };
 
-  // A deque, so descending never moves the frames above: `current` below
-  // stays valid across a push.
-  std::deque<Frame> stack;
   ASTNode result;
 
   // The head of the recursive version, in its order -- in particular the
   // fromTo test before the SYMBOL test, which is what makes substituting
   // for a symbol work at all. Either the answer needs no frame and lands in
-  // `result`, or a frame is pushed and the walk goes below it.
-  auto descend = [&](const ASTNode& node) -> bool
+  // `result`, or `frame` is prepared for the walk below it.
+  auto prepare = [&](const ASTNode& node, Frame& frame) -> bool
   {
     const Kind k = node.GetKind();
     if (k == BVCONST || k == TRUE || k == FALSE)
@@ -196,19 +193,17 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
       return false;
     }
 
-    Frame f;
-
     if ((it = fromTo.find(node)) != fromTo.end())
     {
       // By value, not by reference: the walk below inserts into and erases
       // from fromTo, and a DenseNodeMap moves its elements when that
       // happens -- a reference here would dangle.
-      f.chainTarget = it->second;
-      assert(f.chainTarget.GetIndexWidth() == node.GetIndexWidth());
-      f.phase = Frame::AwaitingChain;
+      frame.chainTarget = it->second;
+      assert(frame.chainTarget.GetIndexWidth() == node.GetIndexWidth());
+      frame.phase = Frame::AwaitingChain;
 
       if (preventInfinite)
-        cache.insert(make_pair(node, f.chainTarget));
+        cache.insert(make_pair(node, frame.chainTarget));
     }
     // These can't be created like regular nodes are
     else if (k == SYMBOL)
@@ -232,17 +227,37 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
     }
     else
     {
-      f.phase = Frame::AwaitingChild;
-      f.children = node.GetChildren();
-      assert(f.children.size() > 0);
+      frame.phase = Frame::AwaitingChild;
+      frame.children = node.GetChildren();
+      assert(frame.children.size() > 0);
       // Should have no leaves left here.
     }
 
-    f.n = node;
-    f.k = k;
-    f.indexWidth = node.GetIndexWidth();
-    f.valueWidth = node.GetValueWidth();
-    stack.push_back(std::move(f));
+    frame.n = node;
+    frame.k = k;
+    frame.indexWidth = node.GetIndexWidth();
+    frame.valueWidth = node.GetValueWidth();
+    return true;
+  };
+
+  // Answer settled roots before constructing the deque. Its constructor may
+  // allocate even when no frame is ever pushed, which made constants, leaves,
+  // stopped arrays and cache hits pay for a traversal they did not need.
+  Frame top;
+  if (!prepare(n, top))
+    return result;
+
+  // A deque, so descending never moves the frames above: `current` below
+  // stays valid across a push.
+  std::deque<Frame> stack;
+  stack.push_back(std::move(top));
+
+  auto descend = [&](const ASTNode& node) -> bool
+  {
+    Frame frame;
+    if (!prepare(node, frame))
+      return false;
+    stack.push_back(std::move(frame));
     return true;
   };
 
@@ -277,9 +292,6 @@ ASTNode SubstitutionMap::replace(const ASTNode& n, NodeMapType& fromTo,
     result = value;
     stack.pop_back();
   };
-
-  if (!descend(n))
-    return result;
 
   while (true)
   {

@@ -1404,6 +1404,34 @@ TEST(DeepDag, shallow_substitution)
   EXPECT_TRUE(substitutionOk(c, SHALLOW));
 }
 
+TEST(DeepDag, substitution_root_fast_paths_preserve_results)
+{
+  Context c;
+  const ASTNode x = c.mgr.CreateSymbol("subst-x", 0, 8);
+  const ASTNode y = c.mgr.CreateSymbol("subst-y", 0, 8);
+  const ASTNode free = c.mgr.CreateSymbol("subst-free", 0, 8);
+  const ASTNode cached = c.mgr.CreateSymbol("subst-cached", 0, 8);
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+
+  ASTNodeMap fromTo, cache;
+  fromTo[x] = y;
+  fromTo[y] = one;
+  cache[cached] = zero;
+
+  EXPECT_EQ(zero, SubstitutionMap::replace(zero, fromTo, cache, c.nf));
+  EXPECT_EQ(free, SubstitutionMap::replace(free, fromTo, cache, c.nf));
+  EXPECT_EQ(zero, SubstitutionMap::replace(cached, fromTo, cache, c.nf));
+  EXPECT_EQ(one, SubstitutionMap::replace(x, fromTo, cache, c.nf));
+  EXPECT_EQ(one, fromTo.at(x));
+
+  const ASTNode array = c.mgr.CreateSymbol("subst-array", 8, 8);
+  const ASTNode write = c.hf->CreateArrayTerm(
+      WRITE, 8, 8, array, c.mgr.CreateZeroConst(8), one);
+  EXPECT_EQ(write, SubstitutionMap::replace(write, fromTo, cache, c.nf,
+                                            true, false));
+}
+
 TEST(DeepDag, shallow_teardown)
 {
   Context c;
