@@ -764,11 +764,39 @@ struct IncrementalSolver::Impl
   // live assertion stack would need after a rebuild.
   std::map<ASTNode, uint64_t> clauseMassOf;
 
-  // Theory clauses are globally valid, but their useful lifetime is best
-  // approximated by the solve that caused them to be emitted. Charging them
-  // to that deterministic owner avoids both extremes: treating every old
-  // lemma as dead rebuilds a repeated query forever, while treating all old
-  // lemmas as permanently live hides refinement-heavy dead growth.
+  // Theory clauses are globally valid -- the read registry is canonical and
+  // session-long, so a congruence axiom over its symbols stays true for every
+  // later stack -- but counting them live forever would hide refinement-heavy
+  // dead growth from the relief valve. They are charged instead to the solve
+  // that emitted them, keyed by that solve's whole-stack conjunction.
+  //
+  // Be clear about what that policy actually does, because it is not the
+  // middle ground it reads as. The key is the entire live stack, so ANY change
+  // to it -- one push of an unrelated level -- yields a fresh key whose mass is
+  // zero, and every lemma ever emitted stops counting at once. Mass survives
+  // only for a bit-identical repeated stack. So the two cases are "repeat the
+  // same query" and "drop it all", with nothing in between, and a session that
+  // refines while its stack moves measures its own live mass short by the
+  // whole refinement total.
+  //
+  // Measured, on a 250-level read-heavy QF_ABV churn session forced to the
+  // valve (--incremental-reencode-limit 8000, 125x tighter than the default):
+  // this costs exactly one relief rebuild that the true live mass would not
+  // have permitted, and 646 of 6800 refinement clauses re-derived after it.
+  // Total time is a wash across three interleaved pairs -- the rebuild
+  // compacts what it discards. Counting the lemmas permanently live instead
+  // removes the rebuild and then never relieves at all on that session, which
+  // is the failure this policy exists to prevent. Attributing mass to the live
+  // read rows is the fix that would be right, and it needs always-on per-row
+  // clause accounting: the only per-row liveness that exists today is a
+  // profiling counter, and feeding that into the valve is precisely the
+  // profiler-changes-the-schedule defect fixed in 635b3b04. Left as it is,
+  // deliberately, with the cost stated rather than the behaviour misdescribed.
+  //
+  // One entry per distinct stack solved since the last rebuild, and each pins
+  // its conjunction node: the map grows with the session's shape, not its
+  // depth. Bounding it would change the repeated-query policy above, so it is
+  // a known cost, not an oversight.
   std::map<ASTNode, uint64_t> refinementMassOf;
   // Refinement clauses currently carried by the backend. Unlike the optional
   // profiling counters this is always maintained: the late-FP trail policy
