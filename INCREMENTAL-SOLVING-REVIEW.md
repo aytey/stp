@@ -50,7 +50,7 @@ mechanism is the part worth remembering.
 | [D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack) | soundness | **FIXED** `e1229764` | yes | no (branch-only code) | fixed + regression | `levelPrivate` decides eliminability over the *raw* stack; levels are encoded from the *ctx-substituted* stack |
 | [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **FIXED** `926bf48f` | yes | no (branch-only code) | fixed + regression | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
 | [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | high | yes | no (branch-only code) | agent-measured | A semantic whole-base pass fires on all four rebuild reasons, unbudgeted (9.4 s measured) |
-| [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | high | yes | no (branch-only code) | yes (both) | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
+| [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | **mostly fixed** | yes | no (branch-only code) | measured 6.5x | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
 | [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | medium | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
 | [D6](#d6--measurement---incremental-profile-changes-the-relief-schedule-it-measures) | measurement | medium | n/a | no (branch-only code) | agent-demonstrated | The profiler substitutes a different live-mass estimator, so it changes when rebuilds fire |
 | [D7](#d7--policy-cbpeverfixed-does-not-measure-what-its-retirement-tier-needs) | policy | medium | yes | no (branch-only code) | agent-reproduced | A level's own assumed truth counts as "a fixing", so the 8-divergence tier is unreachable for array-free sessions |
@@ -638,8 +638,20 @@ one-line fix is: clear `baseEliminatedDefs` in `rebuildEncodings` next to
 
 ## D4 — COST: the privacy predicate makes a no-op check quadratic in stack depth
 
-**Severity:** high (this is the cost the engagement-at-32 policy is compensating
-for). **Evidence:** measured by me; stronger figures agent-reported.
+**Status: substantially FIXED** by the occurrence index (work-queue item 4).
+Measured on a deepening stack whose every level contributes a private
+elimination, session total: **3.13 s → 0.48 s at depth 400**, with the growth
+rate falling from roughly 10x per doubling (cubic) to roughly 4.3x (quadratic);
+`prepare-us` fell from 2.84 s to 0.10 s. What remains is the per-check context
+rebuild, which is linear in the live stack and unaddressed.
+
+*(Numbers indicative, not interleaved quiet-box A/B: single runs on a shared
+machine, some under load. The 6.5x gap is far outside that noise; treat the
+exact figures as approximate.)*
+
+**Severity:** was high --- this is the cost the engagement-at-32 policy is
+compensating for. **Evidence:** measured by me; stronger figures
+agent-reported.
 **Sites:** `IncrementalSolver.cpp:1700-1706` (`levelPrivate`'s scan),
 `:1738-1747` (revalidation on cache **hit**), `:5219-5222` (`conjunctCountOf`),
 `:5150-5177` (context rebuild), `:1551-1574` (`symbolsOfCache`).
@@ -1481,14 +1493,25 @@ live raw level, so the superseded units are implied rather than contradictory
 - **Still open.** Rebalance the suite toward the automatic engagement path;
   73 of 87 RUN lines still force `--incremental`.
 
-### 4. Give the elimination invariant one owner (fixes D1's class and D4)
+### 4. Give the elimination invariant one owner --- PARTLY DONE
 
-A maintained **symbol → live-level** occurrence index, consulted by a single
-`eliminable(v)` predicate covering every source that can reach the encoder (raw
-live levels, base symbols, live `ctx` bodies, live CBP facts, blasted symbols).
-Then delete the screening memo's special cases and the `ctx` re-join. Same index
-serves `conjunctCountOf`'s job; skip that map entirely when
-`rawConjuncts.size() == 1`.
+**Done.** A `symbol → {live-level count, deepest live level}` occurrence index,
+built lazily per solve, now answers both eliminability questions in constant
+time: `levelPrivate`'s "does another live level name v?" and
+`collectCtxExportedSymbols`' "does a level below this one name context key u?".
+The second matters twice over --- D1's fix introduced that query, and scanning
+the stack for it made an elimination-heavy session *cubic*; the index removed
+the regression and left the code well ahead of where it started (see
+[D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth)).
+`conjunctCountOf` is no longer built at whole-level granularity, where its only
+consumer provably cannot fire.
+
+**Still open.** The index is rebuilt per solve rather than maintained against
+the previous stack by longest common prefix; the screening memo's special cases
+and the `ctx` re-join are still there (the re-join is now provably inert for its
+stated purpose, so it can go); and the per-check context rebuild --- the
+remaining linear term --- is untouched. A single `eliminable(v)` predicate
+covering every source that can reach the encoder is still the destination.
 
 This is also the natural first production consumer for `Backtrack.h` (D11) ---
 it is insert-only per level, exactly the discipline that header implements.

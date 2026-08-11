@@ -1679,6 +1679,69 @@ struct IncrementalSolver::Impl
     preparedPieceOf.erase(it);
   }
 
+  // ── Where each symbol occurs in the live pushed stack ────────────────
+  //
+  // Both eliminability questions are occurrence queries over the live
+  // levels: "does any level other than this one name v?" and "does any
+  // level BELOW this one name context key u?". Answering either by scanning
+  // the stack costs O(depth) per candidate, and both are asked once per
+  // candidate per level, so the session cost grew as the cube of the stack
+  // depth on a stack whose levels each contribute a definition.
+  //
+  // One pass over the live levels answers both in constant time. The levels'
+  // symbol sets are already memoised, so this is set iteration rather than
+  // DAG walking, and it is rebuilt per call because the stack is the only
+  // thing that defines it.
+  struct LevelOccurrence
+  {
+    size_t levels = 0;   // how many live pushed levels name the symbol
+    size_t deepest = 0;  // the largest such level index
+  };
+  typedef std::unordered_map<ASTNode, LevelOccurrence, ASTNode::ASTNodeHasher,
+                             ASTNode::ASTNodeEqual>
+      LevelOccurrenceMap;
+  LevelOccurrenceMap levelOccurrences;
+  bool levelOccurrencesBuilt = false;
+
+  // Built on first use rather than per solve: a stack whose preparations
+  // harvest no definition and whose context stays empty never asks either
+  // question, and the pass is proportional to the live levels' symbol sets,
+  // which is not free on a symbol-rich stack.
+  void invalidateLevelOccurrences() { levelOccurrencesBuilt = false; }
+
+  void ensureLevelOccurrences(const ASTVec& stack)
+  {
+    if (levelOccurrencesBuilt)
+      return;
+    levelOccurrencesBuilt = true;
+    levelOccurrences.clear();
+    for (size_t j = 1; j < stack.size(); j++)
+      for (const ASTNode& s : symbolsOf(stack[j]))
+      {
+        LevelOccurrence& use = levelOccurrences[s];
+        use.levels++;
+        use.deepest = j;
+      }
+  }
+
+  // Does any live pushed level other than `levelIdx` name `v`?
+  bool namedByAnotherLevel(const ASTNode& v, size_t levelIdx,
+                           const ASTVec& stack)
+  {
+    ensureLevelOccurrences(stack);
+    LevelOccurrenceMap::const_iterator it = levelOccurrences.find(v);
+    if (it == levelOccurrences.end())
+      return false;
+    size_t elsewhere = it->second.levels;
+    if (levelIdx < stack.size())
+    {
+      const ASTNodeSet& own = symbolsOf(stack[levelIdx]);
+      if (own.find(v) != own.end())
+        elsewhere--;
+    }
+    return elsewhere > 0;
+  }
+
   // Symbols a live pushed-definition entry can inject into a level DEEPER
   // than `levelIdx`, and which therefore may not be eliminated there.
   //
@@ -1705,6 +1768,7 @@ struct IncrementalSolver::Impl
     if (ctx.empty())
       return;
 
+    ensureLevelOccurrences(stack);
     std::vector<ASTNode> pending;
     ASTNodeSet queued;
     for (ASTNodeMap::const_iterator it = ctx.begin(); it != ctx.end(); ++it)
@@ -1712,15 +1776,12 @@ struct IncrementalSolver::Impl
       // Entries accumulate by level prefix, so an entry visible while
       // `levelIdx` is prepared can only rewrite levels below it. The piece's
       // own conjuncts are checked separately (see preparePiece's assert).
-      for (size_t j = levelIdx + 1; j < stack.size(); j++)
-      {
-        const ASTNodeSet& syms = symbolsOf(stack[j]);
-        if (syms.find(it->first) == syms.end())
-          continue;
-        if (queued.insert(it->first).second)
-          pending.push_back(it->first);
-        break;
-      }
+      LevelOccurrenceMap::const_iterator use =
+          levelOccurrences.find(it->first);
+      if (use == levelOccurrences.end() || use->second.deepest <= levelIdx)
+        continue;
+      if (queued.insert(it->first).second)
+        pending.push_back(it->first);
     }
 
     while (!pending.empty())
@@ -1760,14 +1821,7 @@ struct IncrementalSolver::Impl
     std::map<ASTNode, size_t>::const_iterator cnt = conjunctCountOf.find(v);
     if (cnt != conjunctCountOf.end() && cnt->second > 1)
       return false;
-    for (size_t j = 1; j < stack.size(); j++)
-    {
-      if (j == levelIdx)
-        continue;
-      if (symbolsOf(stack[j]).find(v) != symbolsOf(stack[j]).end())
-        return false;
-    }
-    return true;
+    return !namedByAnotherLevel(v, levelIdx, stack);
   }
 
   // The re-conjoined form of a definition the privacy check refused.
@@ -5254,6 +5308,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // Accumulate the facts of shallower live levels for the deeper levels'
   // privacy checks.
   ASTNodeSet activeCbpFactSymbols;
+  // Both eliminability questions below are constant-time lookups into an
+  // occurrence index rather than stack scans; it is built on first use, so a
+  // stack that asks neither pays nothing (see LevelOccurrence).
+  impl->invalidateLevelOccurrences();
   for (size_t level = 1; level < assertionsSMT2.size(); level++)
   {
     const bool individually =
@@ -5323,10 +5381,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
       // How many of this level's raw conjuncts mention each symbol; a
       // definition is only eliminable if its variable stays inside one.
+      // At whole-level granularity there is exactly one raw conjunct, so
+      // every count would be one and the test this feeds can never fire --
+      // building it would be a walk over the level's symbols for nothing.
       std::map<ASTNode, size_t> conjunctCountOf;
-      for (const ASTNode& rc : rawConjuncts)
-        for (const ASTNode& s : impl->symbolsOf(rc))
-          conjunctCountOf[s]++;
+      if (rawConjuncts.size() > 1)
+        for (const ASTNode& rc : rawConjuncts)
+          for (const ASTNode& s : impl->symbolsOf(rc))
+            conjunctCountOf[s]++;
 
       // Totalisation order matters more than it looks. Totalising the
       // RAW conjunct and substituting after keeps the symfpu circuits
