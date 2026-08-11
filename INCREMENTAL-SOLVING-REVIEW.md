@@ -24,6 +24,7 @@ what must not be re-chased, and what to do next.
 | Wondering why the design is like this | [Part III](#part-iii--architecture-assessment), then [Part VI](#part-vi--reference-solver-investigations) |
 | Chasing performance | [Part IV](#part-iv--cost-model-and-measurements) |
 | Looking for a specific finding | [Appendix B](#appendix-b--full-finding-ledger) -- all 44, with verification verdicts |
+| Deciding what to do next | [Part V](#part-v--work-queue) -- tiered and re-ordered after the fixes; Tier 0 is the merge gate |
 
 ---
 
@@ -59,6 +60,7 @@ mechanism is the part worth remembering.
 | [D10](#d10--layering-a-node-construction-rewrite-is-gated-on-a-mutable-session-mode-flag) | layering | low | after any `push` | **no --- master folds unconditionally** | yes, incl. vs master | `SimplifyingNodeFactory` reads `UserFlags.incremental_solving`; contradicts the branch's own stated invariant |
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | low | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
 | [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | cost | low | array logics | no (branch-only code) | agent-measured | ~1.8 ms per call, several calls per refinement round |
+| [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | low | yes | n/a (introduced by `e1229764`) | measured: 4 of 93 | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
 
 ### Verified correct (do not re-chase) — see [Part II](#part-ii--verified-correct-do-not-re-chase)
 
@@ -1029,6 +1031,77 @@ stored map by reference, as `ToSATAIG` does.
 
 ---
 
+## D13 — CONSERVATISM: D1's fix refuses eliminations the context re-join would have covered
+
+**Severity:** low, and **measured**. Introduced deliberately by `e1229764`; not
+a defect, a known over-approximation with a known clean fix.
+**Sites:** `IncrementalSolver.cpp` `collectCtxExportedSymbols`, `levelPrivate`,
+and the `ctx` re-join in `checkSatOnCurrentStack`.
+
+D1's fix refuses to eliminate any symbol a live `ctx` body can export to a
+deeper level. But eliminating such a symbol is sound *when the re-join
+succeeds*, because the deeper level then has that symbol substituted away too.
+The predicate does not ask whether the re-join would have covered it, so it
+refuses some eliminations that were legitimate.
+
+### What it costs, measured
+
+Over all 73 files of `tests/query-files/incremental-tests/`, comparing the
+pre-fix binary against the fixed one (`-s --incremental`, summing the
+`N eliminated` line across every solve):
+
+```
+eliminations, pre-fix : 93
+eliminations, current : 89
+```
+
+Three files differ, and two are D1's own witnesses (`6 -> 5` each) where the
+lost elimination **is** the unsound one --- the fix working, not a cost. The
+entire genuine cost in the corpus is one file:
+
+```
+level-elimination.smt2   4 -> 2      (per check: 2 0 0 0 0, was 2 1 1 0 0)
+```
+
+Check 1 is untouched. The losses are checks 2 and 3, where a deeper level names
+`x` and `ctx[x] = (bvadd a #x01)` exports `a`.
+
+The shape needed to trigger it: a level defines `x := f(a)`, a deeper level
+names `x`, and `a` is otherwise private. Rare in this corpus --- but the corpus
+is small, so if a real workload shows preparation eliminating noticeably less
+than before, this is the first thing to check.
+
+### The fix, and the fix NOT to make
+
+**Do not** have `levelPrivate` predict whether the re-join will succeed by
+replicating its three decline conditions. That is precisely how D1 arose: one
+invariant maintained by agreement between two sites, which drifted. A fourth
+decline condition added to the re-join and not to the predicate reintroduces
+the wrong answer.
+
+Make elimination and context-inlining a **single transaction** instead.
+`preparePiece` should record an elimination only if the caller will inline it;
+the caller's three declines then become guaranteed rather than silent. One
+decision, evaluated once, consumed twice, with no possibility of divergence.
+
+That has a strong consequence: if *every* eliminated variable is guaranteed to
+have a `ctx` entry, then no eliminated variable can reach the encoder through a
+context body at all --- and `collectCtxExportedSymbols` can be **deleted
+outright**, along with its per-entry lookup. The endpoint is strictly better
+than both the current state and the pre-fix state: it recovers the
+eliminations, removes code, and removes a query.
+
+⚠ It would make soundness newly depend on `SubstitutionMap::replace` expanding
+context entries through each other transitively (`x -> f(a)` with `a -> 0`
+collapsing in one pass). That behaviour is real and documented in the `sigma0`
+comment, but it must be *verified* rather than assumed before this lands.
+
+This is the same work as [Part V](#part-v--work-queue) item "give the
+elimination invariant one owner", whose "delete the `ctx` re-join" clause this
+supersedes with a concrete mechanism.
+
+---
+
 # PART II — VERIFIED CORRECT (do not re-chase)
 
 Each item below was actively attacked during this review and survived. The
@@ -1450,128 +1523,211 @@ both D1 and D2.
 
 # PART V — WORK QUEUE
 
-Ordered. Items 1--3 are merge blockers.
+Re-ordered 2026-08-11 after D1, D2 and most of D4 were fixed. The ordering
+principle changed with them: while two silent wrong answers stood, everything
+else was noise. With no known soundness defect remaining, the question becomes
+*what would find the next one*, and only then *what costs the most*.
 
-### 1. Fix D1 (privacy over the raw stack) --- DONE, `e1229764`
+Each item states what it buys, so the order can be argued with rather than
+followed blindly.
 
-`collectCtxExportedSymbols()` protects every symbol a live `ctx` entry can
-inject into a level below the one being prepared, reaching `levelPrivate`
-through the existing `protectedSymbols` channel so both the fresh path and the
-cached-piece revalidation are covered; reachability is transitive and scoped to
-deeper levels, so a single-level session eliminates exactly what it did before.
-`rootLit()` additionally asserts that nothing being encoded names a variable
-this solve eliminated. Cost: one elimination in `level-elimination.smt2`,
-precisely the one that was only sound by way of the `ctx` re-join.
+## Tier 0 — before this branch merges
 
-### 2. Fix D2 (promotion pins an unvalidated prepared form) --- DONE, `926bf48f`
+### 0.1 Re-run the corpus campaign with model validation
 
-Promotion records the conjuncts it pinned; the promoted-level skip is taken
-only while the level still prepares to exactly them. On drift the level is
-assumed for that solve --- sound, since a prepared form is a consequence of its
-live raw level, so the superseded units are implied rather than contradictory
---- and the epoch is replaced at the next call's maintenance block.
+**The single highest-value action available, and a merge gate.** Two proven
+soundness defects survived a 22,999-file differential campaign because it
+compared answer streams only, and a wrong `sat` produces a perfectly
+self-consistent stream. `scripts/incremental-bench.py` now gives the candidate
+arm `--check-sanity` by default (`9bbdd056`), so a re-run actually tests what
+the last one was assumed to.
 
-### 3. Strengthen the correctness gate --- DONE
+Everything below this line is an optimisation of a system whose correctness at
+scale is currently unverified. Do this first.
 
-- **Done.** The four witnesses are regressions:
-  `elimination-context-export.smt2`,
-  `elimination-context-export-default-engagement.smt2`,
-  `unit-promotion-repreparation.smt2` and
-  `unit-promotion-repreparation-chained.smt2`. Each was verified to FAIL
-  against the pre-fix source before being kept --- all five RUN configurations
-  answered `sat`.
-- **Done.** `scripts/incremental-bench.py` paired mode now gives the candidate
-  arm `--check-sanity` by default (`--no-check-models` opts out for timing
-  runs) and records `candidate_model_validation` in the sidecar, so a report
-  cannot present an answers-only run as a correctness gate.
-- **Partly done.** The regressions pin `--disable-cbitp` and the default
-  automatic-engagement path (the default-engagement file is the first test in
-  the directory to exercise engagement-at-32 at all). Campaign arms for
-  `--no-incremental-promote-units` and `--incremental-auto-engage-at 1` are
-  still worth adding: mechanisms that mask each other must be tested
-  independently, which is exactly why D2 survived so long.
-- **Still open.** Rebalance the suite toward the automatic engagement path;
-  73 of 87 RUN lines still force `--incremental`.
+Add arms that break the masking relationships, because both defects were partly
+hidden by *other* mechanisms re-deriving what they lost:
+`--disable-cbitp`, `--no-incremental-promote-units`, and
+`--incremental-auto-engage-at 1`.
 
-### 4. Give the elimination invariant one owner --- PARTLY DONE
+### 0.2 Fix D5 --- non-deterministic naming in front of the block cache
 
-**Done.** A `symbol → {live-level count, deepest live level}` occurrence index,
-built lazily per solve, now answers both eliminability questions in constant
-time: `levelPrivate`'s "does another live level name v?" and
-`collectCtxExportedSymbols`' "does a level below this one name context key u?".
-The second matters twice over --- D1's fix introduced that query, and scanning
-the stack for it made an elimination-heavy session *cubic*; the index removed
-the regression and left the code well ahead of where it started (see
-[D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth)).
-`conjunctCountOf` is no longer built at whole-level granularity, where its only
-consumer provably cannot fire.
+**Under-rated in the first review; it belongs here.** `RemoveUnconstrained`
+mints counter-named variables, and it sits directly in front of a cache keyed
+on the resulting node, so an **identical re-pushed stack misses the cache and
+re-encodes from scratch**: 4,177 -> 56,299 SAT variables over 15 identical
+repeats. That is unbounded growth on precisely the workload incremental solving
+exists for, it silently defeats the branch's headline reuse claim
+(`docs/incremental-solving.rst:341-344` promises the opposite), and on a long
+session it ends in memory exhaustion rather than a wrong answer --- which is
+why it reads as a performance note and is really a robustness bug.
 
-**Still open.** The index is rebuilt per solve rather than maintained against
-the previous stack by longest common prefix; the screening memo's special cases
-and the `ctx` re-join are still there (the re-join is now provably inert for its
-stated purpose, so it can go); and the per-check context rebuild --- the
-remaining linear term --- is untouched. A single `eliminable(v)` predicate
-covering every source that can reach the encoder is still the destination.
+Fix: memoise the pass by input node, storing `(output, eliminated definitions)`
+together --- which restores determinism *and* makes a repeated stack O(1) above
+the transform --- or give the stand-ins deterministic names via the branch's own
+`CreateDeterministicVariable`.
 
-This is also the natural first production consumer for `Backtrack.h` (D11) ---
-it is insert-only per level, exactly the discipline that header implements.
+### 0.3 Fix D3 --- unbudgeted whole-base pass welded to `rebuildEncodings`
 
-### 5. Unweld the base pass from epoch replacement (D3)
+A semantic pass over the entire base --- constant-bit propagation, equality
+propagation, simplification, unconstrained elimination --- fires on **all four**
+rebuild reasons, including the two that are pure SAT-backend configuration
+latches, with no size test, no trial gate, no memo and no off-switch. Measured
+at **9.4 s** inside a single trail-retirement rebuild whose entire purpose was
+to set one CaDiCaL option. Every neighbouring use of those same passes is
+budgeted.
 
-Content-key it on the base conjunction; budget it like every neighbouring use;
-invoke it only from `Relief`. Clear `baseEliminatedDefs` in `rebuildEncodings`.
+Fix: content-key it on the base conjunction, give it the same halving gate its
+neighbours have, and invoke it only from the `Relief` path. Clear
+`baseEliminatedDefs` in `rebuildEncodings` beside `restoredBaseRoots` (D3b).
 
-### 6. Make the profiler behaviour-neutral (D6)
+## Tier 1 — before any measurement or tuning is trusted
 
-One live-mass estimator for the decision; profiling adds reporting only.
+### 1.1 Fix D6 --- make the profiler behaviour-neutral
 
-### 7. Re-derive the engagement ordinal
+`--incremental-profile` substitutes a different live-mass estimator, so it
+changes **when relief rebuilds fire**. Any number taken with the profiler
+describes a configuration production does not run, and 17 of the suite's RUN
+lines assert counters produced under it.
 
-After items 4 and 6, re-measure. Move the threshold behind an
+This gates the timing campaign and every tuning decision below it: fix it
+*before* re-deriving thresholds, or the thresholds are fitted to the profiled
+regime. Compute one live value for the decision on both paths; let profiling add
+reporting only. If the exact walk is affordable every solve it is the right
+production estimator and roughly 80 lines plus 4 fields can be deleted.
+
+### 1.2 Re-derive the engagement ordinal
+
+**Newly worth doing, and potentially the largest single win.** QF_BV/QF_ABV
+sessions are held on the batch pipeline until their **32nd** solve, a threshold
+fitted to a per-check reconstruction cost that `00ea5c1e` has now substantially
+reduced. The number may simply be wrong now, and every solve before it is a
+session not getting the feature.
+
+Re-measure, then move the decision behind an
 `IncrementalSolver::worthEngaging(stack, solvesRun)` seam so the driver owns the
-cost judgement and the C API gets the same policy; leave only flag plumbing in
-`Cpp_interface`.
+cost judgement and the C API --- which hard-codes 3 and cannot see
+`--incremental-auto-engage-at` --- gets the same policy.
 
-### 8. Consolidate session shape
+## Tier 2 — real costs, no correctness exposure
 
-One `SessionShape` computed per solve (few-solve vs many-solve, growing vs fixed
-base, array/FP presence, size band). Trail retirement, inprobing retirement, and
-unit promotion become three consumers of it rather than three constant sets with
-mutual gating. Fix D7's `cbpEverFixed` as part of this.
+### 2.1 Fix D7 --- CBP retirement measures the wrong thing
 
-### 9. Structural cleanups (any order)
+`cbpEverFixed` is set by a level's own assumed truth, so the 8-divergence tier
+is unreachable for array-free sessions and the two tiers are effectively
+inverted. Drive the leash off evidence that a fixing *crossed a level boundary*
+--- the property the pass exists for. Charge the feed cap against the union the
+engine retains rather than the per-level sum (D7b), and let a rollback below the
+tripping level re-arm the pass.
 
-- `BackendEpoch` value type owning the solver plus exactly the fields
-  `rebuildEncodings` clears, with a `Config`; one
-  `EpochPolicy::decide(stack, stats) -> Config` replacing the four trigger sites
-  and the three copies of the inprobing predicate.
-- Latch `configuration_closed` in the non-virtual `SATSolver::addClause` facade
-  and assert it in the setters, so the configuration window is a checked
-  invariant rather than a call-ordering convention backed by a third-party
-  `abort()`.
-- Delete or adopt `Backtrack.h`; delete `batchTablesSeeded` and its stale
-  comment; implement or delete `canHandle`; switch the three `Cpp_interface`
-  model readers to `hasIncrementalSolver()`.
-- Revert the node-factory `incremental_solving` special case (D10); split
-  `UserFlags.incremental_solving` into request vs session state.
-- One `ScopedSimplification` helper and one `EliminationChannel` object,
-  replacing the duplicated harvest-split loops and the three elimination-replay
-  representations.
-- Replace the per-check thread with a persistent large-stack worker.
+### 2.2 Fix D8 --- per-encode registry copy and whole-table anchors
 
-### 10. Deferred, unchanged from the previous review
+Every array encode installs the entire session registry into the batch
+transformer by value and copies it back, and the transformer then re-conjoins an
+index-binding equation for **every registry row with a computed index** onto
+every array conjunct --- including rows from popped levels. Hand the transformer
+a registry by reference and emit anchors only for `touchedReads`, which the
+driver already collects. Charge theory lemmas to their registry rows rather than
+to a whole-stack owner key (D8b).
 
-The three-run timing campaign (old Phase 0 item 7). **Moot until items 1--2 land**
---- do not spend machine time measuring a binary that returns wrong answers.
+### 2.3 Finish D4 --- the remaining linear term
 
-### 11. Longer term
+The occurrence index is rebuilt per solve rather than maintained against the
+previous stack by longest common prefix, and the per-check context rebuild
+(`splitConjuncts` + `harvestPushed` over every level, plus the fresh `ctx`) is
+untouched. Memoise the harvested-definition set per level node; skip the base
+split when the base conjunction is unchanged, using the pointer-equality trick
+`updateStackStability` already uses.
 
-The assertion journal with independent stage cursors
-([Part VIII](#part-viii--recommended-scoped-state-architecture)) remains the right
-destination, but items 4 and 8 capture most of its value at a fraction of the
+### 2.4 Fix D13 --- one transaction for elimination and context inlining
+
+Recovers the eliminations D1's fix conservatively refuses (measured: 4 of 93
+across the corpus, 2 of them genuine) **and** deletes `collectCtxExportedSymbols`
+outright. Strictly better than both the current and the pre-fix state. Verify
+`replace`'s transitive expansion before relying on it. Do **not** implement it by
+predicting the re-join's declines in a second place --- that is how D1 happened.
+
+### 2.5 Fix D12 --- incremental symbol map
+
+~1.8 ms per call, several calls per refinement round, walking every symbol ever
+blasted. Maintain it at `totalizeSymbol`/`ensureEncoded`/`rebuildEncodings` and
+return it by reference.
+
+## Tier 3 — batch-path regressions this branch introduced
+
+These are small, but they are behaviour master did not have, and two of them
+touch code outside the driver.
+
+### 3.1 D10 --- node-construction rewrite gated on a session mode flag
+
+`SimplifyingNodeFactory` reads `UserFlags.incremental_solving`, which `push()`
+sets, so a pushing session gets a different word-level DAG **even when the driver
+never engages**. It contradicts the branch's own stated invariant and it means
+the batch-vs-incremental differential compares two engines handed different node
+graphs. Keep the rewrite unconditional; express encoding-order preferences where
+order is chosen. Split the flag into request vs session state (D10b: a
+`push` followed by `reset` currently promotes the whole rest of the session to
+forced-incremental).
+
+### 3.2 D9 --- `construct_counterexample_flag` made sticky
+
+One array round or one `:produce-models` permanently disables the documented
+unchanged-stack cache shortcut and re-enables per-solve counterexample
+construction in the batch pipeline. Give the driver a private
+`needsCandidateModel`; restore per-check derivation.
+
+## Tier 4 — cleanups, any order
+
+### 4.1 D11 --- dead code
+
+`Backtrack.h` (273 lines + test, zero production users): delete it, **or** land
+its first consumer. The natural one is the occurrence index `00ea5c1e` just
+added --- it is insert-only per level, exactly this header's discipline.
+`canHandle()` is a `return true` stub whose batch fallback is therefore dead;
+`batchTablesSeeded` is write-only with a stale comment;
+`CbpCallerCheckpoint::offBefore`/`conflictBefore` are a dead store/restore pair.
+Switch the three `Cpp_interface` model readers to `hasIncrementalSolver()` so a
+batch session stops allocating a driver to ask whether one exists.
+
+### 4.2 Consolidate session shape
+
+Trail-reuse retirement, inprobing retirement and unit promotion are three
+constant sets with mutual gating (trail gates inprobing gates promotion),
+implementing one latent concept. One `SessionShape` computed per solve, three
+consumers.
+
+### 4.3 Backend epoch as an object
+
+~28 fields hand-reset in `rebuildEncodings`, four trigger sites, one eligibility
+predicate written out three times. A `BackendEpoch` value type with a `Config`,
+and one `EpochPolicy::decide(...)`. Latch `configuration_closed` in the
+`SATSolver::addClause` facade so the configuration window is a checked invariant
+rather than a call-ordering convention backed by a third-party `abort()`.
+
+### 4.4 Rebalance the test suite
+
+73 of 87 RUN lines force `--incremental`; production runs automatic engagement.
+`elimination-context-export-default-engagement.smt2` is currently the only test
+exercising engagement-at-32 at all.
+
+### 4.5 The untracked findings
+
+F9, F10, F16, F22, F23, F26 and F38 in
+[Appendix B](#appendix-b--full-finding-ledger), each with a stated fix.
+
+## Tier 5 — after the above
+
+### 5.1 The three-run timing campaign
+
+Runnable again now D1/D2 are fixed. Run it with `--no-check-models` (validation
+is not free and would distort timings), **after** D6, and after 1.2 in case the
+engagement ordinal moves.
+
+### 5.2 The assertion journal
+
+[Part VIII](#part-viii--recommended-scoped-state-architecture) remains the right
+destination, but 2.3 and 4.2 capture most of its value at a fraction of the
 cost. Reassess after they land.
-
----
 
 # PART VI — REFERENCE SOLVER INVESTIGATIONS
 
@@ -2366,6 +2522,7 @@ not as an implementation.
 | 2026-08-08 | closeout update at `f1e55c2c` (solver tip `ee8685bb`) | Instrumentation and CBP-rollback results; accounting/privacy repairs; frozen 22,999-file reconciliation |
 | **2026-08-11** | **second review at tip `278552ce`** | **Restructured. Added: two reproduced soundness defects (D1, D2) with witnesses and fixes; ten further tracked defects; a verified-correct / do-not-re-chase register; the 44-finding ledger; cost measurements; a re-ordered work queue. Prior content retained in Parts VI--X and Appendix D.** |
 | **2026-08-11** (same day, later) | **master `d47f6b57` rebuilt at the merge base** | **Added [Validation against master](#validation-against-master): all four witnesses answer `unsat` on master; per-defect master-exposure analysis; D10 reproduced as a divergence from master; D9 source-verified; D8/D5 shown to depend on branch-only persistence; 72-file corpus differential (71 identical, 1 = a feature master lacks). Status board gained an "In master?" column.** |
+| **2026-08-11** (reassessment) | after `00ea5c1e` | Added [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered), the measured conservatism D1's fix introduced (4 of 93 eliminations corpus-wide, 2 genuine, in one file), with the single-transaction fix and an explicit warning against the two-site prediction that caused D1. Work queue re-ordered into tiers: the ordering principle changed once no known soundness defect remained, from "fix the wrong answers" to "find the next one, then pay down cost". |
 | **2026-08-11** (fixes) | `e1229764`, `926bf48f`, and the regression/harness commit | **D1 and D2 fixed**; four regressions landed, each verified to fail against the pre-fix source before being kept; paired campaign mode now validates the candidate's models by default. Status board, work queue and Appendix A updated. No known soundness defect remains. |
 | **2026-08-11** (same day, later still) | **cross-checked with Bitwuzla, cvc5 and Z3** | **The four witnesses' expected answers no longer rest on STP alone: Bitwuzla `0.9.1-dev`, cvc5 `1.3.5.dev` and Z3 `5.0.0` agree with STP master on all 64 answers across the four files; the branch matches 60/64 and diverges on the final check of each. Recorded in Validation §1.** |
 
