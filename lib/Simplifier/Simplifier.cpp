@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FloatBlaster.h"
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <deque>
 
 namespace stp
@@ -802,14 +803,14 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
   // map test in Frame::Start, and the tail each shared is `finish`.
   struct Frame
   {
-    enum Job
+    enum Job : uint8_t
     {
       FormulaJob,
       AtomicJob,
       TermJob,
       ArrayJob
     };
-    enum Phase
+    enum Phase : uint8_t
     {
       Start,
       PrecheckedStart,
@@ -860,17 +861,14 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       Phase phase;
     };
 
-    Job job = FormulaJob;
-
+    // Put the reference-counted and aligned state first. The scalar state is
+    // packed at the tail so a frame does not acquire padding between every
+    // phase discriminator and node.
     ASTNode b;
     ASTNode a;
-    bool pushNeg = false;
-    Phase phase = Start;
 
     // AND, OR and XOR collect their operands.
     ASTVec outvec;
-    size_t i = 0;
-    Kind outKind = UNDEFINED;
 
     // The operands an arm has to keep across a suspension: what a NOT has
     // under it, the two sides of a binary connective, the three of an
@@ -882,16 +880,31 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // those jobs are mutually exclusive, so carrying another ASTNode in every
     // frame would only make the explicit stack larger.
     ASTNode output;
-    unsigned valueWidth = 0;
+    size_t i = 0;
 
-    Frame() = default;
+    // Formula jobs use the kind while term jobs use the width. A frame can
+    // never be both, so keeping separate words only enlarged every frame.
+    union
+    {
+      Kind outKind;
+      unsigned valueWidth;
+    };
+
+    Job job = FormulaJob;
+    Phase phase = Start;
+    bool pushNeg = false;
+
+    Frame() : outKind(UNDEFINED) {}
 
     explicit Frame(Init&& init)
-        : job(init.job), b(std::move(init.b)), a(std::move(init.a)),
-          pushNeg(init.pushNeg), phase(init.phase)
+        : b(std::move(init.b)), a(std::move(init.a)), outKind(UNDEFINED),
+          job(init.job), phase(init.phase), pushNeg(init.pushNeg)
     {
     }
   };
+
+  static_assert(sizeof(Frame) <= 88,
+                "simplifier continuation frame unexpectedly grew");
 
   ASTNode result;
 
