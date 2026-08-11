@@ -1943,7 +1943,14 @@ struct IncrementalSolver::Impl
     // bit-blast memo's sharing and can be strictly harder to search: a
     // family the batch pipeline solves in a second ran to timeout,
     // deterministically, on shuffled forms of near-identical size.
-    const size_t before = dagSizeUpTo(out, bigFormulaCap);
+    // Measured unclipped. `out` has just been expanded under sigma0, whose
+    // replacements carry no inlining cap, so a piece that arrived under the
+    // granularity gate can leave it far above bigFormulaCap -- and a clipped
+    // count saturates there, turning "must at least halve" into a fixed
+    // ten-thousand-node ceiling that a legitimately large collapse cannot
+    // meet. This is the cache-miss path, so the walk is paid once per
+    // distinct piece, against passes that walk it anyway.
+    const size_t before = dagSizeUpTo(out, std::numeric_limits<size_t>::max());
     const size_t budget = before / 2;
     {
       SubstitutionMap trialSm(bm);
