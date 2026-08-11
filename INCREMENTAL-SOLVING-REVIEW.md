@@ -2121,24 +2121,59 @@ None is a correctness item; each needs a decision rather than analysis.
   `automaticEngagementReady`, and the driver asserts the one direction that
   must hold (`forced-first` implies `engagedSolves == 0`) --- exactly the
   mis-plumbing a new frontend would introduce. Two unit tests.
-- **F36** --- `--incremental-inprobing` silently disables bounded variable
-  elimination, learned-clause shrinking and lucky phases, documented only in a
-  commit message and `SATSolver.h`. One paragraph in
-  `docs/incremental-solving.rst` closes it.
-- **F44** --- ~20 fitted constants and 8 flags, with the most intricate policy
-  undocumented.
-- **F7 (second half)** --- `symbolsOfCache` is never cleared, so it holds a
-  symbol set for every node measured since the session began. Entries can never
-  be stale (symbol sets are a pure function of the node), so a clear at
-  `rebuildEncodings` is pure reclamation. D4 is marked FIXED/closed while this
-  named sub-item is neither fixed nor declined.
-- **F24** --- the deterministic-name keep-alive pin is a convention held at one
-  call site, with no assertion and no test. Move it into
-  `CreateDeterministicVariable`, or pin it with a test.
-- **Per-check thread creation** --- `runOnBigStack` spawns a worker per check.
-  It is this document's own leading hypothesis for an unexplained
-  small-session loss, and it was never queued. A persistent worker, or an
-  explicit acceptance.
+- **F36 --- DONE (`5c050d99`).** `--incremental-inprobing` silently disabled
+  bounded variable elimination, learned-clause shrinking and lucky phases,
+  documented only in a commit message and `SATSolver.h`.
+  `docs/incremental-solving.rst` now states it, with why the three ride the
+  same switch, and the consequence a user needs: `on` keeps all four, not just
+  probing.
+- **F44 --- the concrete instance is DONE (`5c050d99`).** ~20 fitted constants
+  and 8 flags, with the most intricate policy undocumented: that policy was
+  CBP's self-retirement, and `docs/incremental-solving.rst` now states both
+  kinds of evidence --- the futility leashes (8 barren divergences for an engine
+  that has never derived a fixing, 64 once it has, and why a level's own assumed
+  truth must not count) and the capacity cap (what is charged, and that both the
+  charge and the refusal are refunded on pop). The general complaint --- that
+  the constants are fitted and mostly unexplained --- stands, and is not
+  closeable by one edit; it is a standing caution, not a work item.
+- **F7 (second half) --- DONE (`5c050d99`), and measured to matter nowhere.**
+  `symbolsOfCache` was never cleared, holding a symbol set for every node
+  measured since the session began. Entries can never be stale (symbol sets are
+  a pure function of the node), so the clear at `rebuildEncodings` is
+  reclamation, not invalidation. **It makes no measurable difference**:
+  interleaved before/after on a 300-round session at 33 MB and a 400-variable
+  one at 212 MB moved neither RSS nor wall time, because the memo only
+  references nodes the AST pool already holds. Kept because it costs nothing and
+  bounds a growth that had no bound --- and recorded here so nobody re-chases it
+  as an optimisation, which it is not.
+- **F24 --- DONE (`5c050d99`), and it was a worse defect than recorded.** The
+  finding was that the keep-alive pin is a convention held at one call site with
+  no assertion and no test. The real problem was at the other end:
+  `CreateDeterministicVariable` claimed "node numbers are unique for the
+  manager's lifetime, so distinct keys can never share a name". They are unique
+  among LIVE nodes --- the GC frees unreferenced interior nodes and re-mints
+  their numbers, which is exactly why the driver pins its per-round spine in
+  `exactStackKeepAlive`. So the factory told its readers no such precondition
+  existed, while the only thing making its contract true was a convention held
+  in another file. It now states the precondition, why nothing there can check
+  it, and who owes the pin.
+- **Per-check thread creation --- STILL OPEN, and the only one of the eight
+  that is.** `runOnBigStack` spawns a worker per check (two call sites, plus one
+  more for the first model read after each sat answer); the 256 MB stack is
+  load-bearing, but the THREAD need not be recreated. It is this document's own
+  leading hypothesis for an unexplained small-session loss.
+
+  An investigation recommended documenting it with a cost model and attaching a
+  cheap experiment. That was **not** taken, because the cost model did not
+  survive review: three of its four costs are wrong --- `staticUniqueId` is
+  `static` in a header, so it is per-translation-unit with no readers at all;
+  `ToSATAIG::cnf_calls` is not on the driver's path; `MutableASTNode::all` is
+  not carried across. Writing a note whose reasoning is known to be wrong is
+  worse than leaving the row open.
+
+  What this actually needs is a measurement, not prose, and `runOnBigStack`'s
+  existing inline fallback makes it cheap to get. That is Tier 5 work. Left
+  open deliberately.
 - **Model channel `SolverMap`** ([Part III.5](#5-layering-inventory), row 3) ---
   **accepted, and the protocol completed.** The map is `STP::substitutionMap`'s
   `SolverMap`, reached through the shared `Simplifier*` the driver holds as
