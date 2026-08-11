@@ -1026,9 +1026,13 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     return true;
   };
 
-  auto step = [&](Frame& f) -> bool {
+  // Keep each job's phase dispatcher in its own function. Formula and term
+  // jobs dominate ordinary simplification; folding the atomic and array
+  // state machines into the same large body evicts their hot code even when
+  // those jobs are not running.
+  auto stepAtomic = [&](Frame& f) -> bool {
   redispatch:
-    if (f.job == Frame::AtomicJob)
+    assert(f.job == Frame::AtomicJob);
     {
       auto finishAtomic = [&](const ASTNode& output)
       {
@@ -1251,8 +1255,11 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
 
       return finishAtomic(output);
     }
+  };
 
-    if (f.job == Frame::ArrayJob)
+  auto stepArray = [&](Frame& f) -> bool {
+  redispatch:
+    assert(f.job == Frame::ArrayJob);
     {
       auto finishArray = [&](const ASTNode& output)
       {
@@ -1336,8 +1343,11 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       return finishArray(nf->CreateArrayTerm(WRITE, iw, f.b.GetValueWidth(),
                                              f.t0, f.t1, f.t2));
     }
+  };
 
-    if (f.job == Frame::TermJob)
+  auto stepTerm = [&](Frame& f) -> bool {
+  redispatch:
+    assert(f.job == Frame::TermJob);
     {
       auto finishTerm = [&](const ASTNode& output)
       {
@@ -1563,6 +1573,11 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       }
       return finishTermTail(f.output);
     }
+  };
+
+  auto stepFormula = [&](Frame& f) -> bool {
+  redispatch:
+    assert(f.job == Frame::FormulaJob);
     // The formula arms implemented in this frame share their memoisation
     // tail: record the PullUpITE result and, when distinct, the input. The
     // separately scheduled AtomicJob owns its own first entry and bypasses
@@ -1874,7 +1889,24 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
 
   while (true)
   {
-    if (step(stack.back()))
+    bool keepFrame = false;
+    switch (stack.back().job)
+    {
+      case Frame::FormulaJob:
+        keepFrame = stepFormula(stack.back());
+        break;
+      case Frame::AtomicJob:
+        keepFrame = stepAtomic(stack.back());
+        break;
+      case Frame::TermJob:
+        keepFrame = stepTerm(stack.back());
+        break;
+      case Frame::ArrayJob:
+        keepFrame = stepArray(stack.back());
+        break;
+    }
+
+    if (keepFrame)
       continue;
 
     stack.pop_back();
