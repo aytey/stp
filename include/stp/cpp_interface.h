@@ -198,7 +198,14 @@ class Cpp_interface
   // and unknown logics retain solve 3. The first solves carry the largest
   // all-new formulas, and the batch pipeline's whole-formula simplification
   // earns its keep there.
+  // The user's REQUEST, read once from the flags, and the SESSION's state,
+  // which a push turns on. Keeping them apart matters because reset() starts
+  // a new session: folding the session bit back into the request made a
+  // session that pushed and then reset behave for the rest of its life as
+  // though --incremental had been passed, forced-first-solve policies and
+  // all.
   bool incremental_from_start;
+  bool session_incremental;
   bool delayed_bv_auto_engagement;
   size_t solves_run;
 

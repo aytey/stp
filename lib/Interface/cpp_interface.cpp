@@ -66,6 +66,7 @@ void Cpp_interface::init()
   produce_models = false;
   model_valid = false;
   incremental_from_start = bm.UserFlags.incremental_solving;
+  session_incremental = incremental_from_start;
   delayed_bv_auto_engagement = false;
   solves_run = 0;
 }
@@ -606,8 +607,9 @@ void Cpp_interface::push()
 {
   // The session is incremental from the first push on (the same trigger z3
   // uses): later check-sats go through the incremental driver where they
-  // can. Sessions that never push are untouched by this.
-  bm.UserFlags.incremental_solving = true;
+  // can. Sessions that never push are untouched by this. This is session
+  // state, not the user's request, so it does not travel through UserFlags.
+  session_incremental = true;
 
   // If the prior one is unsatisiable then the new one will be too. The
   // core provenance rides along, so a shortcut taken above a core-recorded
@@ -723,7 +725,7 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
         engageAt > 0 &&
         solves_run >= static_cast<size_t>(engageAt - 1);
     const bool use_incremental =
-        bm.UserFlags.incremental_solving &&
+        session_incremental &&
         (incremental_from_start || automaticEngagementReady) &&
         GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
     const bool firstForcedIncrementalSolve =

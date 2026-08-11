@@ -807,7 +807,7 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
   // encoding -- stays batch throughout. vc_setFlags 'i' still forces the
   // driver from the first.
   const bool use_incremental =
-      b->UserFlags.incremental_solving &&
+      stp_i->sessionIncremental &&
       (stp_i->incrementalFromStart || stp_i->incrementalSolvesRun > 1);
   const bool firstForcedIncrementalSolve =
       use_incremental && stp_i->incrementalFromStart &&
@@ -889,7 +889,7 @@ void vc_push(VC vc)
 
   // The session is incremental from the first push on, exactly as the
   // SMT-LIB2 frontend behaves; sessions that never push are untouched.
-  b->UserFlags.incremental_solving = true;
+  stp_i->sessionIncremental = true;
 
   stp_i->ClearAllTables();
   b->Push();
@@ -3252,6 +3252,7 @@ void process_argument(const char ch, VC vc)
       // docs/incremental-solving.rst.
       bm->UserFlags.incremental_solving = true;
       ((stp::STP*)vc)->incrementalFromStart = true;
+      ((stp::STP*)vc)->sessionIncremental = true;
       break;
     case 'm':
       bm->UserFlags.smtlib1_parser_flag = true;
