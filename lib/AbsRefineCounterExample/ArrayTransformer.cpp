@@ -418,7 +418,9 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
 
     if (k == SYMBOL || k == BVCONST)
     {
-      result = finishTransformTerm(n, n);
+      // Leaves are not memoized, and their width checks are true by
+      // construction because the result is the input itself.
+      result = n;
       return false;
     }
 
