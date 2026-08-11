@@ -3582,8 +3582,24 @@ struct IncrementalSolver::Impl
     // re-assert the equation -- the memo would skip it.
     screenedContent.clear();
     restoredBaseRoots.clear();
+    // Epoch-scoped, like the roots above: the eliminations below belong to
+    // the epoch that recorded them, and the pass that repopulates them may
+    // not run for this one. Clearing here rather than only inside the pass
+    // keeps a stale claim from surviving into a fresh epoch that re-asserts
+    // the raw base.
+    baseEliminatedDefs.clear();
 
-    resimplifyBaseAtRebuild(assertionsSMT2);
+    // Re-materialising the base is needed whatever ended the epoch;
+    // re-SIMPLIFYING it is only worth its price when the epoch ended because
+    // the encoding had grown too big. Two of the four reasons -- retiring
+    // inprocessing and retiring trail reuse -- are pure SAT-backend
+    // configuration latches that want a fresh solver and nothing else, and
+    // running a whole-base constant-bit, equality, simplification and
+    // unconstrained pass for them is unbudgeted work nobody asked for:
+    // measured at 18ms for a 3,001-conjunct base of trivial constraints, and
+    // it scales with the base. Promotion demotion is likewise about
+    // retraction, not size.
+    resimplifyBaseAtRebuild(assertionsSMT2, reason == RebuildReason::Relief);
   }
 
   // A forced base-only first solve has no earlier batch round to simplify its
@@ -3682,7 +3698,7 @@ struct IncrementalSolver::Impl
   // base loop keeps skipping conjuncts the pass already covers; the
   // simplified replacements wait in pendingRebuiltBase for the encoding
   // point after the backend's configuration window is decided.
-  void resimplifyBaseAtRebuild(const ASTVec& assertionsSMT2)
+  void resimplifyBaseAtRebuild(const ASTVec& assertionsSMT2, bool simplify)
   {
     pendingRebuiltBase.clear();
     if (level0Asserted.empty())
@@ -3694,7 +3710,7 @@ struct IncrementalSolver::Impl
     for (const ASTNode& c : base)
       pendingRebuiltBase.push_back(c);
 
-    if (!bm->UserFlags.optimize_flag)
+    if (!simplify || !bm->UserFlags.optimize_flag)
       return;
     // Arrays keep the historical per-conjunct path: eliminating within
     // an array-carrying base would put reads into the replay channel the
