@@ -4240,7 +4240,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::Impl::solvePlainExactStack(
 
   bool construct = uf.check_counterexample_flag ||
                    uf.print_counterexample_flag || uf.produce_models ||
-                   uf.construct_counterexample_flag;
+                   uf.request_counterexample;
 #ifndef NDEBUG
   construct = true;
 #endif
@@ -4558,7 +4558,10 @@ IncrementalSolver::Impl::exactStackCheckSat(
     return solvePlainExactStack(assertionsSMT2, assumptions, inputToSat,
                                 blockRegular);
 
-  // Array equality needs a candidate model on every refinement round.
+  // Array equality needs a candidate model on every refinement round. This
+  // is the round's own requirement, so it is restored on the way out rather
+  // than left switched on for the rest of the session.
+  const bool savedConstruct = uf.construct_counterexample_flag;
   uf.construct_counterexample_flag = true;
 
   if (fpCtx)
@@ -4611,6 +4614,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
 
   tosat->setAssumptions(NULL);
   uf.ackermannisation = savedAck;
+  uf.construct_counterexample_flag = savedConstruct;
 
   if (uf.stats_flag && refinementRounds > 0)
     std::cerr << "Incremental: array-equality refinement converged after "
@@ -5914,14 +5918,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   }
   const bool needRefinement = activeHasArrays && !uf.ackermannisation;
 
-  // construct_counterexample_flag is both derived state and a direct
-  // input: the C API's 'c' flag sets it explicitly, with no other trace
-  // of the request. Folding it into the derivation keeps that request
-  // alive across the write-back below, which previously clobbered it --
-  // a 'c'-only session on a release build lost its counterexamples.
+  // Derived afresh from the genuine inputs -- including the C API's direct
+  // request, which now has its own field -- so that a check needing a
+  // candidate model for refinement cannot leave construction switched on
+  // for every later check, and with it the frontend's shortcut for a
+  // repeated query whose model nobody wants.
   bool construct = uf.check_counterexample_flag ||
                    uf.print_counterexample_flag || uf.produce_models ||
-                   uf.construct_counterexample_flag || needRefinement;
+                   uf.request_counterexample || needRefinement;
 #ifndef NDEBUG
   construct = true;
 #endif

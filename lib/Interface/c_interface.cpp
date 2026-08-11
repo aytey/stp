@@ -3233,10 +3233,10 @@ void process_argument(const char ch, VC vc)
       bm->UserFlags.optimize_flag = false;
       break;
     case 'c':
-      bm->UserFlags.construct_counterexample_flag = true;
+      bm->UserFlags.request_counterexample = true;
       break;
     case 'd':
-      bm->UserFlags.construct_counterexample_flag = true;
+      bm->UserFlags.request_counterexample = true;
       bm->UserFlags.check_counterexample_flag = true;
       break;
 

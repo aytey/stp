@@ -445,13 +445,15 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     }
   }
 
-  // construct_counterexample_flag is a direct input as well as derived
-  // state -- the C API's 'c' flag sets it with no other trace of the
-  // request -- so the derivation may widen it but must not clear it.
-  if (bm->UserFlags.check_counterexample_flag ||
+  // Recomputed per query, never latched: every input is available here,
+  // including the C API's direct request, so a query that happens to need a
+  // candidate model cannot leave construction switched on for the rest of
+  // the session.
+  bm->UserFlags.construct_counterexample_flag =
+      bm->UserFlags.check_counterexample_flag ||
       bm->UserFlags.print_counterexample_flag ||
-      bm->UserFlags.produce_models || (arrayops && !removed))
-    bm->UserFlags.construct_counterexample_flag = true;
+      bm->UserFlags.produce_models || bm->UserFlags.request_counterexample ||
+      (arrayops && !removed);
 
 #ifndef NDEBUG
   bm->UserFlags.construct_counterexample_flag = true;
