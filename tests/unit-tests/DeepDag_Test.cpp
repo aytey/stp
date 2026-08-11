@@ -719,6 +719,37 @@ bool simplifyRootFastPathsOk(Context& c)
          substitutedOutput == c.mgr.CreateBVConst(8, 3);
 }
 
+// A descendant request normally answers from the simplification map rather
+// than by pushing another work frame. The parent must consume those ready
+// term and formula answers in place: yielding and re-dispatching is wasted
+// work, while treating a ready answer as a completed parent drops the rest of
+// the parent entirely.
+bool simplifyReadyDescendantsOk(Context& c)
+{
+  const ASTNode zero = c.mgr.CreateZeroConst(8);
+  const ASTNode x = c.mgr.CreateSymbol("ready-descendant-x", 0, 8);
+  const ASTNode y = c.mgr.CreateSymbol("ready-descendant-y", 0, 8);
+  const ASTNode left = c.hf->CreateTerm(BVXOR, 8, x, zero);
+  const ASTNode right = c.hf->CreateTerm(BVXOR, 8, y, zero);
+  const ASTNode equality = c.hf->CreateNode(EQ, left, right);
+  const ASTNode top = c.hf->CreateNode(AND, equality, c.mgr.ASTTrue);
+  c.roots.push_back(top);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+
+  // Prime both term continuations and then the formula continuation. Every
+  // child request made while simplifying `top` can now answer immediately.
+  simp.SimplifyTerm(left);
+  simp.SimplifyTerm(right);
+  const ASTNode simplifiedEquality = simp.SimplifyFormula(equality, false);
+  const ASTNode output = simp.SimplifyFormula(top, false);
+  c.roots.push_back(simplifiedEquality);
+  c.roots.push_back(output);
+  return output == simplifiedEquality;
+}
+
 // A term contains a formula which contains the preceding term, at every
 // level. Separate iterative formula and term drivers are insufficient for
 // this shape: calling from one driver into the other still makes one C++
@@ -1844,6 +1875,12 @@ TEST(DeepDag, simplifier_root_fast_paths_preserve_results)
 {
   Context c;
   EXPECT_TRUE(simplifyRootFastPathsOk(c));
+}
+
+TEST(DeepDag, simplifier_consumes_ready_descendants_in_place)
+{
+  Context c;
+  EXPECT_TRUE(simplifyReadyDescendantsOk(c));
 }
 
 TEST(DeepDag, shallow_simplify_alternating_term_formula)
