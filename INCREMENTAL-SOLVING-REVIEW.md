@@ -2797,7 +2797,7 @@ narrower or differently scoped issue (the *corrected* claim is what to act on);
 | F13 | PARTLY | low | cbp | Engine/caller/memo triple kept aligned by asserts + repair fallback; two dead fields | **D11** |
 | F14 | PARTLY | low | cbp | Session-wide retirement from prefix-scoped, double-counted evidence | **D7b** |
 | F15 | PARTLY | med | arrays | Every array encode seeds the whole registry; anchors for every read ever seen | **D8** |
-| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | partly; still open |
+| F16 | PARTLY | low | arrays | No-progress guard counts SAT calls, not new axioms | open; memo reverted |
 | F17 | PARTLY | low | arrays | Active-read liveness is a refcount shadow; `batchTablesSeeded` dead | **D11** |
 | F18 | CONFIRMED | low | arrays | Adapter rebuilds an O(all session symbols) map per call | **D12** |
 | F19 | PARTLY | low | arrays | Congruence lemmas "permanent" but charged to a per-stack owner key | **D8b** |
@@ -2845,29 +2845,44 @@ fixed; three were measured and deliberately declined. Details below.
   emit each fact as `EQ(replaceChildren(domain, fromTo), k)`, drop facts folding
   to TRUE, stop the walk at an emitted domain, and include surviving facts' mass
   in the gate.
-- **F16 --- PARTLY, and the headline claim was wrong.** `cd34049d` changed the
-  refinement no-progress guard from counting solve calls to counting submitted
-  clauses, and the commit said that keying on the solve count "made it unable
-  to fire in precisely the situation it names". The new measure has the same
-  blind spot. On the legacy read-refinement path every `applyAxiomsToSolver`
-  site is immediately followed by a solve, and `SATSolver::addClause` counts
-  every submission including a duplicate, so a round that re-derives only
-  axioms the solver already holds re-submits them, re-solves, and advances both
-  counters. The livelock the guard exists to convert into an abort is still a
-  hang.
+- **F16 --- STILL OPEN. The memo was built, measured and REVERTED (`09a0018d`).**
+  `cd34049d` changed the no-progress guard from counting solve calls to
+  counting submitted clauses and said that made it able to fire. It did not.
+  On the legacy path every `applyAxiomsToSolver` site is immediately followed
+  by a solve, and `getEquals` mints a FRESH comparison circuit per call, so a
+  re-derived axiom is not a duplicate clause at all --- it is new variables and
+  new clauses encoding a constraint already present. No clause- or
+  variable-based measure can tell that from progress.
 
-  **Still open**, with the remedy the finding itself named as its second
-  option: memoise emitted `(index0,index1,value0,value1)` pairs in
-  `applyAxiomsToSolver` (`AbstractionRefinement.cpp:259-267`), so a round that
-  adds nothing new submits nothing and the guard trips. That is shared batch
-  code, and the guard only matters once the encoding and the word-level
-  evaluation already disagree, so it is recorded rather than rushed.
+  The memo that would fix it was implemented (`484c01f2`) and pulled. Two
+  reasons, the second decisive.
 
-  What `cd34049d` did buy, and this part stands: the same guard now exists on
-  the array-equality hybrid fallback branch, which had none at all, and a
-  clause-based measure cannot raise a spurious abort if a future path ever
-  submits without re-solving. The in-tree comment now says all of this instead
-  of claiming the fix.
+  *It never hits* --- structurally, not rarely. `SATBased_ArrayReadRefinement`
+  runs once per batch solve and generates each index pair once, so every lookup
+  is a miss. Instrumented across the 461-file query corpus, suppression was
+  zero in every file.
+
+  *It costs.* Per axiom it builds a four-node key and copies each leaf's
+  SAT-variable vector --- twice, since a miss re-reads after emission --- at
+  ~12-15 heap allocations, retaining all of it for the solver's lifetime. The
+  copied payload is `2*indexWidth + 2*elementWidth` unsigneds, so it scales
+  with floating-point width, and read-congruence axioms are quadratic in reads
+  per array. Measured on the 24 worst-regressed QF_ABVFP/QF_BVFP files from the
+  campaign: **167.6 s with it against 156.1 s without, a 7.4% tax** on exactly
+  the workloads under investigation for a performance regression.
+
+  It is not the whole of that regression either: with no arrays there is no
+  refinement, so the memo is unreachable in QF_BVFP, and that family regressed
+  too.
+
+  **What a real fix would need.** The suppression has to reach across the
+  repeated `SATBased_ArrayReadRefinement` calls the DRIVER makes inside one
+  check-sat --- that is where a re-derivation actually happens --- while
+  costing the batch path, which never repeats, nothing at all. The version
+  tried here was scoped to the solver and charged both. One more constraint
+  learned the hard way: holding `ASTNode`s in solver-owned state is unsafe,
+  because the AST tables are cleared on a different schedule from the solver's
+  lifetime.
 
 - **F22 --- DEFERRED, deliberately.** in a session alternating extensionality and ordinary array rounds, a
   SYMBOL-rooted read is abstracted twice (`@ext_read_k<A>_k<i>` and
