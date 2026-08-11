@@ -1271,6 +1271,32 @@ ASTNode SimplifyingNodeFactory::CreateSimpleEQ(const ASTVec& children)
 ASTNode SimplifyingNodeFactory::CreateSimpleEQConstConcat(
     const ASTNode& constant, const ASTNode& concat)
 {
+  auto splitConstant = [&](const ASTNode& c, const ASTNode& term,
+                           ASTNode& low, ASTNode& high) {
+    const unsigned lowWidth = term[1].GetValueWidth();
+    const unsigned width = term.GetValueWidth();
+    low = NodeFactory::CreateTerm(
+        BVEXTRACT, lowWidth, c, bm.CreateBVConst(32, lowWidth - 1),
+        bm.CreateZeroConst(32));
+    high = NodeFactory::CreateTerm(
+        BVEXTRACT, term[0].GetValueWidth(), c,
+        bm.CreateBVConst(32, width - 1), bm.CreateBVConst(32, lowWidth));
+  };
+
+  // Most concat equalities split only once. Keep that case out of the
+  // continuation machine so it does not construct a deque for two leaf
+  // equalities.
+  if (concat[0].GetKind() != BVCONCAT && concat[1].GetKind() != BVCONCAT)
+  {
+    ASTNode lowConstant, highConstant;
+    splitConstant(constant, concat, lowConstant, highConstant);
+    const ASTNode lowEquality =
+        NodeFactory::CreateNode(EQ, concat[1], lowConstant);
+    const ASTNode highEquality =
+        NodeFactory::CreateNode(EQ, concat[0], highConstant);
+    return NodeFactory::CreateNode(stp::AND, lowEquality, highEquality);
+  }
+
   struct Frame
   {
     enum Phase
@@ -1308,14 +1334,8 @@ ASTNode SimplifyingNodeFactory::CreateSimpleEQConstConcat(
         continue;
       }
 
-      const unsigned lowWidth = frame.term[1].GetValueWidth();
-      const unsigned width = frame.term.GetValueWidth();
-      frame.lowConstant = NodeFactory::CreateTerm(
-          BVEXTRACT, lowWidth, frame.constant,
-          bm.CreateBVConst(32, lowWidth - 1), bm.CreateZeroConst(32));
-      frame.highConstant = NodeFactory::CreateTerm(
-          BVEXTRACT, frame.term[0].GetValueWidth(), frame.constant,
-          bm.CreateBVConst(32, width - 1), bm.CreateBVConst(32, lowWidth));
+      splitConstant(frame.constant, frame.term, frame.lowConstant,
+                    frame.highConstant);
 
       frame.phase = Frame::LowDone;
       stack.emplace_back(frame.lowConstant, frame.term[1]);
