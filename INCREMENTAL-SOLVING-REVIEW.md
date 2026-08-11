@@ -1614,7 +1614,7 @@ together --- which restores determinism *and* makes a repeated stack O(1) above
 the transform --- or give the stand-ins deterministic names via the branch's own
 `CreateDeterministicVariable`.
 
-### 0.3 Fix D3 --- unbudgeted whole-base pass welded to `rebuildEncodings` --- DONE, `e093b0d2`
+### 0.3 Fix D3 --- unbudgeted whole-base pass welded to `rebuildEncodings` --- DONE, `e093b0d2` (residue below)
 
 A semantic pass over the entire base --- constant-bit propagation, equality
 propagation, simplification, unconstrained elimination --- fires on **all four**
@@ -1627,6 +1627,16 @@ budgeted.
 Fix: content-key it on the base conjunction, give it the same halving gate its
 neighbours have, and invoke it only from the `Relief` path. Clear
 `baseEliminatedDefs` in `rebuildEncodings` beside `restoredBaseRoots` (D3b).
+
+**What `e093b0d2` did not do.** It gated the semantic pass on the rebuild
+reason, so the three pure-SAT-configuration rebuilds (inprobing, trail,
+promotion) no longer pay it. On the **Relief** path --- the one reason that is
+genuinely about size, and the only one that still runs it --- the pass is
+unchanged: whole-base, unbudgeted, unmemoised, the shape D3 measured at 9.4 s
+over 23,294 conjuncts. That is defensible, because a relief rebuild is
+re-encoding everything anyway and the size gate makes it rare, but it is not
+closed: nothing bounds the pass against the rebuild it is part of. Re-open if a
+workload is ever seen taking relief rebuilds on a large base.
 
 ## Tier 1 — before any measurement or tuning is trusted
 
