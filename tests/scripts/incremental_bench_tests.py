@@ -310,6 +310,74 @@ class IncrementalBenchCliTests(unittest.TestCase):
             self.assertTrue(revalidation.exists())
             self.assertEqual(BENCH.FULL_OK, read_rows(revalidation)[0]["verdict"])
 
+    def test_paired_mode_validates_candidate_models_unless_refused(self):
+        # A campaign that only reads sat/unsat off stdout is not a correctness
+        # gate: a wrong sat agrees with itself. The candidate arm therefore
+        # gets STP's model check by default, and a run that declines it says
+        # so in the sidecar so a report cannot present it as one.
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            recorder = directory / "recorder.py"
+            log = directory / "argv.log"
+            write_solver(
+                recorder,
+                """
+                import sys
+                with open(%r, "a", encoding="utf-8") as sink:
+                    sink.write("argv: " + " ".join(sys.argv[1:-1]) + "\\n")
+                print("sat", flush=True)
+                """ % str(log),
+            )
+            query = directory / "query.smt2"
+            query.write_text("(check-sat)\\n", encoding="utf-8")
+
+            for refuse in (False, True):
+                output = directory / ("on.csv" if not refuse else "off.csv")
+                arguments = [
+                    "--solver-a", sys.executable, "--arg-a", str(recorder),
+                    "--solver-b", sys.executable, "--arg-b", str(recorder),
+                    "--runs", "1", "--out", str(output), str(query),
+                ]
+                if refuse:
+                    arguments.append("--no-check-models")
+                log.write_text("", encoding="utf-8")
+                self.run_harness(arguments)
+
+                metadata = json.loads(
+                    (Path(str(output) + ".meta.json")).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(
+                    not refuse, metadata["candidate_model_validation"]
+                )
+                self.assertEqual(
+                    not refuse,
+                    BENCH.CHECK_MODELS_ARG
+                    in metadata["solvers"]["b"]["arguments"],
+                )
+                # The baseline is never given it: it is the oracle, and the
+                # check would only slow it down.
+                self.assertNotIn(
+                    BENCH.CHECK_MODELS_ARG,
+                    metadata["solvers"]["a"]["arguments"],
+                )
+                # And it really reaches the candidate process, not just the
+                # sidecar: exactly one of the two invocations carries it.
+                invocations = [
+                    line
+                    for line in log.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("argv:")
+                ]
+                self.assertEqual(2, len(invocations))
+                self.assertEqual(
+                    0 if refuse else 1,
+                    sum(
+                        1 for line in invocations
+                        if BENCH.CHECK_MODELS_ARG in line.split()
+                    ),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

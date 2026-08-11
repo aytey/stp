@@ -594,10 +594,25 @@ binary hash, arguments, embedded revision and build options, dynamic-library
 listing, and linked ``libstp`` hash; it also refuses to resume against changed
 identity or finish after an arm changes underneath the run. Outliers,
 timeouts, and non-``FULL_OK`` results receive a longer revalidation run unless
-that phase is explicitly deferred. The main soundness instrument during
-development remains answer-sequence differential testing between the batch
-and incremental engines: they must agree on every answer they both produce,
-and only complete identical streams count as a full success.
+that phase is explicitly deferred.
+
+Paired mode also gives the candidate arm ``--check-sanity``, so every ``sat``
+it reports is checked by constructing the counterexample and evaluating the
+raw assertions against it. This is on by default and ``--no-check-models``
+turns it off. It is not an optional extra: answer-sequence comparison alone
+cannot see a wrong ``sat``, because a solver that answers ``sat`` where the
+truth is ``unsat`` produces a perfectly self-consistent stream, and both of
+the soundness defects found in the driver were of exactly that shape and
+survived a 22,999-file campaign that compared answers only. A timing campaign
+should pass ``--no-check-models``, since construction and checking are not
+free; the sidecar records ``candidate_model_validation`` either way, so a
+report can state which kind of run produced it.
+
+The main soundness instrument during development is therefore
+model-validated answer-sequence differential testing between the batch and
+incremental engines: they must agree on every answer they both produce, only
+complete identical streams count as a full success, and every satisfiable
+answer the candidate gives must satisfy the assertions it was given.
 
 ``scripts/incremental-bench-report.py`` validates and combines the resulting
 shards. For example::

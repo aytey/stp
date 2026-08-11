@@ -52,6 +52,11 @@ PREFIX_ONLY_INCONCLUSIVE = "PREFIX_ONLY_INCONCLUSIVE"
 DISAGREEMENT = "DISAGREEMENT"
 ANSWER_WORDS = ("sat", "unsat", "unknown")
 SCHEMA_VERSION = 2
+# STP's own model check: construct the counterexample of a sat answer and
+# evaluate the raw assertions against it. A wrong sat fails here even though
+# its answer stream looks self-consistent, which is the whole reason paired
+# mode turns it on for the candidate by default.
+CHECK_MODELS_ARG = "--check-sanity"
 
 PAIRED_FIELDS = [
     "file", "run", "order", "verdict",
@@ -573,11 +578,22 @@ def run_paired_mode(args, files, argv):
     if runs <= 0:
         raise ValueError("--runs must be positive")
     common = tuple(args.extra_args)
+    # Answer-sequence comparison alone is not a correctness gate. Both of the
+    # soundness defects found in the incremental driver produced a wrong SAT
+    # with a model that does not satisfy the asserted formulas, and a campaign
+    # that only reads sat/unsat off stdout agrees with itself on every such
+    # row. --check-sanity makes the candidate validate its own model against
+    # the raw assertions and fail loudly instead, so it is on by default here
+    # and has to be turned off deliberately -- which a timing campaign should
+    # do, since model construction and validation are not free.
+    candidate_args = tuple(args.args_b)
+    if args.check_models and CHECK_MODELS_ARG not in candidate_args:
+        candidate_args += (CHECK_MODELS_ARG,)
     first_spec = SolverSpec(
         args.label_a, args.solver_a, common + tuple(args.args_a)
     )
     second_spec = SolverSpec(
-        args.label_b, args.solver_b, common + tuple(args.args_b)
+        args.label_b, args.solver_b, common + candidate_args
     )
     solver_metadata = {
         "a": inspect_solver(first_spec, args.version_timeout),
@@ -591,6 +607,11 @@ def run_paired_mode(args, files, argv):
             "revalidation_ratio": args.revalidation_ratio,
             "revalidation_deferred": args.defer_revalidation,
             "arm_order_policy": "sha256(file)-parity alternating by run",
+            # Recorded so a report can state whether the candidate validated
+            # its models, rather than leaving readers to infer it from the
+            # command line: a campaign run without this is an answer-stream
+            # comparison, not a correctness gate.
+            "candidate_model_validation": bool(args.check_models),
         },
     )
     require_resume_provenance(args.out, args.resume)
@@ -768,6 +789,18 @@ def make_parser():
     parser.add_argument(
         "--arg-b", action="append", default=[], dest="args_b",
         help="candidate-only solver argument (paired mode)",
+    )
+    parser.add_argument(
+        "--check-models", dest="check_models", action="store_true",
+        default=True,
+        help="validate the candidate's models against the raw assertions "
+             "(adds %s; on by default in paired mode)" % CHECK_MODELS_ARG,
+    )
+    parser.add_argument(
+        "--no-check-models", dest="check_models", action="store_false",
+        help="do not validate the candidate's models; use for timing "
+             "campaigns, where construction and checking are not free. A "
+             "run with this set compares answer streams only.",
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--runs", type=int)

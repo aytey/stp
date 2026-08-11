@@ -29,21 +29,26 @@ what must not be re-chased, and what to do next.
 
 ## Status board
 
-**Merge recommendation: do not merge until D1 and D2 are fixed.** Both are
-silent wrong answers (`sat` on an `unsat` query) reachable with **no non-default
-flags at all**, on logics STP is built for. Everything else on this list is
-quality, cost, or maintainability.
+**D1 and D2 are FIXED** (commits `e1229764`, `926bf48f`), with all four
+witnesses landed as regressions and the campaign harness hardened so a run of
+its kind would catch them (see [Part V](#part-v--work-queue) item 3). Both were silent wrong
+answers (`sat` on an `unsat` query) reachable with **no non-default flags at
+all**, on logics STP is built for. Everything still open on this list is
+quality, cost, or maintainability --- **no known soundness defect remains**.
 
 **Every defect below is branch-introduced.** None reproduces on master --- see
 [Validation against master](#validation-against-master) for the evidence, which
 is per-defect.
 
-### Open defects
+### Defects
 
-| ID | Class | Severity | Default flags? | In master? | Reproduced | Summary |
+Status column: FIXED items keep their full write-up below, because the
+mechanism is the part worth remembering.
+
+| ID | Class | Status / severity | Default flags? | In master? | Evidence | Summary |
 |---|---|---|---|---|---|---|
-| [D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack) | soundness | **blocker** | yes | no (branch-only code) | yes, both builds | `levelPrivate` decides eliminability over the *raw* stack; levels are encoded from the *ctx-substituted* stack |
-| [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **blocker** | yes | no (branch-only code) | yes, both builds | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
+| [D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack) | soundness | **FIXED** `e1229764` | yes | no (branch-only code) | fixed + regression | `levelPrivate` decides eliminability over the *raw* stack; levels are encoded from the *ctx-substituted* stack |
+| [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates) | soundness | **FIXED** `926bf48f` | yes | no (branch-only code) | fixed + regression | Promotion pins a level's *prepared* conjuncts but only revalidates its *raw* conjunction |
 | [D3](#d3--architecture-whole-base-re-simplification-is-welded-to-rebuildencodings) | architecture | high | yes | no (branch-only code) | agent-measured | A semantic whole-base pass fires on all four rebuild reasons, unbudgeted (9.4 s measured) |
 | [D4](#d4--cost-the-privacy-predicate-makes-a-no-op-check-quadratic-in-stack-depth) | cost | high | yes | no (branch-only code) | yes (both) | Steady-state per-check work is O(depth²); this is what engagement-at-32 hides |
 | [D5](#d5--architecture-the-exact-stack-block-cache-is-fronted-by-a-non-deterministic-pass) | architecture | medium | `--array-equality` | no (branch-only *dependency* on master naming) | agent-measured | `RemoveUnconstrained` mints counter-named vars in front of the block cache: 4,177 → 56,299 vars over 15 *identical* repeats |
@@ -65,11 +70,12 @@ array congruence-lemma permanence; deterministic-name uniqueness; the
 `submittedClauses()` chokepoint; the cheap live-mass estimator's lower-bound
 property; `SessionProfile::add()` completeness.
 
-### Deferred from the previous review (unchanged)
+### Deferred from the previous review
 
 Phase 0 item 7, the three-run timing campaign, remains the only open item of the
-old roadmap. **It is now moot until D1/D2 are fixed:** any timing campaign run on
-the current tip measures a binary that returns wrong answers.
+old roadmap. It was moot while D1/D2 stood; with both fixed it is runnable
+again, and should be run with `--no-check-models` (model validation is not free
+and would distort timings) against a correctness campaign that keeps it on.
 
 ---
 
@@ -1434,32 +1440,46 @@ both D1 and D2.
 
 Ordered. Items 1--3 are merge blockers.
 
-### 1. Fix D1 (privacy over the raw stack)
+### 1. Fix D1 (privacy over the raw stack) --- DONE, `e1229764`
 
-Add live-`ctx`-body symbols to `protectedSymbols` before `levelPrivate` is
-consulted. Land the `rootLit` debug assert (`activeEliminatedVars` ∩ encoded
-conjunct symbols = ∅) at the same time. Verification recipe in
-[D1](#d1--soundness-private-elimination-privacy-is-decided-over-the-raw-stack).
+`collectCtxExportedSymbols()` protects every symbol a live `ctx` entry can
+inject into a level below the one being prepared, reaching `levelPrivate`
+through the existing `protectedSymbols` channel so both the fresh path and the
+cached-piece revalidation are covered; reachability is transitive and scoped to
+deeper levels, so a single-level session eliminates exactly what it did before.
+`rootLit()` additionally asserts that nothing being encoded names a variable
+this solve eliminated. Cost: one elimination in `level-elimination.smt2`,
+precisely the one that was only sound by way of the `ctx` re-join.
 
-### 2. Fix D2 (promotion pins an unvalidated prepared form)
+### 2. Fix D2 (promotion pins an unvalidated prepared form) --- DONE, `926bf48f`
 
-Option (a): store the promoted conjunct set per level and demote + rebuild on
-difference. Until fixed, consider defaulting `--incremental-promote-units` off.
-Verification recipe in [D2](#d2--soundness-unit-promotion-pins-a-prepared-form-it-never-revalidates).
+Promotion records the conjuncts it pinned; the promoted-level skip is taken
+only while the level still prepares to exactly them. On drift the level is
+assumed for that solve --- sound, since a prepared form is a consequence of its
+live raw level, so the superseded units are implied rather than contradictory
+--- and the epoch is replaced at the next call's maintenance block.
 
-### 3. Strengthen the correctness gate
+### 3. Strengthen the correctness gate --- DONE
 
-- Land `w6.smt2`, `w7.smt2`, `repro3.smt2`, `promote7.smt2` as regressions under
-  `tests/query-files/incremental-tests/` (they are in
-  [Appendix A](#appendix-a--witness-files) in full).
-- **Add `--check-sanity` to the incremental arm of the differential campaign.**
-  Both defects are caught by it and missed by answer-stream comparison. This is
-  the single highest-value change to the validation protocol.
-- Add campaign arms with `--disable-cbitp`, `--no-incremental-promote-units`, and
-  `--incremental-auto-engage-at 1`. Mechanisms that mask each other must be
-  tested independently --- D2 exists precisely because four mechanisms
-  redundantly re-derive the same fact.
-- Rebalance the suite toward the automatic engagement path.
+- **Done.** The four witnesses are regressions:
+  `elimination-context-export.smt2`,
+  `elimination-context-export-default-engagement.smt2`,
+  `unit-promotion-repreparation.smt2` and
+  `unit-promotion-repreparation-chained.smt2`. Each was verified to FAIL
+  against the pre-fix source before being kept --- all five RUN configurations
+  answered `sat`.
+- **Done.** `scripts/incremental-bench.py` paired mode now gives the candidate
+  arm `--check-sanity` by default (`--no-check-models` opts out for timing
+  runs) and records `candidate_model_validation` in the sidecar, so a report
+  cannot present an answers-only run as a correctness gate.
+- **Partly done.** The regressions pin `--disable-cbitp` and the default
+  automatic-engagement path (the default-engagement file is the first test in
+  the directory to exercise engagement-at-32 at all). Campaign arms for
+  `--no-incremental-promote-units` and `--incremental-auto-engage-at 1` are
+  still worth adding: mechanisms that mask each other must be tested
+  independently, which is exactly why D2 survived so long.
+- **Still open.** Rebalance the suite toward the automatic engagement path;
+  73 of 87 RUN lines still force `--incremental`.
 
 ### 4. Give the elimination invariant one owner (fixes D1's class and D4)
 
@@ -1925,9 +1945,24 @@ re-materialized roots.
 
 # APPENDIX A — WITNESS FILES
 
-Verbatim and self-contained. All four reproduce at tip `278552ce` on both
-`build/` and `bd-dbg/`. Recommended home:
-`tests/query-files/incremental-tests/`.
+Verbatim and self-contained. All four reproduced at tip `278552ce` on both
+`build/` and `bd-dbg/`, and each was re-checked against the pre-fix source
+after the fixes landed to confirm it still fails there.
+
+**These are now regressions in the tree**, under
+`tests/query-files/incremental-tests/`:
+
+| Witness here | Landed as |
+|---|---|
+| `w6.smt2` | `elimination-context-export.smt2` |
+| `w7.smt2` | `elimination-context-export-default-engagement.smt2` |
+| `repro3.smt2` | `unit-promotion-repreparation.smt2` |
+| `promote7.smt2` | `unit-promotion-repreparation-chained.smt2` |
+
+The landed versions carry lit `RUN`/`CHECK` lines and additional
+`--check-sanity` and `--disable-cbitp` configurations; the bodies are the same.
+They are kept below because a witness stripped of its harness is the form you
+want when bisecting.
 
 ## A.1 `w6.smt2` — D1, minimal (needs `--incremental` or `--incremental-auto-engage-at 1`)
 
@@ -2308,12 +2343,11 @@ not as an implementation.
 | 2026-08-08 | closeout update at `f1e55c2c` (solver tip `ee8685bb`) | Instrumentation and CBP-rollback results; accounting/privacy repairs; frozen 22,999-file reconciliation |
 | **2026-08-11** | **second review at tip `278552ce`** | **Restructured. Added: two reproduced soundness defects (D1, D2) with witnesses and fixes; ten further tracked defects; a verified-correct / do-not-re-chase register; the 44-finding ledger; cost measurements; a re-ordered work queue. Prior content retained in Parts VI--X and Appendix D.** |
 | **2026-08-11** (same day, later) | **master `d47f6b57` rebuilt at the merge base** | **Added [Validation against master](#validation-against-master): all four witnesses answer `unsat` on master; per-defect master-exposure analysis; D10 reproduced as a divergence from master; D9 source-verified; D8/D5 shown to depend on branch-only persistence; 72-file corpus differential (71 identical, 1 = a feature master lacks). Status board gained an "In master?" column.** |
+| **2026-08-11** (fixes) | `e1229764`, `926bf48f`, and the regression/harness commit | **D1 and D2 fixed**; four regressions landed, each verified to fail against the pre-fix source before being kept; paired campaign mode now validates the candidate's models by default. Status board, work queue and Appendix A updated. No known soundness defect remains. |
 | **2026-08-11** (same day, later still) | **cross-checked with Bitwuzla, cvc5 and Z3** | **The four witnesses' expected answers no longer rest on STP alone: Bitwuzla `0.9.1-dev`, cvc5 `1.3.5.dev` and Z3 `5.0.0` agree with STP master on all 64 answers across the four files; the branch matches 60/64 and diverges on the final check of each. Recorded in Validation §1.** |
 
 **Working-tree note at time of writing:** the branch tip is local and unpushed.
 Untracked in the worktree: `HANDOVER.md`, `NEXT-SESSION-PROMPT.md`, build
 directories `bd-dbg/`, `bd-mid/`, `bd-pretoday/`, and scratch queries
 `moo.smt2`, `fp_soundness_bug.smt2`, `reduced-Problem101.smt2`. `lib/extlib-abc`
-shows as modified. The four witness files in
-[Appendix A](#appendix-a--witness-files) are **not** yet in the tree --- landing
-them is [Part V](#part-v--work-queue) item 3.
+shows as modified.
