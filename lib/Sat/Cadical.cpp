@@ -286,9 +286,11 @@ void Cadical::unsatAssumptions(const vec_literals& assumps,
 
 void Cadical::suggestPhase(uint32_t var, bool value)
 {
-  // Literal conversion as everywhere: through the factor translation
-  // table, declared before first mention.
-  declareNewVariables();
+  // No declareNewVariables() here, deliberately. Declaring can reach
+  // CaDiCaL's declare_more_variables, which leaves the SATISFIED state and
+  // resets the extension -- too much for an advisory hint to do. Nothing is
+  // lost: every literal worth phasing has had a clause added and is
+  // therefore already declared, and one that has not is guarded below.
   if (factor_enabled)
   {
     if (var >= ext_of_stp.size())

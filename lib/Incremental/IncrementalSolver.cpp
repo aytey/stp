@@ -5089,6 +5089,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // must precede the extensionality routing below: an equality round
     // encodes into the same persistent solver.
     impl->decideBVA(assertionsSMT2);
+
+    // Retire stale retraction bookkeeping here, inside the maintenance block,
+    // rather than after the routing below: an all-array-equality session
+    // returns through the extensionality path and never reached it, so its
+    // hint list grew one entry per distinct block root for the life of the
+    // epoch and every solve hinted all of them. The precondition is the
+    // configuration window, which decideBVA has just closed -- the pins are
+    // clauses.
+    impl->retireStaleActivation();
   }
 
   // Whole-array equality routes the entire check-sat through the
@@ -5314,10 +5323,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     }
     impl->pendingRebuiltBase.clear();
   }
-
-  // The configuration window is decided by here, so stale retraction
-  // bookkeeping can be retired (the pins are clauses).
-  impl->retireStaleActivation();
 
   ASTVec conjuncts;
   splitConjuncts(assertionsSMT2[0], bm->ASTTrue, conjuncts);
