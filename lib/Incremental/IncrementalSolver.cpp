@@ -2348,6 +2348,27 @@ struct IncrementalSolver::Impl
            levelStableSolves[0] >= inprobingRetireSolves;
   }
 
+  // The AUTO-mode evidence that probe inprocessing has turned from a one-off
+  // win into a recurring tax: a session long enough to have paid for it
+  // repeatedly, a base that has stopped moving underneath it, and an encoding
+  // big enough for probing to be the dominant per-solve cost.
+  //
+  // Three sites have to agree on this and each wrote it out in full: whether
+  // to retire now, whether a rebuild happening anyway can absorb the
+  // retirement, and whether to take it as that rebuild lands. Three copies of
+  // a five-term conjunction over two fitted constants is three chances for
+  // them to drift, and the third site exists precisely because the first two
+  // disagreeing by one solve cost a measured 2x on a double rebuild.
+  bool inprobingRetirementEarned() const
+  {
+    return bm->UserFlags.incremental_inprobing ==
+               UserDefinedFlags::BVAMode::AUTO &&
+           solver->supportsInprobingControl() &&
+           engagedSolves > inprobingRetireSolves &&
+           baseStableForInprobingRetirement() &&
+           solver->nVars() >= inprobingRetireMinVars;
+  }
+
   // Whether the bounded-variable-addition decision has been taken for the
   // current backend instance. rebuildEncodings resets it: the fresh solver
   // reopens the configuration window. The warning latch is per session --
@@ -5121,13 +5142,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // capability is probed without touching the live solver, and a backend
     // that cannot control it simply never retires.
     impl->engagedSolves++;
-    if (!impl->inprobingRetired && impl->solver->supportsInprobingControl() &&
-        (uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF ||
-         (uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
-          !impl->trailReuseAllowed &&
-          impl->engagedSolves > Impl::inprobingRetireSolves &&
-          impl->baseStableForInprobingRetirement() &&
-          impl->solver->nVars() >= Impl::inprobingRetireMinVars)))
+    if (!impl->inprobingRetired &&
+        ((uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF &&
+          impl->solver->supportsInprobingControl()) ||
+         (impl->inprobingRetirementEarned() && !impl->trailReuseAllowed)))
     {
       impl->inprobingRetired = true;
       if (uf.stats_flag)
@@ -5159,11 +5177,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
             impl->currentRefinementClauseMass >=
             Impl::trailReuseRefinementClauseFloor;
         const bool canRetireInprobingWithTrail =
-            uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
-            impl->solver->supportsInprobingControl() &&
-            impl->engagedSolves > Impl::inprobingRetireSolves &&
-            impl->baseStableForInprobingRetirement() &&
-            impl->solver->nVars() >= Impl::inprobingRetireMinVars;
+            impl->inprobingRetirementEarned();
         const bool smallLateFpState =
             impl->lateArrayFpSolvesWithTrail >=
                 Impl::trailReuseLateArrayFpProbeSolves &&
@@ -5189,12 +5203,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // would fire on the NEXT solve and rebuild a freshly re-encoded
         // solver all over again; a session whose trail died at fifty
         // thousand variables measured 2x slower from that double rebuild.
-        if (!impl->inprobingRetired &&
-            uf.incremental_inprobing == UserDefinedFlags::BVAMode::AUTO &&
-            impl->solver->supportsInprobingControl() &&
-            impl->engagedSolves > Impl::inprobingRetireSolves &&
-            impl->baseStableForInprobingRetirement() &&
-            impl->solver->nVars() >= Impl::inprobingRetireMinVars)
+        if (!impl->inprobingRetired && impl->inprobingRetirementEarned())
         {
           impl->inprobingRetired = true;
           if (uf.stats_flag)

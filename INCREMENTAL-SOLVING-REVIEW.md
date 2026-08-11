@@ -1832,20 +1832,53 @@ added --- it is insert-only per level, exactly this header's discipline.
 Switch the three `Cpp_interface` model readers to `hasIncrementalSolver()` so a
 batch session stops allocating a driver to ask whether one exists.
 
-### 4.2 Consolidate session shape
+### 4.2 Consolidate session shape --- PARTLY DONE; the object declined
 
 Trail-reuse retirement, inprobing retirement and unit promotion are three
 constant sets with mutual gating (trail gates inprobing gates promotion),
-implementing one latent concept. One `SessionShape` computed per solve, three
-consumers.
+implementing one latent concept.
 
-### 4.3 Backend epoch as an object
+**The duplication is gone.** The inprobing-retirement predicate --- a five-term
+conjunction over two fitted constants --- was written out in full at three sites
+that must agree: whether to retire now, whether a rebuild happening anyway can
+absorb the retirement, and whether to take it as that rebuild lands. The third
+site exists *because* the first two disagreeing by one solve cost a measured 2x
+on a double rebuild, which is the strongest possible argument against keeping
+three copies. It is now one `inprobingRetirementEarned()`.
+
+**The `SessionShape` object is declined.** The three concepts have genuinely
+different lifetimes --- trail reuse is decided per solve, inprobing retirement
+is a one-way latch on the backend instance, unit promotion is per level and
+survives rebuilds --- and a single value type computed per solve would have to
+carry all three anyway while implying they move together. What made them look
+like one concept was the shared constants and the copied predicate; with the
+predicate shared, what remains is three policies that read each other's
+results, which is what the code says. Re-open if a fourth consumer appears.
+
+### 4.3 Backend epoch as an object --- window CHECKED `497bb966`; the object declined
 
 ~28 fields hand-reset in `rebuildEncodings`, four trigger sites, one eligibility
-predicate written out three times. A `BackendEpoch` value type with a `Config`,
-and one `EpochPolicy::decide(...)`. Latch `configuration_closed` in the
-`SATSolver::addClause` facade so the configuration window is a checked invariant
-rather than a call-ordering convention backed by a third-party `abort()`.
+predicate written out three times.
+
+**The checkable part is done (`497bb966`).** The configuration window is now an
+invariant the code enforces rather than a convention backed by a third-party
+`abort()`: the six setters carrying the rule are non-virtual facades that check
+before dispatching, following the pattern `addClause` and `solve` already use in
+that header. It needed no new state --- `submitted_clauses` already counts what
+STP handed *this* backend instance, and a rebuild constructs a new one, so
+`configurationOpen()` is that counter being zero. The whole suite passes in the
+assertion build, so nothing configures late today; three unit tests pin the
+window itself. The thrice-written predicate is 4.2's, and is also done.
+
+**The `BackendEpoch` value type is declined.** What is left of this item after
+the above is moving ~28 fields from one struct into another so that
+`rebuildEncodings` assigns an object instead of assigning fields. That is a
+mechanical rewrite of the reset path of a 6,000-line file whose invariants are
+subtle and mostly untested at that granularity, in exchange for no behaviour
+change and no new check --- the check was the part with value, and it landed
+without the refactor. The field count is the only evidence offered for it. Do it
+if the epoch ever needs to be copied, compared, or snapshotted; until then it
+buys a shorter diff at the cost of a risky one.
 
 ### 4.4 Rebalance the test suite --- DONE
 
