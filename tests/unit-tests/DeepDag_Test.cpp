@@ -67,6 +67,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/VariablesInExpression.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
+#include "stp/Util/NodeIterator.h"
 #include "stp/Simplifier/StrengthReduction.h"
 #include "stp/Simplifier/SubstitutionMap.h"
 #include "stp/Simplifier/constantBitP/Dependencies.h"
@@ -843,6 +844,43 @@ bool nodeDomainOk(Context& c, unsigned depth)
   NodeDomainAnalysis nda(&c.mgr);
   nda.buildMap(f);
   return true;
+}
+
+// NodeIterator historically visits children right-to-left. Put the deep
+// child last so a pending-node implementation retains one unvisited sibling
+// at every level; a continuation iterator retains just the active path.
+bool nodeIteratorOk(Context& c, unsigned depth)
+{
+  ASTNode n = c.mgr.CreateSymbol("iterator-x0", 0, 8);
+  for (unsigned i = 1; i < depth; ++i)
+  {
+    const std::string name = "iterator-x" + std::to_string(i);
+    n = c.hf->CreateTerm(BVXOR, 8,
+                         c.mgr.CreateSymbol(name.c_str(), 0, 8), n);
+  }
+  c.roots.push_back(n);
+  return c.mgr.NodeSize(n) == 2 * depth - 1;
+}
+
+bool nodeIteratorOrderOk(Context& c)
+{
+  const ASTNode condition =
+      c.mgr.CreateSymbol("iterator-order-condition", 0, 0);
+  const ASTNode a = c.mgr.CreateSymbol("iterator-order-a", 0, 8);
+  const ASTNode b = c.mgr.CreateSymbol("iterator-order-b", 0, 8);
+  const ASTNode d = c.mgr.CreateSymbol("iterator-order-d", 0, 8);
+  const ASTNode left = c.hf->CreateTerm(BVCONCAT, 16, a, b);
+  const ASTNode right = c.hf->CreateTerm(BVCONCAT, 16, b, d);
+  const ASTNode top =
+      c.hf->CreateTerm(ITE, 16, condition, left, right);
+  c.roots.push_back(top);
+
+  const ASTVec expected{top, right, d, b, left, a, condition};
+  ASTVec actual;
+  NodeIterator nodes(top, c.mgr.ASTUndefined, c.mgr);
+  for (ASTNode n = nodes.next(); n != nodes.end(); n = nodes.next())
+    actual.push_back(n);
+  return actual == expected;
 }
 
 // VariablesInExpression::getSymbol.
@@ -1790,6 +1828,18 @@ TEST(DeepDag, shallow_mutable_dag_walks)
   EXPECT_TRUE(mutableDagWalksOk(c, SHALLOW));
 }
 
+TEST(DeepDag, node_iterator_preserves_lifo_dag_order)
+{
+  Context c;
+  EXPECT_TRUE(nodeIteratorOrderOk(c));
+}
+
+TEST(DeepDag, shallow_node_iterator)
+{
+  Context c;
+  EXPECT_TRUE(nodeIteratorOk(c, SHALLOW));
+}
+
 TEST(DeepDag, mutable_dag_root_fast_paths_preserve_no_ops)
 {
   Context c;
@@ -2032,6 +2082,7 @@ TEST(DeepDag, deep_mutable_dag_walks)
 }
 TEST(DeepDag, DISABLED_deep_use_ite_context)    { EXPECT_STACK_SAFE(useITEContextOk, 20000); }
 TEST(DeepDag, deep_node_domain)        { EXPECT_STACK_SAFE(nodeDomainOk, 20000); }
+TEST(DeepDag, deep_node_iterator)      { EXPECT_STACK_SAFE(nodeIteratorOk, 20000); }
 TEST(DeepDag, deep_vars_in_expression) { EXPECT_STACK_SAFE(varsInExpressionOk, 20000); }
 TEST(DeepDag, deep_propagate_equalities) { EXPECT_STACK_SAFE(propagateEqualitiesOk, 20000); }
 TEST(DeepDag, deep_array_transformer)  { EXPECT_STACK_SAFE(arrayTransformerOk, 20000); }

@@ -27,7 +27,8 @@ THE SOFTWARE.
 
 #include "stp/AST/ASTNode.h"
 #include "stp/STPManager/STPManager.h"
-#include <stack>
+#include <limits>
+#include <vector>
 
 namespace stp
 {
@@ -36,7 +37,26 @@ namespace stp
 // wrong.
 class NodeIterator // not copyable
 {
-  std::stack<ASTNode> toVisit;
+  struct Frame
+  {
+    ASTNode node;
+    // `unentered` means the node itself has not been returned yet. Once it
+    // has, this is the number of children still to visit, in reverse order
+    // to retain NodeIterator's historical LIFO traversal.
+    size_t nextChild = unentered;
+
+    static constexpr size_t unentered =
+        std::numeric_limits<size_t>::max();
+
+    explicit Frame(const ASTNode& n) : node(n) {}
+  };
+  static_assert(sizeof(Frame) <= 2 * sizeof(void*),
+                "NodeIterator frames must contain only traversal state");
+
+  // Continuations retain one frame per active ancestor. The former pending
+  // node stack retained every unvisited sibling along the frontier, which
+  // made a shallow, very wide node allocate in proportion to its degree.
+  std::vector<Frame> path;
 
   const ASTNode& sentinel;
   uint8_t iteration;
@@ -45,43 +65,47 @@ public:
   NodeIterator(const ASTNode& n, const ASTNode& _sentinel, STPMgr& stpMgr)
       : sentinel(_sentinel), iteration(stpMgr.getNextIteration())
   {
-    toVisit.push(n);
+    path.emplace_back(n);
   }
 
   ASTNode next()
   {
-    ASTNode result = sentinel;
-
-    while (true)
+    while (!path.empty())
     {
-      if (toVisit.empty())
-        return sentinel;
+      Frame& frame = path.back();
+      if (frame.nextChild == Frame::unentered)
+      {
+        frame.nextChild = frame.node.Degree();
+        ASTNode result = frame.node;
 
-      result = toVisit.top();
-      toVisit.pop();
+        if (!ok(result) || result.getIteration() == iteration)
+        {
+          path.pop_back();
+          continue;
+        }
 
-      if (!ok(result))
-        continue; // Not OK to investigate.
+        if (result == sentinel)
+        {
+          path.pop_back();
+          return result;
+        }
 
-      if (result.getIteration() != iteration)
-        break; // not visited, DONE!
+        result.setIteration(iteration);
+        return result;
+      }
+
+      if (frame.nextChild == 0)
+      {
+        path.pop_back();
+        continue;
+      }
+
+      const ASTNode& child = frame.node[--frame.nextChild];
+      if (child.getIteration() != iteration)
+        path.emplace_back(child);
     }
 
-    if (result == sentinel)
-      return result;
-
-    result.setIteration(iteration);
-
-    const ASTChildren c = result.GetChildren();
-    auto itC = c.begin();
-    auto itendC = c.end();
-    for (; itC != itendC; itC++)
-    {
-      if (itC->getIteration() == iteration)
-        continue; // already examined.
-      toVisit.push(*itC);
-    }
-    return result;
+    return sentinel;
   }
 
   ASTNode end() { return sentinel; }

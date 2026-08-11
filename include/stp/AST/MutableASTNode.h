@@ -361,17 +361,43 @@ public:
     if (dirty)
       return;
 
-    vector<MutableASTNode*> pending(1, this);
-    while (!pending.empty())
+    struct ParentFrame
     {
-      MutableASTNode* current = pending.back();
-      pending.pop_back();
-      if (current->dirty)
+      MutableASTNode* node;
+      ParentsType::const_iterator next;
+
+      explicit ParentFrame(MutableASTNode* n)
+          : node(n), next(n->parents.begin())
+      {
+      }
+    };
+    static_assert(sizeof(ParentFrame) <= 2 * sizeof(void*),
+                  "dirty-walk frames must contain only traversal state");
+
+    dirty = true;
+    if (parents.empty())
+      return;
+
+    // Retain the parent-set continuation at each active level rather than
+    // enqueueing every parent on the traversal frontier at once.
+    vector<ParentFrame> path;
+    path.emplace_back(this);
+    while (!path.empty())
+    {
+      ParentFrame& frame = path.back();
+      if (frame.next == frame.node->parents.end())
+      {
+        path.pop_back();
+        continue;
+      }
+
+      MutableASTNode* parent = *frame.next++;
+      if (parent->dirty)
         continue;
 
-      current->dirty = true;
-      pending.insert(pending.end(), current->parents.begin(),
-                     current->parents.end());
+      parent->dirty = true;
+      if (!parent->parents.empty())
+        path.emplace_back(parent);
     }
   }
 
@@ -473,24 +499,39 @@ public:
     if (isSymbol())
       result.push_back(this);
 
-    vector<MutableASTNode*> pending;
-    // A LIFO worklist needs the children in reverse to retain the original
-    // left-to-right depth-first order (and therefore result order).
-    for (size_t i = children.size(); i > 0; --i)
-      pending.push_back(children[i - 1]);
+    if (children.empty())
+      return;
 
-    while (!pending.empty())
+    struct ChildFrame
     {
-      MutableASTNode* current = pending.back();
-      pending.pop_back();
+      MutableASTNode* node;
+      size_t nextChild = 0;
+    };
+    static_assert(sizeof(ChildFrame) <= 2 * sizeof(void*),
+                  "variable-walk frames must contain only traversal state");
+
+    // A continuation per active ancestor retains the old left-to-right DFS
+    // result order without retaining all unvisited siblings on the frontier.
+    vector<ChildFrame> path;
+    path.push_back({this});
+    while (!path.empty())
+    {
+      ChildFrame& frame = path.back();
+      if (frame.nextChild == frame.node->children.size())
+      {
+        path.pop_back();
+        continue;
+      }
+
+      MutableASTNode* current = frame.node->children[frame.nextChild++];
       if (!visited.insert(current).second)
         continue;
 
       if (current->isSymbol())
         result.push_back(current);
 
-      for (size_t i = current->children.size(); i > 0; --i)
-        pending.push_back(current->children[i - 1]);
+      if (!current->children.empty())
+        path.push_back({current});
     }
   }
 
