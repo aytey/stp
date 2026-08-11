@@ -316,6 +316,9 @@ ASTNode FpTotalise::zeroChoice(const char* tag, const ASTNode& left,
 // them. The CNF comparison is what checks it.
 ASTNode FpTotalise::visit(const ASTNode& n)
 {
+  const bool prime = bm->UserFlags.prime_memos;
+  PrimeAudit::Running running(memoAudit, n, prime);
+
   if (n.Degree() == 0)
     return n;
 
@@ -337,7 +340,7 @@ ASTNode FpTotalise::visit(const ASTNode& n)
   for (size_t i = 0; i < n.Degree() && !fill; i++)
     fill = !settled(n[i]);
 
-  if (!fill)
+  if (!fill || !prime)
     return totalise(n);
 
   // The walk finishes with the node it started from, so the last answer it

@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "Symbols.h"
 #include "stp/AST/AST.h"
 #include "stp/Util/Attributes.h"
+#include "stp/Util/DagWalk.h"
 
 namespace stp
 {
@@ -46,6 +47,9 @@ private:
   // flags; null means the default, which is to prime. Only the priming
   // switch is read, and only so a test can run both ways.
   const UserDefinedFlags* uf = nullptr;
+
+  // Debug-only: verify that priming keeps getSymbol's call depth bounded.
+  PrimeAudit symbolAudit{"VariablesInExpression::getSymbol", 8};
 
 public:
   DLL_PUBLIC VariablesInExpression();

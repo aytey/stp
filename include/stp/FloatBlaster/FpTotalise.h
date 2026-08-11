@@ -27,6 +27,7 @@ THE SOFTWARE.
 
 #include "stp/AST/AST.h"
 #include "stp/STPManager/STPManager.h"
+#include "stp/Util/DagWalk.h"
 
 namespace stp
 {
@@ -173,6 +174,9 @@ private:
 
   STPMgr* bm;
   NodeFactory* nf;
+
+  // Debug-only: verify that priming keeps visit's call depth bounded.
+  PrimeAudit memoAudit{"FpTotalise::visit", 8};
   // `traversal_cache` preserves DAG sharing only for one topLevel walk and is
   // released immediately afterwards. `persistent_cache` keeps just the
   // source FP/array nodes whose encoding changed and may be requested again

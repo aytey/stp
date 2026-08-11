@@ -34,6 +34,7 @@ THE SOFTWARE.
 #include "stp/Simplifier/constantBitP/FixedBits.h"
 #include "stp/Simplifier/UnsignedIntervalAnalysis.h"
 #include "stp/Simplifier/ValueSetAnalysis.h"
+#include "stp/Util/DagWalk.h"
 #include <iostream>
 #include <unordered_map>
 
@@ -57,6 +58,9 @@ using NodeToValueSetMap =
 class NodeDomainAnalysis
 {
   STPMgr& bm;
+
+  // Debug-only: verify that priming keeps buildMap's call depth bounded.
+  PrimeAudit mapAudit{"NodeDomainAnalysis::buildMap", 8};
 
   // Cache read-only empty objects of different sizes.
   FixedBits* emptyBoolean;

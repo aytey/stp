@@ -68,13 +68,16 @@ void VariablesInExpression::primeSymbols(const ASTNode& n)
 
 Symbols* VariablesInExpression::getSymbol(const ASTNode& n)
 {
+  const bool prime = uf == nullptr || uf->prime_memos;
+  PrimeAudit::Running running(symbolAudit, n, prime);
+
   {
     const ASTNodeToNodes::const_iterator it = symbol_graph.find(n.GetNodeNum());
     if (it != symbol_graph.end())
       return it->second;
   }
 
-  if (!priming && (uf == nullptr || uf->prime_memos))
+  if (!priming && prime)
   {
     priming = true;
     primeSymbols(n);

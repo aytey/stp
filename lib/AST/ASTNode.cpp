@@ -253,6 +253,10 @@ static const uint32_t FP_NOT_A_FLOAT = 0xFFFFFFFFu;
 // level down. See DagWalk.h, and DeepDag_Test.cpp for the depths.
 void ASTNode::cacheFPFormat() const
 {
+  const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
+  static thread_local PrimeAudit audit{"ASTNode::cacheFPFormat", 8};
+  PrimeAudit::Running running(audit, *this, prime);
+
   // One node, with its operands already answered.
   auto store = [](const ASTNode& n) {
     unsigned int e = 0;
@@ -294,7 +298,7 @@ void ASTNode::cacheFPFormat() const
   for (size_t i = from; i < to && !fill; i++)
     fill = !settled((*this)[i]);
 
-  if (!fill)
+  if (!fill || !prime)
   {
     store(*this);
     return;
@@ -469,6 +473,10 @@ SourceSort ASTNode::GetSourceSort() const
   if (IsNull())
     return SourceSort::unknown();
 
+  const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
+  static thread_local PrimeAudit audit{"ASTNode::GetSourceSort", 8};
+  PrimeAudit::Running running(audit, *this, prime);
+
   if (const SourceSort* cached = _int_node_ptr->cachedSourceSort())
     return *cached;
 
@@ -505,7 +513,7 @@ SourceSort ASTNode::GetSourceSort() const
   for (size_t i = from; i < to && !fill; i++)
     fill = !settled((*this)[i]);
 
-  if (fill)
+  if (fill && prime)
     primeMemo(
         *this,
         [&](const ASTNode& child) {

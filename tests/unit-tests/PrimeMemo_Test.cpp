@@ -24,12 +24,13 @@ THE SOFTWARE.
 
 // Whether PrimeAudit catches a pass and its priming walk disagreeing.
 //
-// Five passes fill their memo from the bottom up so that their own recursion
-// stops one level down, which is sound only where the walk reaches the nodes
-// the pass would have reached anyway. What guarded that before was
-// tests/prime-memos-differential.py, which solves each query with priming on
-// and off and requires the same CNF -- and it catches a violation only when
-// the violation changes the output, which two deliberate ones did not.
+// Six memoised computations fill their tables from the bottom up so their
+// own recursion stops one level down, which is sound only where the walk
+// reaches the nodes the pass would have reached anyway. Before the direct
+// audit, this was guarded only by tests/prime-memos-differential.py, which
+// solves each query with priming on and off and requires the same result and
+// CNF -- and it catches a violation only when the violation changes the
+// output, which two deliberate ones did not.
 //
 // So the walk and the pass are compared directly now (stp/Util/DagWalk.h),
 // and this is the test of the comparison rather than of any pass: a walk and
@@ -129,13 +130,13 @@ void run(PrimeAudit& audit, const ASTNode& n, const ASTVec& asks)
 // A pass that was not primed: it runs a node and, from inside it, the node
 // below -- one level of its own call stack per level of the input, which is
 // what priming exists to stop and what the depth claim is about.
-void runUnprimed(PrimeAudit& audit, const ASTNode& n)
+void runUnprimed(PrimeAudit& audit, const ASTNode& n, bool active = true)
 {
-  PrimeAudit::Running running(audit, n);
+  PrimeAudit::Running running(audit, n, active);
 
   const ASTNode below = Context::interiorChild(n);
   if (below != n) // the bottom of the chain answers with itself.
-    runUnprimed(audit, below);
+    runUnprimed(audit, below, active);
 }
 
 // Holds the audit open while a case reads its verdict. The check runs when
@@ -199,6 +200,20 @@ TEST(PrimeAudit, a_pass_that_nests_past_its_claim_is_reported)
       << "audit said: " << bad;
   EXPECT_NE(bad.find("over its claim of 4"), std::string::npos)
       << "audit said: " << bad;
+}
+
+// The differential deliberately turns priming off to recover the old
+// recursive implementation. That run is the baseline, not a violation of
+// the primed-depth claim, so instrumentation must be dormant with the flag.
+TEST(PrimeAudit, a_pass_with_priming_disabled_is_not_audited)
+{
+  Context& c = fresh();
+  PrimeAudit audit("test", 4);
+
+  runUnprimed(audit, c.chain(12), false);
+
+  EXPECT_EQ(0u, audit.depth());
+  EXPECT_EQ("", audit.disagreement());
 }
 
 // ... and it stops the process rather than reporting quietly, which is the

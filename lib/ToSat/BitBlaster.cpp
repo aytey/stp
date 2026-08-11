@@ -747,7 +747,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
   // Debug-only, and the whole of what holds primeMemos to the blaster: every
   // node reached from here is one the walk has to have offered, and every
   // operand the walk primed is one that has to be reached from here.
-  PrimeAudit::Running running(memoAudit, term);
+  const bool prime = uf != NULL && uf->prime_memos;
+  PrimeAudit::Running running(memoAudit, term, prime);
 
   auto it = BBTermMemo.find(term);
   if (it != BBTermMemo.end())
@@ -757,7 +758,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term,
     return it->second;
   }
 
-  if (!priming && uf != NULL && uf->prime_memos)
+  if (!priming && prime)
   {
     priming = true;
     primeMemos(term, support);
@@ -1338,7 +1339,8 @@ const BBNode BitBlaster::BBForm(const ASTNode& form,
 {
   // The other half of the audit above: the two memos are primed by one walk,
   // so the walk is held to both functions at once.
-  PrimeAudit::Running running(memoAudit, form);
+  const bool prime = uf != NULL && uf->prime_memos;
+  PrimeAudit::Running running(memoAudit, form, prime);
 
   auto it = BBFormMemo.find(form);
   if (it != BBFormMemo.end())
@@ -1347,7 +1349,7 @@ const BBNode BitBlaster::BBForm(const ASTNode& form,
     return it->second;
   }
 
-  if (!priming && uf != NULL && uf->prime_memos)
+  if (!priming && prime)
   {
     priming = true;
     primeMemos(form, support);

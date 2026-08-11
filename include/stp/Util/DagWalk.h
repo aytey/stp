@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include <cassert>
 #include <cstdint>
 #include <deque>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -96,10 +97,16 @@ public:
   class Running
   {
     PrimeAudit& audit;
+    bool active;
 
   public:
-    Running(PrimeAudit& audit_, const ASTNode&) : audit(audit_)
+    // `active_` is false only for the deliberately recursive side of the
+    // on/off differential: that run is a baseline, not a failed priming.
+    Running(PrimeAudit& audit_, const ASTNode&, bool active_ = true)
+        : audit(audit_), active(active_)
     {
+      if (!active)
+        return;
       audit.running++;
       if (audit.running > audit.deepest)
         audit.deepest = audit.running;
@@ -110,6 +117,8 @@ public:
 
     ~Running()
     {
+      if (!active)
+        return;
       audit.running--;
       if (audit.running == 0)
         audit.finished();
@@ -159,7 +168,7 @@ public:
   class Running
   {
   public:
-    Running(PrimeAudit&, const ASTNode&) {}
+    Running(PrimeAudit&, const ASTNode&, bool = true) {}
   };
 };
 #endif

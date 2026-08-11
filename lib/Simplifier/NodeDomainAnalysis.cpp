@@ -429,6 +429,9 @@ namespace stp
 
   NodeDomainAnalysis::DomainInfo NodeDomainAnalysis::buildMap(const ASTNode& n)
   {
+    const bool prime = bm.UserFlags.prime_memos;
+    PrimeAudit::Running running(mapAudit, n, prime);
+
     {
       auto it = toFixedBits.find(n);
       if (it != toFixedBits.end())
@@ -439,7 +442,7 @@ namespace stp
       }
     }
 
-    if (!priming && bm.UserFlags.prime_memos)
+    if (!priming && prime)
     {
       priming = true;
       primeMaps(n);

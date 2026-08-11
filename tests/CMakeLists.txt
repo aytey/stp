@@ -227,14 +227,38 @@ endif()
 # Several passes fill their memo bottom-up before running so that deeply
 # nested input does not exhaust the stack. That is only sound if the priming
 # visits the nodes the pass would have visited anyway, which nothing in the
-# code enforces -- so solve both ways and require the same CNF.
+# code enforces -- so solve both ways and require the same result and CNF.
+# Negative and build-inapplicable lit tests are excluded from this corpus;
+# every selected query has to complete on both sides.
+if(PYTHON_EXECUTABLE)
+    add_test(
+      NAME prime-memos-differential-tests
+      COMMAND ${PYTHON_EXECUTABLE}
+              ${PROJECT_SOURCE_DIR}/tests/prime-memos-differential-test.py
+              ${PROJECT_SOURCE_DIR}/tests/prime-memos-differential.py
+    )
+    set_tests_properties(prime-memos-differential-tests PROPERTIES TIMEOUT 60)
+endif()
+
 if(BUILD_EXECUTABLES AND PYTHON_EXECUTABLE)
+    set(PRIME_MEMO_FEATURES)
+    if(ENABLE_FLOATING_POINT)
+      list(APPEND PRIME_MEMO_FEATURES floating-point)
+    endif()
+    if(USE_LIBBF)
+      list(APPEND PRIME_MEMO_FEATURES libbf)
+    endif()
+    if(USE_MINISAT)
+      list(APPEND PRIME_MEMO_FEATURES minisat)
+    endif()
+
     add_test(
       NAME prime-memos-differential
       COMMAND ${PYTHON_EXECUTABLE}
               ${PROJECT_SOURCE_DIR}/tests/prime-memos-differential.py
               $<TARGET_FILE:stp-bin>
               ${PROJECT_SOURCE_DIR}/tests/query-files
+              ${PRIME_MEMO_FEATURES}
     )
     set_tests_properties(prime-memos-differential PROPERTIES
       SKIP_RETURN_CODE 77
