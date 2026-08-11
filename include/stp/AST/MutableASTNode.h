@@ -174,8 +174,10 @@ public:
         current.tempChildren[i]->parents.insert(mut);
       }
 
-      mut->children.insert(mut->children.end(), current.tempChildren.begin(),
-                           current.tempChildren.end());
+      // The temporary already has exactly the representation the mutable
+      // node needs. Transfer its allocation instead of allocating a second
+      // pointer array and copying every child into it.
+      mut->children = std::move(current.tempChildren);
       visited.insert(std::make_pair(current.n.GetNodeNum(), mut));
 
       result = mut;
@@ -269,17 +271,13 @@ public:
     {
       MutableASTNode* node;
       size_t nextChild = 0;
-      ASTVec newChildren;
-
-      explicit RebuildFrame(MutableASTNode* n) : node(n)
-      {
-        newChildren.reserve(n->children.size());
-      }
     };
+    static_assert(sizeof(RebuildFrame) <= 2 * sizeof(void*),
+                  "mutable rebuild frames must not own child buffers");
 
-    std::deque<RebuildFrame> stack;
-    stack.emplace_back(this);
-    ASTNode result;
+    std::vector<RebuildFrame> stack;
+    stack.push_back({this});
+    ASTVec newChildren;
 
     while (true)
     {
@@ -288,17 +286,21 @@ public:
 
       if (frame.nextChild < current->children.size())
       {
-        MutableASTNode* child = current->children[frame.nextChild];
+        MutableASTNode* child = current->children[frame.nextChild++];
         if (!child->dirty || child->children.empty())
-        {
-          frame.newChildren.push_back(child->n);
-          frame.nextChild++;
           continue;
-        }
 
-        stack.emplace_back(child);
+        stack.push_back({child});
         continue;
       }
+
+      // Every child owns its rebuilt AST answer, so only the node currently
+      // being recreated needs a child-handle buffer. Reuse one allocation
+      // across the whole post-order walk instead of one vector per depth.
+      newChildren.clear();
+      newChildren.reserve(current->children.size());
+      for (MutableASTNode* child : current->children)
+        newChildren.push_back(child->n);
 
       // Don't use the simplifying node factory here. Imagine CreateNode
       // simplified (= 1 (ite x 1 0)) down to x. This object would become a
@@ -306,30 +308,25 @@ public:
       if (current->n.GetType() == BOOLEAN_TYPE)
       {
         current->n = stpMgr->hashingNodeFactory->CreateNode(
-            current->n.GetKind(), frame.newChildren);
+            current->n.GetKind(), newChildren);
       }
       else if (current->n.GetType() == BITVECTOR_TYPE)
       {
         current->n = stpMgr->hashingNodeFactory->CreateTerm(
             current->n.GetKind(), current->n.GetValueWidth(),
-            frame.newChildren);
+            newChildren);
       }
       else
       {
         current->n = stpMgr->hashingNodeFactory->CreateArrayTerm(
             current->n.GetKind(), current->n.GetIndexWidth(),
-            current->n.GetValueWidth(), frame.newChildren);
+            current->n.GetValueWidth(), newChildren);
       }
 
       current->dirty = false;
-      result = current->n;
       stack.pop_back();
       if (stack.empty())
-        return result;
-
-      RebuildFrame& parent = stack.back();
-      parent.newChildren.push_back(result);
-      parent.nextChild++;
+        return current->n;
     }
   }
 

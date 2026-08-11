@@ -1016,6 +1016,45 @@ bool mutableDagBuildResumeOrderOk(Context& c)
   return ok;
 }
 
+// Dirty rebuilding can reach the same mutable child through more than one
+// parent. The first route rebuilds it and later routes reuse the stored AST;
+// the parent must gather both answers in operand order even though rebuild
+// frames no longer retain their own child vectors.
+bool mutableDagSharedRebuildOk(Context& c)
+{
+  const ASTNode x = c.mgr.CreateSymbol("mutable-rebuild-x", 0, 8);
+  const ASTNode y = c.mgr.CreateSymbol("mutable-rebuild-y", 0, 8);
+  const ASTNode z = c.mgr.CreateSymbol("mutable-rebuild-z", 0, 8);
+  const ASTNode shared = c.hf->CreateTerm(BVXOR, 8, x, y);
+  const ASTNode left = c.hf->CreateTerm(BVPLUS, 8, shared, z);
+  const ASTNode right = c.hf->CreateTerm(BVAND, 8, z, shared);
+  const ASTNode top = c.hf->CreateTerm(BVPLUS, 8, left, right, z);
+  c.roots.push_back(top);
+
+  std::unordered_map<uint64_t, MutableASTNode*> nodes;
+  MutableASTNode* root = MutableASTNode::build(top, nodes);
+  vector<MutableASTNode*> variables;
+  const ASTNode replacement =
+      c.mgr.CreateSymbol("mutable-rebuild-replacement", 0, 8);
+  nodes.at(x.GetNodeNum())->replaceWithVar(replacement, variables);
+
+  const ASTNode expectedShared =
+      c.hf->CreateTerm(BVXOR, 8, replacement, y);
+  const ASTNode expectedLeft =
+      c.hf->CreateTerm(BVPLUS, 8, expectedShared, z);
+  const ASTNode expectedRight =
+      c.hf->CreateTerm(BVAND, 8, z, expectedShared);
+  const ASTNode expected =
+      c.hf->CreateTerm(BVPLUS, 8, expectedLeft, expectedRight, z);
+  const ASTNode rebuilt = root->toASTNode(&c.mgr);
+  c.roots.push_back(rebuilt);
+
+  const bool ok = rebuilt == expected && root->toASTNode(&c.mgr) == rebuilt &&
+                  variables.size() == 1 && root->checkInvariant();
+  MutableASTNode::cleanup();
+  return ok;
+}
+
 // Mutable parents are a set, so two edges from one parent represent one
 // parent relationship. Detaching such a DAG must likewise process that
 // relationship once. Otherwise every duplicate edge revisits an already
@@ -1767,6 +1806,12 @@ TEST(DeepDag, mutable_dag_build_consumes_returned_children_in_order)
 {
   Context c;
   EXPECT_TRUE(mutableDagBuildResumeOrderOk(c));
+}
+
+TEST(DeepDag, mutable_dag_shared_children_rebuild_in_operand_order)
+{
+  Context c;
+  EXPECT_TRUE(mutableDagSharedRebuildOk(c));
 }
 
 TEST(DeepDag, counterexample_prechecked_heads_preserve_model_values)
