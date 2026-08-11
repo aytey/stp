@@ -69,6 +69,35 @@ vector<BBNodeAIG> _empty_BBNodeAIGVec;
 const bool debug_do_check = false;
 const bool debug_bitblaster = false;
 
+namespace
+{
+// BBForm and BBTerm share one recursion budget because they call each other.
+// Keeping the counter in a scope guard makes all of their many early returns
+// release the budget without putting cleanup code on each path.
+class UnprimedDepth
+{
+  size_t& depth;
+  const bool active;
+
+public:
+  UnprimedDepth(size_t& depth_, const bool active_)
+      : depth(depth_), active(active_)
+  {
+    if (active)
+      ++depth;
+  }
+
+  UnprimedDepth(const UnprimedDepth&) = delete;
+  UnprimedDepth& operator=(const UnprimedDepth&) = delete;
+
+  ~UnprimedDepth()
+  {
+    if (active)
+      --depth;
+  }
+};
+} // namespace
+
 // Translates signed BVDIV,BVMOD and BVREM into unsigned variety
 static ASTNode TranslateSignedDivModRem(const ASTNode& in, NodeFactory* nf)
 {
@@ -767,7 +796,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
     }
   }
 
-  if (!priming && prime)
+  if (!priming && prime && unprimedDepth >= unprimedDepthLimit)
   {
     priming = true;
     primeMemos(term, support);
@@ -780,6 +809,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       return it->second;
     }
   }
+
+  UnprimedDepth depth(unprimedDepth, !priming && prime);
 
   if (uf != NULL && uf->optimize_flag && uf->simplify_during_BB_flag)
   {
@@ -1367,7 +1398,7 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
     }
   }
 
-  if (!priming && prime)
+  if (!priming && prime && unprimedDepth >= unprimedDepthLimit)
   {
     priming = true;
     primeMemos(form, support);
@@ -1377,6 +1408,8 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
     if (it != BBFormMemo.end())
       return it->second;
   }
+
+  UnprimedDepth depth(unprimedDepth, !priming && prime);
 
   const Kind k = form.GetKind();
   if (!is_Form_kind(k))

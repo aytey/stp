@@ -485,8 +485,9 @@ bool simplifyFormulaSpineOk(Context& c, unsigned depth)
 }
 
 // BitBlaster::BBTerm, which reaches its operands by calling itself from 24
-// places across its kind switch. Not restated: its memo is filled from the
-// bottom first instead.
+// places across its kind switch. The blaster uses ordinary recursion for a
+// bounded prefix, then fills the remaining suffix of its memo from the bottom
+// first. This depth is well beyond that boundary.
 bool bitBlastTermOk(Context& c, unsigned depth)
 {
   const ASTNode f = c.formula(c.chain(BVXOR, depth));

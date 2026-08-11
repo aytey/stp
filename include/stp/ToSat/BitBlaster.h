@@ -289,20 +289,22 @@ class BitBlaster
                          bool knownMissing);
 
   // BBForm and BBTerm both blast a node's operands by calling themselves, so
-  // input nested deeply enough takes the stack with it. This fills both
-  // memos from the bottom up first, so those calls return at a memo and the
-  // walking is done with frames on the heap. One walk over both, because the
-  // two reach each other: a formula's operands can be terms and a term's can
-  // be formulas. See DeepDag_Test.cpp.
+  // input nested deeply enough takes the stack with it. Shallow inputs keep
+  // the ordinary recursive path: starting an extra walk at their root costs
+  // more than the stack it saves. Once the shared formula/term recursion
+  // budget is exhausted, primeMemos fills both memos below that point and the
+  // bounded recursive prefix unwinds normally. One walk covers both memos
+  // because the two functions reach each other. See DeepDag_Test.cpp.
   void primeMemos(const ASTNode& n, BBNodeSet& support);
+  static constexpr size_t unprimedDepthLimit = 512;
+  size_t unprimedDepth = 0;
   bool priming = false;
 
-  // Debug-only: how deeply the blaster nests once primeMemos has run. Empty
-  // and free in a build with NDEBUG. The claim is a real one here -- both
-  // memos are primed by one walk, so the calls it makes on its operands
-  // answer from one of them, and the deepest the whole query corpus reaches
-  // is 11. See stp/Util/DagWalk.h.
-  PrimeAudit memoAudit{"BitBlaster", 32};
+  // Debug-only: the deliberately recursive prefix plus the small amount of
+  // recursion used while processing nodes created during priming. Empty and
+  // free in a build with NDEBUG. The suffix itself must still answer from one
+  // of the two memos rather than nesting with the input.
+  PrimeAudit memoAudit{"BitBlaster", unprimedDepthLimit + 32};
 
   bool isConstant(const BBNodeVec& v);
   ASTNode getConstant(const BBNodeVec& v, const ASTNode& n);
