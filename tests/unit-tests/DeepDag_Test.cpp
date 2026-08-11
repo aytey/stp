@@ -622,6 +622,32 @@ bool simplifyMixedTermOperandsOk(Context& c)
   return output == stored;
 }
 
+// A descendant term is prechecked before its frame is pushed. Preserve a
+// substitution image found by that check so the frame neither probes the map
+// again nor accidentally simplifies the original symbol instead.
+bool simplifyPrecheckedSubstitutionOk(Context& c)
+{
+  const ASTNode one = c.mgr.CreateOneConst(8);
+  const ASTNode two = c.mgr.CreateBVConst(8, 2);
+  const ASTNode three = c.mgr.CreateBVConst(8, 3);
+  const ASTNode substituted = c.mgr.CreateSymbol("prechecked", 0, 8);
+  const ASTNode image = c.hf->CreateTerm(BVPLUS, 8, one, two);
+  const ASTNode input = c.hf->CreateTerm(BVXOR, 8, substituted,
+                                         c.mgr.CreateZeroConst(8));
+  c.roots.push_back(image);
+  c.roots.push_back(input);
+
+  c.mgr.UserFlags.optimize_flag = true;
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  if (!simp.UpdateSolverMap(substituted, image))
+    return false;
+
+  const ASTNode output = simp.SimplifyTerm(input);
+  c.roots.push_back(output);
+  return output == three;
+}
+
 // A term contains a formula which contains the preceding term, at every
 // level. Separate iterative formula and term drivers are insufficient for
 // this shape: calling from one driver into the other still makes one C++
@@ -1306,6 +1332,12 @@ TEST(DeepDag, simplify_term_preserves_mixed_operand_positions)
 {
   Context c;
   EXPECT_TRUE(simplifyMixedTermOperandsOk(c));
+}
+
+TEST(DeepDag, simplify_term_preserves_prechecked_substitution)
+{
+  Context c;
+  EXPECT_TRUE(simplifyPrecheckedSubstitutionOk(c));
 }
 
 TEST(DeepDag, shallow_simplify_alternating_term_formula)

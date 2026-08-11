@@ -813,6 +813,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     enum Phase
     {
       Start,
+      PrecheckedStart,
       AndOrOperand, // AND/OR: the operand at `i`
       NotBody,      // NOT: whatever is under the run of NOTs
       XorOperand,   // XOR: the operand at `i`
@@ -835,6 +836,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       AtomicEqCombined,
       AtomicEqIteCondition,
 
+      TermSubstitutionPrechecked,
       TermSubstitution,
       TermOperand,
       TermPulled,
@@ -893,16 +895,14 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       return true;
     }
 
-    // Every arm began by asking the map about the node PullUpITE produced,
-    // which is not the node formulaShortcut just asked about.
+    // Every arm began by asking the map about the node PullUpITE produced.
+    // formulaShortcut already asked when PullUpITE left the node unchanged.
     ASTNode cached;
-    if (CheckSimplifyMap(a, cached, neg))
+    if (a != n && CheckSimplifyMap(a, cached, neg))
     {
-      // ... and SimplifyFormula's tail then recorded it against the node as
-      // it arrived, and against that one if they differ.
+      // `a` is the key that answered, so only the node as it arrived still
+      // needs recording.
       UpdateSimplifyMap(n, cached, neg);
-      if (a != n)
-        UpdateSimplifyMap(a, cached, neg);
       result = cached;
       return true;
     }
@@ -924,6 +924,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     f.phase = resume;
 
     ASTNode a;
+    ASTNode substitutionImage;
+    Frame::Phase start = Frame::Start;
     if (job == Frame::FormulaJob)
     {
       if (head(n, neg, a))
@@ -937,10 +939,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         return true;
       }
 
-      ASTNode image;
-      if (!InsideSubstitutionMap(n, image) &&
-          CheckSimplifyMap(n, result, false))
+      if (InsideSubstitutionMap(n, substitutionImage))
+        start = Frame::TermSubstitutionPrechecked;
+      else if (CheckSimplifyMap(n, result, false))
         return true;
+      else
+        start = Frame::PrecheckedStart;
     }
     else if (job == Frame::ArrayJob)
     {
@@ -951,13 +955,19 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       }
       if (CheckSimplifyMap(n, result, false))
         return true;
+      start = Frame::PrecheckedStart;
     }
+    else if (job == Frame::AtomicJob)
+      start = Frame::PrecheckedStart;
 
     Frame below;
     below.job = job;
     below.b = n;
     below.a = a;
     below.pushNeg = neg;
+    below.phase = start;
+    if (start == Frame::TermSubstitutionPrechecked)
+      below.output = substitutionImage;
     stack.push_back(std::move(below));
     return true;
   };
@@ -1000,9 +1010,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         return finishEquality(output);
       };
 
-      if (f.phase == Frame::Start)
+      if (f.phase == Frame::Start || f.phase == Frame::PrecheckedStart)
       {
-        if (CheckSimplifyMap(f.b, result, f.pushNeg))
+        if (f.phase == Frame::Start &&
+            CheckSimplifyMap(f.b, result, f.pushNeg))
           return false;
 
         // Keep the original atomic-formula order: every binary predicate
@@ -1177,15 +1188,18 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       const unsigned iw = f.b.GetIndexWidth();
       assert(iw > 0);
 
-      if (f.phase == Frame::Start)
+      if (f.phase == Frame::Start || f.phase == Frame::PrecheckedStart)
       {
-        if (CheckSimplifyMap(f.b, result, false))
-          return false;
-
-        if (f.b.GetKind() == SYMBOL)
+        if (f.phase == Frame::Start)
         {
-          result = f.b;
-          return false;
+          if (CheckSimplifyMap(f.b, result, false))
+            return false;
+
+          if (f.b.GetKind() == SYMBOL)
+          {
+            result = f.b;
+            return false;
+          }
         }
 
         if (f.b.GetKind() == ITE)
@@ -1241,8 +1255,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       {
         if (!f.t2.IsNull())
           UpdateSimplifyMap(f.t2, output, false);
-        UpdateSimplifyMap(f.a, output, false);
-        UpdateSimplifyMap(f.b, output, false);
+        if (f.a != f.t2)
+          UpdateSimplifyMap(f.a, output, false);
+        if (f.b != f.a && f.b != f.t2)
+          UpdateSimplifyMap(f.b, output, false);
 
         assert(!output.IsNull());
         assert(f.a.GetValueWidth() == output.GetValueWidth());
@@ -1268,26 +1284,35 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       if (f.phase == Frame::TermPulled || f.phase == Frame::TermRetry)
       {
         UpdateSimplifyMap(f.b, result, false);
-        UpdateSimplifyMap(f.a, result, false);
+        if (f.a != f.b)
+          UpdateSimplifyMap(f.a, result, false);
         return finishTerm(result);
       }
       if (f.phase == Frame::TermOutput)
         return finishTermTail(result);
 
-      if (f.phase == Frame::Start)
+      if (f.phase == Frame::Start ||
+          f.phase == Frame::PrecheckedStart ||
+          f.phase == Frame::TermSubstitutionPrechecked)
       {
         assert(_bm->UserFlags.optimize_flag);
         if (f.b.isConstant())
           return finishTerm(f.b);
 
         f.a = f.b;
+        const ASTNode substitutionImage = f.output;
         f.output = f.a;
         assert(BVTypeCheck(f.a));
 
-        if (InsideSubstitutionMap(f.a, f.output))
+        if (f.phase == Frame::TermSubstitutionPrechecked)
+          return want(f, Frame::TermSubstitution, substitutionImage, false,
+                      Frame::TermJob);
+        if (f.phase == Frame::Start &&
+            InsideSubstitutionMap(f.a, f.output))
           return want(f, Frame::TermSubstitution, f.output, false,
                       Frame::TermJob);
-        if (CheckSimplifyMap(f.a, result, false))
+        if (f.phase == Frame::Start &&
+            CheckSimplifyMap(f.a, result, false))
           return false;
 
         const Kind k = f.a.GetKind();
@@ -1428,7 +1453,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
     // has not just set to the same value.
     auto finish = [&](const ASTNode& output) {
       UpdateSimplifyMap(f.a, output, f.pushNeg);
-      UpdateSimplifyMap(f.b, output, f.pushNeg);
+      if (f.b != f.a)
+        UpdateSimplifyMap(f.b, output, f.pushNeg);
       result = output;
       return false;
     };
@@ -2448,7 +2474,8 @@ ASTNode Simplifier::simplify_term_switch(const ASTNode& actualInputterm,
           output = annihilator;
           // memoize
           UpdateSimplifyMap(inputterm, output, false);
-          UpdateSimplifyMap(actualInputterm, output, false);
+          if (actualInputterm != inputterm)
+            UpdateSimplifyMap(actualInputterm, output, false);
           // cerr << "output of SimplifyTerm: " << output << endl;
           return output;
         }
@@ -2464,7 +2491,8 @@ ASTNode Simplifier::simplify_term_switch(const ASTNode& actualInputterm,
         {
           output = annihilator;
           UpdateSimplifyMap(inputterm, output, false);
-          UpdateSimplifyMap(actualInputterm, output, false);
+          if (actualInputterm != inputterm)
+            UpdateSimplifyMap(actualInputterm, output, false);
           return output;
         }
 
