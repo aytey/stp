@@ -298,6 +298,10 @@ struct IncrementalSolver::Impl
     uint64_t retainedClauses = 0;
     uint64_t liveClauses = 0;
     uint64_t peakLiveClauses = 0;
+    // The exact live AIG-cone union for this solve. Reported only: it is
+    // deliberately not the number the relief valve decides on, so that
+    // profiling does not move the rebuild schedule.
+    uint64_t exactLiveClauses = 0;
     uint64_t cbpResets = 0;
     uint64_t cbpDivergences = 0;
     uint64_t cbpRollbacks = 0;
@@ -2429,6 +2433,7 @@ struct IncrementalSolver::Impl
         << " refinement-clauses=" << profile.refinementClauses
         << " retained-clauses=" << profile.retainedClauses
         << " live-clauses=" << profile.liveClauses
+        << " exact-live-clauses=" << profile.exactLiveClauses
         << " peak-live-clauses=" << profile.peakLiveClauses
         << " sat-calls=" << profile.satCalls
         << " refinement-sat-calls=" << profile.refinementSatCalls
@@ -2712,25 +2717,34 @@ struct IncrementalSolver::Impl
                          uint64_t cheapLiveMass,
                          uint64_t nonStructuralMass)
   {
-    uint64_t live = cheapLiveMass;
+    // The value that drives the relief decision is the same in both modes.
+    // It used to be the cheap ownership estimate normally and an exact cone
+    // union under --incremental-profile, which meant the profiler changed
+    // WHEN rebuilds fire: exact is never below the estimate, so a profiled
+    // run raised the peak and rebuilt later, or not at all. Every number
+    // taken with the profiler then described a configuration production does
+    // not run, including the rebuild counters the tests assert on.
+    recordLiveClauseMass(cheapLiveMass);
+
+    const bool stage = reliefSizeReached();
+    if (profile.enabled || stage)
+      normalizeAigRoots(currentRoots);
+
     if (profile.enabled)
     {
-      // Profiling is opt-in instrumentation, so pay for an exact current
-      // working-set measurement instead of reporting the lazy lower bound.
-      normalizeAigRoots(currentRoots);
-      const uint64_t structural =
-          encodedAigConeMass(currentRoots, permanentAigRoots.size());
-      live = addMass(structural, nonStructuralMass);
+      // Reported, never fed back: instrumentation observes the exact working
+      // set without moving the schedule it is there to observe.
+      profile.exactLiveClauses = addMass(
+          encodedAigConeMass(currentRoots, permanentAigRoots.size()),
+          nonStructuralMass);
     }
-    recordLiveClauseMass(live);
 
     // A pending exact walk is only useful once the variable floor has been
     // crossed. Coalesce to this solve's snapshot: retaining every historical
     // root vector on a growing ordinary stack would be quadratic memory, and
     // stale popped stacks are precisely the content relief should reclaim.
-    if (!profile.enabled && reliefSizeReached())
+    if (stage)
     {
-      normalizeAigRoots(currentRoots);
       pendingLiveCone.currentRoots.swap(currentRoots);
       pendingLiveCone.permanentRootCount = permanentAigRoots.size();
       pendingLiveCone.nonStructuralMass = nonStructuralMass;

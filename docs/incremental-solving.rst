@@ -371,8 +371,10 @@ retained/peak ratio would authorize relief before the next solve, one exact
 union walk first repairs the epoch's peak live mass and the ratio is tested
 again. Retaining only the latest snapshot avoids quadratic root-vector history;
 popped historical stacks are deliberately allowed to become reclaimable.
-``--incremental-profile`` instead opts into the exact union measurement on
-every solve.
+``--incremental-profile`` additionally measures the exact union on every
+solve and reports it as ``exact-live-clauses``, but that measurement is
+reported only: the value the valve decides on is the same in both cases, so
+profiling cannot move the rebuild schedule it is there to observe.
 
 Theory-lemma ownership remains an intentional policy approximation: a lemma is
 charged to the deterministic query that emitted it even though it may later
@@ -567,10 +569,14 @@ Clause counters have deliberately different lifetimes and meanings:
   backend has internally simplified away.
 - ``live-clauses`` is the current solve's ownership estimate and
   ``peak-live-clauses`` is its high-water mark in the current backend epoch.
-  The inexpensive normal-path value uses formula-key submission deltas; the
-  profiler measures the exact live AIG union, and the relief valve performs the
-  same exact walk on its latest pending snapshot before a cheap estimate may
-  authorize rebuilding. Permanent units, active activation implications, and
+  Both come from formula-key submission deltas, whether or not profiling is
+  on, and the relief valve performs an exact live-AIG-union walk on its latest
+  pending snapshot before a cheap estimate may authorize rebuilding.
+- ``exact-live-clauses`` is that exact union measured for the current solve,
+  under ``--incremental-profile`` only. It is reported beside the estimate
+  rather than substituted for it: an exact figure is never below the estimate,
+  so feeding it to the valve raised the peak and delayed rebuilds, which made
+  every profiled run describe a configuration normal solving does not use. Permanent units, active activation implications, and
   owner-keyed theory lemmas are added separately. Retired activation
   implications and pins remain retained but dead. All live values are capped
   by the retained total.
