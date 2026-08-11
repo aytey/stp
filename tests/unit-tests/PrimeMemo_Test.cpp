@@ -141,6 +141,35 @@ TEST(DagWalk, preorder_is_left_to_right_and_honours_pruning)
   EXPECT_EQ((ASTVec{top, left, a, b, pruned}), visited);
 }
 
+TEST(DagWalk, postorder_rebuild_preserves_child_ranges_and_sharing)
+{
+  Context& c = fresh();
+  const ASTNode a = c.mgr.CreateSymbol("rebuild-a", 0, 4);
+  const ASTNode b = c.mgr.CreateSymbol("rebuild-b", 0, 4);
+  const ASTNode d = c.mgr.CreateSymbol("rebuild-d", 0, 4);
+  const ASTNode shared = c.hf->CreateTerm(BVXOR, 4, a, b);
+  const ASTNode left = c.hf->CreateTerm(BVPLUS, 4, shared, d);
+  const ASTNode top = c.hf->CreateTerm(BVAND, 4, left, shared);
+
+  ASTNodeMap cache;
+  std::vector<std::pair<ASTNode, ASTVec>> combined;
+  const ASTNode result = postOrderRebuild(
+      top, cache, [&](const ASTNode& n, const ASTVec& children) {
+        combined.push_back({n, children});
+        return n;
+      });
+
+  ASSERT_EQ(top, result);
+  ASSERT_EQ(3U, combined.size());
+  EXPECT_EQ(shared, combined[0].first);
+  EXPECT_EQ(toASTVec(shared.GetChildren()), combined[0].second);
+  EXPECT_EQ(left, combined[1].first);
+  EXPECT_EQ(toASTVec(left.GetChildren()), combined[1].second);
+  EXPECT_EQ(top, combined[2].first);
+  EXPECT_EQ(toASTVec(top.GetChildren()), combined[2].second);
+  EXPECT_EQ(3U, cache.size());
+}
+
 TEST(PrimeMemo, non_owning_operand_views_preserve_postorder)
 {
   Context& c = fresh();

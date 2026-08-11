@@ -30,6 +30,7 @@ THE SOFTWARE.
 #include <cstdint>
 #include <deque>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -405,19 +406,30 @@ void primeMemo(const ASTNode& top, Classify classify, Visit visit)
 template <class Cache, class Combine>
 ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
 {
-  // One node's progress: the children combined so far, and how far along its
-  // own child list it has got.
+  // One node's progress: where its children begin in the shared LIFO arena,
+  // and how far along its own child list it has got. Keeping an ASTVec in
+  // every suspended frame allocated once per level on ordinary inputs.
   struct Frame
   {
     ASTNode n;
-    ASTVec children;
+    size_t childrenBegin;
     size_t i = 0;
     bool waiting = false; // a child is being combined below.
 
-    Frame(const ASTNode& node) : n(node) { children.reserve(node.Degree()); }
+    Frame(const ASTNode& node, const size_t begin)
+        : n(node), childrenBegin(begin)
+    {
+    }
   };
 
   ASTNode result;
+
+  // Results already collected by every suspended frame. A child frame owns
+  // the suffix beginning at childrenBegin; when it completes, that suffix is
+  // moved through one reusable vector for combine and then replaced by the
+  // child's single result in its parent.
+  ASTVec activeChildren;
+  ASTVec combinedChildren;
 
   // Answers that need no frame, which is what the recursive form answered
   // without a call.
@@ -443,7 +455,7 @@ ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
   // A deque, so descending never moves the frames above it: `current` stays
   // valid across a push.
   std::deque<Frame> stack;
-  stack.emplace_back(top);
+  stack.emplace_back(top, activeChildren.size());
 
   while (true)
   {
@@ -452,7 +464,7 @@ ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
     if (current.waiting)
     {
       current.waiting = false;
-      current.children.push_back(result);
+      activeChildren.push_back(result);
       current.i++;
     }
 
@@ -461,14 +473,14 @@ ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
     {
       if (known(current.n[current.i]))
       {
-        current.children.push_back(result);
+        activeChildren.push_back(result);
         current.i++;
         continue;
       }
 
       // Nothing above may be read after this push.
       current.waiting = true;
-      stack.emplace_back(current.n[current.i]);
+      stack.emplace_back(current.n[current.i], activeChildren.size());
       descended = true;
       break;
     }
@@ -476,7 +488,18 @@ ASTNode postOrderRebuild(const ASTNode& top, Cache& cache, Combine combine)
     if (descended)
       continue;
 
-    result = combine(current.n, current.children);
+    assert(activeChildren.size() - current.childrenBegin ==
+           current.n.Degree());
+    combinedChildren.clear();
+    combinedChildren.insert(
+        combinedChildren.end(),
+        std::make_move_iterator(activeChildren.begin() +
+                                current.childrenBegin),
+        std::make_move_iterator(activeChildren.end()));
+    activeChildren.resize(current.childrenBegin);
+
+    result = combine(current.n, combinedChildren);
+    combinedChildren.clear();
     cache.insert({current.n, result});
 
     stack.pop_back();
