@@ -30,13 +30,26 @@ what must not be re-chased, and what to do next.
 
 ## Status board
 
-**All twelve tracked defects are now FIXED or closed**, and D13 with them.
-D1 and D2 (`e1229764`, `926bf48f`) were silent wrong answers, with all four
-witnesses landed as regressions and the campaign harness hardened so a run of
-its kind would catch them (see [Part V](#part-v--work-queue)). Both were
-reachable with **no non-default flags at all**, on logics STP is built for.
-Everything still open in this document is quality, cost, or maintainability ---
-**no known soundness defect remains**.
+**All fourteen tracked defects are now FIXED or closed.** **Three** of them
+were silent wrong answers: D1 and D2 (`e1229764`, `926bf48f`), found by this
+review, and **D14** (`87a77ac2`), found later and by accident. All three were
+reachable with **no non-default flags on the path**, on logics STP is built
+for; every witness is landed as a regression and the campaign harness now
+validates the candidate's models by default (see
+[Part V](#part-v--work-queue)).
+
+**Read D14 before trusting this board.** It was not found by looking for
+soundness defects. It came out of adversarially challenging **F43**, a *tidiness*
+row about duplicated preprocessing code: the challenge agreed the refactor that
+row asks for would be churn, then asked the question the refactor would have
+hidden --- whether each of the four preprocessing prefixes still enforces what
+its siblings enforce. One did not, and the gap was a wrong answer. The sweep
+that produced this document had classified that area as cost-and-clarity. So
+"no known soundness defect remains" is the honest status and has already been
+wrong once; it is a statement about what has been looked for, not about what is
+there. The relief-rebuild path is where all three of the last defects lived and
+where the test suite is thinnest --- 11 of 82 files reach a rebuild at all, and
+every one of them has to force `--incremental-reencode-limit` to get there.
 
 Two tracked rows were fixed only at their headline, and their sub-items are
 tracked separately: **D7b** (feed cap) is now fixed, and **D8b** (refinement
@@ -66,6 +79,7 @@ mechanism is the part worth remembering.
 | [D11](#d11--dead-backtrackh-canhandle-batchtablesseeded) | dead code | **FIXED** | n/a | no (branch-only code) | yes | A tested 273-line scoped-container library with zero production users; a `return true` seam; a write-only flag |
 | [D12](#d12--cost-the-tosatbase-adapter-rebuilds-an-oall-session-symbols-map-per-call) | form | **closed** | array logics | no (branch-only code) | measured: no effect | Per-call cost is real but the call count is not; caching it and removing the copy both measured neutral. Contract fixed, optimisation declined. |
 | [D13](#d13--conservatism-d1s-fix-refuses-eliminations-the-context-re-join-would-have-covered) | conservatism | **FIXED** | yes | n/a (introduced by `e1229764`) | eliminations restored; 1.5x faster | D1's fix refuses eliminations the `ctx` re-join would have covered; clean fix is a single elimination/inline transaction |
+| [D14](#d14--soundness-the-relief-rebuild-keeps-a-definition-whose-dependency-it-just-dropped) | **soundness** | **FIXED** `87a77ac2` | yes (needs a relief rebuild) | no (branch-only code) | fixed + regression; 4 engines agree | The relief rebuild keeps a definition for an untouchable variable while `RemoveUnconstrained` drops the last constraint on a variable that definition mentions. The rebuilt base is strictly weaker than the raw base it replaces: `sat` on an `unsat` query |
 
 ### Verified correct (do not re-chase) — see [Part II](#part-ii--verified-correct-do-not-re-chase)
 
@@ -89,8 +103,11 @@ and would distort timings) against a correctness campaign that keeps it on.
 ## Validation against master
 
 Every defect in this document was checked against master to establish that it is
-a **branch regression** rather than a pre-existing STP bug. Result: **all twelve
-are branch-introduced; none reproduces on master.**
+a **branch regression** rather than a pre-existing STP bug. Result: **all
+fourteen are branch-introduced; none reproduces on master.** D14 was added after
+this section was first written; it is branch-only by construction, because
+`resimplifyBaseAtRebuild` exists only on this branch, and its witness answers
+`unsat` on master's batch pipeline as well as on Bitwuzla, cvc5 and Z3.
 
 ### Comparison baseline
 
@@ -106,7 +123,7 @@ are branch-introduced; none reproduces on master.**
 > `make stp` alone leaves a stale `build/stp`, and `libstp.so` is linked
 > dynamically, so a saved binary is never a valid A/B arm on its own.
 
-### 1. The two soundness defects: four independent engines say `unsat`, the branch says `sat`
+### 1. The three soundness defects: four independent engines say `unsat`, the branch says `sat`
 
 The witnesses were cross-checked against three external SMT solvers as well as
 STP master, so the expected answer does not rest on STP's own reasoning or on my
@@ -1149,6 +1166,121 @@ supersedes with a concrete mechanism.
 
 ---
 
+## D14 — SOUNDNESS: the relief rebuild keeps a definition whose dependency it just dropped
+
+**Status: FIXED, `87a77ac2`.** Class: soundness (`sat` on an `unsat` query).
+Flags: none on the path itself; the session must take a relief rebuild.
+In master: no --- `resimplifyBaseAtRebuild` is branch-only code.
+Pre-existing on this branch: **yes**, reproduced identically at `933a3b4b`.
+
+Sites: `lib/Incremental/IncrementalSolver.cpp:3833` (`resimplifyBaseAtRebuild`),
+`:3898` (`untouch` construction), `:3976` (`RemoveUnconstrained`), `:3993` (the
+keep-vs-eliminate filter). The fix is the closure at `:3941`.
+
+### Mechanism
+
+The relief rebuild re-derives the whole base semantically before re-encoding
+it. Two things happen in that pass that are individually correct and jointly
+are not.
+
+1. `PropagateEqualities` harvests `u -> (bvadd v #x01)` from a base equation
+   and **deletes the equation from the formula**. The definition now lives only
+   in the substitution map.
+2. `untouch` (`:3898-3902`) is the symbols of every live pushed level. A level
+   constrains its symbols from outside the base, so the base pass must not
+   eliminate them. With `u` on a live pushed level, `u` is untouchable and `v`
+   --- mentioned nowhere but the base --- is not.
+3. `RemoveUnconstrained` runs (`:3976`) and decides unconstrainedness **from
+   the formula alone**. By this point `v`'s only surviving occurrence is inside
+   the map *value* `(bvadd v #x01)`, which it cannot see. It drops
+   `(bvult v #x02)` --- `v`'s last constraint --- and records a witness for `v`.
+4. The filter at `:3993` keeps `(= u (bvadd v #x01))` as an asserted conjunct,
+   because `u` is untouchable.
+
+What re-encodes is therefore a definition of `u` in terms of a variable nothing
+constrains. **The rebuilt base is strictly weaker than the raw base it
+replaced.** `u` is free.
+
+Nothing restores it. The restore path covers content screened *after* the
+rebuild; this level was already live, which is precisely why the rebuild had to
+treat `u` as untouchable in the first place.
+
+### Witness
+
+`tests/query-files/incremental-tests/relief-kept-definition-dependency.smt2`.
+Base `u = v + 1` and `v < 2`, so `u` is 1 or 2 and `(= u #xff)` is **unsat**.
+Ten dead push/check/pop rounds, then that query.
+
+| | answer |
+|---|---|
+| branch, `--incremental` | **`sat`** |
+| branch, batch pipeline | `unsat` |
+| branch, `--incremental-base-resimplify-limit 0` (pass off) | `unsat` |
+| Bitwuzla, cvc5, Z3 | `unsat` |
+
+`--check-sanity` rejects the model outright ("the model does not satisfy an
+asserted formula"), so a campaign validating models would have caught it.
+
+Ten rounds is not arbitrary and the reduction is fragile: the valve must fire
+**on the final check**, when the `u` level is the live one. At nine rounds and
+at eleven it fires elsewhere and the answer is correct. Three earlier
+reductions --- screening order, query novelty, a single query after the
+rebuild --- all failed to reproduce, because in each of them the rebuild landed
+on a throwaway level and the ordinary restore path handled it correctly.
+
+### Why neither the sweep nor 23,000 files of fuzzing found it
+
+The alignment is narrow: a base definition whose dependency appears nowhere
+else, a pushed level naming the *defined* variable but not the dependency, and
+a relief rebuild landing on exactly that check. Relief needs
+`nVars >= --incremental-reencode-limit`, default **1,000,000** --- so a corpus
+whose sessions never reach a million variables never enters this code at all,
+no matter how many files it has. Of 82 suite files, 11 reach a rebuild, and
+every one forces the limit to get there.
+
+The sweep did examine this pass --- it is D3, filed as *architecture: cost and
+coupling*, with "no soundness consequence found" written in its own write-up.
+
+### Fix
+
+Close `untouch` under the substitution map's right-hand sides, to a fixpoint,
+before `RemoveUnconstrained` runs (`:3941-3974`). If `k` is untouchable and the
+pass has harvested `k -> d`, then `k`'s value comes from `d` and every symbol of
+`d` carries exactly the weight `k` did. The fixpoint is needed because a symbol
+added that way can itself be a map key.
+
+Restoring `(= v witness)` instead would be **wrong**: it over-pins `u`.
+Substituting the witness into the kept definition would be wrong for the same
+reason.
+
+### Verification recipe
+
+```sh
+# reproduce (pre-fix), and check the four-engine agreement
+build/stp --incremental --incremental-reencode-limit 1 \
+    tests/query-files/incremental-tests/relief-kept-definition-dependency.smt2
+build/stp  tests/query-files/incremental-tests/relief-kept-definition-dependency.smt2   # batch: unsat
+# isolate the pass without touching the source
+build/stp --incremental --incremental-reencode-limit 1 \
+    --incremental-base-resimplify-limit 0  <witness>    # unsat: the pass is the cause
+```
+
+### What this says about the rest of the branch
+
+It was found by adversarially challenging **F43**, a Tier 4.6 tidiness row
+about four duplicated preprocessing prefixes. The challenge agreed the shared
+helper that row proposes would be churn --- and then asked the question the
+helper would have hidden: *does each of the four still enforce what its siblings
+enforce?* `preparePiece` asserts (`:2103-2112`) that no variable it recorded as
+eliminated occurs in any conjunct it keeps. This pass keeps conjuncts too, runs
+`RemoveUnconstrained` afterwards, and had neither that assert nor an argument
+for why it did not need one.
+
+Porting that assert is therefore not tidiness; it is the check that would have
+caught this. It is tracked in [Tier 4.6](#46-findings-the-sweep-recorded-and-never-queued).
+
+---
+
 # PART II — VERIFIED CORRECT (do not re-chase)
 
 Each item below was actively attacked during this review and survived. The
@@ -1927,8 +2059,30 @@ Collected here because until now they pointed at a section that does not exist.
 None is a correctness item; each needs a decision rather than analysis.
 
 - **F43** --- four re-implementations of the batch preprocessing prefix, three
-  replay representations. One helper, three callers. This row had no write-up
-  anywhere in this document.
+  replay representations. This row had no write-up anywhere in this document.
+  **The shared helper is DECLINED** on two independent readings: the four
+  differ on nine axes (pass set, order, `apply` variant, untouchable set, fp
+  policy, theory refusal, acceptance gate, elimination filter, replay sink and
+  memo key), each using a distinct combination, so a single helper would
+  parameterise itself into churn on the most subtle code on the branch.
+  **What is owed instead** is the invariant check the comparison exposed --- see
+  [D14](#d14--soundness-the-relief-rebuild-keeps-a-definition-whose-dependency-it-just-dropped),
+  which came out of exactly this question and was a wrong answer:
+  1. port `preparePiece`'s assert (`:2103-2112`) to `resimplifyBaseAtRebuild`
+     and to `preprocessExactStackBlock` --- no variable recorded as eliminated
+     may occur in any conjunct the pass keeps;
+  2. add the missing `apply` between constant-bit propagation and
+     `RemoveUnconstrained` in `resimplifyBaseAtRebuild`, which batch has
+     (`STP.cpp:676-677`) and the exact-stack block has (`:4091-4092`). It is
+     benign today only because `RemoveUnconstrained` applies the same map
+     internally, so turning that pass off with
+     `--unconstrained-variable-elimination 0` leaves eliminated symbols present
+     in the emitted base --- and it is what would make the ported assert
+     misfire if landed without it. The two go together;
+  3. the docs table describing the four prefixes, which is cheap and matches
+     the F36 precedent --- but note it would **not** have surfaced D14, since it
+     records pass order, gate and replay channel, and the defect was in none of
+     those.
 - **F3** --- the forced-first-solve recovery family: three special-case entry
   conditions ([Part III.4](#4-overreach-inventory)). Deriving forced-first from
   `engagedSolves == 0` would drop the plumbed bool.
@@ -2491,6 +2645,29 @@ by `recogniseDefinition` on the raw conjunct.
 
 ---
 
+## A.5 `relief-kept-definition-dependency.smt2` — D14, landed as the regression
+
+Unlike A.1--A.4 this witness lives in the suite rather than here, because its
+shape is load-bearing: the relief valve must fire on the FINAL check, when the
+`u` level is the live one, and that is what fixes the round count at ten. Nine
+rounds and eleven both fire elsewhere and answer correctly.
+
+```smt2
+(set-logic QF_BV)
+(declare-fun u () (_ BitVec 8))
+(declare-fun v () (_ BitVec 8))
+; ... y1..y10 ...
+(assert (= u (bvadd v #x01)))   ; harvested and deleted from the formula
+(assert (bvult v #x02))         ; v's only other occurrence
+; ten push / (bvugt (bvmul yN yN) #x03) / check-sat / pop rounds
+(push 1) (assert (= u #xff)) (check-sat) (pop 1)   ; unsat; the branch said sat
+```
+
+Run with `--incremental --incremental-reencode-limit 1`. The limit only makes a
+small session reach the valve --- the path it then takes is the default one.
+
+---
+
 # APPENDIX B — FULL FINDING LEDGER
 
 44 findings from the 2026-08-11 review. **Status** is the adversarial verifier's
@@ -2807,6 +2984,9 @@ not as an implementation.
 | **2026-08-11** (untracked-findings pass) | `cd34049d`, `bac4c110`, `96f14b16`, `933a3b4b` | The seven ledger rows that were recorded and never tracked are closed: F16, F26, F38 and F9 fixed; F10 (adoption shrink gate) and F23 (`FpTotalise` root memo) built, measured and reverted --- the first because counting a pinning fact's DAG mass over-counts shared interned cones and refused an adoption the corpus pins, the second because it measured neutral; F22 deferred with its reason. |
 | **2026-08-11** (cross-check) | audit of this document against the tree | Found that two rows marked FIXED were fixed only at their headline, and that three ledger rows pointed at a "Part V.9" that does not exist. Added D7b/D8b tracking, [Tier 4.6](#46-findings-the-sweep-recorded-and-never-queued) to own the eight items that had no home, and corrected the status-board paragraph, nine stale work-queue headings, the Tier 4.4 test-suite figures and an `F36` cited as `D36`. |
 | **2026-08-11** (D7b/D8b) | `e438bbba`, `95014cd7` | **D7b fixed**: the CBP feed cap is charged what a level adds rather than the sum of level DAG sizes, the retention invariant is asserted, and a capacity refusal is released when the stack falls back below it; two regressions, both confirmed to fail against the old accounting, plus corrected counters in `incremental-profile.smt2`. **D8b closed, declined with measurement**: reproduced as one spurious relief rebuild and 646 of 6800 lemmas re-derived, with no time difference, at a valve setting 125x tighter than the default; the available remedy is the extreme the design rejected, and the right one would recreate D6. |
+
+| **2026-08-11** (work-queue sweep) | `60e83767`, `4ce441a1`, `0e12ca21`, `9872ba2c`, `497bb966`, `11c2f65d`, `5c050d99`, `13565d23` | Tier 1.2 seam landed and the ordinal re-measured (unchanged, deliberately --- the synthetic sweep says session SHAPE, not length, is the discriminator). D3's relief-path residue budgeted. Tier 4.4 done: automatic-engagement coverage 9 -> 43 files, `--check-sanity` 23 -> 33. Backend configuration window made a checked invariant; the thrice-written inprobing predicate consolidated; the `SessionShape` and `BackendEpoch` value types declined with reasons. Four Tier 4.6 orphans closed (F36, F44, F24, F7). |
+| **2026-08-11** (D14) | `87a77ac2` | **A third soundness defect**, found by adversarially challenging the F43 *tidiness* row rather than by looking for one. The relief rebuild keeps a definition for an untouchable variable while dropping the last constraint on a variable that definition mentions, producing a base strictly weaker than the one it replaces. Reproduced identically at `933a3b4b`, so pre-existing rather than introduced by the sweep above. Fixed by closing the untouchable set under the substitution map's right-hand sides; regression landed on both engagement paths and verified to fail without it. The status board's "no known soundness defect remains" has now been wrong once, and says so. |
 
 **Working-tree note at time of writing:** the branch tip is local and unpushed.
 Untracked in the worktree: `HANDOVER.md`, `NEXT-SESSION-PROMPT.md`, build
