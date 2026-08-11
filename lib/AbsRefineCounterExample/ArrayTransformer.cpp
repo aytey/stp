@@ -331,10 +331,7 @@ struct ArrayTransformer::Frame
   ASTNode thn;
   ASTNode els;
 
-  Frame(Job j, const ASTNode& node) : job(j), n(node)
-  {
-    parts.reserve(node.Degree());
-  }
+  Frame(Job j, const ASTNode& node) : job(j), n(node) {}
 };
 
 // TransformFormula, TransformTerm and TransformArrayRead, walked together
@@ -373,7 +370,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
         return false;
       }
 
-      stack.push_back(Frame(Frame::Read, n));
+      stack.emplace_back(Frame::Read, n);
       return true;
     }
 
@@ -408,7 +405,7 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       if (!transformableFormula(k))
         FatalError("TransformFormula: Illegal kind: ", ASTUndefined, k);
 
-      stack.push_back(Frame(Frame::Formula, n));
+      stack.emplace_back(Frame::Formula, n);
       return true;
     }
 
@@ -432,12 +429,18 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
     if (k == WRITE)
       FatalError("TransformTerm: this kind is not supported", n);
 
-    stack.push_back(Frame(Frame::Term, n));
+    stack.emplace_back(Frame::Term, n);
     return true;
   };
 
   // One step of TransformFormula: collect the operands, then rebuild.
   auto stepFormula = [&](Frame& f) -> bool {
+    if (f.phase == Frame::Start)
+    {
+      f.phase = Frame::Operands;
+      f.parts.reserve(f.n.Degree());
+    }
+
     if (f.waiting)
     {
       f.waiting = false;
@@ -551,6 +554,12 @@ ASTNode ArrayTransformer::transform(const bool asFormula, const ASTNode& top)
       assert(result.GetIndexWidth() == f.n.GetIndexWidth());
       result = finishTransformTerm(f.n, result);
       return false;
+    }
+
+    if (f.phase == Frame::Start)
+    {
+      f.phase = Frame::Operands;
+      f.parts.reserve(f.n.Degree());
     }
 
     if (f.waiting)

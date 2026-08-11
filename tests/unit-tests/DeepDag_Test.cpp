@@ -1562,6 +1562,50 @@ TEST(DeepDag, mutable_dag_repeated_edges_are_detached_once)
   EXPECT_TRUE(mutableDagRepeatedEdgesOk(c));
 }
 
+TEST(DeepDag, array_transformer_job_specific_operands_preserve_paths)
+{
+  Context c;
+  const ASTNode cond = c.mgr.CreateSymbol("array-cond", 0, 0);
+  const ASTNode array = c.mgr.CreateSymbol("array-buffer", 8, 8);
+  const ASTNode index = c.mgr.CreateSymbol("array-index", 0, 8);
+  const ASTNode read = c.hf->CreateTerm(READ, 8, array, index);
+  const ASTNode sum = c.hf->CreateTerm(
+      BVXOR, 8, read, c.mgr.CreateOneConst(8));
+  const ASTNode choice = c.hf->CreateTerm(
+      ITE, 8, cond, sum, c.mgr.CreateZeroConst(8));
+  const ASTNode input = c.hf->CreateNode(
+      EQ, choice, c.mgr.CreateSymbol("array-rhs", 0, 8));
+
+  SubstitutionMap sm(&c.mgr);
+  Simplifier simp(&c.mgr, &sm);
+  ArrayTransformer transformer(&c.mgr, &simp);
+  const ASTNode result = transformer.TransformFormula_TopLevel(input);
+
+  bool sawIte = false;
+  bool sawGenericTerm = false;
+  bool sawRead = false;
+  ASTNodeSet visited;
+  ASTVec pending{result};
+  while (!pending.empty())
+  {
+    const ASTNode n = pending.back();
+    pending.pop_back();
+    if (!visited.insert(n).second)
+      continue;
+    sawIte |= n.GetKind() == ITE;
+    sawGenericTerm |= n.GetKind() == BVXOR;
+    sawRead |= n.GetKind() == READ;
+    pending.insert(pending.end(), n.begin(), n.end());
+  }
+
+  EXPECT_EQ(EQ, result.GetKind());
+  EXPECT_TRUE(sawIte);
+  EXPECT_TRUE(sawGenericTerm);
+  EXPECT_FALSE(sawRead);
+  ASSERT_EQ(1U, transformer.arrayToIndexToRead.count(array));
+  EXPECT_EQ(1U, transformer.arrayToIndexToRead.at(array).count(index));
+}
+
 /* The same properties on inputs deeper than the call stack can hold.
    Depths are picked so each case reaches the traversal it is named for:
    buildShareCount's frames are far smaller than rewrite's, so it only
