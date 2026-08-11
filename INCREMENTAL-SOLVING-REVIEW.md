@@ -2053,7 +2053,9 @@ All seven are resolved --- F9 (`96f14b16`), F16 (`cd34049d`), F26 and F38
 (`bac4c110`) fixed; F10 and F23 built, measured and reverted; F22 deferred with
 its reason. See [Appendix B](#appendix-b--full-finding-ledger).
 
-### 4.6 Findings the sweep recorded and never queued --- 7 of 8 DONE
+### 4.6 Findings the sweep recorded and never queued
+
+**Seven of the eight are done**; only the F43 docs table remains.
 
 Collected here because until now they pointed at a section that does not exist.
 None is a correctness item; each needs a decision rather than analysis.
