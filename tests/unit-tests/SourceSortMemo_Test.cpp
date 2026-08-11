@@ -122,6 +122,25 @@ TEST(SourceSortMemo, asking_again_costs_no_derivation)
   EXPECT_EQ(0u, mgr.source_sort_derivations);
 }
 
+// A settled node answers before priming is considered. In particular, a
+// caller may change the diagnostic/differential mode between queries without
+// invalidating the source-sort memo or re-entering the derivation path.
+TEST(SourceSortMemo, cached_answer_is_independent_of_priming_mode)
+{
+  STPMgr mgr;
+  const ASTNode root = storeChain(mgr, 64);
+
+  mgr.UserFlags.prime_memos = true;
+  const SourceSort expected = root.GetSourceSort();
+  mgr.source_sort_derivations = 0;
+
+  mgr.UserFlags.prime_memos = false;
+  EXPECT_EQ(expected, root.GetSourceSort());
+  mgr.UserFlags.prime_memos = true;
+  EXPECT_EQ(expected, root.GetSourceSort());
+  EXPECT_EQ(0u, mgr.source_sort_derivations);
+}
+
 // The node factories re-assert a node's widths on every hash-cons hit, so a
 // memo dropped on every width *assignment* rather than on every width
 // *change* is no memo at all -- it would be discarded once per incoming edge.

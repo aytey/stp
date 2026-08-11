@@ -254,8 +254,10 @@ static const uint32_t FP_NOT_A_FLOAT = 0xFFFFFFFFu;
 void ASTNode::cacheFPFormat() const
 {
   const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
+#ifndef NDEBUG
   static thread_local PrimeAudit audit{"ASTNode::cacheFPFormat", 8};
   PrimeAudit::Running running(audit, *this, prime);
+#endif
 
   // One node, with its operands already answered.
   auto store = [](const ASTNode& n) {
@@ -473,12 +475,14 @@ SourceSort ASTNode::GetSourceSort() const
   if (IsNull())
     return SourceSort::unknown();
 
-  const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
-  static thread_local PrimeAudit audit{"ASTNode::GetSourceSort", 8};
-  PrimeAudit::Running running(audit, *this, prime);
-
   if (const SourceSort* cached = _int_node_ptr->cachedSourceSort())
     return *cached;
+
+  const bool prime = _int_node_ptr->nodeManager->UserFlags.prime_memos;
+#ifndef NDEBUG
+  static thread_local PrimeAudit audit{"ASTNode::GetSourceSort", 8};
+  PrimeAudit::Running running(audit, *this, prime);
+#endif
 
   // One node, with its operands already answered. The answer goes on the node
   // where a node can hold one -- a leaf cannot, only an interior node holds
