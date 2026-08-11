@@ -4999,6 +4999,12 @@ IncrementalSolver::~IncrementalSolver()
     impl->ce->setFpEncodingContext(NULL);
 }
 
+bool IncrementalSolver::forcedFirstSolve(bool forcedFromStart,
+                                        size_t solvesRun)
+{
+  return forcedFromStart && solvesRun == 0;
+}
+
 bool IncrementalSolver::automaticEngagementReady(int64_t configuredThreshold,
                                                 bool delayedBvLogic,
                                                 size_t solvesRun)
@@ -5239,6 +5245,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // would throw away for a technique that measured neutral there. The
     // capability is probed without touching the live solver, and a backend
     // that cannot control it simply never retires.
+    // A frontend may claim a forced FIRST solve only before this driver has
+    // engaged at all: four preprocessing policies below read that claim and
+    // would otherwise apply to a solve that DID have batch-preprocessed
+    // predecessors. The driver cannot derive the fact -- it is a session
+    // fact, not an object one -- but it can check the one direction that
+    // must hold, which is exactly the mis-plumbing a new frontend would
+    // introduce by passing its forced flag and forgetting the ordinal.
+    assert((!firstForcedIncrementalSolve || impl->engagedSolves == 0) &&
+           "a forced first solve was claimed after the driver had engaged");
     impl->engagedSolves++;
     if (!impl->inprobingRetired &&
         ((uf.incremental_inprobing == UserDefinedFlags::BVAMode::OFF &&

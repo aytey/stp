@@ -92,6 +92,25 @@ public:
   static bool automaticEngagementReady(int64_t configuredThreshold,
                                        bool delayedBvLogic, size_t solvesRun);
 
+  // Whether this solve is a forced FIRST engagement: the session explicitly
+  // asked for the driver (--incremental, vc_setFlags 'i') AND has made no
+  // real check yet. Four policies in the driver key on it -- a speculative
+  // whole-stack block, a skipped constant-bit bootstrap, a pure-literal pass
+  // over a base-only stack, and the scoped-preprocessing gate.
+  //
+  // Deliberately NOT derivable inside the driver as `engagedSolves == 0`.
+  // That says only "this driver object has not solved before", which is also
+  // true of the automatic path's first engaged solve -- and THAT solve has
+  // had batch-preprocessed predecessors, so it must keep the search shape
+  // they left. The difference is a session fact only a frontend can see, and
+  // the three ways it comes apart are all reachable: resetAssertions()
+  // destroys the driver without resetting the frontend's counter, the C API's
+  // 'i' flag can arrive after batch queries have already run, and a
+  // canHandle() refusal bumps the counter without engaging.
+  //
+  // `solvesRun` is checks already made, as above; the first check asks with 0.
+  static bool forcedFirstSolve(bool forcedFromStart, size_t solvesRun);
+
   // Whether every assertion currently on the stack is inside the fragment
   // this driver encodes. Every construct the frontends can produce is
   // covered, so this answers TRUE today and exists as the seam should a

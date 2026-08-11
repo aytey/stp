@@ -820,9 +820,12 @@ int vc_query_with_timeout(VC vc, Expr e, int timeout_max_conflicts, int timeout_
        stp::IncrementalSolver::automaticEngagementReady(
            stp_i->bm->UserFlags.incremental_auto_engage_at,
            /*delayedBvLogic=*/false, stp_i->incrementalSolvesRun));
+  // Same policy object as the SMT-LIB2 frontend. The `use_incremental &&`
+  // this used to carry was dead: the value is read only inside the
+  // `if (use_incremental)` branch below.
   const bool firstForcedIncrementalSolve =
-      use_incremental && stp_i->incrementalFromStart &&
-      stp_i->incrementalSolvesRun == 0;
+      stp::IncrementalSolver::forcedFirstSolve(stp_i->incrementalFromStart,
+                                               stp_i->incrementalSolvesRun);
   stp_i->incrementalSolvesRun++;
   if (use_incremental)
   {

@@ -1,5 +1,6 @@
-// The automatic-engagement policy: when a session that never asked for the
-// incremental driver should start using it anyway.
+// The two engagement policies: when a session that never asked for the
+// incremental driver should start using it anyway, and when a session that
+// DID ask is making its forced first solve.
 //
 // This was a literal in two places. The SMT-LIB2 reader read
 // --incremental-auto-engage-at and applied a per-logic default; the C API
@@ -73,4 +74,30 @@ TEST(IncrementalEngagement, NegativeThresholdsAreTheDefaultNotAnUnderflow)
   EXPECT_TRUE(readyOnCheck(-7, true, 32));
   EXPECT_FALSE(readyOnCheck(-7, false, 2));
   EXPECT_TRUE(readyOnCheck(-7, false, 3));
+}
+
+// The forced-first policy. Both frontends computed this identically and
+// separately, and four preprocessing policies in the driver key on it: a
+// speculative whole-stack block, a skipped constant-bit bootstrap, a
+// pure-literal pass over a base-only stack, and the scoped-preprocessing gate.
+TEST(IncrementalEngagement, ForcedFirstIsTheFirstCheckOfAForcedSession)
+{
+  EXPECT_TRUE(IncrementalSolver::forcedFirstSolve(true, 0));
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(true, 1));
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(true, 99));
+}
+
+// A session that never forced the driver has no forced first solve, at any
+// ordinal -- including the one the automatic policy engages on. That solve
+// HAS had batch-preprocessed predecessors, and the four policies above must
+// not reach it; conflating the two is why deriving this from the driver's own
+// `engagedSolves == 0` would be wrong.
+TEST(IncrementalEngagement, AutomaticEngagementIsNeverAForcedFirstSolve)
+{
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(false, 0));
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(false, 2));
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(false, 31));
+  // the automatic policy says engage here; the forced policy still says no
+  EXPECT_TRUE(IncrementalSolver::automaticEngagementReady(-1, true, 31));
+  EXPECT_FALSE(IncrementalSolver::forcedFirstSolve(false, 31));
 }

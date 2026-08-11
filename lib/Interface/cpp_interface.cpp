@@ -720,8 +720,10 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
         session_incremental &&
         (incremental_from_start || autoEngaged) &&
         GlobalSTP->getIncrementalSolver()->canHandle(assertionsSMT2);
+    // The `use_incremental &&` this used to carry was dead: the value is read
+    // only inside the `if (use_incremental)` branch below.
     const bool firstForcedIncrementalSolve =
-        use_incremental && incremental_from_start && solves_run == 0;
+        IncrementalSolver::forcedFirstSolve(incremental_from_start, solves_run);
     solves_run++;
 
     SOLVER_RETURN_TYPE last_result;

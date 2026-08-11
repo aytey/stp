@@ -2092,9 +2092,33 @@ None is a correctness item; each needs a decision rather than analysis.
      matching the F36 precedent --- but note it would **not** have surfaced D14,
      since it records pass order, gate and replay channel, and the defect was in
      none of those.
-- **F3** --- the forced-first-solve recovery family: three special-case entry
-  conditions ([Part III.4](#4-overreach-inventory)). Deriving forced-first from
-  `engagedSolves == 0` would drop the plumbed bool.
+- **F3 --- DONE, and the review's own proposal declined.** The three entry
+  conditions are one concept ("this solve has no batch-preprocessed
+  predecessor, so run the cheap part of the batch prefix now") applied to three
+  DISJOINT stack shapes, plus a fourth consumer inside `exactStackCheckSat`
+  and a fifth in the opposite direction (skip a bootstrap that cannot
+  amortise). They are mutually exclusive by stack size and run at points that
+  cannot be co-located, so merging them is churn.
+
+  **Deriving forced-first from `engagedSolves == 0` would be a defect, not a
+  refactor.** That predicate says only "this driver object has not solved
+  before", which is also true of the automatic path's first engaged solve ---
+  and that solve HAS had batch-preprocessed predecessors. Deriving would widen
+  all four policies onto the path production runs, and at the fourth consumer
+  it is worse: post-increment, `engagedSolves > 1 || engagedSolves == 0` is a
+  tautology, deleting the distinction `45b846fa` introduced. The four tests
+  that pin these counters all force `--incremental`, so the change would have
+  landed uncaught. The three ways the two facts come apart are all reachable:
+  `resetAssertions()` destroys the driver without resetting the frontend's
+  counter; the C API's `'i'` flag can arrive after batch queries; a
+  `canHandle()` refusal bumps the counter without engaging.
+
+  What was done instead is the residue that does meet the standard: the
+  judgement was written character-identically in both frontends, so it is now
+  one `IncrementalSolver::forcedFirstSolve` beside
+  `automaticEngagementReady`, and the driver asserts the one direction that
+  must hold (`forced-first` implies `engagedSolves == 0`) --- exactly the
+  mis-plumbing a new frontend would introduce. Two unit tests.
 - **F36** --- `--incremental-inprobing` silently disables bounded variable
   elimination, learned-clause shrinking and lucky phases, documented only in a
   commit message and `SATSolver.h`. One paragraph in
