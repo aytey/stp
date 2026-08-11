@@ -160,7 +160,7 @@ void Cadical::setFrozen(uint32_t var)
   (void)var;
 }
 
-bool Cadical::setSearchBias(SearchBias bias)
+bool Cadical::setSearchBiasInternal(SearchBias bias)
 {
   // Cadical has named configurations of its own, so this is a straight
   // translation. "unsat" turns off stabilising search and the local-search
@@ -214,7 +214,7 @@ bool Cadical::okay()
 // factor's contract allows, and CaDiCaL places each declared range itself.
 // Only ever called while the solver is still empty (CONFIGURING), which is
 // the one state "factor" may be set in.
-bool Cadical::enableBVA()
+bool Cadical::enableBVAInternal()
 {
 #ifdef STP_CADICAL_HAS_FACTOR
   s->set("factor", 1);
@@ -233,7 +233,7 @@ bool Cadical::enableBVA()
 // re-propagating everything from the root. Mode 1 restricts the kept
 // trail to the assumption prefix; measured equal to mode 2 on the
 // many-small-queries workloads this targets.
-bool Cadical::enableTrailReuse()
+bool Cadical::enableTrailReuseInternal()
 {
   // Like factor, "ilb" may only be set while the solver is still in its
   // configuration window; the driver's size gate therefore works by
@@ -246,7 +246,7 @@ bool Cadical::supportsInprobingControl() const
   return inprobing_control;
 }
 
-bool Cadical::disableInprobing()
+bool Cadical::disableInprobingInternal()
 {
   // Configuration-window-only, like factor and ilb: the incremental
   // driver's retirement therefore rebuilds onto a fresh solver and
@@ -254,14 +254,14 @@ bool Cadical::disableInprobing()
   return s->set("inprobing", 0);
 }
 
-bool Cadical::disableEliminationAndShrinking()
+bool Cadical::disableEliminationAndShrinkingInternal()
 {
   const bool a = s->set("elim", 0);
   const bool b = s->set("shrink", 0);
   return a && b;
 }
 
-bool Cadical::disableLuckyPhases()
+bool Cadical::disableLuckyPhasesInternal()
 {
   return s->set("lucky", 0);
 }

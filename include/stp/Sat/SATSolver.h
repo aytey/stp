@@ -78,6 +78,12 @@ public:
 
   uint64_t submittedClauses() const { return submitted_clauses; }
 
+  // Whether this backend will still accept configuration. The window closes
+  // at the first clause; a caller that must decide about a LIVE solver and
+  // apply the choice to the fresh one a rebuild constructs can ask instead
+  // of relying on knowing where it is in the sequence.
+  bool configurationOpen() const { return submitted_clauses == 0; }
+
   virtual bool okay() const = 0; // FALSE means solver is in a conflicting state
 
   // Search without assumptions.
@@ -141,13 +147,21 @@ public:
   // FALSE means this backend has nothing corresponding to the requested bias.
   // That isn't an error: the bias is a hint about the workload, and a backend
   // that ignores it is slower rather than wrong.
-  virtual bool setSearchBias(SearchBias /*bias*/) { return false; }
+  bool setSearchBias(SearchBias bias)
+  {
+    assertConfigurable("setSearchBias");
+    return setSearchBiasInternal(bias);
+  }
 
   // Ask the backend to turn on bounded variable addition (BVA, CaDiCaL's
   // "factor"). Like setSearchBias this is only ever called before the first
   // clause is added, and FALSE means the backend has no such technique to
   // enable -- a performance hint declined, not an error.
-  virtual bool enableBVA() { return false; }
+  bool enableBVA()
+  {
+    assertConfigurable("enableBVA");
+    return enableBVAInternal();
+  }
 
   // Ask the backend to reuse the solver trail across incremental solve
   // calls when consecutive assumption sequences share a prefix, instead of
@@ -158,7 +172,11 @@ public:
   // stack order and push/pop only ever change the suffix. FALSE means the
   // backend has no such mechanism -- a performance hint declined, not an
   // error.
-  virtual bool enableTrailReuse() { return false; }
+  bool enableTrailReuse()
+  {
+    assertConfigurable("enableTrailReuse");
+    return enableTrailReuseInternal();
+  }
 
   // Whether this backend can turn probe-based inprocessing off, and the
   // switch itself. disableInprobing() is only ever called before the
@@ -169,7 +187,11 @@ public:
   // backend has no such technique to control -- a performance hint
   // declined, not an error.
   virtual bool supportsInprobingControl() const { return false; }
-  virtual bool disableInprobing() { return false; }
+  bool disableInprobing()
+  {
+    assertConfigurable("disableInprobing");
+    return disableInprobingInternal();
+  }
 
   // The rest of the recurring-inprocessing retirement, applied alongside
   // disableInprobing under the same configuration-window rule: bounded
@@ -179,14 +201,22 @@ public:
   // and learned-clause shrinking taxes every conflict of a many-solve
   // session. Both measured as steady per-solve losses on the sessions
   // that retire inprobing, and their removal composes with it.
-  virtual bool disableEliminationAndShrinking() { return false; }
+  bool disableEliminationAndShrinking()
+  {
+    assertConfigurable("disableEliminationAndShrinking");
+    return disableEliminationAndShrinkingInternal();
+  }
 
   // Turn off the backend's lucky-phase probing, which re-tries trivial
   // whole-assignment patterns over the entire clause database at every
   // solve call. Worth its price once per formula; on a persistent
   // many-solve solver it is a recurring tax. Configuration-window-only,
   // like the rest; FALSE means nothing to turn off.
-  virtual bool disableLuckyPhases() { return false; }
+  bool disableLuckyPhases()
+  {
+    assertConfigurable("disableLuckyPhases");
+    return disableLuckyPhasesInternal();
+  }
 
   // After solveWithAssumptions returned false: the subset of the assumed
   // literals that the refutation actually used, in the same 2*var+sign
@@ -320,6 +350,33 @@ public:
   }
 
 protected:
+  // Backends may only accept configuration while they are still empty --
+  // CaDiCaL closes its option window at the first clause and answers a late
+  // setter by aborting the process. This header stated that rule in prose
+  // beside five separate methods and checked it nowhere; a rebuild that
+  // configured in the wrong order would have died inside a third-party
+  // library with no STP frame to name the caller. submitted_clauses is
+  // already exactly the latch -- it counts what STP handed THIS backend
+  // instance, and a rebuild constructs a fresh one -- so the window needs no
+  // state of its own, only asking.
+  void assertConfigurable(const char* what) const
+  {
+    (void)what;
+    assert(submitted_clauses == 0 &&
+           "backend configured after its first clause: the configuration "
+           "window closes there");
+  }
+
+  // Backend-specific configuration. Callers use the non-virtual facades
+  // above, which check the window first. FALSE means the backend has no such
+  // technique -- a performance hint declined, not an error.
+  virtual bool setSearchBiasInternal(SearchBias /*bias*/) { return false; }
+  virtual bool enableBVAInternal() { return false; }
+  virtual bool enableTrailReuseInternal() { return false; }
+  virtual bool disableInprobingInternal() { return false; }
+  virtual bool disableEliminationAndShrinkingInternal() { return false; }
+  virtual bool disableLuckyPhasesInternal() { return false; }
+
   // Backend-specific clause translation. Callers use addClause(), whose
   // non-virtual facade keeps submission accounting complete for every path,
   // including theory refinement code that only sees SATSolver&.

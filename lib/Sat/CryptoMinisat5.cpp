@@ -182,7 +182,7 @@ uint32_t CryptoMiniSat5::newVar()
   return s->nVars() - 1;
 }
 
-bool CryptoMiniSat5::setSearchBias(SearchBias bias)
+bool CryptoMiniSat5::setSearchBiasInternal(SearchBias bias)
 {
   // CryptoMiniSat has no named configurations, so what it offers has to be
   // picked out by hand. Turning off SLS is the piece that carries over: it is

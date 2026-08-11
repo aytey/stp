@@ -60,7 +60,7 @@ public:
 
   uint32_t newVar() override;
 
-  bool setSearchBias(SearchBias bias) override;
+  bool setSearchBiasInternal(SearchBias bias) override;
 
   void setVerbosity(int v) override;
 

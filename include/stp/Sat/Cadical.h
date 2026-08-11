@@ -93,16 +93,16 @@ public:
 
   void setFrozen(uint32_t var) override;
 
-  bool setSearchBias(SearchBias bias) override;
+  bool setSearchBiasInternal(SearchBias bias) override;
 
-  bool enableBVA() override;
+  bool enableBVAInternal() override;
 
   bool supportsInprobingControl() const override;
-  bool disableInprobing() override;
-  bool disableEliminationAndShrinking() override;
-  bool disableLuckyPhases() override;
+  bool disableInprobingInternal() override;
+  bool disableEliminationAndShrinkingInternal() override;
+  bool disableLuckyPhasesInternal() override;
 
-  bool enableTrailReuse() override;
+  bool enableTrailReuseInternal() override;
 
   void suggestPhase(uint32_t var, bool value) override;
 
