@@ -145,7 +145,17 @@ rather than by backtracking:
   occurs-check, unit booleans as true/false). **Base-level** definitions
   go into a persistent store: the base level only grows -- reset
   destroys the driver -- so that store is monotone and needs no
-  backtracking; the defining equation itself stays asserted.
+  backtracking. The defining equation is normally *eliminated*: it
+  encodes to true under its own entry, the variable never reaches the
+  SAT solver, and its model value is produced by evaluating the
+  definition. That is sound exactly while every encoded occurrence of
+  the variable is substituted away, so the equation is restored as a
+  permanent unit -- always sound, the base only grows -- the moment any
+  raw-encoding route would give the variable SAT bits: a frozen late
+  definition naming it on the right-hand side, or an exact-stack block
+  carrying the raw base. A definition harvested for a variable whose
+  bits already exist skips the elimination outright and is encoded raw
+  from the start.
 - **Pushed** definitions accumulate into a per-solve context BY LEVEL
   PREFIX: before a level is prepared, its own raw definitions join the
   map, so level L is substituted uniformly under the definitions of
@@ -508,7 +518,9 @@ Testing and measurement
 
 ``tests/query-files/incremental-tests/`` holds the behavioural tests:
 push/pop rounds, models under retraction, substitution soundness (the
-freeze rule has a dedicated test that fails as sat-on-unsat without it),
+freeze rule and the restoration of eliminated base definitions each have
+dedicated tests that fail as sat-on-unsat without them, the latter on
+both forced and default automatic engagement),
 arrays with refinement across rounds, eager Ackermannisation, floating
 point, the extensionality block and its cache, and the driver's own
 reuse counters (run with ``-s``, the driver reports how much each check
@@ -772,10 +784,3 @@ Limitations
   subsequent changing stacks still cannot reproduce the whole batch pipeline
   without forfeiting the persistent per-level roots. The default engagement
   policy remains the general answer to that structural difference.
-
-Maintainer architecture review
-------------------------------
-
-``INCREMENTAL-SOLVING-REVIEW.md`` records the branch-versus-master review,
-comparisons with Bitwuzla, cvc5, and Z3, the state-lifetime audit, open risks,
-and the recommended instrumentation/CBP-undo/assertion-journal roadmap.
