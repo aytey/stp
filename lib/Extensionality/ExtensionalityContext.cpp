@@ -991,6 +991,13 @@ void ExtensionalityContext::locateCanonicalOperands(const ASTNode& root)
   // found safe, every later write which shares that node is safe without a
   // fresh post-order map. Across all writes this visits each unique index-DAG
   // node once rather than once per write.
+  //
+  // The set is marked in pre-order, so a walk that finds a witness stops
+  // with the subtrees of already-marked nodes unexamined. That never leaks
+  // into a later answer only because a hit is fatal below: every call that
+  // returns false ran to completion, and only completed walks leave nodes
+  // behind for a later walk to trust. If the FatalError ever becomes a soft
+  // skip, this memo must go back to per-walk state.
   ASTNodeSet checkedWriteIndexNodes;
   auto writeIndexMentionsWitness = [&](const ASTNode& index) {
     bool mentions = false;
