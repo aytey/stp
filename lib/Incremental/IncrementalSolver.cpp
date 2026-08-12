@@ -2227,12 +2227,16 @@ struct IncrementalSolver::Impl
   // Substitutions harvested from base-level equations: x -> t for a
   // base-level conjunct (= x t), plus TRUE/FALSE for unit boolean
   // conjuncts. The base level only grows, so this map is monotone and
-  // needs no backtracking; and the defining equation is ALWAYS kept
-  // asserted, never eliminated, so using an entry to rewrite any conjunct
-  // -- at any level, popped and re-pushed or not -- is sound, and no model
-  // reconstruction is ever needed. (This is deliberately weaker than
-  // variable elimination: completeness is traded for having no leveled
-  // state at all.)
+  // needs no backtracking. An entry's defining equation normally encodes
+  // to TRUE under its own entry -- a genuine elimination, with the
+  // variable's model value replayed by evaluating the definition -- and
+  // that is sound exactly while every encoded occurrence of the variable
+  // is substituted away. Two raw-encoding routes can break that
+  // completeness: a frozen late definition (mustKeepRaw) whose right-hand
+  // side names the variable, and an exact-stack block carrying the raw
+  // base. restoreDroppedSigma0 re-asserts the defining conjunct as a
+  // permanent unit before either may mint bits; after that, rewriting
+  // under the entry is plain simplification of an asserted equation.
   //
   // SubstitutionMap::replace expands entries through each other as it runs
   // ((x -> y) plus (y -> 5) becomes (x -> 5), mutating the map); every
@@ -2251,6 +2255,25 @@ struct IncrementalSolver::Impl
   // encoded afterwards, which is sound exactly because the equation is
   // asserted.
   ASTNodeSet mustKeepRaw;
+
+  // The raw defining conjunct behind each sigma0 entry, and the entries
+  // whose equation is NOT asserted in the current backend epoch (it
+  // encoded to TRUE under its own entry; the model replays the value by
+  // evaluation). Such a variable must never acquire live SAT bits: every
+  // encoded occurrence was substituted away, so bits could only arrive
+  // through a route that encodes RAW content -- a frozen late definition
+  // whose right-hand side names the variable, or an exact-stack block
+  // carrying the raw base -- and bits without the equation are
+  // unconstrained: sat where unsat lies that way, and models that
+  // contradict the raw stack. restoreDroppedSigma0 is the guard: before
+  // any formula is encoded, each dropped variable it mentions gets its
+  // defining conjunct back as a permanent unit (always sound -- the base
+  // only grows), encoded raw via mustKeepRaw so it cannot erase itself
+  // under its own entry. A relief rotation clears mustKeepRaw and its
+  // fresh epoch re-encodes every equation to TRUE again, so it re-drops
+  // every entry and restoration repeats on demand.
+  std::map<ASTNode, ASTNode> sigma0DefiningConjunctOf;
+  ASTNodeSet sigma0Dropped;
 
   // One activation literal per distinct set of root literals a pushed
   // level has ever solved with. Assuming the activation literal asserts
@@ -3128,10 +3151,17 @@ struct IncrementalSolver::Impl
       return;
 
     // Frozen: the variable's bits already live in the solver, so this
-    // equation must constrain them for real (see mustKeepRaw).
+    // equation must constrain them for real (see mustKeepRaw). Otherwise
+    // the equation encodes to TRUE under its own entry -- a genuine
+    // elimination -- and the entry is recorded as dropped, so a later
+    // raw-encoding route restores the equation before minting the
+    // variable's bits (see restoreDroppedSigma0).
     if (encoding.nodes().symbolToBBNode.find(var) !=
         encoding.nodes().symbolToBBNode.end())
       mustKeepRaw.insert(c);
+    else
+      sigma0Dropped.insert(var);
+    sigma0DefiningConjunctOf[var] = c;
 
     sigma0[var] = expanded;
   }
@@ -3222,6 +3252,43 @@ struct IncrementalSolver::Impl
     return simplifyAlone(out);
   }
 
+  // Enforce the elimination invariant at the encode boundary: a sigma0
+  // variable whose defining equation was dropped may not acquire SAT
+  // bits. A formula raw enough to still mention one (a frozen late
+  // definition's right-hand side, an exact-stack block carrying the raw
+  // base) first gets that variable's defining conjunct back as a
+  // permanent unit, encoded raw (mustKeepRaw) with its stale eliminated
+  // encoding evicted. Restoring one equation can expose another dropped
+  // variable inside its own right-hand side; the recursion through
+  // rootLit's encode runs this same guard, and each step removes its
+  // variable from the dropped set before encoding, so the chain
+  // terminates and a definition never restores itself twice.
+  void restoreDroppedSigma0(const ASTNode& toEncode)
+  {
+    if (sigma0Dropped.empty())
+      return;
+    for (const ASTNode& s : symbolsOf(toEncode))
+    {
+      if (sigma0Dropped.erase(s) == 0)
+        continue;
+      const ASTNode conj = sigma0DefiningConjunctOf.at(s);
+      mustKeepRaw.insert(conj);
+      // The conjunct's cached encoding is the eliminated TRUE form; evict
+      // it so the re-encode below produces the raw equation.
+      rootLitOf.erase(conj);
+      const int lit = rootLit(conj);
+      SATSolver::vec_literals unit;
+      unit.push(SATSolver::mkLit(lit >> 1, lit & 1));
+      addClause(unit);
+      baseLiveMass = addMass(baseLiveMass, addMass(clauseMassOf[conj], 1));
+      recordPermanentRoot(conj);
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "Incremental: restored an eliminated base definition "
+                     "before its variable was encoded raw"
+                  << std::endl;
+    }
+  }
+
   // Lower, transform and bit-blast a fully rewritten word-level formula
   // into the persistent solver, returning its root literal. Everything
   // emitted is a conservative extension; every actual encode is counted
@@ -3233,6 +3300,16 @@ struct IncrementalSolver::Impl
   int encodePrepared(const ASTNode& key, ASTNode toEncode, const Fragment& frag)
   {
     ScopedProfileTimer encodingTimer(profile.enabled, profile.encodeNs);
+    restoreDroppedSigma0(toEncode);
+#ifndef NDEBUG
+    // Vacuous right after the guard above by construction; it stays
+    // because it re-states the boundary contract independently of the
+    // guard's internals, so a future early-exit or cap added there fails
+    // here instead of encoding unconstrained bits.
+    for (const ASTNode& s : symbolsOf(toEncode))
+      assert(sigma0Dropped.find(s) == sigma0Dropped.end() &&
+             "encoding raw content over a dropped base definition");
+#endif
     if (frag.fp)
       toEncode = fpContext()->lowerPrepared(toEncode);
 
@@ -3705,6 +3782,14 @@ struct IncrementalSolver::Impl
     // bits in the retiring epoch. In the fresh epoch sigma0 can substitute
     // them from the start, so carrying the freeze would be stale policy.
     releaseContainer(mustKeepRaw);
+    // With the freezes gone, the fresh epoch's base re-encode eliminates
+    // every defining equation again, so every sigma0 entry is dropped
+    // until a raw route in the new epoch restores it.
+    releaseContainer(sigma0Dropped);
+    for (std::map<ASTNode, ASTNode>::const_iterator it =
+             sigma0DefiningConjunctOf.begin();
+         it != sigma0DefiningConjunctOf.end(); ++it)
+      sigma0Dropped.insert(it->first);
 
     releaseContainer(callCbpSubst);
     releaseContainer(callCbpDeferred);
@@ -4593,6 +4678,16 @@ struct IncrementalSolver::Impl
       if (scopes.activeEliminatedVariables().find(it->first) !=
           scopes.activeEliminatedVariables().end())
         continue;
+      // A dropped base definition's variable must never have been blasted:
+      // restoreDroppedSigma0 re-asserts the equation before any raw route
+      // may encode it, and relief destroys this memo when it re-drops. Bits
+      // here without the equation would feed models and the refinement
+      // loop's raw-stack evaluation from unconstrained values. This is the
+      // one funnel every model and refinement read passes through, so a
+      // future encode route that bypasses the restore guard fails here by
+      // name instead of answering from garbage.
+      assert(sigma0Dropped.find(it->first) == sigma0Dropped.end() &&
+             "a dropped base definition's variable was bit-blasted");
       const vector<BBNodeAIG>& bits = it->second;
       vector<unsigned> vars(bits.size(), ~((unsigned)0));
       bool anyLive = false;
@@ -4956,6 +5051,15 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // to the identical node and this cache hit makes the repeat round's
   // encoding free -- and the recycled names keep previously encoded
   // checker lemmas attached to the right SAT variables.
+  // The block encodes the RAW stack -- the base's defining equations
+  // included -- so it can mint bits for variables sigma0 eliminated. Those
+  // equations hold inside the block only under its retractable literal; a
+  // later ordinary round would read the then-unconstrained bits into
+  // models and into the refinement loop's raw-stack evaluation. Restore
+  // them as permanent units first (see restoreDroppedSigma0) -- always
+  // sound, since the base only grows.
+  restoreDroppedSigma0(inputToSat);
+
   int blockLit;
   Aig_Obj_t* blockRegular = NULL;
   bool blockReused = false;
