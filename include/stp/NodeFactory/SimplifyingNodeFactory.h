@@ -100,6 +100,8 @@ private:
 
   ASTNode chaseRead(ASTChildren children, unsigned int width);
 
+  ASTNode simplifyArrayEquality(const ASTNode& a, const ASTNode& b);
+
   ASTNode plusRules(const ASTNode& n0, const ASTNode& n1);
 
   //Helper functions

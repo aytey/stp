@@ -64,6 +64,7 @@ BitBlaster::buildAdditionNetworkResult: safe: two overloads sharing a name. The 
 BitBlaster::updateTerm: safe: recurses to a fixed point on one node, not down the DAG
 CommonSubSum::rebuild: off-path: behind --enable-common-subsum (UserFlags.enable_common_subsum, default false). DeepDag's deep_common_sub_sum runs the pass at 20,000 and passes
 ConstantBitPropagation::checkAtFixedPoint: off-path: its one caller is an assert in BitBlaster, so it is gone under NDEBUG; in an assertions build it does walk the input
+Cpp_interface::applyFunction: safe: overload forwarding; the by-name form resolves one Function and calls the already-resolved overload, whose substitution walk is iterative
 Cpp_interface::LookupOrCreateSymbol: safe: overload forwarding, not a walk
 Cpp_interface::newNode: safe: overload forwarding, not a walk
 Dot_Print1: off-path: the dot printer, behind --print-back-DOT (UserFlags.print_STPinput_back_dot_flag)

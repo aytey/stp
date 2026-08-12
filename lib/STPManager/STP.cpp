@@ -308,11 +308,32 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // preparation records an entry only for a node that was already an
   // ARRAY_EQ, so a non-empty map means one was built, which means the
   // option was on.
+  std::unique_ptr<PropagateEqualities> pe(
+      new PropagateEqualities(simp, bm->defaultNodeFactory, bm));
+
   ASTNode semantic_input = original_input;
   if (bm->UserFlags.enable_array_equality)
   {
-    if (ext == NULL && (containsOpaqueArrayEquality(original_input) ||
-                        !arrayEqualityRewrites.empty()))
+    const bool hasOpaqueEquality =
+        containsOpaqueArrayEquality(original_input) ||
+        !arrayEqualityRewrites.empty();
+
+    // A definitional equality -- a symbol equated with an array term at
+    // the top level, (= A (store B i v)) -- substitutes the symbol away
+    // outright, which is strictly cheaper than abstracting the equality
+    // and refining it with lemmas. Run the propagator once before
+    // lowering so those equalities never reach abstraction; whatever
+    // remains (negated, nested, or non-definitional equalities) lowers
+    // as before. This is the only point in the solve where the
+    // propagator can see an ARRAY_EQ at all.
+    if (hasOpaqueEquality && bm->UserFlags.optimize_flag &&
+        bm->UserFlags.propagate_equalities)
+    {
+      semantic_input = pe->topLevel(semantic_input);
+      bm->ASTNodeStats(pe_message.c_str(), semantic_input);
+    }
+
+    if (ext == NULL && hasOpaqueEquality)
     {
       ext = bm->getExtensionality();
       ext->beginSolve();
@@ -323,7 +344,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     // no equality.
     if (ext != NULL)
       semantic_input =
-          ext->lowerArrayEqualities(original_input, arrayEqualityRewrites);
+          ext->lowerArrayEqualities(semantic_input, arrayEqualityRewrites);
   }
 
   bm->ASTNodeStats("input asserts and query: ", semantic_input);
@@ -342,8 +363,6 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
 
   // A heap object so I can easily control its lifetime.
   std::unique_ptr<BVSolver> bvSolver(new BVSolver(bm, simp));
-  std::unique_ptr<PropagateEqualities> pe(
-      new PropagateEqualities(simp, bm->defaultNodeFactory, bm));
 
   ASTNode inputToSat = semantic_input;
 
@@ -356,7 +375,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // current form can be recovered. Array-valued ITEs remain structural and
   // are handled directly by the consistency checker's T rules. A query with
   // no active array equality stays on STP's ordinary array path.
-  const bool extActive = ext != NULL && ext->active();
+  bool extActive = ext != NULL && ext->active();
   // Releases the record-table seal on every exit from this function.
   ExtensionalityContext::SolveScope extScope(ext);
   if (extActive)
@@ -365,11 +384,26 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     if (bm->UserFlags.ackermannisation)
     {
       // Eager Ackermannization expands reads into if-then-else chains,
-      // destroying the array structure the lazy procedure works on.
-      cerr << "Warning: --ackermanize is disabled for queries with "
-              "array equality."
-           << endl;
-      bm->UserFlags.ackermannisation = false;
+      // destroying the array structure the lazy procedure works on --
+      // so the equalities go the same way: instantiate them pointwise
+      // over the solve's read indexes and retire the records, leaving a
+      // self-contained formula on STP's ordinary eager path. Quotiented
+      // sorts (float or RoundingMode cells or indexes) have no sound
+      // pointwise bit instantiation and stay on lemmas on demand.
+      const ASTNode eager = ext->instantiateEagerAckermann(inputToSat);
+      if (!eager.IsNull())
+      {
+        inputToSat = eager;
+        extActive = false;
+        bm->ASTNodeStats("after eager equality instantiation: ", inputToSat);
+      }
+      else
+      {
+        cerr << "Warning: --ackermanize is disabled for queries with "
+                "array equality over floating-point sorts."
+             << endl;
+        bm->UserFlags.ackermannisation = false;
+      }
     }
   }
 
