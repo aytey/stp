@@ -133,4 +133,34 @@ TEST(IncrementalScopeState, PromotionIsOwnedByThePreparedFrame)
   EXPECT_EQ(0u, scopes.promotedDepth());
 }
 
+TEST(IncrementalScopeState, EpochReleasePreservesOnlyTheLiveRawLedger)
+{
+  STPMgr mgr;
+  IncrementalScopeState scopes;
+  const ASTNode base = mgr.ASTTrue;
+  const ASTNode a = mgr.CreateSymbol("epoch_a", 0, 0);
+  const ASTNode b = mgr.CreateSymbol("epoch_b", 0, 0);
+
+  scopes.reconcile(ASTVec{base, a, b});
+  scopes.reconcile(ASTVec{base, a});
+  const uint64_t baseId = scopes.frame(0).id;
+  const uint64_t topId = scopes.frame(1).id;
+  const size_t baseStability = scopes.stableSolves(0);
+
+  scopes.markCbpFed(0);
+  scopes.markCbpFed(1);
+  scopes.startCbpMemo(0);
+  scopes.startCbpMemo(1);
+  scopes.releaseEpochStorage();
+
+  ASSERT_EQ(2u, scopes.size());
+  EXPECT_EQ(baseId, scopes.frame(0).id);
+  EXPECT_EQ(topId, scopes.frame(1).id);
+  EXPECT_EQ(baseStability, scopes.stableSolves(0));
+  EXPECT_EQ(0u, scopes.cbpFedDepth());
+  EXPECT_EQ(0u, scopes.cbpMemoDepth());
+  EXPECT_TRUE(scopes.activeSemanticKeys().empty());
+  EXPECT_TRUE(scopes.activeEliminations().empty());
+}
+
 } // namespace

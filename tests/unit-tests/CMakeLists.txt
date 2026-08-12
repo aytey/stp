@@ -23,6 +23,8 @@
 # C API tests (these should be .cpp or .cxx files because GTest needs C++)
 # -----------------------------------------------------------------------------
 AddSTPGTest(IncrementalCBP_Test.cpp)
+AddSTPGTest(IncrementalEncodingEpoch_Test.cpp)
+AddSTPGTest(IncrementalPolicy_Test.cpp)
 AddSTPGTest(IncrementalScopeState_Test.cpp)
 AddSTPGTest(IncrementalActiveReads_Test.cpp)
 AddSTPGTest(ArrayReadRefinementProgress_Test.cpp)

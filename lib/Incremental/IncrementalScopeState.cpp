@@ -156,6 +156,30 @@ void IncrementalScopeState::rollbackCbpFedTo(size_t depth)
   cbpFedLevels.erase(cbpFedLevels.begin() + depth, cbpFedLevels.end());
 }
 
+void IncrementalScopeState::releaseEpochStorage()
+{
+  assert(!wholeStackActive);
+  assert(currentEliminations.empty());
+  assert(currentEliminatedVariables.empty());
+  assert(currentSemanticKeys.empty());
+
+  // Copying the live frames deliberately drops capacity retained by a much
+  // deeper, now-popped stack, including capacity in cleared promotion and
+  // preprocessing vectors. Scope identity and stability counters survive.
+  std::vector<Frame>(frames).swap(frames);
+
+  // clear()/resize(0) retain vector and hash-table high-water storage. A
+  // relief epoch is a reclamation boundary, so release both the independent
+  // CBP consumer and the already-reconciled transaction aggregates rather
+  // than merely making them logically empty.
+  std::vector<ConsumerFrame>().swap(cbpFedLevels);
+  std::vector<CbpMemo>().swap(cbpMemos);
+  std::vector<ScopedElimination>().swap(currentEliminations);
+  ASTNodeSet().swap(currentEliminatedVariables);
+  ASTVec().swap(currentSemanticKeys);
+  wholeStackPreprocessing = PreprocessingTransaction();
+}
+
 size_t IncrementalScopeState::trimCbpMemoToCurrent()
 {
   size_t lcp = 0;

@@ -227,6 +227,11 @@ public:
   void markCbpFed(size_t level);
   void rollbackCbpFedTo(size_t depth);
   void resetCbpFed() { cbpFedLevels.clear(); }
+  // Preserve the live raw frame ledger, but release storage belonging to
+  // consumers and preprocessing transactions from the retiring encoding
+  // epoch. Called only after reconcile(), before this solve commits a new
+  // transaction.
+  void releaseEpochStorage();
 
   size_t trimCbpMemoToCurrent();
   size_t cbpMemoDepth() const { return cbpMemos.size(); }

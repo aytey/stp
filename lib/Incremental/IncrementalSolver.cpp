@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/Incremental/IncrementalSolver.h"
 
 #include "stp/Incremental/IncrementalCBP.h"
+#include "stp/Incremental/IncrementalPolicy.h"
 #include "stp/Incremental/IncrementalScopeState.h"
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
@@ -131,6 +132,52 @@ bool observableModelRequested(const UserDefinedFlags& uf)
 #endif
   return requested;
 }
+
+template <class Container> void releaseContainer(Container& container)
+{
+  Container empty;
+  container.swap(empty);
+}
+
+// One resettable word-to-AIG encoding epoch. BitBlaster memo entries contain
+// BBNodeAIG pointers owned by the manager, and the Simplifier is referenced by
+// the blaster, so one object owns their lifetime and resets them in dependency
+// order. Ordinary check-sats keep this object intact; only memory relief
+// rotates it.
+class AigEncodingEpoch
+{
+  STPMgr* bm;
+  std::unique_ptr<SubstitutionMap> substitutionMap;
+  std::unique_ptr<Simplifier> simplifier;
+  std::unique_ptr<BBNodeManagerAIG> nodeManager;
+  std::unique_ptr<BitBlaster> bitBlaster;
+
+public:
+  explicit AigEncodingEpoch(STPMgr* bm_) : bm(bm_) { reset(); }
+
+  void reset()
+  {
+    bitBlaster.reset();
+    nodeManager.reset();
+    simplifier.reset();
+    substitutionMap.reset();
+
+    substitutionMap.reset(new SubstitutionMap(bm));
+    simplifier.reset(new Simplifier(bm, substitutionMap.get()));
+    nodeManager.reset(new BBNodeManagerAIG());
+    bitBlaster.reset(new BitBlaster(nodeManager.get(), simplifier.get(),
+                                    bm->defaultNodeFactory,
+                                    &bm->UserFlags, NULL));
+  }
+
+  BBNodeManagerAIG& nodes() { return *nodeManager; }
+  const BBNodeManagerAIG& nodes() const { return *nodeManager; }
+  BitBlaster& blaster() { return *bitBlaster; }
+  size_t aigAndNodes() const
+  {
+    return static_cast<size_t>(nodeManager->totalNumberOfNodes());
+  }
+};
 
 // The one retraction mechanism is SAT assumptions, so the backend must
 // support them. Plain MiniSat stands in for the ones that cannot: the
@@ -360,6 +407,7 @@ struct IncrementalSolver::Impl
     uint64_t rebuildPromotion = 0;
     uint64_t rebuildInprobing = 0;
     uint64_t rebuildTrail = 0;
+    uint64_t encodingEpochResets = 0;
   };
 
   struct SessionProfile
@@ -444,6 +492,7 @@ struct IncrementalSolver::Impl
     uint64_t rebuildPromotion = 0;
     uint64_t rebuildInprobing = 0;
     uint64_t rebuildTrail = 0;
+    uint64_t encodingEpochResets = 0;
 
     void add(const CheckProfile& p)
     {
@@ -527,6 +576,7 @@ struct IncrementalSolver::Impl
       rebuildPromotion += p.rebuildPromotion;
       rebuildInprobing += p.rebuildInprobing;
       rebuildTrail += p.rebuildTrail;
+      encodingEpochResets += p.encodingEpochResets;
     }
   };
 
@@ -541,37 +591,43 @@ struct IncrementalSolver::Impl
   // check belongs here.
   IncrementalScopeState scopes;
 
+  // Optional, fitted performance decisions are read only through this
+  // profile. The persistent assumption/refinement mechanism and resource
+  // epoch rotation do not depend on them.
+  const IncrementalPolicy policy;
+
   std::unique_ptr<SATSolver> solver;
 
   // The bit-blaster wants a Simplifier; give it an inert one of its own, as
   // ToSATAIG::bitblast does, so no batch-pipeline substitution state can
   // leak into the persistent encoding.
-  SubstitutionMap substitutionMap;
-  Simplifier simp;
-  BBNodeManagerAIG bbMgr;
-  BitBlaster bb;
+  AigEncodingEpoch encoding;
 
   // AIG object Id -> CNF variable; -1 = not encoded yet. AIG Ids are dense
-  // and only ever grow, since the AIG manager lives as long as this object.
+  // and only grow within one resettable encoding epoch.
   std::vector<int> aigIdToVar;
 
   // The variable standing for the AIG's constant-1 node, unit-asserted at
   // creation; -1 until first needed.
   int trueVar;
 
-  // conjunct -> root literal (2*var + sign). Permanent: the encoding of a
-  // formula is a definition, valid in every context.
+  // conjunct -> root literal (2*var + sign). Epoch-persistent: the encoding
+  // of a formula is a definition, valid in every context using this AIG/SAT
+  // epoch.
   NodeToLitMap rootLitOf;
 
-  // conjunct -> fragment facts. Permanent: node-local properties.
+  // conjunct -> fragment facts. Node-local properties cached for this
+  // encoding epoch; relief drops dead node keys as well as their circuits.
   NodeToFragmentMap fragmentCache;
 
-  // The read registry, persistent across check-sats: array -> index ->
+  // The read registry, persistent across ordinary check-sats in an encoding
+  // epoch: array -> index ->
   // ArrayRead, exactly the batch ArrayTransformer's table. The transformer
   // consults it before minting an abstraction variable, so seeding it from
   // here before every transform gives one canonical read symbol per
-  // (array, index) for the whole session -- which is what makes refinement
-  // axioms (congruence over those symbols) permanently valid clauses.
+  // (array, index) for that epoch -- which is what makes refinement axioms
+  // (congruence over those symbols) valid permanent clauses in its SAT
+  // instances. A relief rotation discards registry and clauses together.
   // Entries from popped scopes stay: their axioms are tautologies of the
   // abstraction, so clauses already learned over them remain valid. They
   // are NOT harmless everywhere, though -- their defining equations were
@@ -678,7 +734,8 @@ struct IncrementalSolver::Impl
   // base grows, consulted by the privacy check.
   ASTNodeSet baseSymbols;
 
-  // Per-node symbol sets, memoised; the keys hold their nodes.
+  // Per-node symbol sets, memoised for this encoding epoch; the keys hold
+  // their nodes.
   // Looked up by node and never iterated, so it wants hashing rather than
   // the ordered comparison an std::map would do on every probe -- and it is
   // probed once per candidate per piece per check.
@@ -688,14 +745,14 @@ struct IncrementalSolver::Impl
   NodeSymbolsMap symbolsOfCache;
 
   // Allocation-free scratch marks for symbol DAG walks. Node ids are
-  // process-thread-wide rather than manager-local, so use lazily allocated
-  // pages relative to this manager's first node: interleaved C API contexts
-  // then cost a few empty page pointers, not a dense array spanning every
-  // other context's nodes.
+  // process-thread-wide, monotone, and not reset with an encoding epoch. A
+  // sparse page map is therefore essential: a vector indexed by page number
+  // would immediately recreate a pointer span proportional to all historical
+  // node ids after every relief rotation, defeating memory reclamation.
   static const size_t symbolVisitPageBits = 16;
   static const size_t symbolVisitPageSize = size_t(1) << symbolVisitPageBits;
   static const size_t symbolVisitPageMask = symbolVisitPageSize - 1;
-  std::vector<std::unique_ptr<uint8_t[]>> symbolVisitPages;
+  std::unordered_map<uint64_t, std::unique_ptr<uint8_t[]>> symbolVisitPages;
   uint8_t symbolVisitEpoch = 0;
 
   void beginSymbolVisit()
@@ -703,9 +760,9 @@ struct IncrementalSolver::Impl
     symbolVisitEpoch++;
     if (symbolVisitEpoch != 0)
       return;
-    for (std::unique_ptr<uint8_t[]>& page : symbolVisitPages)
-      if (page)
-        std::fill(page.get(), page.get() + symbolVisitPageSize, uint8_t(0));
+    for (auto& entry : symbolVisitPages)
+      std::fill(entry.second.get(), entry.second.get() + symbolVisitPageSize,
+                uint8_t(0));
     symbolVisitEpoch = 1;
   }
 
@@ -716,11 +773,7 @@ struct IncrementalSolver::Impl
     assert(node >= base);
     const uint64_t relative = node - base;
     const uint64_t page64 = relative >> symbolVisitPageBits;
-    assert(page64 <= std::numeric_limits<size_t>::max());
-    const size_t pageIndex = static_cast<size_t>(page64);
-    if (pageIndex >= symbolVisitPages.size())
-      symbolVisitPages.resize(pageIndex + 1);
-    std::unique_ptr<uint8_t[]>& page = symbolVisitPages[pageIndex];
+    std::unique_ptr<uint8_t[]>& page = symbolVisitPages[page64];
     if (!page)
       page.reset(new uint8_t[symbolVisitPageSize]());
     uint8_t& mark = page[static_cast<size_t>(relative) & symbolVisitPageMask];
@@ -767,11 +820,13 @@ struct IncrementalSolver::Impl
   // live assertion stack would need after a rebuild.
   std::map<ASTNode, uint64_t> clauseMassOf;
 
-  // Theory clauses are globally valid -- the read registry is canonical and
-  // session-long, so a congruence axiom over its symbols stays true for every
-  // later stack -- but counting them live forever would hide refinement-heavy
-  // dead growth from the relief valve. They are charged instead to the solve
-  // that emitted them, keyed by that solve's whole-stack conjunction.
+  // Theory clauses are globally valid within an encoding epoch -- the read
+  // registry is canonical there, so a congruence axiom over its symbols stays
+  // true for every later stack in the epoch -- but counting them live forever
+  // would hide refinement-heavy dead growth from the relief valve. They are
+  // charged instead to the solve that emitted them, keyed by that solve's
+  // whole-stack conjunction. A relief rotation discards registry and clauses
+  // together.
   //
   // Be clear about what that policy actually does, because it is not the
   // middle ground it reads as. The key is the entire live stack, so ANY change
@@ -847,6 +902,16 @@ struct IncrementalSolver::Impl
   // roughly the working set, so the next fire needs 4x growth again.
   uint64_t maxLiveClauseMass = 0;
 
+  // AST roots deliberately pinned by semantic caches in this encoding epoch.
+  // The running charge is an inexpensive, conservative sum of per-root DAG
+  // sizes; once it reaches the configured floor, semanticReliefReached()
+  // walks the exact retained and live unions before authorizing rotation.
+  ASTNodeSet semanticEpochRoots;
+  uint64_t semanticNodeCharge = 0;
+  ASTVec latestSemanticLiveRoots;
+  uint64_t maxLiveSemanticNodes = 0;
+  uint64_t lastRetainedSemanticNodes = 0;
+
   // Probe-based inprocessing retirement (see the trigger in
   // checkSatOnCurrentStack): how many solves this driver has run, and
   // whether the persistent solver now runs with inprobing off.
@@ -921,6 +986,74 @@ struct IncrementalSolver::Impl
     const size_t s = dagSizeUpTo(n, cap);
     memo[n] = s;
     return s;
+  }
+
+  size_t semanticCacheLimit() const
+  {
+    const int64_t configured =
+        bm->UserFlags.incremental_semantic_cache_limit;
+    if (configured <= 0)
+      return 0;
+    const uint64_t value = static_cast<uint64_t>(configured);
+    return value > std::numeric_limits<size_t>::max()
+               ? std::numeric_limits<size_t>::max()
+               : static_cast<size_t>(value);
+  }
+
+  void chargeSemanticRoot(const ASTNode& root)
+  {
+    const size_t limit = semanticCacheLimit();
+    if (limit == 0 || root.IsNull() ||
+        !semanticEpochRoots.insert(root).second ||
+        semanticNodeCharge >= limit)
+      return;
+
+    const size_t remaining =
+        limit - static_cast<size_t>(semanticNodeCharge);
+    const size_t charge = dagSizeUpTo(root, remaining);
+    semanticNodeCharge =
+        charge > remaining ? limit : semanticNodeCharge + charge;
+  }
+
+  uint64_t astDagUnionSize(const ASTVec& roots) const
+  {
+    ASTNodeSet visited;
+    ASTVec pending = roots;
+    while (!pending.empty())
+    {
+      const ASTNode node = pending.back();
+      pending.pop_back();
+      if (node.IsNull() || !visited.insert(node).second)
+        continue;
+      for (unsigned i = 0; i < node.Degree(); ++i)
+        pending.push_back(node[i]);
+    }
+    return static_cast<uint64_t>(visited.size());
+  }
+
+  void stageSemanticLiveStack(const ASTVec& rawStack,
+                              const ASTVec& encodedRoots)
+  {
+    ASTVec next = rawStack;
+    next.insert(next.end(), encodedRoots.begin(), encodedRoots.end());
+    latestSemanticLiveRoots.swap(next);
+  }
+
+  bool semanticReliefReached()
+  {
+    const size_t limit = semanticCacheLimit();
+    if (limit == 0 || semanticNodeCharge < limit ||
+        latestSemanticLiveRoots.empty())
+      return false;
+
+    const uint64_t live = astDagUnionSize(latestSemanticLiveRoots);
+    maxLiveSemanticNodes = std::max(maxLiveSemanticNodes, live);
+
+    ASTVec retainedRoots(semanticEpochRoots.begin(),
+                         semanticEpochRoots.end());
+    lastRetainedSemanticNodes = astDagUnionSize(retainedRoots);
+    return maxLiveSemanticNodes != std::numeric_limits<uint64_t>::max() &&
+           maxLiveSemanticNodes + 1 <= lastRetainedSemanticNodes / 4;
   }
 
   // CBP's cost follows the sum of the level DAGs it feeds (a shared node in
@@ -1838,7 +1971,8 @@ struct IncrementalSolver::Impl
                     const std::map<ASTNode, size_t>& conjunctCountOf,
                     const ASTNodeSet& protectedSymbols)
   {
-    if (bbMgr.symbolToBBNode.find(v) != bbMgr.symbolToBBNode.end())
+    if (encoding.nodes().symbolToBBNode.find(v) !=
+        encoding.nodes().symbolToBBNode.end())
       return false;
     if (baseSymbols.find(v) != baseSymbols.end())
       return false;
@@ -2256,10 +2390,12 @@ struct IncrementalSolver::Impl
       // This is a session classification, so a source array level remains
       // evidence after it is popped. Inspect only new/replaced levels: an
       // unchanged level was already screened on the call where it arrived.
-      // fragment() examines the raw node separately from the FP-prepared
-      // form, preventing totalisation's internal arrays from setting this.
+      // Inspect the raw node directly, preventing totalisation's internal
+      // arrays from setting this. Deliberately avoid fragment() here: memory
+      // relief immediately follows reconciliation and must compare the
+      // previous epoch snapshot before current-query cache roots are charged.
       if (!sourceArraysSeen && !same)
-        sourceArraysSeen = fragment(assertionsSMT2[i]).sourceArrays;
+        sourceArraysSeen = containsArrayOps(assertionsSMT2[i], bm);
     }
   }
 
@@ -2282,7 +2418,8 @@ struct IncrementalSolver::Impl
   // disagreeing by one solve cost a measured 2x on a double rebuild.
   bool inprobingRetirementEarned() const
   {
-    return bm->UserFlags.incremental_inprobing ==
+    return policy.adaptiveBackendConfiguration() &&
+           bm->UserFlags.incremental_inprobing ==
                UserDefinedFlags::BVAMode::AUTO &&
            solver->supportsInprobingControl() &&
            engagedSolves > inprobingRetireSolves &&
@@ -2303,6 +2440,10 @@ struct IncrementalSolver::Impl
   // while retained/liveness decisions use only the current solver's count.
   uint64_t retiredClauseSubmissions = 0;
 
+  // Generation of the resettable semantic/AIG encoding store. SAT-only
+  // configuration rebuilds do not advance it; a relief rebuild does.
+  uint64_t encodingEpochGeneration = 0;
+
   uint64_t lifetimeClauseSubmissions() const
   {
     return addMass(retiredClauseSubmissions, solver->submittedClauses());
@@ -2318,12 +2459,12 @@ struct IncrementalSolver::Impl
   Impl(STPMgr* bm_, AbsRefine_CounterExample* ce_, Simplifier* batchSimp_,
        ArrayTransformer* batchAT_)
       : bm(bm_), ce(ce_), batchSimp(batchSimp_), batchAT(batchAT_),
-        solver(makeBackend(bm_->UserFlags, true)), substitutionMap(bm_),
-        simp(bm_, &substitutionMap),
-        bb(&bbMgr, &simp, bm_->defaultNodeFactory, &bm_->UserFlags, NULL),
+        policy(bm_->UserFlags.incremental_core_only),
+        solver(makeBackend(bm_->UserFlags, true)), encoding(bm_),
         trueVar(-1), lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
-        trailReuseAllowed(true), lastLevelCount(0), bvaDecided(false),
+        trailReuseAllowed(!policy.coreOnly()), lastLevelCount(0),
+        bvaDecided(false),
         bvaWarned(false), encodesThisCall(0)
   {
     // Refinement adds clauses between solve calls; tell backends that need
@@ -2343,7 +2484,8 @@ struct IncrementalSolver::Impl
     // many-solve by definition, so that is a recurring tax (measured a
     // third of small variant-push sessions); the batch pipeline's
     // single-solve instances keep it.
-    solver->disableLuckyPhases();
+    if (policy.adaptiveBackendConfiguration())
+      solver->disableLuckyPhases();
   }
 
   void beginProfile(size_t levels)
@@ -2468,6 +2610,8 @@ struct IncrementalSolver::Impl
         << " rebuild-promotion=" << profile.rebuildPromotion
         << " rebuild-inprobing=" << profile.rebuildInprobing
         << " rebuild-trail=" << profile.rebuildTrail
+        << " encoding-epoch-resets=" << profile.encodingEpochResets
+        << " policy=" << (policy.coreOnly() ? "core" : "full")
         << " extensionality=" << (profile.extensionality ? 1 : 0)
         << " first-stack-preprocesses=" << profile.firstStackPreprocesses
         << " first-stack-eliminations=" << profile.firstStackEliminations
@@ -2558,6 +2702,8 @@ struct IncrementalSolver::Impl
         << " rebuild-promotion=" << sessionProfile.rebuildPromotion
         << " rebuild-inprobing=" << sessionProfile.rebuildInprobing
         << " rebuild-trail=" << sessionProfile.rebuildTrail
+        << " encoding-epoch-resets=" << sessionProfile.encodingEpochResets
+        << " policy=" << (policy.coreOnly() ? "core" : "full")
         << " first-stack-preprocesses="
         << sessionProfile.firstStackPreprocesses
         << " first-stack-eliminations="
@@ -2612,7 +2758,7 @@ struct IncrementalSolver::Impl
     recordPeakLiveClauseMass(mass);
   }
 
-  bool reliefSizeReached() const
+  bool clauseReliefSizeReached() const
   {
     return bm->UserFlags.incremental_reencode_limit > 0 &&
            (int64_t)solver->nVars() >=
@@ -2747,7 +2893,7 @@ struct IncrementalSolver::Impl
     // not run, including the rebuild counters the tests assert on.
     recordLiveClauseMass(cheapLiveMass);
 
-    const bool stage = reliefSizeReached();
+    const bool stage = clauseReliefSizeReached();
     if (profile.enabled || stage)
       normalizeAigRoots(currentRoots);
 
@@ -2983,7 +3129,8 @@ struct IncrementalSolver::Impl
 
     // Frozen: the variable's bits already live in the solver, so this
     // equation must constrain them for real (see mustKeepRaw).
-    if (bbMgr.symbolToBBNode.find(var) != bbMgr.symbolToBBNode.end())
+    if (encoding.nodes().symbolToBBNode.find(var) !=
+        encoding.nodes().symbolToBBNode.end())
       mustKeepRaw.insert(c);
 
     sigma0[var] = expanded;
@@ -3147,7 +3294,7 @@ struct IncrementalSolver::Impl
 
     const uint64_t clausesPre = solver->submittedClauses();
     bm->GetRunTimes()->start(RunTimes::BitBlasting);
-    BBNodeAIG root = bb.BBForm(toEncode);
+    BBNodeAIG root = encoding.blaster().BBForm(toEncode);
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
     bm->GetRunTimes()->start(RunTimes::CNFConversion);
@@ -3174,6 +3321,7 @@ struct IncrementalSolver::Impl
   // variables are canonical for the session.
   int rootLit(const ASTNode& conjunct)
   {
+    chargeSemanticRoot(conjunct);
 #ifndef NDEBUG
     // The encode boundary is where the elimination invariant is finally
     // observable: a variable whose defining equation this solve dropped must
@@ -3218,6 +3366,7 @@ struct IncrementalSolver::Impl
 
   const Fragment& fragment(const ASTNode& n)
   {
+    chargeSemanticRoot(n);
     NodeToFragmentMap::const_iterator it = fragmentCache.find(n);
     if (it != fragmentCache.end())
       return it->second;
@@ -3236,10 +3385,10 @@ struct IncrementalSolver::Impl
     // reached the bit-blaster, and the refinement loop -- which is what
     // enforces congruence between unspecified results at equal indices --
     // was skipped. This costs a second totalisation of the node: the
-    // session-long context memoises each CHANGED subterm, so rootLit's later
-    // call re-uses those rewrites rather than re-deriving them, but it does
-    // re-walk the root to rebuild the spine and re-collect the rounding-mode
-    // side conditions. A root-level memo was tried and measured neutral --
+    // encoding-epoch context memoises each CHANGED subterm, so rootLit's
+    // later call re-uses those rewrites rather than re-deriving them, but it
+    // does re-walk the root to rebuild the spine and re-collect the
+    // rounding-mode side conditions. A root-level memo was tried and measured neutral --
     // SAT time dominates every floating-point session it would help -- and
     // was dropped rather than carry a per-root cache for nothing.
     ASTNode basis = n;
@@ -3260,7 +3409,7 @@ struct IncrementalSolver::Impl
                        const ASTNode& inputToSat, Aig_Obj_t* blockRegular);
   ToSATBase* ensureAdapter();
 
-  // The session-long floating-point encoding context. Its totalisation
+  // The encoding-epoch floating-point context. Its totalisation
   // re-conjoins every side condition (rounding-mode pinning in particular)
   // onto each call's own result -- by design, precisely so the guarantee
   // is independent of the assertion stack -- so per-conjunct preparation
@@ -3288,7 +3437,7 @@ struct IncrementalSolver::Impl
     const unsigned width = std::max((unsigned)1, s.GetValueWidth());
     for (unsigned i = 0; i < width; i++)
     {
-      BBNodeAIG bit = bbMgr.CreateSymbol(s, i);
+      BBNodeAIG bit = encoding.nodes().CreateSymbol(s, i);
       ensureEncoded(Aig_Regular(bit.n));
     }
   }
@@ -3470,14 +3619,143 @@ struct IncrementalSolver::Impl
     }
   }
 
-  // Rebuild the SAT side from nothing, keeping every semantic store. The
-  // persistent encoding never reclaims anything, so a long session whose
-  // popped content never returns pays for it in solver memory and dead
-  // decision variables; once that dominates, starting the solver over and
-  // re-encoding just the live stack is the standard relief valve. The
-  // bit-blast memo and the AIG survive, so re-encoding active content is
-  // a walk over existing circuits; refinement axioms die with the solver
-  // and are re-derived lazily, which is sound -- they are accelerators.
+  size_t semanticCacheEntryCount() const
+  {
+    size_t rows = 0;
+    for (ArrayTransformer::ArrType::const_iterator it = myReads.begin();
+         it != myReads.end(); ++it)
+      rows += it->second.size();
+    return semanticEpochRoots.size() + fragmentCache.size() + rows +
+           readsOfEncoded.size() +
+           myAckPairs.size() + exactStackKeepAlive.size() +
+           exactScopedPreprocessOf.size() + preparedPieceOf.size() +
+           eliminationUsers.size() + screenedContent.size() +
+           symbolsOfCache.size() + symbolVisitPages.size() +
+           dagSizeBigMemo.size() + scopedBlockOf.size();
+  }
+
+  // Release all state whose validity/reuse is tied to the word-to-AIG
+  // encoding epoch. This is deliberately stronger than a SAT-only policy
+  // restart: every holder of an AIG pointer is already empty when this runs,
+  // and only the current raw assertion ledger plus permanent base facts
+  // survive to reconstruct the next epoch.
+  void rotateEncodingEpoch()
+  {
+    assert(policy.rotateEncodingEpochForRelief());
+    const size_t oldAigNodes = encoding.aigAndNodes();
+    const size_t oldRoots = rootLitOf.size();
+    const size_t oldSemanticEntries = semanticCacheEntryCount();
+
+    // CBP retains at most one processed prefix, but that prefix can belong to
+    // a route which has since been bypassed by exact-stack solves. Relief is
+    // the point at which even that dead prefix and its vector high-water
+    // storage must go.
+    cbpReset();
+    scopes.releaseEpochStorage();
+    cbpMemoStable = 0;
+
+    ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+    if (ext != NULL)
+      ext->releaseSolveStorage();
+
+    // The old model has already been invalidated by entry into this check.
+    // Withdraw shared model-channel seeds before dropping the ASTs they pin.
+    if (batchSimp != NULL)
+    {
+      DenseNodeMap* channel = batchSimp->Return_SolverMap();
+      for (const ASTNode& key : seededModelKeys)
+        channel->erase(key);
+    }
+    releaseContainer(seededModelKeys);
+    ce->ReleaseModelStorage();
+
+    // ArrayTransformer's maps free their nodes on clear, but the per-run
+    // touched-read vector retains the largest exact block it has seen.
+    batchAT->recordTouchedReads = false;
+    releaseContainer(batchAT->touchedReads);
+
+    if (fpCtx)
+      ce->setFpEncodingContext(NULL);
+    fpCtx.reset();
+    adapter.reset();
+    releaseContainer(symbolMapStorage);
+
+    releaseContainer(fragmentCache);
+    releaseContainer(myReads);
+    releaseContainer(readsOfEncoded);
+    releaseContainer(myAckPairs);
+    releaseContainer(exactStackKeepAlive);
+    releaseContainer(exactScopedPreprocessOf);
+    releaseContainer(preparedPieceOf);
+    releaseContainer(eliminationUsers);
+    releaseContainer(screenedContent);
+    releaseContainer(symbolsOfCache);
+    releaseContainer(symbolVisitPages);
+    symbolVisitEpoch = 0;
+    releaseContainer(dagSizeBigMemo);
+    releaseContainer(scopedBlockOf);
+    releaseContainer(levelOccurrences);
+    invalidateLevelOccurrences();
+    releaseContainer(restoredBaseRoots);
+    releaseContainer(pendingRebuiltBase);
+    releaseContainer(clauseMassOf);
+    releaseContainer(refinementMassOf);
+    releaseContainer(baseEliminatedDefs);
+    // This set records equations frozen only because their variables had AIG
+    // bits in the retiring epoch. In the fresh epoch sigma0 can substitute
+    // them from the start, so carrying the freeze would be stale policy.
+    releaseContainer(mustKeepRaw);
+
+    releaseContainer(callCbpSubst);
+    releaseContainer(callCbpDeferred);
+    releaseContainer(callCbpFactEmitted);
+    releaseContainer(callCbpFedConjuncts);
+    releaseContainer(cbpCallerCheckpoints);
+    releaseContainer(cbpSubstUndo);
+    releaseContainer(cbpFedConjunctsAdded);
+    releaseContainer(cbpFactsAdded);
+    releaseContainer(cbpSubstTrailedThisLevel);
+
+    // clear() leaves the high-water allocation behind for vectors and hash
+    // tables. These were made logically empty by the backend reset; swap now
+    // makes the relief boundary reclaim their storage as well.
+    releaseContainer(aigIdToVar);
+    releaseContainer(rootLitOf);
+    releaseContainer(aigRootOf);
+    releaseContainer(permanentAigRoots);
+    releaseContainer(pendingLiveCone.currentRoots);
+    releaseContainer(actLitOf);
+    releaseContainer(everAssumedLits);
+    releaseContainer(activationMassOf);
+    releaseContainer(lastSeededKeys);
+    releaseContainer(seededRowRef);
+    releaseContainer(foldedRowsOf);
+    releaseContainer(pendingBaseSeed);
+    releaseContainer(assumedLitLevels);
+    releaseContainer(lastLevelLitConjuncts);
+    releaseContainer(lastFailedLits);
+    releaseContainer(semanticEpochRoots);
+    semanticNodeCharge = 0;
+    releaseContainer(latestSemanticLiveRoots);
+    maxLiveSemanticNodes = 0;
+    lastRetainedSemanticNodes = 0;
+
+    encoding.reset();
+    ++encodingEpochGeneration;
+    if (profile.enabled)
+      profile.encodingEpochResets++;
+    if (bm->UserFlags.stats_flag)
+      std::cerr << "Incremental: encoding epoch reset (generation "
+                << encodingEpochGeneration << ", released " << oldAigNodes
+                << " AIG nodes, " << oldRoots << " roots, "
+                << oldSemanticEntries << " semantic cache entries)"
+                << std::endl;
+  }
+
+  // Rebuild the SAT side from nothing. Policy-only rebuilds preserve the
+  // semantic/AIG store and cheaply re-CNF the live roots. A relief rebuild
+  // additionally rotates that store above, so dead historical circuits and
+  // semantic caches no longer accumulate for the life of the session.
   // (The finer-grained alternative -- pinning popped variables away from
   // the decision heuristics, as cvc5's CaDiCaL propagator does -- needs
   // the propagator interface and is not portable across our backends.)
@@ -3491,6 +3769,8 @@ struct IncrementalSolver::Impl
   // literals need no hint because assumptions are forced, not decided.
   void hintRetractedLevels(const SATSolver::vec_literals& assumptions)
   {
+    if (!policy.retractionSearchHints())
+      return;
     std::unordered_set<int> current;
     for (int i = 0; i < assumptions.size(); i++)
       current.insert(assumptions[i].x);
@@ -3592,8 +3872,12 @@ struct IncrementalSolver::Impl
       // measured neutral).
       solver->disableEliminationAndShrinking();
     }
-    solver->disableLuckyPhases();
+    if (policy.adaptiveBackendConfiguration())
+      solver->disableLuckyPhases();
     bvaDecided = false;
+
+    if (reason == RebuildReason::Relief)
+      rotateEncodingEpoch();
 
     aigIdToVar.clear();
     trueVar = -1;
@@ -3609,14 +3893,11 @@ struct IncrementalSolver::Impl
     lastSeededKeys.clear();
     seededRowRef.clear();
     foldedRowsOf.clear();
-    pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
     clauseMassOf.clear();
-    // Symbol sets are a pure function of the node, so nothing here is ever
-    // stale and the memo was never cleared at all -- it held an entry for
-    // every node measured since the session began, including every popped
-    // level's. A rebuild is the point where most of those stop being
-    // reachable, so dropping it here is reclamation, not invalidation; what
-    // is still live is re-derived on the next solve that asks.
+    // Symbol sets are a pure function of the node, so this is reclamation,
+    // not invalidation: entries for still-live nodes are simply re-derived
+    // on the next solve that asks. SAT-only policy restarts may reclaim this
+    // cheap memo even though they retain the structural AIG epoch.
     symbolsOfCache.clear();
     refinementMassOf.clear();
     currentRefinementClauseMass = 0;
@@ -3642,6 +3923,11 @@ struct IncrementalSolver::Impl
     // the raw base.
     baseEliminatedDefs.clear();
 
+    // Every permanent raw base root is re-encoded in the fresh epoch. This
+    // assignment belongs after full rotation, which releases the old
+    // vector's high-water storage.
+    pendingBaseSeed.assign(level0Asserted.begin(), level0Asserted.end());
+
     // Re-materialising the base is needed whatever ended the epoch;
     // re-SIMPLIFYING it is only worth its price when the epoch ended because
     // the encoding had grown too big. Two of the four reasons -- retiring
@@ -3652,7 +3938,9 @@ struct IncrementalSolver::Impl
     // measured at 18ms for a 3,001-conjunct base of trivial constraints, and
     // it scales with the base. Promotion demotion is likewise about
     // retraction, not size.
-    resimplifyBaseAtRebuild(assertionsSMT2, reason == RebuildReason::Relief);
+    resimplifyBaseAtRebuild(
+        assertionsSMT2,
+        reason == RebuildReason::Relief && policy.semanticPreprocessing());
   }
 
   // A forced base-only first solve has no earlier batch round to simplify its
@@ -4173,7 +4461,8 @@ struct IncrementalSolver::Impl
 
     const UserDefinedFlags& uf = bm->UserFlags;
     bool wants = uf.cadical_factor == UserDefinedFlags::BVAMode::ON;
-    if (uf.cadical_factor == UserDefinedFlags::BVAMode::AUTO &&
+    if (policy.adaptiveBackendConfiguration() &&
+        uf.cadical_factor == UserDefinedFlags::BVAMode::AUTO &&
         !uf.ackermannisation)
     {
       wants = !myReads.empty();
@@ -4257,7 +4546,8 @@ struct IncrementalSolver::Impl
     for (ASTNodeMap::const_iterator it = sigma0.begin(); it != sigma0.end();
          ++it)
     {
-      if (bbMgr.symbolToBBNode.find(it->first) == bbMgr.symbolToBBNode.end())
+      if (encoding.nodes().symbolToBBNode.find(it->first) ==
+          encoding.nodes().symbolToBBNode.end())
       {
         (*channel)[it->first] = it->second;
         seededModelKeys.insert(it->first);
@@ -4297,8 +4587,8 @@ struct IncrementalSolver::Impl
   void buildSymbolMap(ToSATBase::ASTNodeToSATVar& out)
   {
     for (BBNodeManagerAIG::SymbolToBBNode::const_iterator it =
-             bbMgr.symbolToBBNode.begin();
-         it != bbMgr.symbolToBBNode.end(); ++it)
+             encoding.nodes().symbolToBBNode.begin();
+         it != encoding.nodes().symbolToBBNode.end(); ++it)
     {
       if (scopes.activeEliminatedVariables().find(it->first) !=
           scopes.activeEliminatedVariables().end())
@@ -4434,6 +4724,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::Impl::solvePlainExactStack(
       addMass(baseLiveMass, clauseMassOf[inputToSat]);
   std::vector<Aig_Obj_t*> currentRoots(1, blockRegular);
   stageLiveConeMass(currentRoots, cheapLiveMass, permanentUnitMass);
+  stageSemanticLiveStack(assertionsSMT2, ASTVec(1, inputToSat));
 
   if (uf.stats_flag)
     solver->printStats();
@@ -4574,12 +4865,14 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // removes the broad forced-first ABV tail. The decision is fixed per raw
   // active conjunction above, so a repeated or re-pushed stack never flips
   // encoding strategy underneath the block cache.
-  const bool scopedPreprocess =
-      exactScopedPreprocessOf
-          .insert(std::make_pair(activeConjunction,
-                                 engagedSolves > 1 ||
-                                     firstForcedIncrementalSolve))
-          .first->second;
+  bool scopedPreprocess = false;
+  if (policy.semanticPreprocessing())
+    scopedPreprocess =
+        exactScopedPreprocessOf
+            .insert(std::make_pair(activeConjunction,
+                                   engagedSolves > 1 ||
+                                       firstForcedIncrementalSolve))
+            .first->second;
   PreprocessingTransaction stackTransaction(PreprocessingMode::ExactStack,
                                              inputToSat);
   stackTransaction.conjuncts.push_back(inputToSat);
@@ -4632,6 +4925,10 @@ IncrementalSolver::Impl::exactStackCheckSat(
   exactStackKeepAlive.insert(prepared);
   exactStackKeepAlive.insert(semantic);
   exactStackKeepAlive.insert(inputToSat);
+  chargeSemanticRoot(activeConjunction);
+  chargeSemanticRoot(prepared);
+  chargeSemanticRoot(semantic);
+  chargeSemanticRoot(inputToSat);
 
   if (uf.enable_array_equality && containsArrayEquality(inputToSat))
     FatalError("IncrementalSolver: an opaque array equality reached the "
@@ -4679,7 +4976,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
       ScopedProfileTimer encodingTimer(profile.enabled, profile.encodeNs);
       const uint64_t submittedBefore = solver->submittedClauses();
       bm->GetRunTimes()->start(RunTimes::BitBlasting);
-      BBNodeAIG root = bb.BBForm(inputToSat);
+      BBNodeAIG root = encoding.blaster().BBForm(inputToSat);
       bm->GetRunTimes()->stop(RunTimes::BitBlasting);
       bm->GetRunTimes()->start(RunTimes::CNFConversion);
       blockRegular = Aig_Regular(root.n);
@@ -4724,7 +5021,8 @@ IncrementalSolver::Impl::exactStackCheckSat(
   bm->soft_timeout_expired = false;
 
   SATSolver::vec_literals assumptions;
-  everAssumedLits[blockLit] = engagedSolves;
+  if (policy.retractionSearchHints())
+    everAssumedLits[blockLit] = engagedSolves;
   assumptions.push(SATSolver::mkLit(blockLit >> 1, blockLit & 1));
   hintRetractedLevels(assumptions);
   if (profile.enabled)
@@ -4823,6 +5121,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
   std::vector<Aig_Obj_t*> currentRoots(1, blockRegular);
   stageLiveConeMass(currentRoots, cheapLiveMass,
                     addMass(permanentUnitMass, theoryMass));
+  stageSemanticLiveStack(assertionsSMT2, ASTVec(1, inputToSat));
 
   // The whole round rode one block literal, so an unsat answer has no
   // per-level or per-assumption granularity: the core is everything.
@@ -4851,6 +5150,22 @@ IncrementalSolver::seededReadsForTesting() const
                 ->second.find(it->first.second) !=
             impl->myReads.find(it->first.first)->second.end())
       out.push_back(it->first);
+  return out;
+}
+
+IncrementalSolver::EncodingEpochStats
+IncrementalSolver::encodingEpochStatsForTesting() const
+{
+  EncodingEpochStats out;
+  out.generation = impl->encodingEpochGeneration;
+  out.aigAndNodes = impl->encoding.aigAndNodes();
+  out.rootEncodings = impl->rootLitOf.size();
+  out.bitBlastedSymbols =
+      impl->encoding.nodes().symbolToBBNode.size();
+  out.semanticCacheEntries = impl->semanticCacheEntryCount();
+  for (ArrayTransformer::ArrType::const_iterator it = impl->myReads.begin();
+       it != impl->myReads.end(); ++it)
+    out.arrayReadRows += it->second.size();
   return out;
 }
 
@@ -5163,17 +5478,27 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // and comparing with the PEAK is the hysteresis: after a rebuild the
     // tracked mass restarts at the working set, so firing again takes
     // another fourfold growth.
-    if (impl->reliefSizeReached() && impl->reliefRatioReached())
+    if (impl->clauseReliefSizeReached() && impl->reliefRatioReached())
       impl->expandPendingLiveConeMass();
 
-    if (impl->reliefSizeReached() && impl->reliefRatioReached())
+    const bool clauseRelief =
+        impl->clauseReliefSizeReached() && impl->reliefRatioReached();
+    // Semantic caches have an independent DAG-node floor. Their cheap charge
+    // only stages the decision; semanticReliefReached walks exact retained
+    // and live unions, so a monotonically growing stack whose snapshots share
+    // almost everything is not mistaken for dead churn.
+    const bool semanticRelief = impl->semanticReliefReached();
+    if (clauseRelief || semanticRelief)
     {
       if (uf.stats_flag)
         std::cerr << "Incremental: re-encoded from scratch (solver had "
                   << impl->solver->nVars() << " variables, "
                   << impl->retainedClauseMass()
                   << " retained clauses for a "
-                  << impl->maxLiveClauseMass << " clause working set)"
+                  << impl->maxLiveClauseMass << " clause working set, "
+                  << impl->lastRetainedSemanticNodes
+                  << " retained semantic DAG nodes for a "
+                  << impl->maxLiveSemanticNodes << " node working set)"
                   << std::endl;
       impl->rebuildEncodings(assertionsSMT2, Impl::RebuildReason::Relief);
     }
@@ -5226,7 +5551,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // policy there lost five measured solves. Arrays introduced internally by
     // FP totalisation do not change that classification. Refinement-heavy
     // array state gets the old size belt instead.
-    if (impl->trailReuseAllowed)
+    if (impl->policy.adaptiveBackendConfiguration() &&
+        impl->trailReuseAllowed)
     {
       bool retire = impl->solver->nVars() >= Impl::trailReuseVarLimit;
       bool hasFp = false;
@@ -5290,7 +5616,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // epoch and every solve hinted all of them. The precondition is the
     // configuration window, which decideBVA has just closed -- the pins are
     // clauses.
-    impl->retireStaleActivation();
+    if (impl->policy.aggregateLevelAssumptions())
+      impl->retireStaleActivation();
   }
 
   // Whole-array equality routes the entire check-sat through the
@@ -5319,7 +5646,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   const bool provisionalBlockAllowed =
       uf.incremental_reencode_limit == 0 ||
       uf.incremental_reencode_limit >= Impl::firstStackMinReencodeLimit;
-  if (firstForcedIncrementalSolve && !assumeLastLevelPerConjunct &&
+  if (impl->policy.firstSolveShortcuts() && firstForcedIncrementalSolve &&
+      !assumeLastLevelPerConjunct &&
       provisionalBlockAllowed && assertionsSMT2.size() > 1)
   {
     bool plainBv = true;
@@ -5368,6 +5696,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // instead. The rewrite/fact memo has its own matching-prefix watermark
   // (see cbpFeedLevel/cbpAdopt and IncrementalScopeState::CbpMemo).
   bool cbpBootstrapDeferred = false;
+  if (impl->policy.crossLevelPropagation())
   {
     ScopedProfileTimer cbpTimer(impl->profile.enabled, impl->profile.cbpNs);
     ScopedProfileTimer syncTimer(impl->profile.enabled,
@@ -5480,9 +5809,16 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
 
     impl->cbpMemoStable = impl->scopes.trimCbpMemoToCurrent();
   }
+  else
+  {
+    impl->cbpMemoStable = 0;
+    if (impl->profile.enabled)
+      impl->profile.stablePrefix = impl->scopes.lastCommonPrefix();
+  }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
-  impl->callCbpOff = impl->cbpSessionRetired || cbpBootstrapDeferred ||
+  impl->callCbpOff = !impl->policy.crossLevelPropagation() ||
+                     impl->cbpSessionRetired || cbpBootstrapDeferred ||
                      impl->cbpOverFeedCap();
   impl->callCbpConflict = false;
 
@@ -5522,18 +5858,23 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // New content first invalidates any cached level whose elimination it
     // contradicts, and joins the base symbol set the privacy check
     // consults -- both before anything is harvested or encoded.
+    if (impl->policy.semanticPreprocessing())
     {
       ScopedProfileTimer screenTimer(impl->profile.enabled,
                                      impl->profile.screenNs);
       impl->screenNewContent(c);
     }
-    const ASTNodeSet& syms = impl->symbolsOf(c);
-    impl->baseSymbols.insert(syms.begin(), syms.end());
-    if (uf.optimize_flag)
-      impl->harvestSigma0(c);
+    if (impl->policy.semanticPreprocessing())
+    {
+      const ASTNodeSet& syms = impl->symbolsOf(c);
+      impl->baseSymbols.insert(syms.begin(), syms.end());
+      if (uf.optimize_flag)
+        impl->harvestSigma0(c);
+    }
   }
 
-  if (firstForcedIncrementalSolve && assertionsSMT2.size() == 1 &&
+  if (impl->policy.firstSolveShortcuts() && firstForcedIncrementalSolve &&
+      assertionsSMT2.size() == 1 &&
       !newLevel0.empty())
   {
     ASTVec reducedBase;
@@ -5556,6 +5897,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // is prepared or encoded: a later level's mention of a variable an
   // earlier level's cached preparation eliminated invalidates that cache
   // entry now, not after the stale entry was already used.
+  if (impl->policy.semanticPreprocessing())
   {
     ScopedProfileTimer screenTimer(impl->profile.enabled,
                                    impl->profile.screenNs);
@@ -5571,7 +5913,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // so a session that never pushes never pays for the feed (a huge
   // single-check formula measured two minutes of fixpoint and harvest
   // with nothing downstream to spend it on).
-  if (uf.optimize_flag && uf.bitConstantProp_flag && assertionsSMT2.size() > 1)
+  if (impl->policy.crossLevelPropagation() && uf.optimize_flag &&
+      uf.bitConstantProp_flag && assertionsSMT2.size() > 1)
   {
     impl->cbpFeedLevel(0, assertionsSMT2[0]);
     impl->cbpFinishLevel();
@@ -5581,7 +5924,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // context, run through the batch equality-propagation and
   // simplification passes, private definitions eliminated and everything
   // else re-conjoined (see PreparedPiece) -- then encoded against the
-  // permanent caches and assumed through one literal per level. The
+  // epoch-persistent caches and assumed through one literal per level. The
   // assumption set is recomputed from the current stack on every call,
   // so popped levels vanish by simply no longer being here.
   SATSolver::vec_literals assumptions;
@@ -5625,7 +5968,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
                                               assertionsSMT2[level]);
 
     ASTVec levelDefiningConjuncts;
-    if (uf.optimize_flag)
+    if (impl->policy.semanticPreprocessing() && uf.optimize_flag)
     {
       const size_t contextBefore = ctx.size();
       conjuncts.clear();
@@ -5655,11 +5998,13 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // (see cbpFeedLevel/cbpAdopt). Never on the per-assumption path,
     // whose conjunct-to-assumption mapping a cross-conjunct fact
     // would blur.
-    if (uf.optimize_flag && !individually && uf.bitConstantProp_flag)
+    if (impl->policy.crossLevelPropagation() && uf.optimize_flag &&
+        !individually && uf.bitConstantProp_flag)
       impl->cbpFeedLevel(level, assertionsSMT2[level]);
 
     conjuncts.clear();
-    if (!uf.optimize_flag || individually)
+    if (!impl->policy.semanticPreprocessing() || !uf.optimize_flag ||
+        individually)
     {
       // check-sat-assuming wants per-assumption granularity: merging the
       // assumptions through a level-wide preparation would destroy the
@@ -6022,7 +6367,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // the sessions that shed the trail pay the full assumption descent
     // every solve, which is exactly what promotion removes (measured
     // ~16% on f84c6e97).
-    if (!individually && uf.incremental_promote_units &&
+    if (impl->policy.unitPromotion() && !individually &&
+        uf.incremental_promote_units &&
         !impl->trailReuseAllowed &&
         level == impl->scopes.promotedDepth() + 1 &&
         level + 1 < assertionsSMT2.size() &&
@@ -6052,26 +6398,31 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       continue;
     }
 
-    if (individually)
+    if (individually || !impl->policy.aggregateLevelAssumptions())
     {
-      // Per-assumption failure granularity: each conjunct's own root is
-      // assumed, and remembered against its conjunct, so an unsat answer
-      // can name exactly the assumptions the refutation used.
-      impl->lastLevelIndividual = true;
+      // The per-assumption route needs one root per source conjunct for
+      // reporting. Core-only mode deliberately uses the same direct-root
+      // mechanism for every level, avoiding the optional activation-literal
+      // aggregation policy while retaining the assumption core itself.
+      if (individually)
+        impl->lastLevelIndividual = true;
       for (size_t k = 0; k < conjuncts.size(); k++)
       {
         const int r = levelRoots[k];
-        impl->everAssumedLits[r] = impl->engagedSolves;
+        if (impl->policy.retractionSearchHints())
+          impl->everAssumedLits[r] = impl->engagedSolves;
         impl->assumedLitLevels.push_back(std::make_pair(r, level));
-        impl->lastLevelLitConjuncts.push_back(
-            std::make_pair(r, conjuncts[k]));
+        if (individually)
+          impl->lastLevelLitConjuncts.push_back(
+              std::make_pair(r, conjuncts[k]));
         assumptions.push(SATSolver::mkLit(r >> 1, r & 1));
       }
       continue;
     }
 
     const int lit = impl->levelAssumption(levelRoots);
-    impl->everAssumedLits[lit] = impl->engagedSolves;
+    if (impl->policy.retractionSearchHints())
+      impl->everAssumedLits[lit] = impl->engagedSolves;
     impl->assumedLitLevels.push_back(std::make_pair(lit, level));
     assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
@@ -6091,7 +6442,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   uint64_t ordinaryLiveMass = impl->baseLiveMass;
   std::vector<Aig_Obj_t*> ordinaryCurrentRoots;
   const bool trackOrdinaryRoots =
-      impl->profile.enabled || impl->reliefSizeReached();
+      impl->profile.enabled || impl->clauseReliefSizeReached();
   if (trackOrdinaryRoots)
     ordinaryCurrentRoots.reserve(activeEncodedKeys.size());
   const uint64_t activationMass = impl->activeActivationMass(assumptions);
@@ -6114,6 +6465,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         Impl::addMass(nonStructuralMass, oldRefinementMass);
     impl->stageLiveConeMass(ordinaryCurrentRoots, ordinaryLiveMass,
                             nonStructuralMass);
+    impl->stageSemanticLiveStack(assertionsSMT2, activeEncodedKeys);
   }
 
   if (impl->profile.enabled)

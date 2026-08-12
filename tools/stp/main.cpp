@@ -462,6 +462,13 @@ void ExtraMain::create_options()
                "--incremental to profile from the first check)")
       ->group(misc_group);
 
+  app.add_flag("--incremental-core-only",
+               bm->UserFlags.incremental_core_only,
+               "run the minimal persistent assumption/refinement core "
+               "without fitted preprocessing, promotion, or adaptive "
+               "backend policies; memory-relief rebuilding remains active")
+      ->group(misc_group);
+
   app.add_flag("--incremental-cbp-reset", bm->UserFlags.incremental_cbp_reset,
                "use reset and prefix re-feed instead of CBP level rollback "
                "on stack divergence (diagnostic oracle)")
@@ -492,6 +499,14 @@ void ExtraMain::create_options()
             "rebuild the incremental solver from the live assertion stack "
             "once its variable count passes this limit and most encodings "
             "belong to popped content. 0 disables the rebuild.",
+            misc_group);
+
+  int64_arg("--incremental-semantic-cache-limit",
+            bm->UserFlags.incremental_semantic_cache_limit,
+            "rotate the complete incremental encoding epoch once semantic "
+            "caches pass this approximate DAG-node charge and an exact "
+            "retained/live graph check finds mostly popped content. 0 "
+            "disables this trigger.",
             misc_group);
 
   app.add_flag("--incremental-promote-units,!--no-incremental-promote-units",

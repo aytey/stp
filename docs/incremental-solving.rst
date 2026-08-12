@@ -68,27 +68,52 @@ lean path described below; arrays, ``--ackermanize``, floating point and
 ``--array-equality`` each add machinery of their own, also described
 below.
 
+``--incremental-core-only`` runs the correctness-bearing mechanism without
+the fitted workload policies. It keeps content-addressed bit-blasting,
+persistent SAT assumptions, ordinary-array refinement, array extensionality,
+model reconstruction, failed-assumption reporting and memory-relief epoch
+rotation. It disables cross-level constant propagation, semantic
+preprocessing transactions, first-solve exact-stack shortcuts, stable-level
+promotion, activation-literal aggregation, retraction phase hints, trail reuse
+and automatic backend reconfiguration. Explicit backend requests such as
+``--cadical-factor=on`` remain explicit requests. The option does not itself
+force driver engagement; combine it with ``--incremental`` or the automatic
+engagement controls. This profile is both a diagnostic baseline and an
+executable architectural boundary: optional performance machinery can be
+evaluated without being confused with the incremental algorithm itself.
+
 The driver, in one page
 -----------------------
 
-The driver (``lib/Incremental/IncrementalSolver.cpp``) has no single
-first-class record for a level and receives no direct ``push``/``pop``
-notification. Each check-sat receives the assertion stack as one conjunction
-per level; each level is split into its top-level conjuncts, and the active
-preprocessing context and assumption set are reconstructed against permanent
-caches. A few targeted structures now track level prefixes or liveness across
-calls -- notably constant-bit propagation memos, promotion stability, and
-active array-read reference counts -- but each manages its own lifetime.
+The driver (``lib/Incremental/IncrementalSolver.cpp``) receives no direct
+``push``/``pop`` notification. Each check-sat receives the assertion stack as
+one conjunction per level. ``IncrementalScopeState`` is the single owner of
+that snapshot's scoped semantics: it reconciles versioned frames by longest
+common prefix and owns promotion state, per-level or whole-stack preprocessing
+transactions, model-replay eliminations, and each preprocessing consumer's
+independent prefix cursor and content memo. Formula output, eliminated
+definitions and justification facts commit atomically to that ledger. A route
+which bypasses a consumer changes no consumer cursor, so a later ordinary
+route still observes and rolls back the divergence.
 
-The persistent encoding state includes:
+Content-addressed encodings are deliberately separate from scope ownership.
+They have two nested lifetimes:
 
-- conjunct -> root literal (a conjunct is bit-blasted and Tseitin-encoded at
-  most once per SAT-backend epoch),
-- the session-long bit-blaster term memo and AIG manager,
-- AIG node -> CNF variable for the current SAT-backend epoch.
+- An *encoding epoch* owns the bit-blaster, AIG manager, root and fragment
+  caches, prepared-form caches, array-read registry, floating-point lowering
+  context and exact-block keepalive nodes.
+- A *SAT backend epoch* owns CNF variables, AIG-to-CNF mappings, activation
+  literals, submitted clauses and learned clauses. Several SAT epochs can
+  reuse one encoding epoch.
 
-A relief-valve or policy rebuild starts a new backend epoch: SAT variables and
-root literals are rematerialized, while the semantic and AIG caches survive.
+Ordinary check-sats preserve both. A SAT-only policy restart (promotion
+retraction or an optional backend-configuration change) replaces the backend
+and re-CNFs live AIG roots while retaining the encoding epoch. A memory-relief
+restart rotates both epochs: it destroys the old bit-blaster/AIG in dependency
+order, releases semantic caches and their high-water storage, and reconstructs
+only the current raw stack and permanent base facts. The raw scope ledger and
+monotone base substitutions survive because they describe live input, not
+historical encodings.
 
 Reconstructing from the current snapshot is what lets ``push``/``pop`` need no
 driver hooks: the parser's assertion stack is the source of truth, and a
@@ -258,8 +283,9 @@ is on the ordinary plain-BV path. Array-equality blocks retain the candidate-
 model/refinement route. ``check-sat-assuming`` retains its individual roots for
 unsat-assumption reporting, arrays and floating point retain their own routes,
 and an explicitly aggressive ``--incremental-reencode-limit`` below the default
-one million disables the provisional block so relief ownership is available
-from the outset (zero, which disables relief, still permits it). Automatic
+one million disables the provisional block so SAT-relief ownership is
+available from the outset. Zero disables that SAT-size trigger and still
+permits the block; the semantic-cache relief trigger is independent. Automatic
 third-solve engagement again does not need this first-check escape.
 
 A pushed level holding many conjuncts is assumed through one *activation
@@ -279,14 +305,17 @@ Arrays
 ------
 
 Array reads are abstracted through the batch ``ArrayTransformer`` with
-its read registry seeded from a persistent copy, so every
+its read registry seeded from an encoding-epoch copy, so every
 ``(array, index)`` pair keeps one canonical abstraction variable for the
-session. That canonicity is what lets refinement work incrementally: the
+epoch. That canonicity is what lets refinement work incrementally: the
 lazy CEGAR loop is the batch pipeline's own (driven through a small
 ``ToSATBase`` adapter that re-solves under the check-sat's assumptions),
 and the congruence axioms it learns are added as *permanent* clauses --
 they are tautologies of the canonical abstraction, valid whichever levels
-are live. For growth accounting they are nevertheless charged to the
+are live in that epoch. A relief rotation discards the registry, its AIG
+symbols and its refinement clauses together, then reconstructs the rows the
+live stack needs; no clause survives the symbols which give it meaning. For
+growth accounting the clauses are charged to the
 deterministic active conjunction that caused them to be emitted. That owner
 classification keeps a repeated live query from triggering rebuilds while
 allowing lemmas associated only with popped query shapes to become reclaimable
@@ -295,9 +324,9 @@ needed: a round that rejects the candidate model while finding no
 congruence axiom to add cannot be repaired by refinement -- it means the
 encoding and the word-level evaluation disagree somewhere -- and dies as
 a ``FatalError`` naming that, where a silent loop would spin at full
-speed forever. A popped read's registry entry stays behind as an unconstrained
-observation of the array, which restricts nothing: an array maps every
-index to some value.
+speed forever. Until epoch rotation, a popped read's registry entry stays
+behind as an unconstrained observation of the array, which restricts nothing:
+an array maps every index to some value.
 
 Under ``--ackermanize`` arrays are compiled away eagerly instead: each
 new read becomes a nested if-then-else over the reads already seen. That
@@ -314,7 +343,7 @@ Floating point
 --------------
 
 Floating-point conjuncts are totalised and lowered through one
-session-long encoding context, so symfpu circuits for terms the rounds
+encoding-epoch context, so symfpu circuits for terms the rounds
 share are built once. Per-conjunct preparation is sound because the
 totaliser re-collects every side condition -- rounding-mode pinning in
 particular -- from each call's own output and conjoins it onto that
@@ -396,6 +425,18 @@ help a different live query. Missing that cross-owner usefulness can cause an
 unnecessary rebuild, but cannot change an answer. Clause counters are 64-bit;
 the common submission counter would wrap after ``2^64`` submissions, which is
 a theoretical rather than practical session limit.
+
+Semantic memory has an independent trigger because word-level cache churn can
+grow without increasing the SAT variable count (for example, many distinct
+roots which simplify to true). ``--incremental-semantic-cache-limit`` sets a
+conservative DAG-node charge (default one million; 0 disables this trigger).
+Once the charge reaches the floor, the driver computes exact unique DAG unions
+for all epoch-pinned semantic roots and for the most recent live raw/encoded
+stack. It rotates only when retained structure is at least four times the peak
+live semantic working set. Thus a growing but mostly shared *live* stack does
+not masquerade as dead churn, while uniformly small popped-query churn cannot
+accumulate forever. The SAT live-cone and semantic graph tests both request the
+same full encoding-epoch rotation.
 
 SAT backends
 ------------
@@ -560,7 +601,8 @@ witnesses. ``first-stack-preprocesses`` and ``first-stack-eliminations``
 identify an adopted multi-level BV block, while ``first-stack-rejected``
 records a trial which fell back without committing it. The profile also covers semantic construction,
 preparation, actual bit-blast/CNF encoding, active-read seeding, backend
-rebuilds, initial and refinement SAT calls, and rolling session totals.
+rebuilds, encoding-epoch rotations, the selected ``core``/``full`` policy,
+initial and refinement SAT calls, and rolling session totals.
 Durations accumulate at nanosecond precision and are emitted as whole
 microseconds, so repeated short operations are retained in the cumulative
 values. It is deliberately separate from ``-s``: verbose diagnostics from
@@ -681,8 +723,8 @@ revalidation globs phase-specific: a broad ``main-shard-*.csv`` also matches
 Limitations
 -----------
 
-- The persistent encoding grows monotonically, and the relief valve is
-  coarse: once the solver's variable count passes
+- The persistent encoding grows monotonically *within an encoding epoch*.
+  Once the solver's variable count passes
   ``--incremental-reencode-limit`` (default one million; 0 disables) and
   the current backend's retained clause submissions substantially exceed the
   peak owned by a live working set, the solver is rebuilt from the live stack.
@@ -692,9 +734,17 @@ Limitations
   paths. Base/promoted units are permanently live for the epoch, activation
   implications are live only while assumed, and theory lemmas are charged to
   their originating active conjunction.
-  Semantic stores survive and active content re-encodes through the bit-blast
-  memo, but learned clauses and refinement axioms start over. The rebuild
-  boundary is also the one
+  This is a full encoding-epoch rotation: semantic/preparation/read caches,
+  floating-point lowering, the bit-blaster and AIG, CNF, learned clauses and
+  refinement axioms start over together. Solve-local extensionality/model
+  tables and vector/hash high-water storage are released too. The independent
+  semantic DAG trigger described above catches churn which creates no SAT
+  growth. With both default triggers enabled, dead historical state is bounded
+  by their configured floors and the four-to-one retained/live hysteresis;
+  live input itself is necessarily unbounded. Disabling both triggers
+  explicitly opts back into session-monotone encoding memory.
+
+  The relief boundary is also the one
   place a GLOBAL simplification pass over the base is both sound and
   free -- everything re-encodes anyway, and the base never retracts --
   so the driver runs the batch equality-propagation, simplification and

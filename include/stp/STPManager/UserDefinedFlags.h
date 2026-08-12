@@ -104,6 +104,12 @@ public:
   // profiling is not distorted by verbose pass/backend output.
   bool incremental_profile = false;
 
+  // Run only the persistent assumption/refinement core. This disables the
+  // fitted cross-level preprocessing, promotion, first-solve shortcuts and
+  // adaptive backend policies, but deliberately keeps memory-relief epoch
+  // rotation and every theory-correctness mechanism.
+  bool incremental_core_only = false;
+
   // Diagnostic oracle for the CBP level trail: discard the engine on every
   // stack divergence and re-feed the surviving prefix, as the pre-trail
   // implementation did. This is intentionally off in normal solving.
@@ -132,12 +138,21 @@ public:
   // rebuild reasons that are not about size. 0 skips it always.
   int64_t incremental_base_resimplify_limit = 100000;
 
-  // The persistent encoding grows monotonically; when the solver's variable
-  // count passes this limit AND most encodings belong to popped,
-  // never-returning content, the solver is rebuilt from the live stack
-  // (semantic stores survive; active content re-encodes through the
-  // bit-blast memo). 0 disables the relief valve.
+  // The persistent encoding grows monotonically within an epoch; when the
+  // solver's variable count passes this limit AND most encodings belong to
+  // popped, never-returning content, the complete semantic/AIG/SAT encoding
+  // epoch is rotated and reconstructed from the live stack. 0 disables this
+  // SAT-size trigger; the independent semantic-cache trigger below may still
+  // rotate.
   int64_t incremental_reencode_limit = 1000000;
+
+  // Approximate DAG-node charge at which the driver exactly compares the
+  // union pinned by semantic caches with the latest live stack. If dead
+  // cached structure is at least four times the peak live union, rotate the
+  // complete semantic/AIG epoch. Separate from the SAT-variable threshold so
+  // diagnostic SAT limits do not turn into unrelated semantic policy knobs.
+  // 0 disables semantic-cache-triggered relief.
+  int64_t incremental_semantic_cache_limit = 1000000;
 
   // Promote a pushed level that has sat identical at the same depth for
   // many consecutive solves to permanent unit clauses: its assumption

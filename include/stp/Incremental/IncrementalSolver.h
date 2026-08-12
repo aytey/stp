@@ -34,14 +34,18 @@ THE SOFTWARE.
 // The incremental solving driver; docs/incremental-solving.rst tells the
 // full story.
 //
-// One SAT solver, one AIG, and one CNF encoding live for the whole session.
+// One SAT solver, one AIG, and one CNF encoding persist across ordinary
+// checks within an encoding epoch.
 // Everything encoded is a conservative extension -- fresh Tseitin variables
-// and definitional clauses -- so it stays valid forever; what changes between
-// check-sats is only which root literals are asserted. A base-level (level 0)
+// and definitional clauses -- so it stays valid for that epoch; what changes
+// between check-sats is only which root literals are asserted. A base-level
+// (level 0)
 // conjunct becomes a permanent unit clause; a conjunct at any pushed level
 // has its root literal *assumed* per solve, so a pop retracts it by simply
 // not assuming it any more. Learned clauses therefore survive both check-sats
-// and pops by construction.
+// and pops by construction. A memory-relief rebuild rotates the complete
+// semantic/AIG epoch and reconstructs only the live stack, bounding dead
+// historical state; SAT-only policy rebuilds retain the AIG epoch.
 //
 // The whole input language is covered -- plain bit-vectors, arrays (lazy
 // refinement or --ackermanize), floating point, and --array-equality --
@@ -182,6 +186,22 @@ public:
   // its SAT variables float, and one such row in the counterexample tables
   // makes the model checker reject every candidate.
   std::vector<std::pair<ASTNode, ASTNode>> seededReadsForTesting() const;
+
+  struct EncodingEpochStats
+  {
+    uint64_t generation = 0;
+    size_t aigAndNodes = 0;
+    size_t rootEncodings = 0;
+    size_t bitBlastedSymbols = 0;
+    size_t semanticCacheEntries = 0;
+    size_t arrayReadRows = 0;
+  };
+
+  // Test-only inspection of the resettable encoding store. A relief test
+  // uses this to distinguish a real AIG/semantic rotation from a SAT-only
+  // restart whose logically cleared vectors still retain their high-water
+  // allocations.
+  EncodingEpochStats encodingEpochStatsForTesting() const;
 
   // Public only so the ToSATBase adapter in the implementation file can
   // name it; the definition never leaves IncrementalSolver.cpp.
