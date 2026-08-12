@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/Incremental/IncrementalSolver.h"
 
 #include "stp/Incremental/IncrementalCBP.h"
+#include "stp/Incremental/IncrementalScopeState.h"
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
 #include "stp/AbsRefineCounterExample/ArrayReadRefinementProgress.h"
@@ -534,6 +535,12 @@ struct IncrementalSolver::Impl
   Simplifier* batchSimp;
   ArrayTransformer* batchAT;
 
+  // The single owner of current scope identity, semantic transactions,
+  // promotion state and preprocessing-consumer cursors. Content-addressed
+  // encoding caches remain below; whether their roots participate in this
+  // check belongs here.
+  IncrementalScopeState scopes;
+
   std::unique_ptr<SATSolver> solver;
 
   // The bit-blaster wants a Simplifier; give it an inert one of its own, as
@@ -655,12 +662,7 @@ struct IncrementalSolver::Impl
   // rootLitOf, which is sound: an encoding is a definition of its
   // formula, valid forever; only the conjunct-to-formula mapping
   // changes.
-  struct PreparedPiece
-  {
-    std::vector<ASTNode> conjuncts;
-    std::vector<std::pair<ASTNode, ASTNode>> eliminatedDefs;
-    ASTNodeSet eliminatedVars;
-  };
+  typedef PreprocessingTransaction PreparedPiece;
   // Keyed by the context-substituted conjunct (the T1 discipline: the
   // key is the rewritten node, so the same conjunct under different live
   // definitions prepares separately and a re-pushed stack hits).
@@ -728,17 +730,6 @@ struct IncrementalSolver::Impl
     return true;
   }
 
-  // The eliminated definitions of the levels the CURRENT solve used,
-  // seeded into the model channel alongside sigma0's.
-  std::vector<std::pair<ASTNode, ASTNode>> activeEliminatedDefs;
-  ASTNodeSet activeEliminatedVars;
-
-  void recordActiveElimination(const ASTNode& key, const ASTNode& value)
-  {
-    activeEliminatedDefs.push_back(std::make_pair(key, value));
-    if (key.GetKind() == SYMBOL)
-      activeEliminatedVars.insert(key);
-  }
   // Keys this driver has seeded into the batch Simplifier's SolverMap
   // (the model-evaluation channel), so the next solve can withdraw them.
   ASTNodeSet seededModelKeys;
@@ -755,12 +746,7 @@ struct IncrementalSolver::Impl
   // against whatever the new content wants; the original raw conjuncts
   // that mentioned the variable return instead (complete, because a
   // variable eliminated as unconstrained occurred in exactly one).
-  struct BaseElimination
-  {
-    ASTNode def;
-    bool witness = false;
-    ASTVec originals;
-  };
+  typedef ScopedElimination BaseElimination;
   std::map<ASTNode, BaseElimination> baseEliminatedDefs;
 
   // Witness originals can be shared by several eliminated variables. The
@@ -1077,38 +1063,12 @@ struct IncrementalSolver::Impl
   // those levels' conjunctions. A divergence (a pop, a changed level, or
   // base growth) rolls the engine and its caller-side semantic overlay back
   // to the longest common prefix, then feeds only the replacement suffix.
-  // The rewrites are memoised per level with one stronger property: a
-  // memo entry records its outputs as derived at BUILD time, when the
-  // accumulated substitution held exactly the entry's own prefix --
-  // so replaying it under a deeper live stack cannot leak a deeper
-  // level's fact into a shallower conjunct, and the memo stays valid
-  // across pops of everything below it (it is trimmed only when its
-  // own prefix changes).
-  struct CbpLevelMemo
-  {
-    struct Fact
-    {
-      ASTNode domain;
-      ASTNode assertion;
-
-      Fact(const ASTNode& domain_, const ASTNode& assertion_)
-          : domain(domain_), assertion(assertion_)
-      {
-      }
-    };
-
-    // The raw level conjunction this entry was built from.
-    ASTNode conjunction;
-    // Raw conjunct -> its final rewritten form (context substitution,
-    // definers restored, constant fixings adopted), in processing
-    // order.
-    std::vector<std::pair<ASTNode, ASTNode>> rewrites;
-    // The pinning facts this level's adoptions appended, paired with the
-    // substitution-domain node whose emission they record. Keeping the
-    // domain explicit matters for a positive Boolean fact that is itself an
-    // EQ node: it cannot be recovered by inspecting the assertion's kind.
-    std::vector<Fact> facts;
-  };
+  // Rewrites are memoised by the scope ledger with one stronger property: an
+  // entry records outputs as derived at BUILD time, when the accumulated
+  // substitution held exactly the entry's own prefix. Replaying under a
+  // deeper stack can therefore never leak a deeper fact upward. Keeping that
+  // memo beside scope identity also means CBP is no longer a second owner of
+  // the assertion stack.
 
   struct CbpSubstUndo
   {
@@ -1138,12 +1098,9 @@ struct IncrementalSolver::Impl
     bool conflictBefore;
   };
 
-  // Fed level conjunctions in feed order (index == stack level; the
-  // engine's validity domain), and the per-level memo (its own,
-  // prefix-trimmed validity domain). Equal lengths at call
-  // boundaries; the memo outlives an engine reset.
-  std::vector<ASTNode> cbpFedLevels;
-  std::vector<CbpLevelMemo> cbpMemo;
+  // Caller-side undo payload parallels the CBP consumer cursor owned by
+  // `scopes`. The semantic identity and memo live there; only mechanics of
+  // undoing this implementation's maps remain here.
   std::vector<CbpCallerCheckpoint> cbpCallerCheckpoints;
   std::vector<CbpSubstUndo> cbpSubstUndo;
   std::vector<ASTNode> cbpFedConjunctsAdded;
@@ -1159,7 +1116,7 @@ struct IncrementalSolver::Impl
   {
     assert(callCbpDeferred.empty());
     assert(!cbpCallerLevelOpen);
-    assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
+    assert(cbpCallerCheckpoints.size() == scopes.cbpFedDepth());
     cbpSubstTrailedThisLevel.clear();
     cbpCallerCheckpoints.push_back(CbpCallerCheckpoint{
         cbpSubstUndo.size(), cbpFedConjunctsAdded.size(), cbpFactsAdded.size(),
@@ -1264,7 +1221,7 @@ struct IncrementalSolver::Impl
     cbpSubstTrailedThisLevel.clear();
     cbpCallerLevelOpen = false;
     callCbpDeferred.clear();
-    cbpFedLevels.resize(levels);
+    scopes.rollbackCbpFedTo(levels);
     return entries;
   }
 
@@ -1275,7 +1232,7 @@ struct IncrementalSolver::Impl
     callCbpDeferred.clear();
     callCbpFactEmitted.clear();
     callCbpFedConjuncts.clear();
-    cbpFedLevels.clear();
+    scopes.resetCbpFed();
     cbpCallerCheckpoints.clear();
     cbpSubstUndo.clear();
     cbpFedConjunctsAdded.clear();
@@ -1335,7 +1292,7 @@ struct IncrementalSolver::Impl
       return;
     // Levels feed in stack order exactly once; anything else is a
     // prefix this session already carries.
-    if (level != cbpFedLevels.size())
+    if (level != scopes.cbpFedDepth())
       return;
     const bool refeed = level < cbpMemoStable;
     ScopedProfileTimer cbpTimer(profile.enabled, profile.cbpNs);
@@ -1424,14 +1381,12 @@ struct IncrementalSolver::Impl
       // instead of re-running the feed.
       callCbpConflict = true;
       callCbpOff = true;
-      cbpFedLevels.push_back(levelConjunction);
-      assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
-      if (cbpMemo.size() == level)
+      scopes.markCbpFed(level);
+      assert(cbpCallerCheckpoints.size() == scopes.cbpFedDepth());
+      if (scopes.cbpMemoDepth() == level)
       {
-        cbpMemo.push_back(CbpLevelMemo());
-        cbpMemo.back().conjunction = levelConjunction;
-        cbpMemo.back().facts.push_back(
-            CbpLevelMemo::Fact(ASTNode(), bm->ASTFalse));
+        scopes.startCbpMemo(level).facts.push_back(
+            ScopedFact(ASTNode(), bm->ASTFalse));
       }
       return;
     }
@@ -1504,16 +1459,13 @@ struct IncrementalSolver::Impl
       }
     }
 
-    cbpFedLevels.push_back(levelConjunction);
-    assert(cbpCallerCheckpoints.size() == cbpFedLevels.size());
+    scopes.markCbpFed(level);
+    assert(cbpCallerCheckpoints.size() == scopes.cbpFedDepth());
     // The memo entry parallels the feed; if this level was already memoised
     // under the same conjunction (the reset oracle/fallback re-feeding the
     // stable prefix), the existing entry keeps replaying.
-    if (cbpMemo.size() == level)
-    {
-      cbpMemo.push_back(CbpLevelMemo());
-      cbpMemo.back().conjunction = levelConjunction;
-    }
+    if (scopes.cbpMemoDepth() == level)
+      scopes.startCbpMemo(level);
   }
 
   // Restore the fed-conjunct fixings cbpFeedLevel parked, once the
@@ -1551,7 +1503,7 @@ struct IncrementalSolver::Impl
   // conjuncts are exempt: their own levels assert them for at least
   // as long as any adopter lives.
   ASTNode cbpAdopt(const ASTNode& conjunct,
-                   std::vector<CbpLevelMemo::Fact>& factsOut)
+                   std::vector<ScopedFact>& factsOut)
   {
     if (callCbpOff || !cbpCallerLevelOpen || callCbpSubst.empty())
       return conjunct;
@@ -1602,7 +1554,7 @@ struct IncrementalSolver::Impl
                      : bm->defaultNodeFactory->CreateNode(NOT, cur);
         else
           fact = bm->defaultNodeFactory->CreateNode(EQ, cur, sit->second);
-        factsOut.push_back(CbpLevelMemo::Fact(cur, fact));
+        factsOut.push_back(ScopedFact(cur, fact));
       }
       for (unsigned j = 0; j < cur.Degree(); j++)
         pending.push_back(cur[j]);
@@ -1756,7 +1708,8 @@ struct IncrementalSolver::Impl
         if (bit->second.witness)
           restore = bit->second.originals;
         else
-          restore.push_back(definitionEquation(bit->first, bit->second.def));
+          restore.push_back(
+              definitionEquation(bit->first, bit->second.value));
         baseEliminatedDefs.erase(bit);
         for (const ASTNode& r : restore)
         {
@@ -1782,7 +1735,7 @@ struct IncrementalSolver::Impl
       return;
     if (profile.enabled)
       profile.preparationInvalidations++;
-    for (const ASTNode& v : it->second.eliminatedVars)
+    for (const ASTNode& v : it->second.eliminatedVariables)
     {
       std::map<ASTNode, std::vector<ASTNode>>::iterator ui =
           eliminationUsers.find(v);
@@ -1971,7 +1924,7 @@ struct IncrementalSolver::Impl
       // expansion anyway, so checking it here as well would pay for the same
       // substitution twice on every cache hit.
       bool privateStill = true;
-      for (const ASTNode& v : hit->second.eliminatedVars)
+      for (const ASTNode& v : hit->second.eliminatedVariables)
       {
         if (!levelPrivate(v, levelIdx, stack, conjunctCountOf,
                           protectedSymbols))
@@ -2087,7 +2040,7 @@ struct IncrementalSolver::Impl
         profile.preparationRejected++;
     }
 
-    PreparedPiece pl;
+    PreparedPiece pl(PreprocessingMode::PerLevel, replaced);
     ASTVec keep;
     DenseNodeMap* defs = scratch.Return_SolverMap();
     for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
@@ -2111,8 +2064,7 @@ struct IncrementalSolver::Impl
         keep.push_back(definitionEquation(var, def));
         continue;
       }
-      pl.eliminatedDefs.push_back(std::make_pair(var, def));
-      pl.eliminatedVars.insert(var);
+      pl.addElimination(var, def);
     }
 
     if (!keep.empty())
@@ -2126,12 +2078,12 @@ struct IncrementalSolver::Impl
     // Recording an elimination while any retained conjunct still mentions
     // its variable would leave live backend bits alongside model-only
     // metadata.  Adopted substitutions must remove every such use.
-    for (const ASTNode& v : pl.eliminatedVars)
+    for (const ASTNode& v : pl.eliminatedVariables)
       for (const ASTNode& c : pl.conjuncts)
         assert(symbolsOf(c).find(v) == symbolsOf(c).end());
 #endif
 
-    for (const ASTNode& v : pl.eliminatedVars)
+    for (const ASTNode& v : pl.eliminatedVariables)
       eliminationUsers[v].push_back(replaced);
 
     return preparedPieceOf.insert(std::make_pair(replaced, pl))
@@ -2278,41 +2230,7 @@ struct IncrementalSolver::Impl
   // promoted depth (lastUnsatCoreLevels), and the frontend's verdict
   // cache can never record an unsat above a promoted level that may
   // have carried it.
-  ASTVec lastStackSeen;
-  std::vector<size_t> levelStableSolves;
-  size_t promotedDepth = 0;
   size_t promoteAfterSolves = 8;
-
-  // What promotion actually pinned, per promoted level.
-  //
-  // A level's raw conjunction is NOT a fingerprint of the units promotion
-  // emitted: those come from its PREPARED form, which can legitimately
-  // change while the raw node stays identical -- a private elimination
-  // retracted by later content, or a different constant-bit adoption. The
-  // stale units stay sound (a prepared form is a consequence of its live
-  // raw level) but they are weaker than what the level now says, and the
-  // stronger form was being dropped by the promoted-level skip. Recording
-  // the pinned conjuncts is what makes that detectable.
-  std::map<size_t, ASTVec> promotedConjunctsOf;
-  // Set when a promoted level was found to have drifted. The level is
-  // assumed for the rest of that solve, which restores the missing
-  // strength immediately; the epoch is replaced at the next call boundary,
-  // where a rebuild is safe, to reclaim the superseded units.
-  bool promotionDriftPending = false;
-
-  bool promotedConjunctsChanged(size_t level, const ASTVec& conjuncts) const
-  {
-    std::map<size_t, ASTVec>::const_iterator it =
-        promotedConjunctsOf.find(level);
-    if (it == promotedConjunctsOf.end())
-      return true;
-    if (it->second.size() != conjuncts.size())
-      return true;
-    for (size_t i = 0; i < conjuncts.size(); i++)
-      if (!(it->second[i] == conjuncts[i]))
-        return true;
-    return false;
-  }
 
   // Track per-level stability against the last call's stack, and start
   // the solver over if a PROMOTED level changed or vanished -- its
@@ -2320,20 +2238,10 @@ struct IncrementalSolver::Impl
   // extensionality rounds see a coherent solver too.
   void updateStackStability(const ASTVec& assertionsSMT2)
   {
-    bool demote = promotionDriftPending;
-    promotionDriftPending = false;
-    for (size_t i = 1; !demote && i <= promotedDepth; i++)
+    const IncrementalScopeState::ReconcileResult reconciliation =
+        scopes.reconcile(assertionsSMT2);
+    if (reconciliation.promotedPrefixRetracted)
     {
-      if (i >= assertionsSMT2.size() || i >= lastStackSeen.size() ||
-          !(assertionsSMT2[i] == lastStackSeen[i]))
-      {
-        demote = true;
-        break;
-      }
-    }
-    if (demote)
-    {
-      promotedDepth = 0;
       promoteAfterSolves *= 2;
       if (bm->UserFlags.stats_flag)
         std::cerr << "Incremental: promoted prefix retracted, solver "
@@ -2342,11 +2250,9 @@ struct IncrementalSolver::Impl
       rebuildEncodings(assertionsSMT2, RebuildReason::Promotion);
     }
 
-    levelStableSolves.resize(assertionsSMT2.size(), 0);
     for (size_t i = 0; i < assertionsSMT2.size(); i++)
     {
-      const bool same = i < lastStackSeen.size() &&
-                        assertionsSMT2[i] == lastStackSeen[i];
+      const bool same = i < reconciliation.commonPrefix;
       // This is a session classification, so a source array level remains
       // evidence after it is popped. Inspect only new/replaced levels: an
       // unchanged level was already screened on the call where it arrived.
@@ -2354,15 +2260,13 @@ struct IncrementalSolver::Impl
       // form, preventing totalisation's internal arrays from setting this.
       if (!sourceArraysSeen && !same)
         sourceArraysSeen = fragment(assertionsSMT2[i]).sourceArrays;
-      levelStableSolves[i] = same ? levelStableSolves[i] + 1 : 0;
     }
-    lastStackSeen = assertionsSMT2;
   }
 
   bool baseStableForInprobingRetirement() const
   {
-    return !levelStableSolves.empty() &&
-           levelStableSolves[0] >= inprobingRetireSolves;
+    return scopes.size() > 0 &&
+           scopes.stableSolves(0) >= inprobingRetireSolves;
   }
 
   // The AUTO-mode evidence that probe inprocessing has turned from a one-off
@@ -3278,7 +3182,8 @@ struct IncrementalSolver::Impl
     // through the pushed-definition context -- naming a variable an earlier
     // level eliminated, which the per-piece check cannot see.
     for (const ASTNode& s : symbolsOf(conjunct))
-      assert(activeEliminatedVars.find(s) == activeEliminatedVars.end() &&
+      assert(scopes.activeEliminatedVariables().find(s) ==
+                 scopes.activeEliminatedVariables().end() &&
              "encoding a conjunct over an eliminated variable");
 #endif
     NodeToLitMap::const_iterator it = rootLitOf.find(conjunct);
@@ -3666,8 +3571,7 @@ struct IncrementalSolver::Impl
     }
     // The fresh solver has no promoted units; a still-stable prefix
     // re-promotes on the next call's tail, recording what it pins then.
-    promotedDepth = 0;
-    promotedConjunctsOf.clear();
+    scopes.clearPromotions();
 
     retiredClauseSubmissions =
         addMass(retiredClauseSubmissions, solver->submittedClauses());
@@ -3778,6 +3682,8 @@ struct IncrementalSolver::Impl
     ASTNode out = ordered.size() == 1
                       ? ordered[0]
                       : bm->defaultNodeFactory->CreateNode(AND, ordered);
+    PreprocessingTransaction transaction(PreprocessingMode::PermanentBase,
+                                         out);
 
     SubstitutionMap passSm(bm);
     Simplifier pass(bm, &passSm);
@@ -3787,20 +3693,17 @@ struct IncrementalSolver::Impl
     out = pass.applySubstitutionMapAtTopLevel(out);
 
     DenseNodeMap* defs = pass.Return_SolverMap();
-    ASTNodeSet eliminated;
+    std::map<ASTNode, size_t> eliminationIndex;
     for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
          ++it)
     {
       if (it->first.GetKind() != SYMBOL ||
           it->first.GetType() != BOOLEAN_TYPE)
         continue;
-      BaseElimination be;
-      be.def = it->second;
-      be.witness = true;
-      baseEliminatedDefs[it->first] = be;
-      eliminated.insert(it->first);
+      eliminationIndex[it->first] = transaction.eliminated.size();
+      transaction.addElimination(it->first, it->second, true);
     }
-    if (eliminated.empty())
+    if (transaction.eliminated.empty())
       return false;
 
     // The raw base was screened before these eliminations existed. Any
@@ -3812,26 +3715,34 @@ struct IncrementalSolver::Impl
       bool saved = false;
       for (const ASTNode& s : symbolsOf(c))
       {
-        if (eliminated.find(s) == eliminated.end())
+        std::map<ASTNode, size_t>::const_iterator e =
+            eliminationIndex.find(s);
+        if (e == eliminationIndex.end())
           continue;
-        baseEliminatedDefs[s].originals.push_back(c);
+        transaction.eliminated[e->second].originals.push_back(c);
         saved = true;
       }
       if (saved)
         screenedContent.erase(c);
     }
 
-    toEncode.clear();
-    splitConjuncts(out, bm->ASTTrue, toEncode);
+    splitConjuncts(out, bm->ASTTrue, transaction.conjuncts);
+
+    // Commit the transformed formula and every witness replay together.
+    // Before this point the trial has made no persistent semantic change.
+    for (const ScopedElimination& e : transaction.eliminated)
+      baseEliminatedDefs[e.symbol] = e;
+    toEncode = transaction.conjuncts;
     if (profile.enabled)
     {
       profile.basePreprocesses++;
-      profile.baseEliminations += eliminated.size();
+      profile.baseEliminations += transaction.eliminated.size();
     }
     if (bm->UserFlags.stats_flag)
       std::cerr << "Incremental: first base pure-literal pass, "
                 << ordered.size() << " conjuncts -> " << toEncode.size()
-                << ", " << eliminated.size() << " eliminated" << std::endl;
+                << ", " << transaction.eliminated.size() << " eliminated"
+                << std::endl;
     return true;
   }
 
@@ -3878,6 +3789,8 @@ struct IncrementalSolver::Impl
     ASTNode conj = base.size() == 1
                        ? base[0]
                        : bm->defaultNodeFactory->CreateNode(AND, base);
+    PreprocessingTransaction transaction(PreprocessingMode::PermanentBase,
+                                         conj);
 
     // Budget it. This is the same PropagateEqualities + applySubstitutionMap
     // + constant-bit propagation the trial path runs, and the trial path is
@@ -4025,7 +3938,7 @@ struct IncrementalSolver::Impl
     // replay, restored by screening if future content mentions it.
     ASTVec keep;
     DenseNodeMap* defs = pass.Return_SolverMap();
-    size_t eliminated = 0;
+    std::map<ASTNode, size_t> eliminationIndex;
     for (DenseNodeMap::const_iterator it = defs->begin(); it != defs->end();
          ++it)
     {
@@ -4037,20 +3950,20 @@ struct IncrementalSolver::Impl
         keep.push_back(definitionEquation(var, def));
         continue;
       }
-      BaseElimination& be = baseEliminatedDefs[var];
-      be.def = def;
-      be.witness = impliedKeys.find(var) == impliedKeys.end();
-      eliminated++;
+      eliminationIndex[var] = transaction.eliminated.size();
+      transaction.addElimination(
+          var, def, impliedKeys.find(var) == impliedKeys.end());
     }
     // Witness eliminations restore their original conjuncts on mention.
     for (const ASTNode& rc : base)
     {
       for (const ASTNode& s : symbolsOf(rc))
       {
-        std::map<ASTNode, BaseElimination>::iterator eit =
-            baseEliminatedDefs.find(s);
-        if (eit != baseEliminatedDefs.end() && eit->second.witness)
-          eit->second.originals.push_back(rc);
+        std::map<ASTNode, size_t>::const_iterator eit =
+            eliminationIndex.find(s);
+        if (eit != eliminationIndex.end() &&
+            transaction.eliminated[eit->second].witness)
+          transaction.eliminated[eit->second].originals.push_back(rc);
       }
     }
     if (!keep.empty())
@@ -4059,8 +3972,15 @@ struct IncrementalSolver::Impl
       out = bm->defaultNodeFactory->CreateNode(AND, keep);
     }
 
-    pendingRebuiltBase.clear();
-    splitConjuncts(out, bm->ASTTrue, pendingRebuiltBase);
+    splitConjuncts(out, bm->ASTTrue, transaction.conjuncts);
+
+    // Commit both halves of the permanent-base transformation together.
+    // The fresh backend cannot observe a transformed formula without the
+    // corresponding model/restoration definitions, or vice versa.
+    baseEliminatedDefs.clear();
+    for (const ScopedElimination& e : transaction.eliminated)
+      baseEliminatedDefs[e.symbol] = e;
+    pendingRebuiltBase = transaction.conjuncts;
 
 #ifndef NDEBUG
     // The same invariant preparePiece asserts over its own output: a variable
@@ -4086,7 +4006,8 @@ struct IncrementalSolver::Impl
     if (bm->UserFlags.stats_flag)
       std::cerr << "Incremental: base re-simplified at rebuild, "
                 << base.size() << " conjuncts -> " << pendingRebuiltBase.size()
-                << ", " << eliminated << " eliminated" << std::endl;
+                << ", " << transaction.eliminated.size() << " eliminated"
+                << std::endl;
   }
 
   // What one run of the scoped block pass produced, so a repeated stack does
@@ -4102,14 +4023,7 @@ struct IncrementalSolver::Impl
   // by input node restores the function property; the eliminations are
   // recorded alongside because they are the only other thing the pass emits,
   // and they are per-solve state that must be replayed on a hit.
-  struct ScopedBlockResult
-  {
-    ASTNode output;
-    std::vector<std::pair<ASTNode, ASTNode>> eliminated;
-    size_t eliminatedSymbols = 0;
-    bool accepted = true;
-  };
-  std::map<std::pair<ASTNode, bool>, ScopedBlockResult> scopedBlockOf;
+  std::map<std::pair<ASTNode, bool>, PreprocessingTransaction> scopedBlockOf;
 
   // The exact-stack path encodes the COMPLETE active stack as one
   // assumption-guarded block. Whole-formula simplification is therefore
@@ -4117,38 +4031,26 @@ struct IncrementalSolver::Impl
   // per-level encodings, a fact from a deeper level cannot leak into a root
   // which survives its pop. Reproduce the high-yield, model-replay-capable
   // prefix of the batch size-reducing pipeline before array transformation.
-  ASTNode preprocessExactStackBlock(const ASTNode& input,
-                                    bool requireCollapse = false,
-                                    bool* accepted = NULL,
-                                    size_t* eliminatedCount = NULL)
+  PreprocessingTransaction
+  preprocessExactStackBlock(const ASTNode& input,
+                            bool requireCollapse = false)
   {
-    if (accepted != NULL)
-      *accepted = true;
-    if (eliminatedCount != NULL)
-      *eliminatedCount = 0;
+    PreprocessingTransaction result(PreprocessingMode::ExactStack, input);
     if (!bm->UserFlags.optimize_flag || input.isConstant())
     {
-      if (accepted != NULL && requireCollapse)
-        *accepted = false;
-      return input;
+      result.accepted = !requireCollapse;
+      result.conjuncts.push_back(input);
+      return result;
     }
 
     // `requireCollapse` is part of the key: it changes both the acceptance
     // rule and the size gate, so the two callers must not share an entry.
     const std::pair<ASTNode, bool> memoKey(input, requireCollapse);
-    std::map<std::pair<ASTNode, bool>, ScopedBlockResult>::const_iterator
-        memo = scopedBlockOf.find(memoKey);
+    std::map<std::pair<ASTNode, bool>,
+             PreprocessingTransaction>::const_iterator memo =
+        scopedBlockOf.find(memoKey);
     if (memo != scopedBlockOf.end())
-    {
-      const ScopedBlockResult& done = memo->second;
-      for (const std::pair<ASTNode, ASTNode>& d : done.eliminated)
-        recordActiveElimination(d.first, d.second);
-      if (accepted != NULL)
-        *accepted = done.accepted;
-      if (eliminatedCount != NULL)
-        *eliminatedCount = done.eliminatedSymbols;
-      return done.output;
-    }
+      return memo->second;
 
     size_t before = 0;
     if (requireCollapse)
@@ -4156,12 +4058,12 @@ struct IncrementalSolver::Impl
       if (dagSizeUpTo(input, firstStackCollapseMinNodes - 1) <
           firstStackCollapseMinNodes)
       {
-        if (accepted != NULL)
-          *accepted = false;
-        ScopedBlockResult& rejected = scopedBlockOf[memoKey];
-        rejected.output = input;
+        PreprocessingTransaction& rejected = scopedBlockOf[memoKey];
+        rejected = PreprocessingTransaction(PreprocessingMode::ExactStack,
+                                            input);
+        rejected.conjuncts.push_back(input);
         rejected.accepted = false;
-        return input;
+        return rejected;
       }
       before = dagSizeUpTo(input, std::numeric_limits<size_t>::max());
     }
@@ -4210,19 +4112,20 @@ struct IncrementalSolver::Impl
     // the DAG. No definitions have entered the model channel yet.
     if (requireCollapse && dagSizeUpTo(out, before / 2) > before / 2)
     {
-      if (accepted != NULL)
-        *accepted = false;
       // A rejected trial commits no definitions (they would be model state
       // for a formula that is not being encoded), so the entry records only
       // the refusal.
-      ScopedBlockResult& rejected = scopedBlockOf[memoKey];
-      rejected.output = input;
+      PreprocessingTransaction& rejected = scopedBlockOf[memoKey];
+      rejected =
+          PreprocessingTransaction(PreprocessingMode::ExactStack, input);
+      rejected.conjuncts.push_back(input);
       rejected.accepted = false;
-      return input;
+      return rejected;
     }
 
-    ScopedBlockResult& done = scopedBlockOf[memoKey];
-    done.output = out;
+    PreprocessingTransaction& done = scopedBlockOf[memoKey];
+    done = PreprocessingTransaction(PreprocessingMode::ExactStack, input);
+    done.conjuncts.push_back(out);
     done.accepted = true;
     const ASTNodeSet retainedSymbols = symbolsOf(out);
     for (DenseNodeMap::const_iterator it = scoped.Return_SolverMap()->begin();
@@ -4231,10 +4134,7 @@ struct IncrementalSolver::Impl
       if (it->first.GetKind() == SYMBOL &&
           retainedSymbols.find(it->first) != retainedSymbols.end())
         continue;
-      recordActiveElimination(it->first, it->second);
-      done.eliminated.push_back(std::make_pair(it->first, it->second));
-      if (it->first.GetKind() == SYMBOL)
-        done.eliminatedSymbols++;
+      done.addElimination(it->first, it->second);
     }
 #ifndef NDEBUG
     // The third statement of the invariant preparePiece and
@@ -4244,14 +4144,12 @@ struct IncrementalSolver::Impl
     // lines up, not of the design, and it is what makes this pass's
     // unconstrained call safe without an untouchable set at all. Say so where
     // it can be checked rather than where it can be argued.
-    for (const std::pair<ASTNode, ASTNode>& e : done.eliminated)
-      assert(retainedSymbols.find(e.first) == retainedSymbols.end() &&
+    for (const ScopedElimination& e : done.eliminated)
+      assert(retainedSymbols.find(e.symbol) == retainedSymbols.end() &&
              "scoped block output mentions a variable it eliminated");
 #endif
-    if (eliminatedCount != NULL)
-      *eliminatedCount = done.eliminatedSymbols;
     bm->ASTNodeStats("Incremental exact stack after preprocessing: ", out);
-    return out;
+    return done;
   }
 
   // The batch pipeline's bounded-variable-addition policy, applied to the
@@ -4370,10 +4268,10 @@ struct IncrementalSolver::Impl
     // sigma0-eliminated variables always have. These are seeded even if an
     // older block bit-blasted the same symbol: buildSymbolMap deliberately
     // omits active eliminations below, so the scoped definition wins.
-    for (const std::pair<ASTNode, ASTNode>& d : activeEliminatedDefs)
+    for (const ScopedElimination& d : scopes.activeEliminations())
     {
-      (*channel)[d.first] = d.second;
-      seededModelKeys.insert(d.first);
+      (*channel)[d.symbol] = d.value;
+      seededModelKeys.insert(d.symbol);
     }
     // Base variables the rebuild-boundary pass eliminated: seeded
     // unconditionally -- their pre-rebuild bits survive in the blast
@@ -4385,7 +4283,7 @@ struct IncrementalSolver::Impl
              baseEliminatedDefs.begin();
          it != baseEliminatedDefs.end(); ++it)
     {
-      (*channel)[it->first] = it->second.def;
+      (*channel)[it->first] = it->second.value;
       seededModelKeys.insert(it->first);
     }
   }
@@ -4402,8 +4300,8 @@ struct IncrementalSolver::Impl
              bbMgr.symbolToBBNode.begin();
          it != bbMgr.symbolToBBNode.end(); ++it)
     {
-      if (activeEliminatedVars.find(it->first) !=
-          activeEliminatedVars.end())
+      if (scopes.activeEliminatedVariables().find(it->first) !=
+          scopes.activeEliminatedVariables().end())
         continue;
       const vector<BBNodeAIG>& bits = it->second;
       vector<unsigned> vars(bits.size(), ~((unsigned)0));
@@ -4682,13 +4580,15 @@ IncrementalSolver::Impl::exactStackCheckSat(
                                  engagedSolves > 1 ||
                                      firstForcedIncrementalSolve))
           .first->second;
+  PreprocessingTransaction stackTransaction(PreprocessingMode::ExactStack,
+                                             inputToSat);
+  stackTransaction.conjuncts.push_back(inputToSat);
   if (scopedPreprocess)
   {
-    bool accepted = true;
-    size_t eliminated = 0;
-    inputToSat = preprocessExactStackBlock(
-        inputToSat, requireScopedCollapse, &accepted, &eliminated);
-    if (!accepted)
+    stackTransaction =
+        preprocessExactStackBlock(inputToSat, requireScopedCollapse);
+    inputToSat = stackTransaction.conjuncts.front();
+    if (!stackTransaction.accepted)
     {
       if (profile.enabled)
         profile.firstStackRejected++;
@@ -4700,6 +4600,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
     }
     if (profile.enabled)
     {
+      const size_t eliminated = stackTransaction.eliminatedSymbolCount();
       if (requireScopedCollapse)
       {
         profile.firstStackPreprocesses++;
@@ -4715,6 +4616,10 @@ IncrementalSolver::Impl::exactStackCheckSat(
 
   if (scopedAccepted != NULL)
     *scopedAccepted = true;
+
+  // Formula output and eliminated-definition replay become active together.
+  // A rejected speculative block returned above without committing either.
+  scopes.commitWholeStack(stackTransaction);
 
   if (activeHasFp)
     inputToSat = fpContext()->lowerPrepared(inputToSat);
@@ -4993,8 +4898,8 @@ std::vector<size_t> IncrementalSolver::lastUnsatCoreLevels() const
   // may rest on it without any assumption failing: the core is floored
   // at the promoted prefix, and the caller's verdict cache can never
   // record an unsat above a level that may have carried it.
-  for (size_t i = 1; i <= impl->promotedDepth && i < impl->lastLevelCount;
-       i++)
+  for (size_t i = 1;
+       i <= impl->scopes.promotedDepth() && i < impl->lastLevelCount; i++)
   {
     if (seen.insert(i).second)
       out.push_back(i);
@@ -5238,9 +5143,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   impl->assumedLitLevels.clear();
   impl->lastLevelLitConjuncts.clear();
   impl->lastFailedLits.clear();
-  impl->activeEliminatedDefs.clear();
-  impl->activeEliminatedVars.clear();
-
   {
     ScopedProfileTimer maintenanceTimer(impl->profile.enabled,
                                         impl->profile.maintenanceNs);
@@ -5464,7 +5366,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // level, or base growth rolls the engine and caller overlay back to their
   // longest common prefix; the diagnostic reset mode rebuilds that prefix
   // instead. The rewrite/fact memo has its own matching-prefix watermark
-  // (see cbpFeedLevel/cbpAdopt and the CbpLevelMemo comment).
+  // (see cbpFeedLevel/cbpAdopt and IncrementalScopeState::CbpMemo).
   bool cbpBootstrapDeferred = false;
   {
     ScopedProfileTimer cbpTimer(impl->profile.enabled, impl->profile.cbpNs);
@@ -5482,8 +5384,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         uf.incremental_cbp_bootstrap_limit;
     if (firstForcedIncrementalSolve && configuredBootstrapLimit > 0 &&
         uf.optimize_flag && uf.bitConstantProp_flag &&
-        assertionsSMT2.size() > 1 && impl->cbpFedLevels.empty() &&
-        impl->cbpMemo.empty())
+        assertionsSMT2.size() > 1 && impl->scopes.cbpFedDepth() == 0 &&
+        impl->scopes.cbpMemoDepth() == 0)
     {
       const uint64_t configured =
           static_cast<uint64_t>(configuredBootstrapLimit);
@@ -5503,13 +5405,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       }
     }
 
-    size_t lcp = 0;
-    while (lcp < impl->cbpFedLevels.size() && lcp < assertionsSMT2.size() &&
-           impl->cbpFedLevels[lcp] == assertionsSMT2[lcp])
-      lcp++;
+    const size_t lcp = impl->scopes.cbpFedCommonPrefix();
     if (impl->profile.enabled)
       impl->profile.stablePrefix = lcp;
-    const bool diverged = lcp < impl->cbpFedLevels.size();
+    const bool diverged = lcp < impl->scopes.cbpFedDepth();
     if (diverged)
     {
       if (impl->profile.enabled)
@@ -5538,7 +5437,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       }
       impl->cbpEpochAdopted = 0;
 
-      const size_t fedLevelsBefore = impl->cbpFedLevels.size();
+      const size_t fedLevelsBefore = impl->scopes.cbpFedDepth();
       const bool aligned =
           impl->callCbp.get() != NULL &&
           impl->callCbp->levelCount() == fedLevelsBefore &&
@@ -5556,7 +5455,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         assert(stats.levels == fedLevelsBefore - lcp);
         assert(impl->callCbp->levelCount() == lcp);
         assert(impl->cbpCallerCheckpoints.size() == lcp);
-        assert(impl->cbpFedLevels.size() == lcp);
+        assert(impl->scopes.cbpFedDepth() == lcp);
         if (impl->profile.enabled)
         {
           impl->profile.cbpRollbacks++;
@@ -5579,13 +5478,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       }
     }
 
-    size_t memoLcp = 0;
-    while (memoLcp < impl->cbpMemo.size() &&
-           memoLcp < assertionsSMT2.size() &&
-           impl->cbpMemo[memoLcp].conjunction == assertionsSMT2[memoLcp])
-      memoLcp++;
-    impl->cbpMemo.resize(memoLcp);
-    impl->cbpMemoStable = memoLcp;
+    impl->cbpMemoStable = impl->scopes.trimCbpMemoToCurrent();
   }
   impl->callCbpAdopted = 0;
   impl->callCbpReplayed = 0;
@@ -5692,7 +5585,6 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // assumption set is recomputed from the current stack on every call,
   // so popped levels vanish by simply no longer being here.
   SATSolver::vec_literals assumptions;
-  std::vector<ASTNode> activeEncodedKeys;
   std::vector<int> levelRoots;
   // The context carries only RETRACTABLE definitions -- harvested from
   // the live pushed levels this call, plus this call's eliminations --
@@ -5729,6 +5621,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   {
     const bool individually =
         assumeLastLevelPerConjunct && level + 1 == assertionsSMT2.size();
+    PreprocessingTransaction levelTransaction(PreprocessingMode::PerLevel,
+                                              assertionsSMT2[level]);
 
     ASTVec levelDefiningConjuncts;
     if (uf.optimize_flag)
@@ -5823,9 +5717,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // live map may hold deeper levels' fixings by now, and prefix
       // discipline forbids folding those into a shallower conjunct.
       const bool cbpHit = level < impl->cbpMemoStable;
-      const bool cbpBuild =
-          !cbpHit && impl->cbpMemo.size() == level + 1 &&
-          impl->cbpMemo[level].conjunction == assertionsSMT2[level];
+      const bool cbpBuild = !cbpHit && impl->scopes.hasCbpMemo(level);
       ASTNodeSet cbpProtectedSymbols = activeCbpFactSymbols;
       const auto protectSymbols = [&](const ASTNode& n)
       {
@@ -5834,7 +5726,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       };
       if (cbpHit)
       {
-        for (const Impl::CbpLevelMemo::Fact& f : impl->cbpMemo[level].facts)
+        for (const ScopedFact& f : impl->scopes.cbpMemo(level).facts)
           protectSymbols(f.assertion);
       }
       else if (cbpBuild)
@@ -5856,7 +5748,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         impl->addSymbolsOf(eligibleDomains, cbpProtectedSymbols);
       }
       size_t cbpMemoIdx = 0;
-      std::vector<Impl::CbpLevelMemo::Fact> cbpFacts;
+      std::vector<ScopedFact> cbpFacts;
       for (const ASTNode& rc : rawConjuncts)
       {
         ASTNode replaced = rc;
@@ -5870,7 +5762,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           if (impl->profile.enabled)
             impl->profile.cbpReplayAttempts++;
           const std::vector<std::pair<ASTNode, ASTNode>>& rw =
-              impl->cbpMemo[level].rewrites;
+              impl->scopes.cbpMemo(level).rewrites;
           if (cbpMemoIdx < rw.size() && rw[cbpMemoIdx].first == rc)
           {
             replaced = rw[cbpMemoIdx].second;
@@ -5929,7 +5821,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               protectSymbols(cbpFacts[i].assertion);
           }
           if (cbpBuild)
-            impl->cbpMemo[level].rewrites.push_back(
+            impl->scopes.cbpMemo(level).rewrites.push_back(
                 std::make_pair(rc, replaced));
         }
 
@@ -5971,15 +5863,15 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // by construction.
         std::vector<std::pair<ASTNode, ASTNode>> ctxInlines;
         bool inlinesHold = true;
-        for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
+        for (const ScopedElimination& d : pp->eliminated)
         {
           ASTNode expanded;
-          if (!impl->ctxInlinable(d.first, d.second, ctx, expanded))
+          if (!impl->ctxInlinable(d.symbol, d.value, ctx, expanded))
           {
             inlinesHold = false;
             break;
           }
-          ctxInlines.push_back(std::make_pair(d.first, expanded));
+          ctxInlines.push_back(std::make_pair(d.symbol, expanded));
         }
         if (!inlinesHold)
         {
@@ -5987,14 +5879,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           pp = &impl->preparePiece(replaced, level, assertionsSMT2,
                                    conjunctCountOf, cbpProtectedSymbols, ctx);
           ctxInlines.clear();
-          for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
+          for (const ScopedElimination& d : pp->eliminated)
           {
             ASTNode expanded;
             const bool held =
-                impl->ctxInlinable(d.first, d.second, ctx, expanded);
+                impl->ctxInlinable(d.symbol, d.value, ctx, expanded);
             assert(held && "a re-prepared piece refuses its own inlining");
             (void)held;
-            ctxInlines.push_back(std::make_pair(d.first, expanded));
+            ctxInlines.push_back(std::make_pair(d.symbol, expanded));
           }
         }
         for (const ASTNode& pc : pp->conjuncts)
@@ -6015,8 +5907,8 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // recursed until the worker stack died. The elimination itself
         // stays (it is sound for the piece and its replay); only the
         // context entry is withheld.
-        for (const std::pair<ASTNode, ASTNode>& d : pp->eliminatedDefs)
-          impl->recordActiveElimination(d.first, d.second);
+        for (const ScopedElimination& d : pp->eliminated)
+          levelTransaction.addElimination(d.symbol, d.value, d.witness);
         for (const std::pair<ASTNode, ASTNode>& ci : ctxInlines)
         {
           // A null expansion means the context already binds the variable,
@@ -6038,7 +5930,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       // replaying level re-asserts the facts it recorded.
       if (cbpHit)
       {
-        for (const Impl::CbpLevelMemo::Fact& f : impl->cbpMemo[level].facts)
+        for (const ScopedFact& f : impl->scopes.cbpMemo(level).facts)
         {
           // A retired session will never adopt again and creates no new
           // caller checkpoints. Its memo still supplies already-recorded
@@ -6046,6 +5938,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
           if (!f.domain.IsNull() && !impl->cbpSessionRetired)
             impl->cbpInsertFactDomain(f.domain);
           conjuncts.push_back(f.assertion);
+          levelTransaction.facts.push_back(f);
         }
       }
       else
@@ -6053,15 +5946,18 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
         // Append rather than assign: a refuted level's memo already
         // carries its FALSE.
         if (cbpBuild)
-          for (const Impl::CbpLevelMemo::Fact& f : cbpFacts)
-            impl->cbpMemo[level].facts.push_back(f);
-        for (const Impl::CbpLevelMemo::Fact& f : cbpFacts)
+          for (const ScopedFact& f : cbpFacts)
+            impl->scopes.cbpMemo(level).facts.push_back(f);
+        for (const ScopedFact& f : cbpFacts)
+        {
           conjuncts.push_back(f.assertion);
+          levelTransaction.facts.push_back(f);
+        }
       }
 
-      const std::vector<Impl::CbpLevelMemo::Fact>& activeFacts =
-          cbpHit ? impl->cbpMemo[level].facts : cbpFacts;
-      for (const Impl::CbpLevelMemo::Fact& f : activeFacts)
+      const std::vector<ScopedFact>& activeFacts =
+          cbpHit ? impl->scopes.cbpMemo(level).facts : cbpFacts;
+      for (const ScopedFact& f : activeFacts)
       {
         const ASTNodeSet& symbols = impl->symbolsOf(f.assertion);
         activeCbpFactSymbols.insert(symbols.begin(), symbols.end());
@@ -6073,21 +5969,23 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     if (impl->callCbpConflict)
     {
       conjuncts.push_back(bm->ASTFalse);
+      levelTransaction.facts.push_back(
+          ScopedFact(ASTNode(), bm->ASTFalse));
       impl->callCbpConflict = false;
     }
     // This level is past rewriting; its own parked fixings now serve
     // the deeper levels.
     impl->cbpFinishLevel();
 
+    levelTransaction.conjuncts = conjuncts;
+    impl->scopes.commitLevel(level, levelTransaction);
+
     if (conjuncts.empty())
       continue;
 
     levelRoots.clear();
     for (const ASTNode& c : conjuncts)
-    {
       levelRoots.push_back(impl->rootLit(c));
-      activeEncodedKeys.push_back(c);
-    }
 
     // A level inside the promoted prefix is already asserted as units;
     // nothing to assume. (Its preparation above still ran: deeper
@@ -6101,11 +5999,11 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // variable unconstrained behind the older, weaker units. Fall through
     // instead, so this solve assumes what the level now says, and hand the
     // epoch to the next call's maintenance block, which can rebuild safely.
-    if (level <= impl->promotedDepth)
+    if (level <= impl->scopes.promotedDepth())
     {
-      if (!impl->promotedConjunctsChanged(level, conjuncts))
+      if (!impl->scopes.promotedConjunctsChanged(level, conjuncts))
         continue;
-      impl->promotionDriftPending = true;
+      impl->scopes.notePromotionDrift();
       if (uf.stats_flag)
         std::cerr << "Incremental: promoted level " << level
                   << " re-prepared differently, assumed for this solve "
@@ -6126,10 +6024,10 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     // ~16% on f84c6e97).
     if (!individually && uf.incremental_promote_units &&
         !impl->trailReuseAllowed &&
-        level == impl->promotedDepth + 1 &&
+        level == impl->scopes.promotedDepth() + 1 &&
         level + 1 < assertionsSMT2.size() &&
-        level < impl->levelStableSolves.size() &&
-        impl->levelStableSolves[level] >= impl->promoteAfterSolves)
+        level < impl->scopes.size() &&
+        impl->scopes.stableSolves(level) >= impl->promoteAfterSolves)
     {
       for (const int r : levelRoots)
       {
@@ -6142,15 +6040,14 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
       assert(conjuncts.size() == levelRoots.size());
       for (const ASTNode& c : conjuncts)
         impl->recordPermanentRoot(c);
-      impl->promotedDepth = level;
       // Remember the form that was pinned, not just how deep promotion
       // reached: the skip above is only sound while the level still
       // prepares to exactly this.
-      impl->promotedConjunctsOf[level] = conjuncts;
+      impl->scopes.promote(level, conjuncts);
       if (uf.stats_flag)
         std::cerr << "Incremental: promoted level " << level << " ("
                   << levelRoots.size() << " conjuncts) to units after "
-                  << impl->levelStableSolves[level] << " stable solves"
+                  << impl->scopes.stableSolves(level) << " stable solves"
                   << std::endl;
       continue;
     }
@@ -6179,6 +6076,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     assumptions.push(SATSolver::mkLit(lit >> 1, lit & 1));
   }
 
+  const ASTVec& activeEncodedKeys = impl->scopes.activeSemanticKeys();
   impl->hintRetractedLevels(assumptions);
 
   ASTNode ordinaryOwner;
@@ -6238,7 +6136,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
               << assumptions.size() << " literals, solver has "
               << impl->solver->nVars() << " variables, " << impl->sigma0.size()
               << " base-level and " << ctx.size() << " pushed substitutions, "
-              << impl->activeEliminatedDefs.size() << " eliminated"
+              << impl->scopes.activeEliminations().size() << " eliminated"
               << std::endl;
     if (impl->callCbpAdopted > 0 || impl->callCbpReplayed > 0)
       std::cerr << "Incremental: cbp adopted " << impl->callCbpAdopted

@@ -137,12 +137,14 @@ public:
   // base-only BV formula instead receives a one-time pure-literal pass before
   // any permanent clause exists.
   //
-  // The driver holds no per-level state: the assumption set is recomputed
-  // from `assertionsSMT2` on every call (against permanent encoding caches),
-  // so push and pop need no hooks here -- the parser's assertion stack is
-  // the single source of truth. Base-level conjuncts become permanent unit
-  // clauses, which is sound because the base level only ever grows; it is
-  // destroyed only by reset/reset-assertions, which destroy this object.
+  // The parser's assertion stack remains canonical and is supplied as a
+  // complete snapshot. The driver reconciles it into one versioned scope
+  // ledger which owns stability, promotion, active preprocessing/model state
+  // and independent processed-prefix cursors (CBP may not run on every
+  // route). The assumption set is still recomputed from the snapshot against
+  // permanent content-addressed encodings; no SAT clause deletion or frontend
+  // push/pop hook is required. Base-level conjuncts become permanent units,
+  // which is sound because reset/reset-assertions destroys this object.
   SOLVER_RETURN_TYPE checkSat(const ASTVec& assertionsSMT2,
                               bool assumeLastLevelPerConjunct = false,
                               bool firstForcedIncrementalSolve = false);
