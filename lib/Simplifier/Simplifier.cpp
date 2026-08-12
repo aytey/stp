@@ -1085,6 +1085,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
   // those jobs are not running.
   auto stepAtomic = [&](Frame& f) -> StepResult {
     assert(f.job == Frame::AtomicJob);
+    // The one request site, wantAtomic, always starts an atomic frame
+    // prechecked: the formula head that scheduled it has already probed the
+    // map for this node under this polarity.
+    assert(f.phase != Frame::Start);
     {
       auto finishAtomic = [&](const ASTNode& output)
       {
@@ -1127,12 +1131,8 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         return finishEquality(output);
       };
 
-      if (f.phase == Frame::Start || f.phase == Frame::PrecheckedStart)
+      if (f.phase == Frame::PrecheckedStart)
       {
-        if (f.phase == Frame::Start &&
-            CheckSimplifyMap(f.b, result, f.pushNeg))
-          return StepResult::Finished;
-
         // Keep the original atomic-formula order: every binary predicate
         // simplifies both operands before dispatch, including BOOLEXTRACT.
         if (f.b.Degree() == 2)
