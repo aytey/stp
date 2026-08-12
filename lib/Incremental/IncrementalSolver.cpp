@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/Incremental/IncrementalCBP.h"
 
 #include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
+#include "stp/AbsRefineCounterExample/ArrayReadRefinementProgress.h"
 #include "stp/AbsRefineCounterExample/ArrayTransformer.h"
 #include "stp/Simplifier/FindPureLiterals.h"
 #include "stp/Simplifier/PropagateEqualities.h"
@@ -4855,6 +4856,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // equality that simplified away runs ordinary read refinement with the
   // checker inactive.
   totalizeBatchRegistrySymbols();
+  ArrayReadRefinementProgress readRefinementProgress;
 
   const uint64_t refinementClausesBefore = solver->submittedClauses();
   ScopedProfileTimer refinementTimer(profile.enabled, profile.refinementNs);
@@ -4884,15 +4886,18 @@ IncrementalSolver::Impl::exactStackCheckSat(
     else
     {
       // The hybrid case: routed here for an array equality that simplified
-      // away, so ordinary read refinement runs and needs the same
-      // no-progress guard the equality-free path has. It had none.
-      const uint64_t submittedBefore = solver->submittedClauses();
-      res = ce->SATBased_ArrayReadRefinement(*solver, semantic, tosat);
+      // away, so ordinary read refinement runs. Progress is a newly emitted
+      // logical congruence axiom, not a fresh CNF circuit for an old one.
+      const size_t emittedBefore =
+          readRefinementProgress.emittedAxiomCount();
+      res = ce->SATBased_ArrayReadRefinement(
+          *solver, semantic, tosat, &readRefinementProgress);
       if (res == SOLVER_UNDECIDED &&
-          solver->submittedClauses() == submittedBefore)
+          readRefinementProgress.emittedAxiomCount() == emittedBefore)
         FatalError("IncrementalSolver: an array-equality round fell back to "
-                   "read refinement, rejected the candidate and added no "
-                   "clause -- the encoding and model evaluation disagree");
+                   "read refinement, rejected the candidate and emitted no "
+                   "new logical axiom -- the encoding and model evaluation "
+                   "disagree");
     }
   }
 
@@ -6309,44 +6314,26 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
     const uint64_t refinementClausesBefore =
         impl->solver->submittedClauses();
     size_t refinementRounds = 0;
+    ArrayReadRefinementProgress refinementProgress;
     SOLVER_RETURN_TYPE res = impl->ce->CallSAT_ResultCheck(
         *impl->solver, bm->ASTTrue, activeConjunction, activeConjunction,
         adapter, true);
     while (res == SOLVER_UNDECIDED)
     {
       refinementRounds++;
-      // A candidate the model check rejects while every congruence axiom
-      // is satisfied cannot be repaired by this loop: the next round
-      // recomputes the same candidate pairs, finds the same axioms already
-      // present, and the session spins forever at full speed. That means the
-      // encoding and the word-level evaluation disagree somewhere -- a bug,
-      // and a FatalError names it where a livelock would just hang.
-      //
-      // Progress is measured in CLAUSES rather than in solve calls -- but be
-      // clear that on the legacy read-refinement path the two are the same
-      // predicate, and this guard STILL cannot fire in the case it names.
-      // Every applyAxiomsToSolver site in SATBased_ArrayReadRefinement is
-      // immediately followed by a solve, and SATSolver::addClause counts
-      // every submission including a duplicate, so a round that re-derives
-      // only axioms the solver already holds re-submits them, re-solves, and
-      // advances both counters. applyAxiomsToSolver has no memo of what it
-      // has emitted. Closing that needs the memo -- emitted
-      // (index0,index1,value0,value1) pairs skipped -- in the batch
-      // refinement code both pipelines share, which is why it is recorded as
-      // open rather than done here.
-      //
-      // What the clause measure does buy: it cannot produce a SPURIOUS abort
-      // if a future path ever submits without re-solving, and the same guard
-      // now exists on the array-equality hybrid fallback branch, which had
-      // none at all. The livelock remains a hang on this path.
-      const uint64_t submittedBefore = impl->solver->submittedClauses();
-      res = impl->ce->SATBased_ArrayReadRefinement(*impl->solver,
-                                                   activeConjunction, adapter);
+      // getEquals creates a fresh comparison circuit even for an axiom the
+      // solver already holds, so clause and variable counts are not logical
+      // progress. The check-local transaction suppresses that re-encoding;
+      // an undecided round must therefore have claimed at least one genuinely
+      // new congruence axiom or the model/encoding boundary is inconsistent.
+      const size_t emittedBefore = refinementProgress.emittedAxiomCount();
+      res = impl->ce->SATBased_ArrayReadRefinement(
+          *impl->solver, activeConjunction, adapter, &refinementProgress);
       if (res == SOLVER_UNDECIDED &&
-          impl->solver->submittedClauses() == submittedBefore)
+          refinementProgress.emittedAxiomCount() == emittedBefore)
         FatalError("IncrementalSolver: an array refinement round rejected "
-                   "the candidate but added no clause -- the encoding and "
-                   "model evaluation disagree");
+                   "the candidate but emitted no new logical axiom -- the "
+                   "encoding and model evaluation disagree");
     }
     adapter->setAssumptions(NULL);
 

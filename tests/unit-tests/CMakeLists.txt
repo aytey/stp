@@ -24,6 +24,7 @@
 # -----------------------------------------------------------------------------
 AddSTPGTest(IncrementalCBP_Test.cpp)
 AddSTPGTest(IncrementalActiveReads_Test.cpp)
+AddSTPGTest(ArrayReadRefinementProgress_Test.cpp)
 AddSTPGTest(SATSolver_Test.cpp)
 AddSTPGTest(SatSolverBudget_Test.cpp)
 AddSTPGTest(TrailReuse_Test.cpp)
