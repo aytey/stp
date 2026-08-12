@@ -114,6 +114,22 @@ uint64_t profileMicros(uint64_t nanoseconds)
   return nanoseconds / 1000;
 }
 
+// Whether the result of this check-sat must leave a caller-visible model.
+// Theory refinement may need a candidate model internally even when this is
+// false; keeping the two requirements separate prevents an internal round
+// from either latching model production on or restoring a stale value from a
+// previous query.
+bool observableModelRequested(const UserDefinedFlags& uf)
+{
+  bool requested = uf.check_counterexample_flag ||
+                   uf.print_counterexample_flag || uf.produce_models ||
+                   uf.request_counterexample;
+#ifndef NDEBUG
+  requested = true;
+#endif
+  return requested;
+}
+
 // The one retraction mechanism is SAT assumptions, so the backend must
 // support them. Plain MiniSat stands in for the ones that cannot: the
 // simplifying MiniSat eliminates variables, and a later batch of definitional
@@ -4501,12 +4517,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::Impl::solvePlainExactStack(
 {
   UserDefinedFlags& uf = bm->UserFlags;
 
-  bool construct = uf.check_counterexample_flag ||
-                   uf.print_counterexample_flag || uf.produce_models ||
-                   uf.request_counterexample;
-#ifndef NDEBUG
-  construct = true;
-#endif
+  const bool construct = observableModelRequested(uf);
   uf.construct_counterexample_flag = construct;
 
   bm->GetRunTimes()->start(RunTimes::Solving);
@@ -4820,10 +4831,12 @@ IncrementalSolver::Impl::exactStackCheckSat(
     return solvePlainExactStack(assertionsSMT2, assumptions, inputToSat,
                                 blockRegular);
 
-  // Array equality needs a candidate model on every refinement round. This
-  // is the round's own requirement, so it is restored on the way out rather
-  // than left switched on for the rest of the session.
-  const bool savedConstruct = uf.construct_counterexample_flag;
+  // Array equality needs a candidate model on every refinement round. Keep
+  // that internal requirement distinct from whether this query's caller is
+  // entitled to observe the resulting model. In particular, the incoming
+  // derived flag may still describe an earlier query (and is false before a
+  // session's first query), so restoring it would lose :produce-models.
+  const bool constructForCaller = observableModelRequested(uf);
   uf.construct_counterexample_flag = true;
 
   if (fpCtx)
@@ -4885,7 +4898,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
 
   tosat->setAssumptions(NULL);
   uf.ackermannisation = savedAck;
-  uf.construct_counterexample_flag = savedConstruct;
+  uf.construct_counterexample_flag = constructForCaller;
 
   if (uf.stats_flag && refinementRounds > 0)
     std::cerr << "Incremental: array-equality refinement converged after "
@@ -6250,12 +6263,7 @@ IncrementalSolver::checkSatOnCurrentStack(const ASTVec& assertionsSMT2,
   // candidate model for refinement cannot leave construction switched on
   // for every later check, and with it the frontend's shortcut for a
   // repeated query whose model nobody wants.
-  bool construct = uf.check_counterexample_flag ||
-                   uf.print_counterexample_flag || uf.produce_models ||
-                   uf.request_counterexample || needRefinement;
-#ifndef NDEBUG
-  construct = true;
-#endif
+  const bool construct = observableModelRequested(uf) || needRefinement;
   uf.construct_counterexample_flag = construct;
 
   // Model evaluation of floating-point terms needs the encoding context
