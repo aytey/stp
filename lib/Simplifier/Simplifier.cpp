@@ -1010,55 +1010,73 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
   // through. Return Pushed only when a child frame was added. An immediate
   // answer stays in `result` and returns Redispatch, which the job-local loop
   // consumes without a control-flow jump or an outer worklist dispatch.
-  auto want = [&](Frame& f, const Frame::Phase resume, const ASTNode& n,
-                  const bool neg,
-                  const Frame::Job job = Frame::FormulaJob) -> StepResult {
-    f.phase = resume;
-
-    ASTNode a;
-    ASTNode substitutionImage;
-    Frame::Phase start = Frame::Start;
-    if (job == Frame::FormulaJob)
-    {
-      if (head(n, neg, a))
-        return StepResult::Redispatch;
-    }
-    else if (job == Frame::TermJob)
-    {
-      if (n.isConstant())
-      {
-        result = n;
-        return StepResult::Redispatch;
-      }
-
-      if (InsideSubstitutionMap(n, substitutionImage))
-        start = Frame::TermSubstitutionPrechecked;
-      else if (CheckSimplifyMap(n, result, false))
-        return StepResult::Redispatch;
-      else
-        start = Frame::PrecheckedStart;
-    }
-    else if (job == Frame::ArrayJob)
-    {
-      if (n.GetKind() == SYMBOL)
-      {
-        result = n;
-        return StepResult::Redispatch;
-      }
-      if (CheckSimplifyMap(n, result, false))
-        return StepResult::Redispatch;
-      start = Frame::PrecheckedStart;
-    }
-    else if (job == Frame::AtomicJob)
-      start = Frame::PrecheckedStart;
-
-    // `n` can name storage in `f` (for example f.output or f.t0). Own it
-    // before emplacing because growing the vector can move `f`.
+  // `n` can name storage in the current frame (for example f.output or
+  // f.t0). Construct the child before growing the vector so it owns those
+  // references before a reallocation can move the parent.
+  auto pushChild = [&](const Frame::Job job, const ASTNode& n, ASTNode a,
+                       const bool neg,
+                       const Frame::Phase start) -> StepResult {
     Frame::Init child{job, n, std::move(a), neg, start};
     stack.emplace_back(std::move(child));
+    return StepResult::Pushed;
+  };
+
+  // Keep the four child heads separate. Their job is known at every request
+  // site; making it a run-time argument forced this hot path through a
+  // four-way discriminator even though only one arm could ever apply.
+  auto want = [&](Frame& f, const Frame::Phase resume, const ASTNode& n,
+                  const bool neg) -> StepResult {
+    f.phase = resume;
+    ASTNode a;
+    if (head(n, neg, a))
+      return StepResult::Redispatch;
+    return pushChild(Frame::FormulaJob, n, std::move(a), neg, Frame::Start);
+  };
+
+  auto wantTerm = [&](Frame& f, const Frame::Phase resume,
+                      const ASTNode& n) -> StepResult {
+    f.phase = resume;
+    if (n.isConstant())
+    {
+      result = n;
+      return StepResult::Redispatch;
+    }
+
+    ASTNode substitutionImage;
+    Frame::Phase start;
+    if (InsideSubstitutionMap(n, substitutionImage))
+      start = Frame::TermSubstitutionPrechecked;
+    else if (CheckSimplifyMap(n, result, false))
+      return StepResult::Redispatch;
+    else
+      start = Frame::PrecheckedStart;
+
+    const StepResult pushed =
+        pushChild(Frame::TermJob, n, ASTNode(), false, start);
     if (start == Frame::TermSubstitutionPrechecked)
       stack.back().output = std::move(substitutionImage);
-    return StepResult::Pushed;
+    return pushed;
+  };
+
+  auto wantArray = [&](Frame& f, const Frame::Phase resume,
+                       const ASTNode& n) -> StepResult {
+    f.phase = resume;
+    if (n.GetKind() == SYMBOL)
+    {
+      result = n;
+      return StepResult::Redispatch;
+    }
+    if (CheckSimplifyMap(n, result, false))
+      return StepResult::Redispatch;
+    return pushChild(Frame::ArrayJob, n, ASTNode(), false,
+                     Frame::PrecheckedStart);
+  };
+
+  auto wantAtomic = [&](Frame& f, const Frame::Phase resume,
+                        const ASTNode& n, const bool neg) -> StepResult {
+    f.phase = resume;
+    return pushChild(Frame::AtomicJob, n, ASTNode(), neg,
+                     Frame::PrecheckedStart);
   };
 
   // Keep each job's phase dispatcher in its own function. Formula and term
@@ -1102,8 +1120,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
           // pushed child; the common request sites below fuse their immediate
           // answers directly.
           const StepResult requested =
-              want(f, Frame::AtomicEqIteCondition, conditionToNegate, true,
-                   Frame::FormulaJob);
+              want(f, Frame::AtomicEqIteCondition, conditionToNegate, true);
           return requested == StepResult::Redispatch ? StepResult::Yield
                                                       : requested;
         }
@@ -1119,12 +1136,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         // Keep the original atomic-formula order: every binary predicate
         // simplifies both operands before dispatch, including BOOLEXTRACT.
         if (f.b.Degree() == 2)
-          return want(f, Frame::AtomicLeft, f.b[0], false, Frame::TermJob);
+          return wantTerm(f, Frame::AtomicLeft, f.b[0]);
       }
       else if (f.phase == Frame::AtomicLeft)
       {
         f.t0 = result;
-        return want(f, Frame::AtomicRight, f.b[1], false, Frame::TermJob);
+        return wantTerm(f, Frame::AtomicRight, f.b[1]);
       }
       else if (f.phase == Frame::AtomicRight)
       {
@@ -1156,8 +1173,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       if (f.phase == Frame::AtomicEqNegRhs)
       {
         const ASTNode combined = LhsMinusRhsTerm(f.output, result);
-        return want(f, Frame::AtomicEqCombined, combined, false,
-                    Frame::TermJob);
+        return wantTerm(f, Frame::AtomicEqCombined, combined);
       }
 
       ASTNode output;
@@ -1192,8 +1208,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         {
           const ASTNode getthebit =
               nf->CreateTerm(BVEXTRACT, 1, f.t0, f.b[1], f.b[1]);
-          return want(f, Frame::AtomicBoolExtract, getthebit, false,
-                      Frame::TermJob);
+          return wantTerm(f, Frame::AtomicBoolExtract, getthebit);
         }
         case EQ:
         {
@@ -1214,8 +1229,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
                                       : output[1];
               const ASTNode negated =
                   nf->CreateTerm(BVUMINUS, rhs.GetValueWidth(), rhs);
-              return want(f, Frame::AtomicEqNegRhs, negated, false,
-                          Frame::TermJob);
+              return wantTerm(f, Frame::AtomicEqNegRhs, negated);
             }
           }
           return optimizeAndFinishEquality(output);
@@ -1264,8 +1278,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
           while (f.i < f.b.Degree())
           {
             const StepResult requested =
-                want(f, Frame::AtomicFpOperand, f.b[f.i], false,
-                     Frame::TermJob);
+                wantTerm(f, Frame::AtomicFpOperand, f.b[f.i]);
             if (requested == StepResult::Pushed)
               return requested;
             assert(requested == StepResult::Redispatch);
@@ -1315,10 +1328,9 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         }
 
         if (f.b.GetKind() == ITE)
-          return want(f, Frame::ArrayCond, f.b[0], false,
-                      Frame::FormulaJob);
+          return want(f, Frame::ArrayCond, f.b[0], false);
         if (f.b.GetKind() == WRITE)
-          return want(f, Frame::ArrayBase, f.b[0], false, Frame::ArrayJob);
+          return wantArray(f, Frame::ArrayBase, f.b[0]);
 
         FatalError("SimplifyArrayTerm: unexpected array term", f.b);
       }
@@ -1328,12 +1340,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         if (f.phase == Frame::ArrayCond)
         {
           f.t0 = result;
-          return want(f, Frame::ArrayThen, f.b[1], false, Frame::ArrayJob);
+          return wantArray(f, Frame::ArrayThen, f.b[1]);
         }
         if (f.phase == Frame::ArrayThen)
         {
           f.t1 = result;
-          return want(f, Frame::ArrayElse, f.b[2], false, Frame::ArrayJob);
+          return wantArray(f, Frame::ArrayElse, f.b[2]);
         }
 
         f.t2 = result;
@@ -1343,12 +1355,12 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
       if (f.phase == Frame::ArrayBase)
       {
         f.t0 = result;
-        return want(f, Frame::ArrayIndex, f.b[1], false, Frame::TermJob);
+        return wantTerm(f, Frame::ArrayIndex, f.b[1]);
       }
       if (f.phase == Frame::ArrayIndex)
       {
         f.t1 = result;
-        return want(f, Frame::ArrayValue, f.b[2], false, Frame::TermJob);
+        return wantTerm(f, Frame::ArrayValue, f.b[2]);
       }
 
       f.t2 = result;
@@ -1420,12 +1432,10 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         assert(BVTypeCheck(f.a));
 
         if (f.phase == Frame::TermSubstitutionPrechecked)
-          return want(f, Frame::TermSubstitution, substitutionImage, false,
-                      Frame::TermJob);
+          return wantTerm(f, Frame::TermSubstitution, substitutionImage);
         if (f.phase == Frame::Start &&
             InsideSubstitutionMap(f.a, f.output))
-          return want(f, Frame::TermSubstitution, f.output, false,
-                      Frame::TermJob);
+          return wantTerm(f, Frame::TermSubstitution, f.output);
         if (f.phase == Frame::Start &&
             CheckSimplifyMap(f.a, result, false))
           return StepResult::Finished;
@@ -1459,7 +1469,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
             operand.GetType() == FLOATINGPOINT_TYPE)
         {
           const StepResult requested =
-              want(f, Frame::TermOperand, operand, false, Frame::TermJob);
+              wantTerm(f, Frame::TermOperand, operand);
           if (requested == StepResult::Pushed)
             return requested;
           assert(requested == StepResult::Redispatch);
@@ -1470,7 +1480,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
         if (operand.GetType() == BOOLEAN_TYPE)
         {
           const StepResult requested =
-              want(f, Frame::TermOperand, operand, false, Frame::FormulaJob);
+              want(f, Frame::TermOperand, operand, false);
           if (requested == StepResult::Pushed)
             return requested;
           assert(requested == StepResult::Redispatch);
@@ -1524,7 +1534,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
 
         const ASTNode pulledUp = PullUpITE(f.a);
         if (pulledUp != f.a)
-          return want(f, Frame::TermPulled, pulledUp, false, Frame::TermJob);
+          return wantTerm(f, Frame::TermPulled, pulledUp);
 
         bool notSimplified = false;
         for (size_t i = 0; i < f.a.Degree(); ++i)
@@ -1536,11 +1546,11 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
           }
         }
         if (notSimplified)
-          return want(f, Frame::TermRetry, f.a, false, Frame::TermJob);
+          return wantTerm(f, Frame::TermRetry, f.a);
       }
 
       if (f.a.GetKind() == READ && f.phase != Frame::TermReadArray)
-        return want(f, Frame::TermReadArray, f.a[0], false, Frame::ArrayJob);
+        return wantArray(f, Frame::TermReadArray, f.a[0]);
 
       if (f.a.GetKind() == READ && f.phase == Frame::TermReadArray &&
           result != f.a[0])
@@ -1567,7 +1577,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
 
       assert(!f.output.IsNull());
       if (f.a != f.output)
-        return want(f, Frame::TermOutput, f.output, false, Frame::TermJob);
+        return wantTerm(f, Frame::TermOutput, f.output);
       return finishTermTail(f.output);
     }
   };
@@ -1860,8 +1870,7 @@ ASTNode Simplifier::simplifyNode(const ASTNode& b, bool pushNeg,
             UpdateSimplifyMap(f.b, result, f.pushNeg);
           return StepResult::Finished;
         }
-        return want(f, Frame::FormulaAtomic, f.a, f.pushNeg,
-                    Frame::AtomicJob);
+        return wantAtomic(f, Frame::FormulaAtomic, f.a, f.pushNeg);
     }
   };
 
