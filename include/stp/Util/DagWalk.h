@@ -252,9 +252,9 @@ public:
 // that costs nothing, because their operands are primed and the walk is one
 // level -- but it is an assumption about the pass's own rewriting and not
 // something priming secures, and it does not always hold. The simplifier's
-// float arm builds a term thousands of levels deep and walks down it: see the
-// note on Simplifier::termAudit, and the depth check below, which is what
-// found it.
+// float arm built a term thousands of levels deep and walked down it; the
+// depth check below is what found it, and that pass is now restated as an
+// explicit job stack (Simplifier::simplifyNode) rather than primed.
 // A pass normally recurses into all of a node's children, in order. The few
 // exceptions in STP recurse into a contiguous subrange, or into all children
 // in reverse order. WalkOperands describes those cases without copying an
