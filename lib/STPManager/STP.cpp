@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 #include "stp/STPManager/STP.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFLowering.h"
 #include "stp/Incremental/IncrementalSolver.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 #include "stp/Simplifier/constantBitP/NodeToFixedBitsMap.h"
@@ -129,6 +131,30 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
   {
     original_input = inputasserts;
   }
+
+  // Durable UF nodes stay visible through frontend substitution and query
+  // assembly. This is their one batch lowering boundary: before FP
+  // totalisation, opaque array equality, or any ordinary preprocessor. Keep
+  // the submitted root in batchUFView and pass only its semantic replacement
+  // plus query-local naming definitions onward.
+  batchUFView = LoweredApplicationView();
+  if (bm->UserFlags.enable_uninterpreted_functions)
+  {
+    UFLowering lowerer(bm);
+    batchUFView = lowerer.lowerCompletedRoot(
+        original_input, UFSolveScope::batch(++batchUFScopeGeneration));
+    original_input = batchUFView.semanticRootWithDefinitions(bm);
+    if (containsKind(original_input, UF_APPLY))
+      FatalError("UF_APPLY crossed the batch completed-root lowering barrier",
+                 original_input);
+  }
+  else if (bm->getUFContextIfAny() != NULL)
+    bm->getUFContextIfAny()->releaseSolveProtection();
+
+  batchUFAdapter->beginQuery(&batchUFView);
+  Ctr_Example->setUFTheoryAdapter(batchUFView.active()
+                                      ? batchUFAdapter.get()
+                                      : NULL);
 
   // The latch is the same kind of cheap fast-negative the lowering test below
   // uses, widened to cover RoundingMode -- which carries no format, so it
@@ -264,6 +290,11 @@ SOLVER_RETURN_TYPE
 STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
                     const ASTNodeMap& arrayEqualityRewrites)
 {
+  if (bm->UserFlags.enable_uninterpreted_functions &&
+      containsKind(original_input, UF_APPLY))
+    FatalError("UF_APPLY reached ordinary batch preprocessing",
+               original_input);
+
   // ARRAY_EQ remains a normal, traversable AST node through query assembly
   // and macro/function substitution. Lower it only now, at the complete-query
   // boundary and before any ordinary simplifier or array transform runs.
@@ -435,7 +466,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // candidate model cannot leave construction switched on for the rest of
   // the session.
   bm->UserFlags.construct_counterexample_flag =
-      bm->UserFlags.modelConstructionRequired(arrayops && !removed);
+      bm->UserFlags.modelConstructionRequired(
+          (arrayops && !removed) || batchUFView.active());
 
   if (bm->UserFlags.enable_flatten)
   {
@@ -572,12 +604,16 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
           // These replacements are not recorded in the solver map, so
           // a symbol the array-equality procedure depends on must not
           // be replaced away.
-          if (extActive)
+          UFContext* ufContext = bm->getUFContextIfAny();
+          if (extActive ||
+              (ufContext != NULL && ufContext->activeInSolve()))
             for (ASTNodeMap::iterator cit = constants.begin();
                  cit != constants.end();)
             {
               if (cit->first.GetKind() == SYMBOL &&
-                  ext->isProtected(cit->first))
+                  ((extActive && ext->isProtected(cit->first)) ||
+                   (ufContext != NULL &&
+                    ufContext->isProtected(cit->first))))
                 cit = constants.erase(cit);
               else
                 ++cit;
@@ -800,7 +836,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   if (bm->UserFlags.stats_flag)
     simp->printCacheStatus();
 
-  const bool maybeRefinement = arrayops && !bm->UserFlags.ackermannisation;
+  const bool maybeRefinement =
+      (arrayops && !bm->UserFlags.ackermannisation) || batchUFView.active();
 
   // Must run before the ConstantBitPropagation object below is built: cb's
   // fixed-point map has to describe the exact tree handed to ToSATAIG, and a
@@ -872,9 +909,9 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     return res;
   }
 
-  // should only go to abstraction refinement if there are array ops.
-  assert(arrayops);
-  assert(!bm->UserFlags.ackermannisation); // Refinement must be enabled too.
+  // An undecided result belongs to an active array or UF refinement owner.
+  assert(arrayops || batchUFView.active());
+  assert(batchUFView.active() || !bm->UserFlags.ackermannisation);
 
   // Refinement driver. In an active equality solve the extensionality
   // checker owns the complete array graph, so each undecided candidate
@@ -883,18 +920,25 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // read-refinement path unchanged.
   while (true)
   {
-    if (extActive)
+    if (extActive && ext->hasPendingLemma())
     {
-      if (!ext->hasPendingLemma())
-        FatalError("array-equality: an active refinement round has neither "
-                   "a decision nor a pending theory lemma");
       ext->encodePendingLemmas(NewSolver, satBase);
+      res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
+                                             semantic_input, original_input,
+                                             satBase, true);
+    }
+    else if (batchUFView.active() && batchUFAdapter->hasPendingLemma())
+    {
+      batchUFAdapter->encodePendingLemma(NewSolver, satBase);
       res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
                                              semantic_input, original_input,
                                              satBase, true);
     }
     else
     {
+      if (!arrayops)
+        FatalError("UF refinement reached undecided without a pending "
+                   "candidate-blocking lemma");
       res = Ctr_Example->SATBased_ArrayReadRefinement(NewSolver,
                                                       semantic_input, satBase);
     }
@@ -918,7 +962,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       return SOLVER_TIMEOUT;
     }
 
-    if (!extActive)
+    if (!extActive && !batchUFView.active())
       break;
   }
 

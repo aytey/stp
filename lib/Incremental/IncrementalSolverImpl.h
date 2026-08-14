@@ -52,6 +52,9 @@ THE SOFTWARE.
 #include "stp/Simplifier/RemoveUnconstrained.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/FloatBlaster/FpEncodingContext.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFLowering.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Sat/SATSolverFactory.h"
 #include "stp/Simplifier/Simplifier.h"
@@ -198,6 +201,7 @@ struct Fragment
   bool arrays;
   bool fp;
   bool arrayEq;
+  bool ufApply;
 };
 typedef std::unordered_map<ASTNode, Fragment, ASTNode::ASTNodeHasher,
                            ASTNode::ASTNodeEqual>
@@ -342,6 +346,13 @@ struct IncrementalSolver::Impl
 
   // Created on first floating-point use; see fpContext().
   std::unique_ptr<FpEncodingContext> fpCtx;
+
+  // The completed public block and its current solve-local UF lowering.
+  // Clause/cache ownership is added by UFPersistentAdapter at M5; keeping the
+  // lowering value here already separates it from context-owned handles and
+  // makes the exact-stack block the sole persistent lowering boundary.
+  LoweredApplicationView activeUFView;
+  std::unique_ptr<UFPersistentAdapter> ufAdapter;
 
   // Nodes the block cache's determinism depends on. STP garbage-collects
   // unreferenced interior nodes and re-mints their numbers, and the
@@ -1619,6 +1630,7 @@ struct IncrementalSolver::Impl
         policy(bm_->UserFlags.incremental_core_only),
         solver(makeBackend(bm_->UserFlags, true)), encoding(bm_),
         walks(bm_->ASTFalse), cnf(solver.get()),
+        ufAdapter(new UFPersistentAdapter(bm_)),
         lastUnsat(false), lastUnsatCoarse(false),
         lastLevelIndividual(false), modelPending(false),
         trailReuseAllowed(!policy.coreOnly()), lastLevelCount(0),
@@ -2278,6 +2290,9 @@ struct IncrementalSolver::Impl
         bm->has_floating_point_theory && containsFloatingPointTheory(n, bm);
     f.arrayEq =
         bm->UserFlags.enable_array_equality && containsKind(n, ARRAY_EQ);
+    f.ufApply = bm->UserFlags.enable_uninterpreted_functions &&
+                bm->getUFContextIfAny() != NULL &&
+                containsKind(n, UF_APPLY);
     f.sourceArrays = containsArrayOps(n, bm);
 
     // Arrayness must be judged on the form that will be encoded: totalising
@@ -2553,6 +2568,12 @@ struct IncrementalSolver::Impl
     ExtensionalityContext* ext = bm->getExtensionalityIfAny();
     if (ext != NULL)
       ext->releaseSolveStorage();
+    UFContext* ufContext = bm->getUFContextIfAny();
+    if (ufContext != NULL)
+      ufContext->releaseSolveProtection();
+    activeUFView = LoweredApplicationView();
+    if (ufAdapter)
+      ufAdapter->clearEncodingEpoch();
 
     // The old model has already been invalidated by entry into this check.
     // Withdraw shared model-channel seeds before dropping the ASTs they pin.

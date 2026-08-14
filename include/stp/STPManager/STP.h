@@ -37,6 +37,9 @@ THE SOFTWARE.
 #include "stp/Util/Attributes.h"
 #include "stp/ToSat/ToSATAIG.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
+#include "stp/UninterpretedFunctions/UFLowering.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
 
 #include <memory>
 
@@ -80,6 +83,13 @@ class STP
   // alive after TopLevelSTP returns so model queries use that exact encoding.
   std::unique_ptr<FpEncodingContext> fpEncodingContext;
 
+  // Public and semantic UF roots for the most recent fresh-query solve. The
+  // value remains alive with the model, while all SAT/checker mutation belongs
+  // to the batch adapter added at M4.
+  LoweredApplicationView batchUFView;
+  std::unique_ptr<UFBatchAdapter> batchUFAdapter;
+  uint64_t batchUFScopeGeneration = 0;
+
 public:
   STPMgr* bm;
   Simplifier* simp;
@@ -108,6 +118,10 @@ public:
   DLL_PUBLIC IncrementalSolver* getIncrementalSolver();
   DLL_PUBLIC void resetIncrementalSolver();
   bool hasIncrementalSolver() const { return incrementalSolver != nullptr; }
+  const LoweredApplicationView& lastBatchUFView() const
+  {
+    return batchUFView;
+  }
 
 public:
   STP(STPMgr* b)
@@ -117,6 +131,7 @@ public:
     simp = new Simplifier(bm,substitutionMap);
     arrayTransformer = new ArrayTransformer(bm, simp);
     Ctr_Example = new AbsRefine_CounterExample(bm, simp, arrayTransformer);
+    batchUFAdapter.reset(new UFBatchAdapter(bm));
     tosat = new ToSATAIG(bm, arrayTransformer);
   }
 
@@ -135,7 +150,10 @@ public:
     resetIncrementalSolver();
 
     if (Ctr_Example != NULL)
+    {
       Ctr_Example->setFpEncodingContext(NULL);
+      Ctr_Example->setUFTheoryAdapter(NULL);
+    }
     fpEncodingContext.reset();
 
     delete Ctr_Example;
@@ -177,6 +195,13 @@ public:
       Ctr_Example->setFpEncodingContext(NULL);
     }
     fpEncodingContext.reset();
+    batchUFView = LoweredApplicationView();
+    if (batchUFAdapter)
+      batchUFAdapter->clear();
+    if (Ctr_Example != NULL)
+      Ctr_Example->setUFTheoryAdapter(NULL);
+    if (bm != NULL && bm->getUFContextIfAny() != NULL)
+      bm->getUFContextIfAny()->releaseSolveProtection();
     // bm->ClearAllTables();
   }
 };

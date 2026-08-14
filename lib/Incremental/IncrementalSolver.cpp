@@ -130,6 +130,8 @@ std::vector<size_t> IncrementalSolver::lastUnsatCoreLevels() const
 
 IncrementalSolver::~IncrementalSolver()
 {
+  if (impl->ce->getUFTheoryAdapter() == impl->ufAdapter.get())
+    impl->ce->setUFTheoryAdapter(NULL);
   // The counterexample machinery may still point at our floating-point
   // encoding context; whoever solves next installs their own before any
   // model is read (and model_valid already refuses stale reads).
@@ -279,6 +281,13 @@ IncrementalSolver::checkSatBody(const ASTVec& assertionsSMT2,
   ExtensionalityContext* staleExt = bm->getExtensionalityIfAny();
   if (staleExt != NULL && staleExt->active())
     staleExt->beginSolve();
+  UFContext* staleUF = bm->getUFContextIfAny();
+  if (staleUF != NULL)
+    staleUF->releaseSolveProtection();
+  impl->activeUFView = LoweredApplicationView();
+  impl->ufAdapter->clearActiveBlock();
+  if (impl->ce->getUFTheoryAdapter() == impl->ufAdapter.get())
+    impl->ce->setUFTheoryAdapter(NULL);
 
   const uint64_t clausesBefore = impl->lifetimeClauseSubmissions();
   impl->encodesThisCall = 0;
