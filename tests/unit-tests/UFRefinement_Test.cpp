@@ -172,6 +172,7 @@ struct ConstantOperandFixture
   ASTNode left;
   ASTNode right;
   LoweredApplicationView view;
+  LoweredApplicationView persistentView;
   RecordingToSAT tosat;
 
   ConstantOperandFixture()
@@ -201,13 +202,22 @@ struct ConstantOperandFixture
         NOT, manager.defaultNodeFactory->CreateNode(EQ, left, right));
     UFLowering lowerer(&manager);
     view = lowerer.lowerCompletedRoot(root, UFSolveScope::batch(11));
+    persistentView = lowerer.lowerCompletedRoot(
+        root, UFSolveScope::persistent(11, 7));
 
     EXPECT_EQ(2u, view.applications.size());
+    EXPECT_EQ(2u, persistentView.applications.size());
     counterexample.InsertIntoCounterExampleMap(predicate, manager.ASTTrue);
     counterexample.InsertIntoCounterExampleMap(x, one);
     tosat.bind(predicate, {0});
     tosat.bind(x, {1, 2});
-    for (const LoweredApplicationRecord& record : view.applications)
+    populate(view);
+    populate(persistentView);
+  }
+
+  void populate(const LoweredApplicationView& applicationView)
+  {
+    for (const LoweredApplicationRecord& record : applicationView.applications)
     {
       const bool isLeft = record.durableHandle == left;
       counterexample.InsertIntoCounterExampleMap(
@@ -374,12 +384,12 @@ TEST(UFRefinement, BatchCNFFoldsBoolAndBitVectorConstantOperands)
   RecordingSolver solver(7);
   adapter.encodePendingLemma(solver, &fixture.tosat);
 
-  // The two exact constant/constant premises disappear.  Reifying p=true
-  // needs two clauses, x=1 needs seven, the BV result equality needs eleven,
-  // and the semantic implication needs one.  In particular, constants do
-  // not acquire SAT variables of their own.
-  ASSERT_EQ(21u, solver.clauses().size());
-  ASSERT_EQ(14u, solver.nextVariable());
+  // The two exact constant/constant premises disappear. p=true aliases p's
+  // existing literal, while x=1 needs only a three-clause conjunction of its
+  // two constant-adjusted bit literals. The BV result equality needs eleven
+  // clauses and the semantic implication one. Constants acquire no SAT vars.
+  ASSERT_EQ(15u, solver.clauses().size());
+  ASSERT_EQ(11u, solver.nextVariable());
 
   const unsigned helperCount = solver.nextVariable() - 7;
   for (unsigned original = 0; original < (1u << 7); ++original)
@@ -408,6 +418,22 @@ TEST(UFRefinement, BatchCNFFoldsBoolAndBitVectorConstantOperands)
     }
     EXPECT_EQ(expected, encoded) << "original assignment " << original;
   }
+}
+
+TEST(UFRefinement, PersistentCNFGuardsEveryFoldedEqualityHelper)
+{
+  ConstantOperandFixture fixture;
+  UFPersistentAdapter adapter(&fixture.manager);
+  adapter.beginBlock(&fixture.persistentView, 7, 3, 11, 300);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+
+  RecordingSolver solver(7);
+  adapter.encodePendingLemma(solver, &fixture.tosat);
+  ASSERT_EQ(15u, solver.clauses().size());
+  ASSERT_EQ(11u, solver.nextVariable());
+  for (const std::vector<int>& clause : solver.clauses())
+    EXPECT_TRUE(containsLiteral(clause, 301));
 }
 
 TEST(UFRefinement, RejectsMalformedPreencodedLeavesBeforeSATMutation)

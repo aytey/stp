@@ -136,12 +136,39 @@ public:
   bool hasConflict() const { return status == Status::Conflict; }
 };
 
-// Stateless logical core. Every candidate table is local to check(), making
-// reset across refinement rounds a structural property rather than a caller
-// obligation.
+// Immutable, validated indexing of one lowered view. Adapters construct this
+// once at beginQuery/beginBlock; candidate rounds therefore never repeat
+// declaration sorting, ownership/type validation, or record grouping.
+class DLL_PUBLIC UFCheckPlan final
+{
+public:
+  bool valid() const { return valid_; }
+  const std::string& diagnostic() const { return diagnostic_; }
+
+private:
+  friend class UFChecker;
+  bool valid_ = false;
+  const LoweredApplicationView* view_ = NULL;
+  std::vector<const UFDecl*> declarations_;
+  std::vector<std::vector<const LoweredApplicationRecord*>> recordsByDecl_;
+  std::string diagnostic_;
+};
+
+// Stateless logical core. Every model-dependent tuple table is local to
+// check(), making reset across refinement rounds a structural property rather
+// than a caller obligation. The immutable structural work lives in a plan.
 class DLL_PUBLIC UFChecker final
 {
 public:
+  static UFCheckPlan
+  validate(const std::vector<const UFDecl*>& activeDeclarations,
+           const LoweredApplicationView& view);
+
+  static UFCheckResult check(const UFCheckPlan& plan,
+                             const UFScalarCandidate& candidate);
+
+  // Convenience for isolated callers and unit tests. Solve-mode adapters use
+  // validate() once and the prepared overload above for every candidate.
   static UFCheckResult
   check(const std::vector<const UFDecl*>& activeDeclarations,
         const LoweredApplicationView& view,

@@ -1,8 +1,7 @@
 #include "stp/UninterpretedFunctions/UFChecker.h"
 #include "extlib-constbv/constantbv.h"
+#include "extlib-unordered-dense/ankerl/unordered_dense.h"
 #include <algorithm>
-#include <map>
-#include <set>
 
 namespace stp
 {
@@ -66,6 +65,32 @@ struct Observation
   const LoweredApplicationRecord* record = NULL;
   UFConcreteValue result;
 };
+
+// Position-sensitive value hashing. Equality remains full typed tuple
+// equality, so even adversarial collisions are semantically harmless. The
+// hash owns no AST identity and does not assume constant interning.
+struct ConcreteTupleHasher
+{
+  size_t operator()(const UFConcreteTuple& tuple) const
+  {
+    size_t hash = static_cast<size_t>(0x9e3779b97f4a7c15ULL);
+    for (size_t i = 0; i < tuple.size(); ++i)
+    {
+      const UFConcreteValue& value = tuple[i];
+      size_t component = value.sort().hash();
+      for (const uint8_t byte : value.bytes())
+        component = component * 1315423911u + byte;
+      hash = (hash * 1315423911u) ^ ((i + 1) * 2654435761u) ^
+             component;
+      hash = hash * 1315423911u + i;
+    }
+    return hash;
+  }
+};
+
+typedef ankerl::unordered_dense::map<UFConcreteTuple, Observation,
+                                     ConcreteTupleHasher>
+    ObservationTable;
 
 } // namespace
 
@@ -173,52 +198,86 @@ bool operator<(const UFConcreteValue& left, const UFConcreteValue& right)
                                       right.bytes_.rend());
 }
 
-UFCheckResult UFChecker::check(
+UFCheckPlan UFChecker::validate(
     const std::vector<const UFDecl*>& activeDeclarations,
-    const LoweredApplicationView& view, const UFScalarCandidate& candidate)
+    const LoweredApplicationView& view)
 {
-  UFCheckResult out;
-  const uint64_t candidateVersion = candidate.version();
-  out.modelSeed.candidateVersion = candidateVersion;
-  out.stats.activeApplications = view.applications.size();
-
-  std::vector<const UFDecl*> declarations = activeDeclarations;
-  std::sort(declarations.begin(), declarations.end(),
+  UFCheckPlan plan;
+  plan.view_ = &view;
+  plan.declarations_ = activeDeclarations;
+  std::sort(plan.declarations_.begin(), plan.declarations_.end(),
             [](const UFDecl* left, const UFDecl* right)
             {
               if (left == NULL || right == NULL)
                 return left < right;
               return left->id() < right->id();
             });
-  if (std::find(declarations.begin(), declarations.end(), nullptr) !=
-      declarations.end())
+  if (std::find(plan.declarations_.begin(), plan.declarations_.end(),
+                nullptr) != plan.declarations_.end())
   {
-    out.diagnostic = "UFCHK received a null active declaration";
-    return out;
+    plan.diagnostic_ = "UFCHK received a null active declaration";
+    return plan;
   }
-  if (std::adjacent_find(declarations.begin(), declarations.end()) !=
-      declarations.end())
+  if (std::adjacent_find(plan.declarations_.begin(),
+                         plan.declarations_.end()) !=
+      plan.declarations_.end())
   {
-    out.diagnostic = "UFCHK received a duplicate active declaration";
-    return out;
+    plan.diagnostic_ = "UFCHK received a duplicate active declaration";
+    return plan;
   }
-  for (size_t i = 1; i < declarations.size(); ++i)
+  const STPMgr* declarationOwner = NULL;
+  for (size_t i = 0; i < plan.declarations_.size(); ++i)
   {
-    if (declarations[i - 1]->id() == declarations[i]->id())
+    const UFDecl* declaration = plan.declarations_[i];
+    if (declaration->owner() == NULL)
     {
-      out.diagnostic = "UFCHK received duplicate declaration identities";
-      return out;
+      plan.diagnostic_ = "UFCHK received an ownerless active declaration";
+      return plan;
     }
-    if (declarations[i - 1]->owner() != declarations[i]->owner())
+    if (i != 0 && plan.declarations_[i - 1]->id() == declaration->id())
     {
-      out.diagnostic = "UFCHK active declarations cross manager ownership";
-      return out;
+      plan.diagnostic_ = "UFCHK received duplicate declaration identities";
+      return plan;
     }
+    if (declarationOwner == NULL)
+      declarationOwner = declaration->owner();
+    else if (declarationOwner != declaration->owner())
+    {
+      plan.diagnostic_ =
+          "UFCHK active declarations cross manager ownership";
+      return plan;
+    }
+    if (!supportedSort(declaration->signature().codomain()))
+    {
+      plan.diagnostic_ =
+          "UFCHK active declaration has an unsupported codomain";
+      return plan;
+    }
+    for (const SourceSort& sort : declaration->signature().domain())
+      if (!supportedSort(sort))
+      {
+        plan.diagnostic_ =
+            "UFCHK active declaration has an unsupported domain";
+        return plan;
+      }
   }
-  out.stats.functions = declarations.size();
 
-  std::map<const UFDecl*, std::vector<const LoweredApplicationRecord*>> byDecl;
-  std::set<ASTNode> handles;
+  plan.recordsByDecl_.resize(plan.declarations_.size());
+  ankerl::unordered_dense::map<const UFDecl*, size_t> declarationIndex;
+  declarationIndex.reserve(plan.declarations_.size());
+  for (size_t i = 0; i < plan.declarations_.size(); ++i)
+    declarationIndex.emplace(plan.declarations_[i], i);
+
+  ankerl::unordered_dense::set<ASTNode, ASTNode::ASTNodeHasher,
+                               ASTNode::ASTNodeEqual>
+      handles;
+  handles.reserve(view.applications.size());
+  if (view.handleToResult.size() != view.applications.size())
+  {
+    plan.diagnostic_ =
+        "UFCHK durable-handle result mapping has the wrong size";
+    return plan;
+  }
   size_t previousOrder = 0;
   bool firstRecord = true;
   for (const LoweredApplicationRecord& record : view.applications)
@@ -232,37 +291,33 @@ UFCheckResult UFChecker::check(
         record.loweredActuals.size() != record.declaration->signature().arity() ||
         record.namedActuals.size() != record.declaration->signature().arity())
     {
-      out.diagnostic = "UFCHK received a malformed lowered application view";
-      return out;
+      plan.diagnostic_ =
+          "UFCHK received a malformed lowered application view";
+      return plan;
     }
     if (!firstRecord && record.stableOrder <= previousOrder)
     {
-      out.diagnostic = "UFCHK application order is not strictly stable";
-      return out;
+      plan.diagnostic_ = "UFCHK application order is not strictly stable";
+      return plan;
     }
     firstRecord = false;
     previousOrder = record.stableOrder;
     if (!handles.insert(record.durableHandle).second)
     {
-      out.diagnostic = "UFCHK received a duplicate durable application";
-      return out;
+      plan.diagnostic_ = "UFCHK received a duplicate durable application";
+      return plan;
     }
-    const std::vector<const UFDecl*>::const_iterator declarationIt =
-        std::lower_bound(declarations.begin(), declarations.end(),
-                         record.declaration,
-                         [](const UFDecl* left, const UFDecl* right)
-                         { return left->id() < right->id(); });
-    if (declarationIt == declarations.end() ||
-        *declarationIt != record.declaration)
+    const auto declarationIt = declarationIndex.find(record.declaration);
+    if (declarationIt == declarationIndex.end())
     {
-      out.diagnostic = "UFCHK view references an inactive declaration";
-      return out;
+      plan.diagnostic_ = "UFCHK view references an inactive declaration";
+      return plan;
     }
     const UFSignature& signature = record.declaration->signature();
     if (record.resultSymbol.GetSourceSort() != signature.codomain())
     {
-      out.diagnostic = "UFCHK result symbol has the wrong SourceSort";
-      return out;
+      plan.diagnostic_ = "UFCHK result symbol has the wrong SourceSort";
+      return plan;
     }
     for (size_t i = 0; i < signature.arity(); ++i)
     {
@@ -275,9 +330,9 @@ UFCheckResult UFChecker::check(
           (record.namedActuals[i].GetKind() != SYMBOL &&
            !record.namedActuals[i].isConstant()))
       {
-        out.diagnostic = "UFCHK argument record is not a typed canonical "
-                         "scalar pair";
-        return out;
+        plan.diagnostic_ = "UFCHK argument record is not a typed canonical "
+                           "scalar pair";
+        return plan;
       }
     }
     const ASTNodeMap::const_iterator resultIt =
@@ -285,30 +340,42 @@ UFCheckResult UFChecker::check(
     if (resultIt == view.handleToResult.end() ||
         resultIt->second != record.resultSymbol)
     {
-      out.diagnostic = "UFCHK durable-handle result mapping is inconsistent";
-      return out;
+      plan.diagnostic_ =
+          "UFCHK durable-handle result mapping is inconsistent";
+      return plan;
     }
-    byDecl[record.declaration].push_back(&record);
+    plan.recordsByDecl_[declarationIt->second].push_back(&record);
   }
 
-  size_t conflictOrder = 0;
-  for (const UFDecl* declaration : declarations)
-  {
-    if (!supportedSort(declaration->signature().codomain()))
-    {
-      out.diagnostic = "UFCHK active declaration has an unsupported codomain";
-      return out;
-    }
-    for (const SourceSort& sort : declaration->signature().domain())
-      if (!supportedSort(sort))
-      {
-        out.diagnostic = "UFCHK active declaration has an unsupported domain";
-        return out;
-      }
+  plan.valid_ = true;
+  return plan;
+}
 
-    std::map<UFConcreteTuple, Observation> table;
+UFCheckResult UFChecker::check(const UFCheckPlan& plan,
+                               const UFScalarCandidate& candidate)
+{
+  UFCheckResult out;
+  const uint64_t candidateVersion = candidate.version();
+  out.modelSeed.candidateVersion = candidateVersion;
+  if (!plan.valid_ || plan.view_ == NULL)
+  {
+    out.diagnostic = plan.diagnostic_.empty()
+                         ? "UFCHK received an unvalidated check plan"
+                         : plan.diagnostic_;
+    return out;
+  }
+  out.stats.activeApplications = plan.view_->applications.size();
+  out.stats.functions = plan.declarations_.size();
+
+  size_t conflictOrder = 0;
+  for (size_t declarationIndex = 0;
+       declarationIndex < plan.declarations_.size(); ++declarationIndex)
+  {
+    const UFDecl* declaration = plan.declarations_[declarationIndex];
     const std::vector<const LoweredApplicationRecord*>& records =
-        byDecl[declaration];
+        plan.recordsByDecl_[declarationIndex];
+    ObservationTable table;
+    table.reserve(records.size());
     for (const LoweredApplicationRecord* record : records)
     {
       UFConcreteTuple tuple;
@@ -328,8 +395,7 @@ UFCheckResult UFChecker::check(
                       out.diagnostic))
         return out;
 
-      const std::map<UFConcreteTuple, Observation>::const_iterator found =
-          table.find(tuple);
+      const ObservationTable::const_iterator found = table.find(tuple);
       if (found == table.end())
       {
         Observation observation;
@@ -384,7 +450,8 @@ UFCheckResult UFChecker::check(
     function.declaration = declaration;
     function.defaultValue =
         UFConcreteValue::zero(declaration->signature().codomain());
-    for (const std::pair<const UFConcreteTuple, Observation>& entry : table)
+    function.cases.reserve(table.size());
+    for (const auto& entry : table)
     {
       UFModelCase modelCase;
       modelCase.arguments = entry.first;
@@ -393,6 +460,12 @@ UFCheckResult UFChecker::check(
           entry.second.record->durableHandle;
       function.cases.push_back(modelCase);
     }
+    // Dense-table iteration is an implementation detail. Preserve the old
+    // typed lexicographic model order explicitly, and pay this O(n log n)
+    // cost only for the final consistent candidate rather than every round.
+    std::sort(function.cases.begin(), function.cases.end(),
+              [](const UFModelCase& left, const UFModelCase& right)
+              { return left.arguments < right.arguments; });
     out.modelSeed.functions.push_back(function);
   }
 
@@ -405,6 +478,13 @@ UFCheckResult UFChecker::check(
   }
   out.status = UFCheckResult::Status::Consistent;
   return out;
+}
+
+UFCheckResult UFChecker::check(
+    const std::vector<const UFDecl*>& activeDeclarations,
+    const LoweredApplicationView& view, const UFScalarCandidate& candidate)
+{
+  return check(validate(activeDeclarations, view), candidate);
 }
 
 } // namespace stp

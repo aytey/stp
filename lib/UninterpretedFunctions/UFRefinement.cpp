@@ -118,6 +118,8 @@ struct MutableAdapterState
 
   STPMgr* manager;
   const LoweredApplicationView* view = NULL;
+  UFCheckPlan checkPlan;
+  std::string checkPlanDiagnostic;
   UFAbstractLemma pendingLemma;
   bool pending = false;
   bool certified = false;
@@ -142,6 +144,28 @@ struct MutableAdapterState
   {
     clearRound();
     view = NULL;
+    checkPlan = UFCheckPlan();
+    checkPlanDiagnostic.clear();
+  }
+
+  void beginView(const LoweredApplicationView* nextView)
+  {
+    clearRound();
+    view = nextView;
+    checkPlan = UFCheckPlan();
+    checkPlanDiagnostic.clear();
+    if (view == NULL || !view->active())
+      return;
+    UFContext* context = manager->getUFContextIfAny();
+    if (context == NULL)
+    {
+      checkPlanDiagnostic =
+          "UF adapter has an active view but no UF context";
+      return;
+    }
+    checkPlan = UFChecker::validate(context->activeDeclarations(), *view);
+    if (!checkPlan.valid())
+      checkPlanDiagnostic = checkPlan.diagnostic();
   }
 };
 
@@ -152,6 +176,13 @@ UFCandidateOutcome checkOneCandidate(
   state.clearRound();
   if (state.view == NULL || !state.view->active())
     return UFCandidateOutcome::Skipped;
+  if (!state.checkPlan.valid())
+  {
+    state.diagnostic = state.checkPlanDiagnostic.empty()
+                           ? "UF adapter has no validated checker plan"
+                           : state.checkPlanDiagnostic;
+    return UFCandidateOutcome::InternalError;
+  }
   UFContext* context = state.manager->getUFContextIfAny();
   if (context == NULL)
   {
@@ -162,8 +193,7 @@ UFCandidateOutcome checkOneCandidate(
   const uint64_t version = ++state.nextCandidateVersion;
   state.candidateCheckCount++;
   CounterExampleCandidate candidate(counterexample, *context, version);
-  UFCheckResult result = UFChecker::check(context->activeDeclarations(),
-                                          *state.view, candidate);
+  UFCheckResult result = UFChecker::check(state.checkPlan, candidate);
   if (result.status == UFCheckResult::Status::InternalError)
   {
     state.diagnostic = result.diagnostic;
@@ -333,6 +363,15 @@ struct ClauseTerm
   }
 };
 
+ClauseTerm negate(ClauseTerm term)
+{
+  if (term.constant)
+    term.value = !term.value;
+  else
+    term.literal ^= 1;
+  return term;
+}
+
 ClauseTerm exclusionLiteral(const BitOperand& operand, bool assignment)
 {
   if (operand.constant)
@@ -363,11 +402,23 @@ void addGuardedClause(SATSolver& solver,
   solver.addClause(clause);
 }
 
-// Fully reify one bit equality with the four XNOR truth-table clauses. The
-// same routine is the mandatory explicit Bool path and each BV bit's helper.
-int encodeBitEquality(SATSolver& solver, const BitOperand& left,
-                      const BitOperand& right, int guardLiteral)
+// Fold constants and SAT aliases before allocating an XNOR helper. Every
+// clause for a helper that remains is scoped by guardLiteral.
+ClauseTerm bitEquality(SATSolver& solver, const BitOperand& left,
+                       const BitOperand& right, int guardLiteral)
 {
+  if (left.constant && right.constant)
+    return ClauseTerm::constantValue(left.value == right.value);
+  if (!left.constant && !right.constant && left.variable == right.variable)
+    return ClauseTerm::constantValue(true);
+  if (left.constant || right.constant)
+  {
+    const BitOperand& constant = left.constant ? left : right;
+    const BitOperand& symbol = left.constant ? right : left;
+    return ClauseTerm::satLiteral(
+        static_cast<int>(2 * symbol.variable + (constant.value ? 0 : 1)));
+  }
+
   const unsigned q = solver.newVar();
   solver.setFrozen(q);
   for (unsigned lv = 0; lv < 2; ++lv)
@@ -383,18 +434,27 @@ int encodeBitEquality(SATSolver& solver, const BitOperand& left,
             static_cast<int>(2 * q + (qv != 0 ? 1 : 0))));
         addGuardedClause(solver, clause, guardLiteral);
       }
-  return static_cast<int>(2 * q);
+  return ClauseTerm::satLiteral(static_cast<int>(2 * q));
 }
 
-int equalityLiteral(SATSolver& solver,
-                    const ToSATBase::ASTNodeToSATVar& bindings,
-                    const UFEqualityAtom& atom, int guardLiteral,
-                    std::map<EqualityKey, int>& cache)
+ClauseTerm equalityTerm(SATSolver& solver,
+                        const ToSATBase::ASTNodeToSATVar& bindings,
+                        const UFEqualityAtom& atom, int guardLiteral,
+                        std::map<EqualityKey, int>& cache)
 {
   const EqualityKey key = equalityKey(atom.left, atom.right, atom.sort);
+  if (key.left == key.right)
+    return ClauseTerm::constantValue(true);
+  if (key.left.isConstant() && key.right.isConstant())
+  {
+    const bool equal = atom.sort.kind() == SourceSort::Kind::Bool
+                           ? key.left.GetKind() == key.right.GetKind()
+                           : constantsSameBits(key.left, key.right);
+    return ClauseTerm::constantValue(equal);
+  }
   const std::map<EqualityKey, int>::const_iterator hit = cache.find(key);
   if (hit != cache.end())
-    return hit->second;
+    return ClauseTerm::satLiteral(hit->second);
 
   const unsigned width = scalarWidth(atom.sort);
   std::vector<int> bitEqualities;
@@ -403,9 +463,19 @@ int equalityLiteral(SATSolver& solver,
   {
     const BitOperand left = bitOperand(key.left, atom.sort, bit, bindings);
     const BitOperand right = bitOperand(key.right, atom.sort, bit, bindings);
-    bitEqualities.push_back(
-        encodeBitEquality(solver, left, right, guardLiteral));
+    const ClauseTerm equality =
+        bitEquality(solver, left, right, guardLiteral);
+    if (equality.constant)
+    {
+      if (!equality.value)
+        return equality;
+      continue;
+    }
+    bitEqualities.push_back(equality.literal);
   }
+
+  if (bitEqualities.empty())
+    return ClauseTerm::constantValue(true);
 
   int result = bitEqualities[0];
   if (bitEqualities.size() > 1)
@@ -427,7 +497,7 @@ int equalityLiteral(SATSolver& solver,
     addGuardedClause(solver, reverse, guardLiteral);
   }
   cache.insert(std::make_pair(key, result));
-  return result;
+  return ClauseTerm::satLiteral(result);
 }
 
 void encodeLemma(MutableAdapterState& state, SATSolver& solver,
@@ -445,13 +515,26 @@ void encodeLemma(MutableAdapterState& state, SATSolver& solver,
   body.reserve(state.pendingLemma.premise.size() + 1);
   for (const UFEqualityAtom& premise : state.pendingLemma.premise)
   {
-    const int q = equalityLiteral(solver, bindings, premise, guardLiteral,
-                                  cache);
-    body.push_back(ClauseTerm::satLiteral(q ^ 1));
+    const ClauseTerm equality =
+        equalityTerm(solver, bindings, premise, guardLiteral, cache);
+    if (equality.constant)
+    {
+      if (!equality.value)
+        FatalError("UF lemma premise is structurally false", premise.left);
+      continue;
+    }
+    body.push_back(negate(equality));
   }
-  const int conclusion = equalityLiteral(
+  const ClauseTerm conclusion = equalityTerm(
       solver, bindings, state.pendingLemma.conclusion, guardLiteral, cache);
-  body.push_back(ClauseTerm::satLiteral(conclusion));
+  if (conclusion.constant)
+  {
+    if (conclusion.value)
+      FatalError("UF conflicting conclusion is structurally true",
+                 state.pendingLemma.conclusion.left);
+  }
+  else
+    body.push_back(conclusion);
   addGuardedClause(solver, body, guardLiteral);
   // Some backends detect at insertion time that this validated blocking
   // clause closes the entire instance.  That is a normal refinement outcome:
@@ -493,7 +576,7 @@ UFBatchAdapter::~UFBatchAdapter() = default;
 void UFBatchAdapter::beginQuery(const LoweredApplicationView* view)
 {
   clear();
-  impl_->state.view = view;
+  impl_->state.beginView(view);
 }
 void UFBatchAdapter::clear()
 {
@@ -578,8 +661,7 @@ void UFPersistentAdapter::beginBlock(const LoweredApplicationView* view,
   // its SAT solver merely by forgetting the notification.
   if (impl_->backendGeneration != backendGeneration)
     advanceBackendGeneration(backendGeneration);
-  impl_->state.clearRound();
-  impl_->state.view = view;
+  impl_->state.beginView(view);
   impl_->activeScope.epoch = epoch;
   impl_->activeScope.backendGeneration = backendGeneration;
   impl_->activeScope.block = blockId;

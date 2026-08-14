@@ -123,6 +123,28 @@ TEST(UFChecker, ReturnsStableUnaryConflictAndValidatedLemma)
   EXPECT_TRUE(lemma.evaluate(false, {false}));
 }
 
+TEST(UFChecker, PreparedPlanIsReusableAndRejectsMalformedViews)
+{
+  UnaryFixture fixture;
+  const UFCheckPlan plan = UFChecker::validate(
+      fixture.context->activeDeclarations(), fixture.view);
+  ASSERT_TRUE(plan.valid()) << plan.diagnostic();
+
+  const UFCheckResult conflict =
+      UFChecker::check(plan, fixture.candidate(43, 3, 3, 10, 11));
+  ASSERT_TRUE(conflict.hasConflict()) << conflict.diagnostic;
+  const UFCheckResult consistent =
+      UFChecker::check(plan, fixture.candidate(44, 3, 4, 10, 11));
+  ASSERT_TRUE(consistent.consistent()) << consistent.diagnostic;
+
+  LoweredApplicationView malformed = fixture.view;
+  malformed.handleToResult.clear();
+  const UFCheckPlan rejected = UFChecker::validate(
+      fixture.context->activeDeclarations(), malformed);
+  EXPECT_FALSE(rejected.valid());
+  EXPECT_NE(std::string::npos, rejected.diagnostic().find("wrong size"));
+}
+
 TEST(UFChecker, PreservesNonInjectivity)
 {
   UnaryFixture fixture;
