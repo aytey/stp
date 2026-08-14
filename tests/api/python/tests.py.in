@@ -35,6 +35,9 @@ import stp
 import unittest
 import ctypes
 import importlib
+import os
+import subprocess
+import textwrap
 
 
 @stp.stp
@@ -89,6 +92,35 @@ class TestSTP(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(value & (value - 1), 0)
 
+    def assert_python_probe_survives(self, body):
+        """Run a ctypes edge case out of process.
+
+        A native abort or invalid-handle segfault must be reported as an
+        ordinary unittest failure, rather than taking the rest of the Python
+        API suite down with it.
+        """
+        package_root = os.path.dirname(os.path.dirname(stp.__file__))
+        environment = os.environ.copy()
+        old_pythonpath = environment.get('PYTHONPATH')
+        environment['PYTHONPATH'] = package_root + (
+            os.pathsep + old_pythonpath if old_pythonpath else '')
+        program = (
+            'import importlib\nimport stp\n'
+            '_stp_native = importlib.import_module("stp.stp")\n' +
+            textwrap.dedent(body))
+        completed = subprocess.run(
+            [sys.executable, '-c', program],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=30)
+        self.assertEqual(
+            completed.returncode, 0,
+            'isolated Python UF probe did not survive (return code %d)\n'
+            'stdout:\n%s\nstderr:\n%s' %
+            (completed.returncode, completed.stdout, completed.stderr))
+
     def test_long(self):
         s = self.s
         a = s.bitvec('a', 256)
@@ -127,6 +159,137 @@ class TestSTP(unittest.TestCase):
             f(x)
         with self.assertRaises(ValueError):
             f(b, b)
+
+    def test_uninterpreted_function_inactive_bitvector_value_is_exception(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            f = s.function('f', [8], 8)
+            application = f(s.bitvec('x', 8))
+            try:
+                application.value
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('inactive UF application returned a value')
+        ''')
+
+    def test_uninterpreted_function_stale_bitvector_value_is_exception(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            f = s.function('f', [8], 8)
+            application = f(s.bitvec('x', 8))
+            s.add(application == s.bitvecval(8, 23))
+            assert s.check()
+            assert application.value == 23
+            s.add(s.true())
+            try:
+                application.value
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('stale UF application returned a value')
+        ''')
+
+    def test_uninterpreted_function_inactive_boolean_value_is_exception(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            predicate = s.function('predicate', [None], None)
+            application = predicate(s.true())
+            try:
+                application.value
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('inactive Bool UF returned a value')
+        ''')
+
+    def test_uninterpreted_function_stale_boolean_value_is_exception(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            predicate = s.function('predicate', [None], None)
+            application = predicate(s.true())
+            s.add(application)
+            assert s.check()
+            assert application.value is True
+            s.add(s.true())
+            try:
+                application.value
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('stale Bool UF returned a value')
+        ''')
+
+    def test_uninterpreted_function_boolean_false_value(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            predicate = s.function('predicate', [None], None)
+            application = predicate(s.true())
+            s.add(s.not_(application))
+            assert s.check()
+            assert application.value is False
+        ''')
+
+    def test_uninterpreted_function_cross_context_argument_is_exception(self):
+        first = stp.Solver(uninterpreted_functions=True)
+        second = stp.Solver(uninterpreted_functions=True)
+        f = first.function('f', [8], 8)
+        foreign = second.bitvec('foreign', 8)
+        with self.assertRaises(ValueError):
+            f(foreign)
+
+    def test_uninterpreted_function_invalid_declaration_is_exception(self):
+        s = stp.Solver(uninterpreted_functions=True)
+        f = s.function('f', [8], 8)
+        f.declaration = 1
+        with self.assertRaises(ValueError):
+            f(s.bitvec('x', 8))
+
+    def test_uninterpreted_function_destroyed_argument_is_exception(self):
+        self.assert_python_probe_survives('''
+            s = stp.Solver(uninterpreted_functions=True)
+            f = s.function('f', [8], 8)
+            x = s.bitvec('x', 8)
+            _stp_native._lib.vc_DeleteExpr(x.expr)
+            try:
+                f(x)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('destroyed argument was accepted')
+        ''')
+
+    def test_uninterpreted_function_destroyed_declaration_is_exception(self):
+        self.assert_python_probe_survives('''
+            owner = stp.Solver(uninterpreted_functions=True)
+            f = owner.function('f', [8], 8)
+            stale = f.declaration
+            _stp_native._lib.vc_Destroy(owner.vc)
+            owner.vc = None
+
+            live = stp.Solver(uninterpreted_functions=True)
+            x = live.bitvec('x', 8)
+            raw = (_stp_native._Expr * 1)(x.expr)
+            result = _stp_native._lib.vc_applyFun(live.vc, stale, raw, 1)
+            if result:
+                raise AssertionError('destroyed declaration was accepted')
+        ''')
+
+    def test_uninterpreted_function_namespace_is_consistent(self):
+        first = stp.Solver(uninterpreted_functions=True)
+        f = first.function('f', [8], 8)
+        with self.assertRaises(ValueError):
+            first.bitvec('f', 8)
+        # A rejected colliding symbol must not displace the UF declaration.
+        self.assertIsInstance(f(first.bitvec('x', 8)), stp.Expr)
+
+        second = stp.Solver(uninterpreted_functions=True)
+        x = second.bitvec('x', 8)
+        with self.assertRaises(ValueError):
+            second.function('x', [8], 8)
+        # A rejected colliding UF must not displace the ordinary symbol.
+        x_again = second.bitvec('x', 8)
+        self.assertTrue(second.check(x == x_again))
 
     def test_equal(self):
       s = self.s
