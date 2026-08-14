@@ -36,7 +36,8 @@ import struct
 from .library_path import PATHS
 
 __all__ = [
-    'AnyExpr', 'ArrayExpr', 'Expr', 'FloatExpr', 'Solver', 'stp', 'add', 'array',
+    'AnyExpr', 'ArrayExpr', 'Expr', 'FloatExpr', 'UninterpretedFunction',
+    'Solver', 'stp', 'add', 'array',
     'bitvec', 'bitvecs', 'check', 'model',
     'RNE', 'RTP', 'RTN', 'RTZ', 'RNA',
     'get_git_version_sha', 'get_git_version_tag', 'get_compilation_env', 'get_lib'
@@ -68,6 +69,7 @@ _VC = c_void_p
 _Expr = c_void_p
 _Type = c_void_p
 _WholeCounterExample = c_void_p
+_UFDecl = c_void_p
 
 _set_func('get_git_version_sha', c_char_p)
 _set_func('get_git_version_tag', c_char_p)
@@ -92,6 +94,10 @@ _set_func('vc_boolType', _Type, _VC)
 _set_func('vc_arrayType', _Type, _VC, _Type, _Type)
 _set_func('vc_varExpr', _Expr, _VC, c_char_p, _Type)
 _set_func('vc_varExpr1', _Expr, _VC, c_char_p, c_int32, c_int32)
+_set_func('vc_declareFun', _UFDecl, _VC, c_char_p, POINTER(c_uint32), c_size_t,
+          c_uint32)
+_set_func('vc_applyFun', _Expr, _VC, _UFDecl, POINTER(_Expr), c_size_t)
+_set_func('vc_getUFApplicationValue', _Expr, _VC, _Expr)
 _set_func('vc_getType', _Type, _VC, _Expr)
 _set_func('vc_getBVLength', c_int32, _VC, _Expr)
 _set_func('vc_eqExpr', _Expr, _VC, _Expr, _Expr)
@@ -292,7 +298,7 @@ def _decode_fp(bits, eb, sb):
 class Solver(object):
     current = None
 
-    def __init__(self, array_equality=False):
+    def __init__(self, array_equality=False, uninterpreted_functions=False):
         """Creates a solver.
 
         With array_equality=True, equality between whole arrays (the
@@ -305,12 +311,15 @@ class Solver(object):
         self.keys = {}
         self.arrays = {}
         self.array_equality = bool(array_equality)
+        self.uninterpreted_functions = bool(uninterpreted_functions)
         self.vc = _lib.vc_createValidityChecker()
         assert self.vc is not None, 'Error creating validity checker'
         # Rounding mode for the arithmetic operators of FloatExprs made here.
         self.rounding_mode = RNE
         if array_equality:
             _lib.vc_setFlag(self.vc, b'x')
+        if uninterpreted_functions:
+            _lib.vc_setFlag(self.vc, b'u')
 
     def __del__(self):
         # TODO We're not quite there yet.
@@ -398,6 +407,34 @@ class Solver(object):
 
         expr = _lib.vc_bvConstExprFromDecStr(self.vc, width, value_conv)
         return Expr(self, width, expr)
+
+    def function(self, name, domain, codomain):
+        """Declare a Bool/BitVec uninterpreted function.
+
+        Sorts are written as positive bit widths; ``None`` or ``0`` denotes
+        Bool. The domain must be non-empty. Applications are durable Expr
+        handles and ``app.value`` reads only a certified active solve value.
+        """
+        if not self.uninterpreted_functions:
+            raise ValueError('uninterpreted functions were not enabled')
+        widths = []
+        for sort in domain:
+            width = 0 if sort is None else int(sort)
+            if width < 0:
+                raise ValueError('function domain widths must be nonnegative')
+            widths.append(width)
+        if not widths:
+            raise ValueError('zero-arity functions are ordinary symbols')
+        result_width = 0 if codomain is None else int(codomain)
+        if result_width < 0:
+            raise ValueError('function codomain width must be nonnegative')
+        raw = (c_uint32 * len(widths))(*widths)
+        declaration = _lib.vc_declareFun(
+            self.vc, name.encode('utf-8'), raw, len(widths), result_width)
+        if not declaration:
+            raise ValueError('uninterpreted-function declaration was rejected')
+        return UninterpretedFunction(self, name, tuple(widths), result_width,
+                                     declaration)
 
     def rounding_mode_expr(self):
         """The current rounding-mode expression (self.rounding_mode, default RNE)."""
@@ -528,9 +565,7 @@ class Solver(object):
         max_conflicts = kwargs.get("max_conflicts", -1)
         max_time = kwargs.get("max_time", -1)
 
-        self.push()
         ret = _lib.vc_query_with_timeout(self.vc, expr, max_conflicts, max_time)
-        self.pop()
         return ret
 
     def check(self, *exprs):
@@ -585,6 +620,13 @@ class Solver(object):
             expr = self.keys[key]
 
         if expr:
+            if _lib.getVWidth(expr) == 0:
+                value = _lib.vc_getCounterExample(self.vc, expr)
+                if not value:
+                    raise ValueError('expression has no certified model value')
+                boolean = _lib.vc_isBool(value)
+                if boolean >= 0:
+                    return bool(boolean)
             bits = self._counterexample_int(expr, _lib.getVWidth(expr))
             eb = _lib.vc_getExpWidth(expr)
             if eb:
@@ -679,6 +721,41 @@ class Solver(object):
         assert isinstance(obj, AnyExpr), 'Object should be an Expression'
         expr = _lib.vc_notExpr(self.vc, obj.expr)
         return Expr(self, obj.width, expr)
+
+
+class UninterpretedFunction(object):
+    """A context-owned UF declaration; calling it creates a durable handle."""
+
+    def __init__(self, solver, name, domain, codomain, declaration):
+        self.s = solver
+        self.name = name
+        self.domain = domain
+        self.codomain = codomain
+        self.declaration = declaration
+
+    def __call__(self, *arguments):
+        if len(arguments) != len(self.domain):
+            raise ValueError('uninterpreted-function arity mismatch')
+        raw_arguments = []
+        for position, (argument, width) in enumerate(zip(arguments,
+                                                         self.domain)):
+            if type(argument) is not Expr or argument.s is not self.s:
+                raise ValueError(
+                    'uninterpreted-function argument %d has wrong ownership '
+                    'or source sort' % position)
+            actual_width = 0 if argument.width is None else argument.width
+            if actual_width != width:
+                raise ValueError(
+                    'uninterpreted-function argument %d has wrong source '
+                    'sort' % position)
+            raw_arguments.append(argument.expr)
+        raw = (_Expr * len(raw_arguments))(*raw_arguments)
+        application = _lib.vc_applyFun(
+            self.s.vc, self.declaration, raw, len(raw_arguments))
+        if not application:
+            raise ValueError('uninterpreted-function application was rejected')
+        width = None if self.codomain == 0 else self.codomain
+        return Expr(self.s, width, application)
 
 
 class AnyExpr(object):

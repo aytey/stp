@@ -107,6 +107,27 @@ class TestSTP(unittest.TestCase):
         self.assertTrue(s.check(b.eq(d), a.add(b).eq(c)))
         self.assertEqual(s.model(), {'a': 1337-42, 'b': 42})
 
+    def test_uninterpreted_function_durable_values(self):
+        s = stp.Solver(uninterpreted_functions=True)
+        f = s.function('f', [8, None], 16)
+        x = s.bitvec('x', 8)
+        b = s.true()
+        application = f(x, b)
+        s.add(x == 7, application == s.bitvecval(16, 0x1234))
+        self.assertTrue(s.check())
+        self.assertEqual(application.value, 0x1234)
+
+        predicate = s.function('predicate', [None], None)
+        observed = predicate(b)
+        s.add(observed)
+        self.assertTrue(s.check())
+        self.assertIs(observed.value, True)
+
+        with self.assertRaises(ValueError):
+            f(x)
+        with self.assertRaises(ValueError):
+            f(b, b)
+
     def test_equal(self):
       s = self.s
       a = s.bitvec('a', 32)

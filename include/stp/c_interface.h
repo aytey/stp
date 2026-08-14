@@ -325,6 +325,13 @@ DLL_PUBLIC UFDeclHandle vc_declareFun(VC vc, const char* name,
 DLL_PUBLIC Expr vc_applyFun(VC vc, UFDeclHandle function,
                             const Expr* arguments, size_t argumentCount);
 
+//! Evaluate a durable UF_APPLY in the most recently certified model.
+//!
+//! Returns a caller-owned Bool/BitVec constant, or NULL after a nonfatal
+//! diagnostic when the handle is stale, inactive, cross-context, not active
+//! in that solve, or no certified model exists. No lowered symbol is exposed.
+DLL_PUBLIC Expr vc_getUFApplicationValue(VC vc, Expr application);
+
 //! \brief Returns the type of the given expression.
 //!
 DLL_PUBLIC Type vc_getType(VC vc, Expr e);
@@ -711,6 +718,9 @@ DLL_PUBLIC void vc_push(VC vc);
 //! afterwards. The counterexample describes the last vc_query (its
 //! assertions plus the negated query at that moment) and stays readable
 //! until the next vc_push or vc_query discards it.
+//! A certified uninterpreted-function application map is intentionally
+//! stricter: because it is keyed by the solved stack/block, vc_pop invalidates
+//! UF application-value reads even while legacy scalar/array values remain.
 //!
 DLL_PUBLIC void vc_pop(VC vc);
 

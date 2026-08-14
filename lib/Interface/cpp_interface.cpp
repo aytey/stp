@@ -33,6 +33,7 @@ THE SOFTWARE.
 #include "stp/STPManager/STPManager.h"
 #include "stp/ToSat/ToSATAIG.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFModel.h"
 #include <cassert>
 
 using std::cerr;
@@ -68,6 +69,7 @@ void Cpp_interface::init()
   produce_models = false;
   session_touched = false;
   model_valid = false;
+  current_command_rejected = false;
   incremental_from_start =
       bm.UserFlags.incremental_mode == UserDefinedFlags::IncrementalMode::ON;
   session_incremental = incremental_from_start;
@@ -166,6 +168,8 @@ void Cpp_interface::setLogic(const std::string& logic)
 
 void Cpp_interface::AddAssert(const ASTNode& assert)
 {
+  if (current_command_rejected)
+    return;
   bm.AddAssert(assert);
   session_touched = true;
 
@@ -296,6 +300,8 @@ void Cpp_interface::removeSymbol(ASTNode to_remove)
 void Cpp_interface::storeFunction(const string& name, const ASTVec& params,
                                   const ASTNode& function)
 {
+  if (current_command_rejected)
+    return;
   Function f;
   f.name = name;
 
@@ -397,7 +403,14 @@ const UFDecl* Cpp_interface::declareUninterpretedFunction(
   const UFDecl* result =
       bm.getUFContext()->declareFunction(name, domain, codomain, diagnostic);
   if (result != NULL)
+  {
     session_touched = true;
+    model_valid = false;
+    if (GlobalSTP != NULL &&
+        GlobalSTP->Ctr_Example->getUFTheoryAdapter() != NULL)
+      GlobalSTP->Ctr_Example->getUFTheoryAdapter()
+          ->invalidateCertifiedModel();
+  }
   return result;
 }
 
@@ -434,12 +447,28 @@ ASTNode Cpp_interface::applyUninterpretedFunction(
   return context->apply(declaration, actuals, diagnostic);
 }
 
-ASTNode Cpp_interface::makeMalformedUFPlaceholder(const UFDecl* declaration)
+ASTNode Cpp_interface::getUninterpretedApplicationValue(
+    const ASTNode& application, std::string* diagnostic)
 {
-  SourceSort sort = SourceSort::boolean();
-  if (declaration != NULL && declaration->owner() == &bm)
-    sort = declaration->signature().codomain();
-  return bm.CreateFreshSourceVariable(sort, "UF_MALFORMED");
+  if (!model_valid || GlobalSTP == NULL)
+  {
+    if (diagnostic != NULL)
+      *diagnostic = "no current certified model is available";
+    return bm.ASTUndefined;
+  }
+  if (GlobalSTP->hasIncrementalSolver())
+    GlobalSTP->getIncrementalSolver()->materializePendingModel();
+  ASTNode value;
+  std::string localDiagnostic;
+  if (!UFModel::evaluateApplication(
+          &bm, GlobalSTP->Ctr_Example->getUFTheoryAdapter(), application,
+          value, localDiagnostic))
+  {
+    if (diagnostic != NULL)
+      *diagnostic = localDiagnostic;
+    return bm.ASTUndefined;
+  }
+  return value;
 }
 
 bool Cpp_interface::hasUninterpretedFunctions() const
@@ -513,8 +542,38 @@ void Cpp_interface::deleteNode(ASTNode* n)
 
 void Cpp_interface::addSymbol(ASTNode& s)
 {
+  if (current_command_rejected)
+    return;
   frames.back()->addSymbol(s);
   session_touched = true;
+}
+
+void Cpp_interface::addTemporarySymbol(ASTNode& s)
+{
+  frames.back()->addSymbol(s);
+  session_touched = true;
+}
+
+bool Cpp_interface::validateTopLevelDeclarationName(
+    const std::string& name, std::string* diagnostic)
+{
+  std::string message;
+  if (lookupFunction(name) != NULL)
+    message = "name '" + name + "' already denotes a define-fun";
+  else if (lookupUninterpretedFunction(name) != NULL)
+    message = "name '" + name +
+              "' already denotes an uninterpreted function";
+  else
+  {
+    ASTNode symbol;
+    if (LookupSymbol(name.c_str(), symbol))
+      message = "name '" + name + "' already denotes an ordinary symbol";
+  }
+  if (message.empty())
+    return true;
+  if (diagnostic != NULL)
+    *diagnostic = message;
+  return false;
 }
 
 void Cpp_interface::addRoundingModeSymbol(ASTNode& s)
@@ -549,6 +608,8 @@ bool Cpp_interface::arraySortsAgree(const ASTNode& arr, const array_sort& sort)
 
 void Cpp_interface::success()
 {
+  if (current_command_rejected)
+    return;
   if (print_success)
   {
     cout << "success" << endl;
@@ -567,6 +628,17 @@ void Cpp_interface::unsupported()
 {
   cout << "unsupported" << endl;
   flush(cout);
+}
+
+void Cpp_interface::rejectCurrentCommand(const std::string& diagnostic)
+{
+  current_command_rejected = true;
+  error(diagnostic);
+}
+
+void Cpp_interface::finishCurrentCommand()
+{
+  current_command_rejected = false;
 }
 
 void Cpp_interface::resetSolver()
@@ -1281,6 +1353,8 @@ void Cpp_interface::getAssertions()
 
 void Cpp_interface::getValue(const ASTVec& v)
 {
+  if (current_command_rejected)
+    return;
   if (!bm.UserFlags.construct_counterexample_flag || !model_valid)
   {
     unsupported();
@@ -1304,6 +1378,23 @@ void Cpp_interface::getValue(const ASTVec& v)
     // equality is enabled; use (get-model), which prints the completed
     // array interpretations. With the feature disabled the
     // pre-extension behavior is preserved unchanged.
+    if (n.GetKind() == UF_APPLY)
+    {
+      std::string diagnostic;
+      const ASTNode value =
+          getUninterpretedApplicationValue(n, &diagnostic);
+      if (value.GetKind() == UNDEFINED)
+      {
+        unsupported();
+        return;
+      }
+      os << "( ";
+      printer::SMTLIB2_Print1(os, n, 0, false);
+      os << " ";
+      printer::SMTLIB2_Print1(os, value, 0, false);
+      os << " )" << std::endl;
+      continue;
+    }
     if (n.GetKind() != SYMBOL ||
         (n.GetType() == ARRAY_TYPE && bm.UserFlags.enable_array_equality))
     {

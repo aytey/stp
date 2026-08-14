@@ -274,6 +274,14 @@ private:
   // rather than print a model of an assertion set that no longer exists.
   bool model_valid;
 
+  // A malformed UF expression is diagnosed without aborting the SMT-LIB
+  // script.  The parser still has to reduce the enclosing typed production,
+  // so it carries a canonical value of the declared result sort to the end
+  // of the command.  This latch prevents that parser-only carrier (or any
+  // other side effect in the rejected command) from entering solver state.
+  // It is cleared exactly at the outer command boundary.
+  bool current_command_rejected;
+
   // Unless --incremental=on or an explicit threshold overrides it, pure
   // QF_BV/QF_ABV sessions delay the persistent driver until solve 32; other
   // and unknown logics retain solve 3. The first solves carry the largest
@@ -420,7 +428,11 @@ public:
   DLL_PUBLIC ASTNode applyUninterpretedFunction(
       const UFDecl* declaration, const ASTVec& actuals,
       std::string* diagnostic = NULL);
-  DLL_PUBLIC ASTNode makeMalformedUFPlaceholder(const UFDecl* declaration);
+  // Evaluate an active durable UF_APPLY in the most recently certified
+  // model. The returned node is a public Bool/BV constant, never a lowered
+  // result symbol. Failure is nonfatal and returns ASTUndefined.
+  DLL_PUBLIC ASTNode getUninterpretedApplicationValue(
+      const ASTNode& application, std::string* diagnostic = NULL);
   bool hasUninterpretedFunctions() const;
 
   DLL_PUBLIC ASTNode LookupOrCreateSymbol(std::string name);
@@ -450,6 +462,16 @@ public:
 
   DLL_PUBLIC void deleteNode(ASTNode* n);
   DLL_PUBLIC void addSymbol(ASTNode& s);
+  // Function formal parameters are parser-local bindings. They may shadow a
+  // top-level declaration and must still be installed temporarily while a
+  // containing define-fun command is being rejected and reduced.
+  DLL_PUBLIC void addTemporarySymbol(ASTNode& s);
+
+  // Check the shared top-level name space before the parser mutates a frame.
+  // With UF enabled declaration-name lexing deliberately reaches this
+  // semantic check even for already classified names.
+  DLL_PUBLIC bool validateTopLevelDeclarationName(
+      const std::string& name, std::string* diagnostic = NULL);
 
   // Declare a symbol of SMT-LIB's RoundingMode sort: registers it like
   // addSymbol, marks it for the model printers, and asserts that it takes
@@ -476,6 +498,12 @@ public:
   DLL_PUBLIC void success();
   DLL_PUBLIC void error(std::string msg);
   DLL_PUBLIC void unsupported();
+
+  // Nonfatal SMT-LIB command rejection used by the typed UF funnel.  No
+  // malformed UF_APPLY or fresh placeholder is constructed or registered.
+  DLL_PUBLIC void rejectCurrentCommand(const std::string& diagnostic);
+  DLL_PUBLIC void finishCurrentCommand();
+  bool currentCommandRejected() const { return current_command_rejected; }
 
   // Resets the tables used by STP, but keeps all the nodes that have been
   // created.

@@ -1,0 +1,326 @@
+#include "stp/UninterpretedFunctions/UFModel.h"
+#include "stp/AbsRefineCounterExample/AbsRefine_CounterExample.h"
+#include "stp/Printer/printers.h"
+#include "stp/STPManager/STPManager.h"
+#include "stp/Simplifier/SubstitutionMap.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
+#include "extlib-constbv/constantbv.h"
+#include <algorithm>
+#include <cctype>
+#include <sstream>
+
+namespace stp
+{
+
+namespace
+{
+
+bool validQuotedSymbol(const std::string& name)
+{
+  // SMT-LIB quoted symbols have no escape for either delimiter character.
+  // Parser declarations have already stripped their surrounding bars.
+  for (const unsigned char c : name)
+    if (c == '|' || c == '\\' || !std::isprint(c))
+      return false;
+  return true;
+}
+
+void printQuotedSymbol(std::ostream& os, const std::string& name)
+{
+  if (!validQuotedSymbol(name))
+    FatalError("UF model contains an external name that cannot be rendered "
+               "as an SMT-LIB2 quoted symbol");
+  os << '|' << name << '|';
+}
+
+void printSort(std::ostream& os, const SourceSort& sort)
+{
+  if (sort.kind() == SourceSort::Kind::Bool)
+  {
+    os << "Bool";
+    return;
+  }
+  if (sort.kind() == SourceSort::Kind::BitVector &&
+      sort.bitVectorWidth() > 0)
+  {
+    os << "(_ BitVec " << sort.bitVectorWidth() << ')';
+    return;
+  }
+  FatalError("UF model tried to print an unsupported SourceSort");
+}
+
+void requireValueSort(const UFConcreteValue& value,
+                      const SourceSort& expected)
+{
+  if (value.sort() != expected)
+    FatalError("UF model seed contains a value at the wrong SourceSort");
+}
+
+void printValue(std::ostream& os, STPMgr* manager,
+                const UFConcreteValue& value)
+{
+  const ASTNode constant = UFModel::concreteValue(manager, value);
+  if (value.sort().kind() == SourceSort::Kind::Bool)
+    os << (constant.GetKind() == TRUE ? "true" : "false");
+  else
+    printer::outputBitVecSMTLIB2(constant, os);
+}
+
+void printCondition(std::ostream& os, STPMgr* manager,
+                    const UFSignature& signature,
+                    const UFConcreteTuple& arguments)
+{
+  if (arguments.size() != signature.arity())
+    FatalError("UF model case has the wrong arity");
+  if (arguments.size() > 1)
+    os << "(and ";
+  for (size_t i = 0; i < arguments.size(); ++i)
+  {
+    if (i != 0)
+      os << ' ';
+    requireValueSort(arguments[i], signature.domain()[i]);
+    os << "(= x" << i << ' ';
+    printValue(os, manager, arguments[i]);
+    os << ')';
+  }
+  if (arguments.size() > 1)
+    os << ')';
+}
+
+bool seedFunctionBefore(const UFFunctionModelSeed* left,
+                        const UFFunctionModelSeed* right)
+{
+  if (left == NULL || right == NULL || left->declaration == NULL ||
+      right->declaration == NULL)
+    return left < right;
+  if (left->declaration->name() != right->declaration->name())
+    return left->declaration->name() < right->declaration->name();
+  return left->declaration->id() < right->declaration->id();
+}
+
+} // namespace
+
+ASTNode UFModel::concreteValue(STPMgr* manager,
+                               const UFConcreteValue& value)
+{
+  if (manager == NULL)
+    FatalError("UF concrete-value conversion has no manager");
+  const SourceSort& sort = value.sort();
+  if (sort.kind() == SourceSort::Kind::Bool)
+    return value.booleanValue() ? manager->ASTTrue : manager->ASTFalse;
+  if (sort.kind() != SourceSort::Kind::BitVector ||
+      sort.bitVectorWidth() == 0)
+    FatalError("UF concrete-value conversion received an unsupported sort");
+
+  const unsigned width = sort.bitVectorWidth();
+  const std::vector<uint8_t>& bytes = value.bytes();
+  if (bytes.size() != (width + 7) / 8)
+    FatalError("UF concrete-value conversion received malformed bytes");
+  CBV bits = CONSTANTBV::BitVector_Create(width, true);
+  CONSTANTBV::BitVector_Empty(bits);
+  for (unsigned i = 0; i < width; ++i)
+    if ((bytes[i / 8] & static_cast<uint8_t>(1u << (i % 8))) != 0)
+      CONSTANTBV::BitVector_Bit_On(bits, i);
+  return manager->CreateBVConst(bits, width); // consumes bits
+}
+
+bool UFModel::evaluateApplication(STPMgr* manager,
+                                  const UFTheoryAdapter* adapter,
+                                  const ASTNode& durableHandle,
+                                  ASTNode& value,
+                                  std::string& diagnostic)
+{
+  value = ASTNode();
+  if (manager == NULL || durableHandle.IsNull() ||
+      !durableHandle.IsOwnedBy(manager))
+  {
+    diagnostic = "uninterpreted-function application belongs to another "
+                 "context or is invalid";
+    return false;
+  }
+  UFContext* context = manager->getUFContextIfAny();
+  if (context == NULL ||
+      !context->isRegisteredApplication(durableHandle))
+  {
+    diagnostic = "expression is not a registered durable "
+                 "uninterpreted-function application";
+    return false;
+  }
+  if (!context->isActiveApplication(durableHandle))
+  {
+    diagnostic = "uninterpreted-function application is stale or inactive";
+    return false;
+  }
+  if (adapter == NULL || !adapter->hasCertifiedModel())
+  {
+    diagnostic = "no certified uninterpreted-function model is available";
+    return false;
+  }
+  UFConcreteValue concrete;
+  if (!adapter->lookupCertifiedApplication(durableHandle, concrete))
+  {
+    diagnostic = "uninterpreted-function application was not active in the "
+                 "certified solve";
+    return false;
+  }
+  if (concrete.sort() != durableHandle.GetSourceSort())
+  {
+    diagnostic = "certified uninterpreted-function value has the wrong "
+                 "SourceSort";
+    return false;
+  }
+  value = concreteValue(manager, concrete);
+  return true;
+}
+
+bool UFModel::completePublicRoot(STPMgr* manager,
+                                 const UFTheoryAdapter& adapter,
+                                 ASTNode& completed,
+                                 std::string& diagnostic)
+{
+  completed = ASTNode();
+  const LoweredApplicationView* view = adapter.applicationView();
+  if (manager == NULL || view == NULL || !view->active() ||
+      view->publicRoot.IsNull() || !view->publicRoot.IsOwnedBy(manager))
+  {
+    diagnostic = "certified UF adapter has no owned active public root";
+    return false;
+  }
+  if (!adapter.hasCertifiedModel())
+  {
+    diagnostic = "UF public-root completion began before certification";
+    return false;
+  }
+
+  ASTNodeMap replacements;
+  for (const LoweredApplicationRecord& record : view->applications)
+  {
+    ASTNode constant;
+    if (!evaluateApplication(manager, &adapter, record.durableHandle,
+                             constant, diagnostic))
+      return false;
+    if (!replacements.insert(
+             std::make_pair(record.durableHandle, constant)).second)
+    {
+      diagnostic = "UF public-root completion saw a duplicate handle";
+      return false;
+    }
+  }
+  ASTNodeMap cache;
+  completed = SubstitutionMap::replace(view->publicRoot, replacements, cache,
+                                       manager->defaultNodeFactory);
+  if (containsKind(completed, UF_APPLY))
+  {
+    diagnostic = "UF public-root completion left an application behind";
+    completed = ASTNode();
+    return false;
+  }
+  return true;
+}
+
+bool UFModel::replayPublicRoot(
+    AbsRefine_CounterExample& counterexample,
+    const UFTheoryAdapter& adapter, std::string& diagnostic)
+{
+  const LoweredApplicationView* view = adapter.applicationView();
+  STPMgr* manager = view == NULL || view->publicRoot.IsNull()
+                        ? NULL
+                        : view->publicRoot.GetNodeManager();
+  ASTNode completed;
+  if (!completePublicRoot(manager, adapter, completed, diagnostic))
+    return false;
+  const ASTNode result = counterexample.QueryFormulaAgainstModel(completed);
+  if (result != manager->ASTTrue)
+  {
+    diagnostic = result == manager->ASTFalse
+                     ? "certified UF interpretation does not satisfy the "
+                       "preserved public root"
+                     : "preserved UF public root did not replay to a Boolean "
+                       "constant";
+    return false;
+  }
+  return true;
+}
+
+UFFunctionModelSeedSet
+UFModel::defaultSeed(const std::vector<const UFDecl*>& declarations)
+{
+  UFFunctionModelSeedSet seed;
+  std::vector<const UFDecl*> ordered = declarations;
+  std::sort(ordered.begin(), ordered.end(),
+            [](const UFDecl* left, const UFDecl* right) {
+              if (left == NULL || right == NULL)
+                return left < right;
+              return left->id() < right->id();
+            });
+  for (const UFDecl* declaration : ordered)
+  {
+    if (declaration == NULL)
+      FatalError("UF default model received a null declaration");
+    UFFunctionModelSeed function;
+    function.declaration = declaration;
+    function.defaultValue =
+        UFConcreteValue::zero(declaration->signature().codomain());
+    seed.functions.push_back(function);
+  }
+  return seed;
+}
+
+void UFModel::printSMTLIB2(std::ostream& os,
+                           const UFFunctionModelSeedSet& seed)
+{
+  std::vector<const UFFunctionModelSeed*> functions;
+  functions.reserve(seed.functions.size());
+  for (const UFFunctionModelSeed& function : seed.functions)
+    functions.push_back(&function);
+  std::sort(functions.begin(), functions.end(), seedFunctionBefore);
+
+  for (const UFFunctionModelSeed* function : functions)
+  {
+    if (function == NULL || function->declaration == NULL ||
+        function->declaration->owner() == NULL)
+      FatalError("UF model seed contains an invalid declaration");
+    const UFDecl& declaration = *function->declaration;
+    const UFSignature& signature = declaration.signature();
+    STPMgr* manager = const_cast<STPMgr*>(declaration.owner());
+    requireValueSort(function->defaultValue, signature.codomain());
+
+    os << "(define-fun ";
+    printQuotedSymbol(os, declaration.name());
+    os << " (";
+    for (size_t i = 0; i < signature.arity(); ++i)
+    {
+      if (i != 0)
+        os << ' ';
+      os << "(x" << i << ' ';
+      printSort(os, signature.domain()[i]);
+      os << ')';
+    }
+    os << ") ";
+    printSort(os, signature.codomain());
+    os << '\n' << "  ";
+
+    // The checker already stores cases in typed tuple order. Emitting them in
+    // that order while nesting leaves the lexicographically first case
+    // outermost, matching the reference renderer and making text independent
+    // of insertion order.
+    for (const UFModelCase& modelCase : function->cases)
+    {
+      if (modelCase.arguments.size() != signature.arity())
+        FatalError("UF model seed contains a wrong-arity case");
+      requireValueSort(modelCase.result, signature.codomain());
+      os << "(ite ";
+      printCondition(os, manager, signature, modelCase.arguments);
+      os << ' ';
+      printValue(os, manager, modelCase.result);
+      os << ' ';
+    }
+    printValue(os, manager, function->defaultValue);
+    for (size_t i = 0; i < function->cases.size(); ++i)
+      os << ')';
+    os << ")\n";
+  }
+}
+
+} // namespace stp

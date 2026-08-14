@@ -28,6 +28,7 @@ from .stp import (
     ArrayExpr,
     Expr,
     FloatExpr,
+    UninterpretedFunction,
     Solver,
     stp,
     add,

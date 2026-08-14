@@ -129,6 +129,14 @@ public:
     return !IsNull() && GetSTPMgr() == manager;
   }
 
+  // The owning manager is immutable. Public printers for context-owned
+  // durable nodes need to recover their declaration registry without relying
+  // on a process-global parser manager.
+  STPMgr* GetNodeManager() const
+  {
+    return IsNull() ? NULL : GetSTPMgr();
+  }
+
   bool isSimplfied() const;
   void hasBeenSimplfied() const;
 

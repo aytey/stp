@@ -39,6 +39,8 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FpTotalise.h"
 #include "stp/Util/GitSHA1.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/UninterpretedFunctions/UFModel.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
 
 // From ABC
 #include "sat/cnf/cnf.h"
@@ -732,6 +734,7 @@ Expr vc_writeExpr(VC vc, Expr array, Expr index, Expr newValue)
 /*! The formula must have Boolean type. */
 void vc_assertFormula(VC vc, Expr e)
 {
+  stp::STP* stp_i = (stp::STP*)vc;
   stp::STPMgr* b = mgr(vc);
   stp::ASTNode* a = (stp::ASTNode*)e;
 
@@ -741,6 +744,10 @@ void vc_assertFormula(VC vc, Expr e)
 
   assert(BVTypeCheck(*a));
   b->AddAssert(*a);
+  // A certified UF map belongs to one completed root. An assertion changes
+  // that root even before the next query clears the ordinary model tables.
+  if (stp_i->Ctr_Example->getUFTheoryAdapter() != NULL)
+    stp_i->Ctr_Example->getUFTheoryAdapter()->invalidateCertifiedModel();
 }
 
 //! Check validity of e in the current context. e must be a FORMULA
@@ -931,8 +938,15 @@ void vc_push(VC vc)
 // run before any state they clear could be reused for solving.
 void vc_pop(VC vc)
 {
-  stp::STPMgr* b = mgr(vc);
+  stp::STP* stp_i = static_cast<stp::STP*>(vc);
+  stp::STPMgr* b = stp_i->bm;
   b->Pop();
+
+  // Preserve the historical ordinary-scalar/array counterexample contract,
+  // but not a UF certified handle map: that map is explicitly rooted in one
+  // unchanged stack/block and every real pop invalidates it.
+  if (stp_i->Ctr_Example->getUFTheoryAdapter() != NULL)
+    stp_i->Ctr_Example->getUFTheoryAdapter()->invalidateCertifiedModel();
 }
 
 void vc_printCounterExample(VC vc)
@@ -975,6 +989,9 @@ void vc_printCounterExampleSMTLIB2(VC vc)
 
 Expr vc_getCounterExample(VC vc, Expr e)
 {
+  if (vc != NULL && e != NULL &&
+      static_cast<stp::ASTNode*>(e)->GetKind() == stp::UF_APPLY)
+    return vc_getUFApplicationValue(vc, e);
   materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::ASTNode* a = (stp::ASTNode*)e;
@@ -1090,6 +1107,14 @@ Expr vc_varExpr1(VC vc, const char* name, int indexwidth, int valuewidth)
 {
   stp::STPMgr* b = mgr(vc);
 
+  if (b->getUFContextIfAny() != NULL &&
+      b->getUFContextIfAny()->lookup(name) != NULL)
+  {
+    reportUFAPIError(std::string("name '") + name +
+                     "' already denotes an uninterpreted function");
+    return NULL;
+  }
+
   stp::SourceSort source_sort;
   if (indexwidth > 0)
     source_sort = stp::SourceSort::array(
@@ -1113,6 +1138,13 @@ Expr vc_varExpr1(VC vc, const char* name, int indexwidth, int valuewidth)
 Expr vc_varExpr(VC vc, const char* name, Type type)
 {
   stp::STPMgr* b = mgr(vc);
+  if (b->getUFContextIfAny() != NULL &&
+      b->getUFContextIfAny()->lookup(name) != NULL)
+  {
+    reportUFAPIError(std::string("name '") + name +
+                     "' already denotes an uninterpreted function");
+    return NULL;
+  }
   stp::ASTNode* typeNode = (stp::ASTNode*)type;
   switch (typeNode->GetKind())
   {
@@ -1194,6 +1226,9 @@ UFDeclHandle vc_declareFun(VC vc, const char* name,
     reportUFAPIError(diagnostic);
     return NULL;
   }
+  stp::STP* stp_i = static_cast<stp::STP*>(vc);
+  if (stp_i->Ctr_Example->getUFTheoryAdapter() != NULL)
+    stp_i->Ctr_Example->getUFTheoryAdapter()->invalidateCertifiedModel();
   return const_cast<stp::UFDecl*>(declaration);
 }
 
@@ -1229,6 +1264,28 @@ Expr vc_applyFun(VC vc, UFDeclHandle function, const Expr* arguments,
     return NULL;
   }
   return wrap(application);
+}
+
+Expr vc_getUFApplicationValue(VC vc, Expr application)
+{
+  if (vc == NULL || application == NULL)
+  {
+    reportUFAPIError(
+        "vc_getUFApplicationValue received a null required argument");
+    return NULL;
+  }
+  materializePendingModel(vc);
+  stp::STP* stp_i = static_cast<stp::STP*>(vc);
+  stp::ASTNode value;
+  std::string diagnostic;
+  if (!stp::UFModel::evaluateApplication(
+          stp_i->bm, stp_i->Ctr_Example->getUFTheoryAdapter(),
+          *static_cast<stp::ASTNode*>(application), value, diagnostic))
+  {
+    reportUFAPIError(diagnostic);
+    return NULL;
+  }
+  return wrap(value);
 }
 
 //! Create an equality expression.  The two children must have the
