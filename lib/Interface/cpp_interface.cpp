@@ -35,6 +35,7 @@ THE SOFTWARE.
 #include "stp/ToSat/ToSATAIG.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/UninterpretedFunctions/UFModel.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
 #include <cassert>
 
 using std::cerr;

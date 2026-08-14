@@ -83,3 +83,21 @@ if(NOT build_result EQUAL 0)
     "UF install-tree consumer build failed (${build_result})\n"
     "${build_stdout}\n${build_stderr}")
 endif()
+
+set(test_command
+    "@CMAKE_CTEST_COMMAND@" --test-dir "${consumer_build_dir}"
+    --output-on-failure)
+if(DEFINED STP_TEST_CONFIG AND NOT STP_TEST_CONFIG STREQUAL "")
+  list(APPEND test_command -C "${STP_TEST_CONFIG}")
+endif()
+execute_process(
+  COMMAND ${test_command}
+  RESULT_VARIABLE test_result
+  OUTPUT_VARIABLE test_stdout
+  ERROR_VARIABLE test_stderr
+)
+if(NOT test_result EQUAL 0)
+  message(FATAL_ERROR
+    "UF install-tree consumer tests failed (${test_result})\n"
+    "${test_stdout}\n${test_stderr}")
+endif()

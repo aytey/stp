@@ -37,15 +37,13 @@ THE SOFTWARE.
 #include "stp/Util/Attributes.h"
 #include "stp/ToSat/ToSATAIG.h"
 #include "stp/Simplifier/NodeDomainAnalysis.h"
-#include "stp/UninterpretedFunctions/UFLowering.h"
-#include "stp/UninterpretedFunctions/UFContext.h"
-#include "stp/UninterpretedFunctions/UFRefinement.h"
-
 #include <memory>
 
 namespace stp
 {
 class IncrementalSolver;
+class LoweredApplicationView;
+class UFBatchAdapter;
 
 // FIXME: This needs a better name
 class STP
@@ -86,7 +84,7 @@ class STP
   // Public and semantic UF roots for the most recent fresh-query solve. The
   // value remains alive with the model, while all SAT/checker mutation belongs
   // to the batch adapter added at M4.
-  LoweredApplicationView batchUFView;
+  std::unique_ptr<LoweredApplicationView> batchUFView;
   std::unique_ptr<UFBatchAdapter> batchUFAdapter;
   uint64_t batchUFScopeGeneration = 0;
 
@@ -118,31 +116,16 @@ public:
   DLL_PUBLIC IncrementalSolver* getIncrementalSolver();
   DLL_PUBLIC void resetIncrementalSolver();
   bool hasIncrementalSolver() const { return incrementalSolver != nullptr; }
-  const LoweredApplicationView& lastBatchUFView() const
-  {
-    return batchUFView;
-  }
+  const LoweredApplicationView& lastBatchUFView() const;
 
 public:
-  STP(STPMgr* b)
-  {
-    bm = b;
-    substitutionMap = new stp::SubstitutionMap(bm);
-    simp = new Simplifier(bm,substitutionMap);
-    arrayTransformer = new ArrayTransformer(bm, simp);
-    Ctr_Example = new AbsRefine_CounterExample(bm, simp, arrayTransformer);
-    batchUFAdapter.reset(new UFBatchAdapter(bm));
-    tosat = new ToSATAIG(bm, arrayTransformer);
-  }
+  // Out of line so the UF implementation types above remain incomplete here.
+  DLL_PUBLIC STP(STPMgr* b);
 
-  STP( const STP& ) = delete; 
-  STP& operator=( const STP& ) = delete; 
+  STP(const STP&) = delete;
+  STP& operator=(const STP&) = delete;
 
-  ~STP() 
-  { 
-    ClearAllTables(); 
-    deleteObjects();
-  }
+  DLL_PUBLIC ~STP();
 
   // NB doesn't delete the STPMgr.
   void deleteObjects()
@@ -181,29 +164,7 @@ public:
   ASTNode callSizeReducing(ASTNode simplified_solved_InputToSAT,
                            BVSolver* bvSolver, PropagateEqualities* pe, NodeDomainAnalysis* domain);
 
-  void ClearAllTables(void)
-  {
-    if (simp != NULL)
-      simp->ClearAllTables();
-    if (arrayTransformer != NULL)
-      arrayTransformer->ClearAllTables();
-    if (tosat != NULL)
-      tosat->ClearAllTables();
-    if (Ctr_Example != NULL)
-    {
-      Ctr_Example->ClearAllTables();
-      Ctr_Example->setFpEncodingContext(NULL);
-    }
-    fpEncodingContext.reset();
-    batchUFView = LoweredApplicationView();
-    if (batchUFAdapter)
-      batchUFAdapter->clear();
-    if (Ctr_Example != NULL)
-      Ctr_Example->setUFTheoryAdapter(NULL);
-    if (bm != NULL && bm->getUFContextIfAny() != NULL)
-      bm->getUFContextIfAny()->releaseSolveProtection();
-    // bm->ClearAllTables();
-  }
+  DLL_PUBLIC void ClearAllTables(void);
 };
 } // end of namespace
 #endif

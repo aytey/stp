@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/UninterpretedFunctions/UFLowering.h"
+#include "stp/UninterpretedFunctions/UFRefinement.h"
 #include "stp/Incremental/IncrementalSolver.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 #include "stp/Simplifier/constantBitP/NodeToFixedBitsMap.h"
@@ -62,6 +63,53 @@ const static string size_inc_message = "After Speculative Simplifications. ";
 const static string pe_message = "After Propagating Equalities. ";
 const static string domain_message = "After Domain Analysis. ";
 const static string se_message = "After Split Extracts. ";
+
+STP::STP(STPMgr* b)
+{
+  bm = b;
+  substitutionMap = new stp::SubstitutionMap(bm);
+  simp = new Simplifier(bm, substitutionMap);
+  arrayTransformer = new ArrayTransformer(bm, simp);
+  Ctr_Example = new AbsRefine_CounterExample(bm, simp, arrayTransformer);
+  batchUFView.reset(new LoweredApplicationView());
+  batchUFAdapter.reset(new UFBatchAdapter(bm));
+  tosat = new ToSATAIG(bm, arrayTransformer);
+}
+
+STP::~STP()
+{
+  ClearAllTables();
+  deleteObjects();
+}
+
+const LoweredApplicationView& STP::lastBatchUFView() const
+{
+  return *batchUFView;
+}
+
+void STP::ClearAllTables(void)
+{
+  if (simp != NULL)
+    simp->ClearAllTables();
+  if (arrayTransformer != NULL)
+    arrayTransformer->ClearAllTables();
+  if (tosat != NULL)
+    tosat->ClearAllTables();
+  if (Ctr_Example != NULL)
+  {
+    Ctr_Example->ClearAllTables();
+    Ctr_Example->setFpEncodingContext(NULL);
+  }
+  fpEncodingContext.reset();
+  *batchUFView = LoweredApplicationView();
+  if (batchUFAdapter)
+    batchUFAdapter->clear();
+  if (Ctr_Example != NULL)
+    Ctr_Example->setUFTheoryAdapter(NULL);
+  if (bm != NULL && bm->getUFContextIfAny() != NULL)
+    bm->getUFContextIfAny()->releaseSolveProtection();
+  // bm->ClearAllTables();
+}
 
 SOLVER_RETURN_TYPE STP::solve_by_sat_solver(SATSolver* newS,
                                             ASTNode original_input,
@@ -142,13 +190,13 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
   // totalisation, opaque array equality, or any ordinary preprocessor. Keep
   // the submitted root in batchUFView and pass only its semantic replacement
   // plus query-local naming definitions onward.
-  batchUFView = LoweredApplicationView();
+  *batchUFView = LoweredApplicationView();
   if (bm->UserFlags.enable_uninterpreted_functions)
   {
     UFLowering lowerer(bm);
-    batchUFView = lowerer.lowerCompletedRoot(
+    *batchUFView = lowerer.lowerCompletedRoot(
         original_input, UFSolveScope::batch(++batchUFScopeGeneration));
-    original_input = batchUFView.semanticRootWithDefinitions(bm);
+    original_input = batchUFView->semanticRootWithDefinitions(bm);
     if (containsKind(original_input, UF_APPLY))
       FatalError("UF_APPLY crossed the batch completed-root lowering barrier",
                  original_input);
@@ -156,8 +204,8 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
   else if (bm->getUFContextIfAny() != NULL)
     bm->getUFContextIfAny()->releaseSolveProtection();
 
-  batchUFAdapter->beginQuery(&batchUFView);
-  Ctr_Example->setUFTheoryAdapter(batchUFView.active()
+  batchUFAdapter->beginQuery(batchUFView.get());
+  Ctr_Example->setUFTheoryAdapter(batchUFView->active()
                                       ? batchUFAdapter.get()
                                       : NULL);
 
@@ -305,7 +353,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // Activate them for exactly the preprocessing, SAT and refinement window;
   // retained batch model data remains readable after this scope closes.
   UFContext* ufSolveContext =
-      batchUFView.active() ? bm->getUFContextIfAny() : NULL;
+      batchUFView->active() ? bm->getUFContextIfAny() : NULL;
   UFContext::SolveScope ufSolveScope(ufSolveContext);
 
   // ARRAY_EQ remains a normal, traversable AST node through query assembly
@@ -480,7 +528,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // the session.
   bm->UserFlags.construct_counterexample_flag =
       bm->UserFlags.modelConstructionRequired(
-          (arrayops && !removed) || batchUFView.active());
+          (arrayops && !removed) || batchUFView->active());
 
   if (bm->UserFlags.enable_flatten)
   {
@@ -850,7 +898,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     simp->printCacheStatus();
 
   const bool maybeRefinement =
-      (arrayops && !bm->UserFlags.ackermannisation) || batchUFView.active();
+      (arrayops && !bm->UserFlags.ackermannisation) || batchUFView->active();
 
   // Must run before the ConstantBitPropagation object below is built: cb's
   // fixed-point map has to describe the exact tree handed to ToSATAIG, and a
@@ -923,8 +971,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   }
 
   // An undecided result belongs to an active array or UF refinement owner.
-  assert(arrayops || batchUFView.active());
-  assert(batchUFView.active() || !bm->UserFlags.ackermannisation);
+  assert(arrayops || batchUFView->active());
+  assert(batchUFView->active() || !bm->UserFlags.ackermannisation);
 
   // Refinement driver. In an active equality solve the extensionality
   // checker owns the complete array graph, so each undecided candidate
@@ -940,7 +988,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
                                              semantic_input, original_input,
                                              satBase, true);
     }
-    else if (batchUFView.active() && batchUFAdapter->hasPendingLemma())
+    else if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
     {
       batchUFAdapter->encodePendingLemma(NewSolver, satBase);
       res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
@@ -975,7 +1023,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       return SOLVER_TIMEOUT;
     }
 
-    if (!extActive && !batchUFView.active())
+    if (!extActive && !batchUFView->active())
       break;
   }
 
