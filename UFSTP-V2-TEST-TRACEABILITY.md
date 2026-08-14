@@ -1,5 +1,12 @@
 # UFSTP v2 target-test traceability
 
+> Fixed-branch supplement: the original catalogue mapping below remains the
+> specification map. `UFSTP-V2-FIXED-INTEGRATION-REPORT.md` records the later
+> red-first audit additions: SAT-backend generation, compound-result
+> liveness, formal shadowing, command transactions, public model permission,
+> opaque C/Python handle lifetime, install consumers, deep/shared lowering,
+> expanded CNF semantics, and imported differential/model/peer fuzzers.
+
 This file maps every row in the normative v2 test catalogue to target-STP
 evidence.  Unless a row explicitly says otherwise, each SMT-LIB test has both
 `--incremental=off` (batch) and `--incremental=on` (persistent exact-stack)

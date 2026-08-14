@@ -1,5 +1,12 @@
 # UFSTP v2.0.0 implementation report
 
+> **Historical report.** This document records the original `uf_codex`
+> implementation at `90c57a4a`. A subsequent cross-branch audit found
+> release-blocking backend-cache, batch-liveness, frontend, and API defects,
+> so its completion statement is not the current integration verdict. The
+> fixes and independently rerun evidence are recorded in
+> `UFSTP-V2-FIXED-INTEGRATION-REPORT.md`.
+
 Date: 2026-08-14 (Europe/London)
 
 ## Completion statement
