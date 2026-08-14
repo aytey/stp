@@ -303,6 +303,11 @@ void ExtraMain::create_options()
                "decide whole-array equality/disequality (extensional arrays) "
                "by lemmas on demand")
       ->group(refinement_group);
+  app.add_flag("--uninterpreted-functions",
+               bm->UserFlags.enable_uninterpreted_functions,
+               "decide Bool/bit-vector uninterpreted functions by dynamic "
+               "Ackermann refinement")
+      ->group(refinement_group);
 
   const char* const bb_group = "Bit-blasting options";
   bool_arg("--bb.div-v1", bm->UserFlags.division_variant_1,

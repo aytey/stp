@@ -201,6 +201,11 @@ static void fpFormatOperands(const ASTNode& n, size_t& from, size_t& to)
       to = (n.Degree() >= 1) ? 1 : 0;
       break;
 
+    case UF_APPLY:
+      // The declaration identity's immutable source sort is the codomain.
+      to = (n.Degree() >= 1) ? 1 : 0;
+      break;
+
     case ITE:
       if (n.Degree() == 3)
       {
@@ -533,6 +538,9 @@ SourceSort ASTNode::deriveSourceSort() const
 {
   if (GetKind() == UNDEFINED)
     return SourceSort::unknown();
+
+  if (GetKind() == UF_APPLY && Degree() >= 1)
+    return (*this)[0].GetSourceSort();
 
   // API type nodes denote the corresponding source sort even though they
   // are not themselves value-bearing terms.

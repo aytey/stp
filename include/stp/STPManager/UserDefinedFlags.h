@@ -181,6 +181,11 @@ public:
   // ARRAY_EQ, which is lowered only after the complete query is assembled.
   bool enable_array_equality = false;
 
+  // Decide nonzero-arity Bool/BitVec uninterpreted functions using the
+  // UFSTP v2 dynamic-Ackermann reference profile. Logic names never toggle
+  // this runtime semantic option.
+  bool enable_uninterpreted_functions = false;
+
   // construct the counterexample in terms of original variable based
   // on the counterexample returned by SAT solver
   bool print_counterexample_flag = false;

@@ -81,6 +81,12 @@
   // "fp" is using its own symbol and must not be told about FP logics.
   static thread_local std::string unresolvedFpKeyword;
 
+  // With the UF feature enabled, let a declare-fun name reach the semantic
+  // action even when it is already classified in another namespace. That is
+  // what makes duplicate/signature/cross-kind rejection explicit and
+  // nonfatal. Feature-off lexing remains byte-for-byte on the legacy path.
+  static thread_local bool ufDeclarationNamePending = false;
+
 #ifdef _MSC_VER
   #include <io.h>
   // defining isatty to avoid dll symbol export inconsistencies
@@ -159,6 +165,13 @@ namespace stp
       return STRING_TOK;
     }
 
+    if (ufDeclarationNamePending)
+    {
+      ufDeclarationNamePending = false;
+      smt2lval.str = new std::string(s);
+      return STRING_TOK;
+    }
+
     stp::ASTNode nptr;
     bool found = false;
 
@@ -173,42 +186,51 @@ namespace stp
     // map probe resolves the name; the token carries the resolved function
     // so the grammar never probes again, and the sort of the stored body
     // (memoised on the node) classifies the token.
-    else if (stp::GlobalParserInterface->hasFunctions())
+    else
     {
-      const stp::Cpp_interface::Function* fn =
-          stp::GlobalParserInterface->lookupFunction(s);
-      if (fn != NULL)
+      if (stp::GlobalParserInterface->hasFunctions())
       {
-        smt2lval.fn = fn;
-        switch (fn->function.GetSourceSort().kind())
+        const stp::Cpp_interface::Function* fn =
+            stp::GlobalParserInterface->lookupFunction(s);
+        if (fn != NULL)
         {
-          case stp::SourceSort::Kind::RoundingMode:
-            return ROUNDINGMODE_FUNCTIONID_TOK;
-          case stp::SourceSort::Kind::BitVector:
-            return BITVECTOR_FUNCTIONID_TOK;
-          case stp::SourceSort::Kind::Bool:
-            return BOOLEAN_FUNCTIONID_TOK;
-          case stp::SourceSort::Kind::FloatingPoint:
-            return FLOATINGPOINT_FUNCTIONID_TOK;
-          // A nullary define-fun whose body has array type is a pure name
-          // for that body, so it is accepted whether or not --array-equality
-          // is on (QF_ABVFP benchmarks use them with no whole-array
-          // equalities in sight). Uses of the name expand to the body in
-          // the grammar.
-          case stp::SourceSort::Kind::Array:
-            return ARRAY_FUNCTIONID_TOK;
-          case stp::SourceSort::Kind::Unknown:
-            smt2error("Function with underivable return sort.");
+          smt2lval.fn = fn;
+          switch (fn->function.GetSourceSort().kind())
+          {
+            case stp::SourceSort::Kind::RoundingMode:
+              return ROUNDINGMODE_FUNCTIONID_TOK;
+            case stp::SourceSort::Kind::BitVector:
+              return BITVECTOR_FUNCTIONID_TOK;
+            case stp::SourceSort::Kind::Bool:
+              return BOOLEAN_FUNCTIONID_TOK;
+            case stp::SourceSort::Kind::FloatingPoint:
+              return FLOATINGPOINT_FUNCTIONID_TOK;
+            case stp::SourceSort::Kind::Array:
+              return ARRAY_FUNCTIONID_TOK;
+            case stp::SourceSort::Kind::Unknown:
+              smt2error("Function with underivable return sort.");
+          }
         }
       }
-      else if (stp::GlobalParserInterface->LookupSymbol(s,nptr)) // it's a symbol.
+
+      if (stp::GlobalParserInterface->getUserFlags()
+              .enable_uninterpreted_functions &&
+          stp::GlobalParserInterface->hasUninterpretedFunctions())
       {
-        found = true;
+        const stp::UFDecl* declaration =
+            stp::GlobalParserInterface->lookupUninterpretedFunction(s);
+        if (declaration != NULL)
+        {
+          smt2lval.ufdecl = declaration;
+          return declaration->signature().codomain().kind() ==
+                         stp::SourceSort::Kind::Bool
+                     ? UF_BOOL_FUNCTIONID_TOK
+                     : UF_BV_FUNCTIONID_TOK;
+        }
       }
-    }
-    else if (stp::GlobalParserInterface->LookupSymbol(s,nptr)) // it's a symbol.
-    {
-      found = true;
+
+      if (stp::GlobalParserInterface->LookupSymbol(s,nptr))
+        found = true;
     }
 
     if (found)
@@ -330,7 +352,12 @@ bv{DIGIT}+             { smt2lval.str = new std::string(smt2text+2); return BVCO
 "check-sat"               { return CHECK_SAT_TOK; }
 "check-sat-assuming"      { return CHECK_SAT_ASSUMING_TOK;}
 "declare-const"           { return DECLARE_CONST_TOK;}
-"declare-fun"             { return DECLARE_FUNCTION_TOK; }
+"declare-fun"             {
+                              ufDeclarationNamePending =
+                                  stp::GlobalParserInterface->getUserFlags()
+                                      .enable_uninterpreted_functions;
+                              return DECLARE_FUNCTION_TOK;
+                            }
 "declare-sort"            { return DECLARE_SORT_TOK;}
 "define-fun"              { return DEFINE_FUNCTION_TOK; }
 "echo"                    { return ECHO_TOK;}

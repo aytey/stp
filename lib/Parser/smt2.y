@@ -356,6 +356,30 @@ namespace stp
    return n;
    }
 
+  static stp::SourceSort parsedUFSort(unsigned encoded)
+  {
+    assert(encoded != std::numeric_limits<unsigned>::max());
+    return encoded == 0 ? stp::SourceSort::boolean()
+                        : stp::SourceSort::bitVector(encoded);
+  }
+
+  static ASTNode* applyParsedUF(const stp::UFDecl* declaration,
+                                ASTVec* actuals)
+  {
+    std::string diagnostic;
+    ASTNode application =
+        stp::GlobalParserInterface->applyUninterpretedFunction(
+            declaration, *actuals, &diagnostic);
+    delete actuals;
+    if (application.GetKind() == UNDEFINED)
+    {
+      stp::GlobalParserInterface->error(diagnostic);
+      application = stp::GlobalParserInterface->makeMalformedUFPlaceholder(
+          declaration);
+    }
+    return stp::GlobalParserInterface->newNode(application);
+  }
+
   ASTNode* createNode(Kind k, ASTNode* c0, ASTNode *c1)
   {
     // Every binary call to this overload is a BV predicate/overflow
@@ -1270,6 +1294,8 @@ namespace stp
      only mutates between commands, never inside a term, so the pointer
      outlives the token that carries it. */
   const stp::Cpp_interface::Function *fn;
+  const stp::UFDecl *ufdecl;
+  std::vector<unsigned> *widthvec;
 };
 
 %start cmd
@@ -1280,6 +1306,9 @@ namespace stp
 %type <node> an_term  an_formula function_param an_const an_fp_term an_fp_predicate an_rounding_mode
 %type <uintval> an_fp_const
 %type <str> info_flag
+%type <str> uf_decl_name
+%type <widthvec> uf_domain_sorts
+%type <uintval> uf_sort uf_codomain_sort
 
 %type <fp_size> an_fp_sort
 %type <arr_component> an_array_sort_component
@@ -1305,6 +1334,7 @@ namespace stp
 %token <node> FORMID_TOK TERMID_TOK
 %token <str> STRING_TOK
 %token <fn> BITVECTOR_FUNCTIONID_TOK BOOLEAN_FUNCTIONID_TOK FLOATINGPOINT_FUNCTIONID_TOK ARRAY_FUNCTIONID_TOK
+%token <ufdecl> UF_BV_FUNCTIONID_TOK UF_BOOL_FUNCTIONID_TOK
 
  /* set-info tokens */
 %token SOURCE_TOK
@@ -1726,6 +1756,9 @@ cmdi:
             0 == strcmp($2->c_str(),"QF_BV") ||
             0 == strcmp($2->c_str(),"QF_ABV") ||
             0 == strcmp($2->c_str(),"QF_AUFBV") ||
+            (0 == strcmp($2->c_str(),"QF_UFBV") &&
+             stp::GlobalParserInterface->getUserFlags()
+                 .enable_uninterpreted_functions) ||
             fp_logic
             )) {
         yyerror("Wrong input logic");
@@ -2198,6 +2231,100 @@ STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TO
   stp::GlobalParserInterface->addRoundingModeSymbol(s);
   delete $1;
 }
+| uf_decl_name uf_domain_sorts RPAREN_TOK uf_codomain_sort
+{
+  const unsigned invalid = std::numeric_limits<unsigned>::max();
+  bool valid = $4 != invalid;
+  std::vector<stp::SourceSort> domain;
+  domain.reserve($2->size());
+  for (unsigned encoded : *$2)
+  {
+    if (encoded == invalid)
+    {
+      valid = false;
+      continue;
+    }
+    domain.push_back(parsedUFSort(encoded));
+  }
+  if (valid)
+  {
+    std::string diagnostic;
+    const stp::UFDecl* declaration =
+        stp::GlobalParserInterface->declareScopedUninterpretedFunction(
+            *$1, domain, parsedUFSort($4), &diagnostic);
+    if (declaration == NULL)
+      stp::GlobalParserInterface->error(diagnostic);
+  }
+  delete $1;
+  delete $2;
+}
+;
+
+// A nonempty domain distinguishes a UF declaration from the existing
+// zero-arity symbol productions. The action runs only after the next token
+// has selected this branch, so feature-off reports the pinned legacy error at
+// the first domain sort and abandons the remainder of the script.
+uf_decl_name:
+STRING_TOK LPAREN_TOK
+{
+  if (!stp::GlobalParserInterface->getUserFlags()
+           .enable_uninterpreted_functions)
+  {
+    yyerror("syntax error, unexpected LPAREN_TOK, expecting RPAREN_TOK");
+    delete $1;
+    YYABORT;
+  }
+  $$ = $1;
+}
+;
+
+uf_domain_sorts:
+uf_sort
+{
+  $$ = new std::vector<unsigned>();
+  $$->push_back($1);
+}
+| uf_domain_sorts uf_sort
+{
+  $1->push_back($2);
+  $$ = $1;
+}
+;
+
+uf_sort:
+LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
+{
+  if ($4 == 0)
+  {
+    stp::GlobalParserInterface->error(
+        "uninterpreted-function BitVec domain sorts must have positive width");
+    $$ = std::numeric_limits<unsigned>::max();
+  }
+  else
+    $$ = $4;
+}
+| BOOL_TOK
+{
+  $$ = 0;
+}
+;
+
+uf_codomain_sort:
+LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
+{
+  if ($4 == 0)
+  {
+    stp::GlobalParserInterface->error(
+        "uninterpreted-function BitVec codomain must have positive width");
+    $$ = std::numeric_limits<unsigned>::max();
+  }
+  else
+    $$ = $4;
+}
+| BOOL_TOK
+{
+  $$ = 0;
+}
 ;
 
 const_decl:
@@ -2608,6 +2735,14 @@ FORMID_TOK
 {
   $$ = stp::GlobalParserInterface->newNode(stp::GlobalParserInterface->applyFunction(*$2,*$3));
   delete $3;
+}
+| LPAREN_TOK UF_BOOL_FUNCTIONID_TOK an_mixed RPAREN_TOK
+{
+  $$ = applyParsedUF($2, $3);
+}
+| LPAREN_TOK UF_BOOL_FUNCTIONID_TOK RPAREN_TOK
+{
+  $$ = applyParsedUF($2, new ASTVec());
 }
 | BOOLEAN_FUNCTIONID_TOK
 {
@@ -3284,6 +3419,14 @@ TERMID_TOK
       yyerror("Must be bitvector type");
 
   delete $3;
+}
+| LPAREN_TOK UF_BV_FUNCTIONID_TOK an_mixed RPAREN_TOK
+{
+  $$ = applyParsedUF($2, $3);
+}
+| LPAREN_TOK UF_BV_FUNCTIONID_TOK RPAREN_TOK
+{
+  $$ = applyParsedUF($2, new ASTVec());
 }
 | LPAREN_TOK FLOATINGPOINT_FUNCTIONID_TOK an_mixed RPAREN_TOK
 {

@@ -104,6 +104,7 @@ typedef void* VC;
 typedef void* Expr;
 typedef void* Type;
 typedef void* WholeCounterExample;
+typedef void* UFDeclHandle;
 #endif
 
 /////////////////////////////////////////////////////////////////////////////
@@ -136,6 +137,7 @@ DLL_PUBLIC const char* get_compilation_env(void);
 //!  - 'r': Enables accermannisation.
 //!  - 's': Sets the status flag to true. TODO: What consequenses does this have?
 //!  - 't': Enables quick statistics. TODO: What is this?
+//!  - 'u': Enables the UFSTP v2 uninterpreted-functions profile.
 //!  - 'v': Enables printing of nodes.
 //!  - 'w': *Disables* word-level solving, despite the name.
 //!  - 'x': Enables deciding equality between whole arrays (the extensional
@@ -307,6 +309,21 @@ DLL_PUBLIC Expr vc_varExpr(VC vc, const char* name, Type type);
 //!
 DLL_PUBLIC Expr vc_varExpr1(VC vc, const char* name, int indexwidth,
                             int valuewidth);
+
+//! Declare a nonzero-arity Bool/BitVec uninterpreted function.
+//!
+//! A width of 0 denotes Bool and a positive width denotes BitVec. The handle
+//! is registry-owned and must not be freed. NULL reports a nonfatal error.
+DLL_PUBLIC UFDeclHandle vc_declareFun(VC vc, const char* name,
+                                      const unsigned* domainWidths,
+                                      size_t domainCount,
+                                      unsigned codomainWidth);
+
+//! Build a durable typed uninterpreted-function application. The returned
+//! Expr is caller-owned and is released with vc_DeleteExpr. NULL reports a
+//! nonfatal arity, sort, stale-handle, or cross-context error.
+DLL_PUBLIC Expr vc_applyFun(VC vc, UFDeclHandle function,
+                            const Expr* arguments, size_t argumentCount);
 
 //! \brief Returns the type of the given expression.
 //!

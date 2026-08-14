@@ -38,6 +38,7 @@ THE SOFTWARE.
 #include "stp/FloatBlaster/FloatBlaster.h"
 #include "stp/FloatBlaster/FpTotalise.h"
 #include "stp/Util/GitSHA1.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
 
 // From ABC
 #include "sat/cnf/cnf.h"
@@ -149,6 +150,14 @@ stp::STPMgr* mgr(VC vc)
 Expr wrap(const stp::ASTNode& n)
 {
   return new stp::ASTNode(n);
+}
+
+void reportUFAPIError(const std::string& message)
+{
+  if (stp::vc_error_hdlr != NULL)
+    stp::vc_error_hdlr(message.c_str());
+  else
+    std::cerr << "CInterface: " << message << std::endl;
 }
 
 /* this method is purposefully not public! */
@@ -1144,6 +1153,82 @@ Expr vc_varExpr(VC vc, const char* name, Type type)
   // store the decls in a vector for printing purposes
   b->decls.push_back(o);
   return output;
+}
+
+UFDeclHandle vc_declareFun(VC vc, const char* name,
+                           const unsigned* domainWidths,
+                           size_t domainCount, unsigned codomainWidth)
+{
+  if (vc == NULL || name == NULL ||
+      (domainCount != 0 && domainWidths == NULL))
+  {
+    reportUFAPIError("vc_declareFun received a null required argument");
+    return NULL;
+  }
+
+  stp::STPMgr* b = mgr(vc);
+  if (b->c_api_source_sorts.find(name) != b->c_api_source_sorts.end())
+  {
+    reportUFAPIError(std::string("name '") + name +
+                     "' already denotes an ordinary symbol");
+    return NULL;
+  }
+
+  std::vector<stp::SourceSort> domain;
+  domain.reserve(domainCount);
+  for (size_t i = 0; i < domainCount; ++i)
+  {
+    domain.push_back(domainWidths[i] == 0
+                         ? stp::SourceSort::boolean()
+                         : stp::SourceSort::bitVector(domainWidths[i]));
+  }
+  const stp::SourceSort codomain =
+      codomainWidth == 0 ? stp::SourceSort::boolean()
+                         : stp::SourceSort::bitVector(codomainWidth);
+
+  std::string diagnostic;
+  const stp::UFDecl* declaration = b->getUFContext()->declareFunction(
+      name, domain, codomain, &diagnostic);
+  if (declaration == NULL)
+  {
+    reportUFAPIError(diagnostic);
+    return NULL;
+  }
+  return const_cast<stp::UFDecl*>(declaration);
+}
+
+Expr vc_applyFun(VC vc, UFDeclHandle function, const Expr* arguments,
+                 size_t argumentCount)
+{
+  if (vc == NULL || function == NULL ||
+      (argumentCount != 0 && arguments == NULL))
+  {
+    reportUFAPIError("vc_applyFun received a null required argument");
+    return NULL;
+  }
+
+  stp::ASTVec actuals;
+  actuals.reserve(argumentCount);
+  for (size_t i = 0; i < argumentCount; ++i)
+  {
+    if (arguments[i] == NULL)
+    {
+      reportUFAPIError("vc_applyFun received a null argument expression");
+      return NULL;
+    }
+    actuals.push_back(*static_cast<stp::ASTNode*>(arguments[i]));
+  }
+
+  stp::STPMgr* b = mgr(vc);
+  std::string diagnostic;
+  const stp::ASTNode application = b->getUFContext()->apply(
+      static_cast<const stp::UFDecl*>(function), actuals, &diagnostic);
+  if (application.GetKind() == stp::UNDEFINED)
+  {
+    reportUFAPIError(diagnostic);
+    return NULL;
+  }
+  return wrap(application);
 }
 
 //! Create an equality expression.  The two children must have the
@@ -3271,6 +3356,9 @@ void process_argument(const char ch, VC vc)
       break;
     case 't':
       bm->UserFlags.quick_statistics_flag = true;
+      break;
+    case 'u':
+      bm->UserFlags.enable_uninterpreted_functions = true;
       break;
     case 'v':
       bm->UserFlags.print_nodes_flag = true;

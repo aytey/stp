@@ -26,6 +26,7 @@ THE SOFTWARE.
 #define CPP_INTERFACE_H_
 
 #include "stp/AST/AST.h"
+#include "stp/UninterpretedFunctions/UFDecl.h"
 #include "stp/NodeFactory/NodeFactory.h"
 #include "stp/Util/Attributes.h"
 #include "extlib-unordered-dense/ankerl/unordered_dense.h"
@@ -164,7 +165,8 @@ private:
     SolverFrame(ankerl::unordered_dense::map<std::string, Function>*
                     global_function_context,
                 std::map<std::string, std::pair<unsigned, unsigned>>*
-                    global_sort_alias_context);
+                    global_sort_alias_context,
+                STPMgr* manager);
     virtual ~SolverFrame();
 
     // Obtain the functions for the current frame
@@ -175,6 +177,7 @@ private:
 
     void addSortAlias(const std::string& name);
     void addSymbol(const ASTNode& symbol);
+    void addUFDeclaration(const UFDecl* declaration);
     bool removeSymbol(const ASTNode& symbol);
     bool lookupSymbol(std::string_view name, ASTNode& output) const;
 
@@ -188,6 +191,7 @@ private:
   private:
     vector<std::string> _scoped_functions;
     vector<std::string> _scoped_sort_aliases;
+    vector<const UFDecl*> _scoped_uf_declarations;
     ASTVec _scoped_symbols;
     // Hash map, not std::map: files declare tens of thousands of symbols
     // with long common prefixes, and a tree walk memcmps the prefix at
@@ -199,6 +203,7 @@ private:
         _global_function_context;
     std::map<std::string, std::pair<unsigned, unsigned>>*
         _global_sort_alias_context;
+    STPMgr* _manager;
   };
 
   // The vector of all frames that have been created by calling push
@@ -400,6 +405,23 @@ public:
   DLL_PUBLIC types functionReturnType(const std::string& name);
   DLL_PUBLIC SourceSort functionReturnSourceSort(const std::string& name);
   bool hasFunctions() const { return !functions.empty(); }
+
+  // Context-owned uninterpreted declarations are distinct from stored
+  // define-fun macros. The general forms are the direct C++ API (context
+  // lifetime); the scoped declaration form is the SMT-LIB frame funnel.
+  DLL_PUBLIC const UFDecl* declareUninterpretedFunction(
+      const std::string& name, const std::vector<SourceSort>& domain,
+      const SourceSort& codomain, std::string* diagnostic = NULL);
+  DLL_PUBLIC const UFDecl* declareScopedUninterpretedFunction(
+      const std::string& name, const std::vector<SourceSort>& domain,
+      const SourceSort& codomain, std::string* diagnostic = NULL);
+  DLL_PUBLIC const UFDecl* lookupUninterpretedFunction(
+      const std::string& name) const;
+  DLL_PUBLIC ASTNode applyUninterpretedFunction(
+      const UFDecl* declaration, const ASTVec& actuals,
+      std::string* diagnostic = NULL);
+  DLL_PUBLIC ASTNode makeMalformedUFPlaceholder(const UFDecl* declaration);
+  bool hasUninterpretedFunctions() const;
 
   DLL_PUBLIC ASTNode LookupOrCreateSymbol(std::string name);
   DLL_PUBLIC bool LookupSymbol(const char* const name, ASTNode& output);

@@ -23,6 +23,7 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "stp/AST/AST.h"
+#include "stp/UninterpretedFunctions/UFDecl.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/Util/NodeIterator.h"
 
@@ -594,6 +595,24 @@ bool BVTypeCheck_term_kind(const ASTNode& n, const Kind& k)
 
   switch (k)
   {
+    case UF_APPLY:
+    {
+      if (n.Degree() < 2 || n[0].GetKind() != SYMBOL)
+        FatalError("BVTypeCheck: malformed UF_APPLY declaration/arity", n);
+      const SourceSort sort = n.GetSourceSort();
+      if (!UFSignature::isSupportedSort(sort))
+        FatalError("BVTypeCheck: unsupported UF_APPLY result sort", n);
+      if (sort.kind() == SourceSort::Kind::Bool)
+      {
+        if (n.GetType() != BOOLEAN_TYPE)
+          FatalError("BVTypeCheck: Bool UF_APPLY has a non-Bool carrier", n);
+      }
+      else if (n.GetType() != BITVECTOR_TYPE ||
+               n.GetValueWidth() != sort.bitVectorWidth())
+        FatalError("BVTypeCheck: BitVec UF_APPLY has the wrong width", n);
+      break;
+    }
+
     case BVCONST:
       if (BITVECTOR_TYPE != n.GetType() && FLOATINGPOINT_TYPE != n.GetType())
         FatalError("BVTypeCheck: The term t does not typecheck, where t = \n",

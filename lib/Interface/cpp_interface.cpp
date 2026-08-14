@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/STPManager/STP.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/ToSat/ToSATAIG.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
 #include <cassert>
 
 using std::cerr;
@@ -77,7 +78,7 @@ void Cpp_interface::init()
 void Cpp_interface::addFrame()
 {
   // create a new frame
-  SolverFrame* new_frame = new SolverFrame(&functions, &sort_aliases);
+  SolverFrame* new_frame = new SolverFrame(&functions, &sort_aliases, &bm);
 
   // store the new frame
   frames.push_back(new_frame);
@@ -374,6 +375,77 @@ SourceSort Cpp_interface::functionReturnSourceSort(const string& name)
   const auto found = functions.find(name);
   return found == functions.end() ? SourceSort::unknown()
                                   : found->second.function.GetSourceSort();
+}
+
+const UFDecl* Cpp_interface::declareUninterpretedFunction(
+    const std::string& name, const std::vector<SourceSort>& domain,
+    const SourceSort& codomain, std::string* diagnostic)
+{
+  if (lookupFunction(name) != NULL)
+  {
+    if (diagnostic != NULL)
+      *diagnostic = "name '" + name + "' already denotes a define-fun";
+    return NULL;
+  }
+  ASTNode symbol;
+  if (LookupSymbol(name.c_str(), symbol))
+  {
+    if (diagnostic != NULL)
+      *diagnostic = "name '" + name + "' already denotes an ordinary symbol";
+    return NULL;
+  }
+  const UFDecl* result =
+      bm.getUFContext()->declareFunction(name, domain, codomain, diagnostic);
+  if (result != NULL)
+    session_touched = true;
+  return result;
+}
+
+const UFDecl* Cpp_interface::declareScopedUninterpretedFunction(
+    const std::string& name, const std::vector<SourceSort>& domain,
+    const SourceSort& codomain, std::string* diagnostic)
+{
+  const UFDecl* result =
+      declareUninterpretedFunction(name, domain, codomain, diagnostic);
+  if (result != NULL)
+    frames.back()->addUFDeclaration(result);
+  return result;
+}
+
+const UFDecl*
+Cpp_interface::lookupUninterpretedFunction(const std::string& name) const
+{
+  const UFContext* context = bm.getUFContextIfAny();
+  return context == NULL ? NULL : context->lookup(name);
+}
+
+ASTNode Cpp_interface::applyUninterpretedFunction(
+    const UFDecl* declaration, const ASTVec& actuals,
+    std::string* diagnostic)
+{
+  UFContext* context = bm.getUFContextIfAny();
+  if (context == NULL)
+  {
+    if (diagnostic != NULL)
+      *diagnostic = "uninterpreted-function declaration is not owned by this "
+                    "context";
+    return bm.ASTUndefined;
+  }
+  return context->apply(declaration, actuals, diagnostic);
+}
+
+ASTNode Cpp_interface::makeMalformedUFPlaceholder(const UFDecl* declaration)
+{
+  SourceSort sort = SourceSort::boolean();
+  if (declaration != NULL && declaration->owner() == &bm)
+    sort = declaration->signature().codomain();
+  return bm.CreateFreshSourceVariable(sort, "UF_MALFORMED");
+}
+
+bool Cpp_interface::hasUninterpretedFunctions() const
+{
+  const UFContext* context = bm.getUFContextIfAny();
+  return context != NULL && context->activeDeclarationCount() != 0;
 }
 
 ASTNode Cpp_interface::LookupOrCreateSymbol(string name)
@@ -1358,9 +1430,10 @@ Cpp_interface::SolverFrame::SolverFrame(
     ankerl::unordered_dense::map<std::string, Function>*
         global_function_context,
     std::map<std::string, std::pair<unsigned, unsigned>>*
-        global_sort_alias_context)
+        global_sort_alias_context,
+    STPMgr* manager)
     : _global_function_context(global_function_context),
-      _global_sort_alias_context(global_sort_alias_context)
+      _global_sort_alias_context(global_sort_alias_context), _manager(manager)
 {
 }
 
@@ -1371,6 +1444,18 @@ Cpp_interface::SolverFrame::SolverFrame(
 // function declarations are correctly decremented.
 Cpp_interface::SolverFrame::~SolverFrame()
 {
+  UFContext* uf = _manager->getUFContextIfAny();
+  if (uf != NULL)
+  {
+    for (const UFDecl* declaration : _scoped_uf_declarations)
+    {
+      std::string ignored;
+      const bool removed = uf->deactivate(declaration, &ignored);
+      assert(removed);
+      (void)removed;
+    }
+  }
+
   // Iterate on the function names in our current scope
   for (const auto& scoped_function_name : getFunctions())
   {
@@ -1414,6 +1499,12 @@ ASTVec& Cpp_interface::SolverFrame::getSymbols()
 void Cpp_interface::SolverFrame::addSortAlias(const std::string& name)
 {
   _scoped_sort_aliases.push_back(name);
+}
+
+void Cpp_interface::SolverFrame::addUFDeclaration(const UFDecl* declaration)
+{
+  assert(declaration != NULL);
+  _scoped_uf_declarations.push_back(declaration);
 }
 
 void Cpp_interface::SolverFrame::addSymbol(const ASTNode& symbol)
@@ -1466,6 +1557,11 @@ void Cpp_interface::SolverFrame::adoptDeclarations(SolverFrame& donor)
                               donor._scoped_sort_aliases.begin(),
                               donor._scoped_sort_aliases.end());
   donor._scoped_sort_aliases.clear();
+
+  _scoped_uf_declarations.insert(_scoped_uf_declarations.end(),
+                                 donor._scoped_uf_declarations.begin(),
+                                 donor._scoped_uf_declarations.end());
+  donor._scoped_uf_declarations.clear();
 }
 
 bool Cpp_interface::SolverFrame::lookupSymbol(std::string_view name,
