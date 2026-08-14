@@ -251,10 +251,11 @@ def eager_script(decls, defs, asserts, funcs):
 
 
 def run(script, args):
-    if '--cryptominisat' in args and not CMS:
-        return 'ERROR:--cryptominisat requires --cryptominisat-stp'
-    p = subprocess.run([STP if '--cryptominisat' not in args else CMS,
-                        '--SMTLIB2'] + args,
+    # Modern STP builds can contain every SAT backend, so --cryptominisat is
+    # normally just another selector on STP.  Keep the alternate executable
+    # hook for comparing an older/dedicated CryptoMiniSat build.
+    executable = CMS if '--cryptominisat' in args and CMS else STP
+    p = subprocess.run([executable, '--SMTLIB2'] + args,
                        input=script.encode(), capture_output=True,
                        timeout=TIMEOUT)
     out = p.stdout.decode()
@@ -344,7 +345,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--stp', default=os.environ.get('STP_BIN'))
     parser.add_argument('--cryptominisat-stp',
-                        default=os.environ.get('STP_CMS_BIN'))
+                        default=os.environ.get('STP_CMS_BIN'),
+                        help=('optional alternate STP executable for the '
+                              '--cryptominisat backend'))
     parser.add_argument('--seed', type=int,
                         default=int(os.environ.get('SEED', '1')))
     parser.add_argument('--rounds', type=int,

@@ -18,6 +18,11 @@ sanitized_build="${1:-$repo_root/build-sanitize}"
 lit_tool="${2:-$(command -v lit || true)}"
 shift "$(( $# > 2 ? 2 : $# ))"
 
+lit_cmake_arg=()
+if [ -n "$lit_tool" ]; then
+  lit_cmake_arg+=("-DLIT_TOOL=$lit_tool")
+fi
+
 cmake -S "$repo_root" -B "$sanitized_build" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=clang \
@@ -29,7 +34,7 @@ cmake -S "$repo_root" -B "$sanitized_build" \
   -DENABLE_ASSERTIONS=ON \
   -DENABLE_TESTING=ON \
   -DSTP_ALLOCATOR=system \
-  ${lit_tool:+-DLIT_TOOL="$lit_tool"} \
+  "${lit_cmake_arg[@]}" \
   "$@"
 
 cmake --build "$sanitized_build" --parallel "$(nproc)"
