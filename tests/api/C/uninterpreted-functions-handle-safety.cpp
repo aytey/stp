@@ -63,8 +63,11 @@ TEST(UninterpretedFunctionsHandleSafety,
 
   stp::STP* engine = static_cast<stp::STP*>(vc);
   std::string diagnostic;
+  const stp::UFDecl* internalDeclaration =
+      engine->bm->getUFContext()->lookup("f");
+  ASSERT_NE(nullptr, internalDeclaration);
   ASSERT_TRUE(engine->bm->getUFContext()->deactivate(
-      static_cast<const stp::UFDecl*>(declaration), &diagnostic));
+      internalDeclaration, &diagnostic));
   EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, actuals, 1));
   EXPECT_GE(apiErrors, 3);
 
@@ -228,6 +231,41 @@ TEST(UninterpretedFunctionsHandleSafety,
 }
 
 TEST(UninterpretedFunctionsHandleSafety,
+     DestroyedActualCannotBecomeValidThroughAddressReuse)
+{
+  vc_registerErrorHandler(countAPIError);
+  apiErrors = 0;
+
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+  const unsigned domain[] = {8};
+  UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
+  ASSERT_NE(nullptr, declaration);
+  Type bv8 = vc_bvType(vc, 8);
+  Expr stale = vc_varExpr(vc, "stale_x", bv8);
+  ASSERT_NE(nullptr, stale);
+  vc_DeleteExpr(stale);
+
+  // Expr is a legacy raw pointer, so the C layer quarantines only its tiny
+  // wrapper storage after destruction. This bounded churn proves that an old
+  // actual cannot become a newly allocated expression through pointer ABA.
+  for (unsigned attempt = 0; attempt < 128; ++attempt)
+  {
+    Expr replacement = vc_varExpr(vc, "replacement_x", bv8);
+    ASSERT_NE(nullptr, replacement);
+    EXPECT_NE(stale, replacement);
+    const Expr staleActuals[] = {stale};
+    EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, staleActuals, 1));
+    vc_DeleteExpr(replacement);
+  }
+
+  EXPECT_GE(apiErrors, 128);
+  vc_DeleteExpr(bv8);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+TEST(UninterpretedFunctionsHandleSafety,
      DestroyedDeclarationCannotBecomeValidThroughAddressReuse)
 {
   vc_registerErrorHandler(countAPIError);
@@ -240,37 +278,26 @@ TEST(UninterpretedFunctionsHandleSafety,
   ASSERT_NE(nullptr, stale);
   vc_Destroy(original);
 
-  // A raw UFDecl* can acquire a new meaning when the allocator reuses its
-  // address. Keep the probe bounded and skip on allocators that do not expose
-  // reuse in this run; when reuse is exposed, the old generation must still
-  // be rejected.
-  bool observedReuse = false;
-  for (unsigned attempt = 0; attempt < 1024; ++attempt)
+  // Churn both managers and declarations. Opaque declaration tokens are
+  // process-lifetime tombstones, so a replacement token must never reuse the
+  // stale token's identity and the stale generation must remain rejectable on
+  // every live checker regardless of allocator address reuse underneath it.
+  for (unsigned attempt = 0; attempt < 128; ++attempt)
   {
     VC live = vc_createValidityChecker();
     vc_setFlag(live, 'u');
     UFDeclHandle replacement =
         vc_declareFun(live, "replacement_f", domain, 1, 8);
     ASSERT_NE(nullptr, replacement);
-    if (replacement == stale)
-    {
-      observedReuse = true;
-      Expr x = vc_varExpr(live, "x", vc_bvType(live, 8));
-      const Expr actuals[] = {x};
-      Expr application = vc_applyFun(live, stale, actuals, 1);
-      EXPECT_EQ(nullptr, application);
-      if (application != nullptr)
-        vc_DeleteExpr(application);
-      vc_DeleteExpr(x);
-      vc_Destroy(live);
-      break;
-    }
+    EXPECT_NE(stale, replacement);
+    Expr x = vc_varExpr(live, "x", vc_bvType(live, 8));
+    const Expr actuals[] = {x};
+    EXPECT_EQ(nullptr, vc_applyFun(live, stale, actuals, 1));
+    vc_DeleteExpr(x);
     vc_Destroy(live);
   }
 
   vc_registerErrorHandler(nullptr);
-  if (!observedReuse)
-    GTEST_SKIP() << "allocator did not reuse the destroyed UFDecl address";
 }
 
 TEST(UninterpretedFunctionsHandleSafety,
@@ -303,6 +330,31 @@ TEST(UninterpretedFunctionsHandleSafety,
   vc_DeleteExpr(x);
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
+}
+
+TEST(UninterpretedFunctionsHandleSafety,
+     BooleanApplicationUsesSourceSortEquality)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+  const unsigned domain[] = {0};
+  UFDeclHandle predicate = vc_declareFun(vc, "predicate", domain, 1, 0);
+  ASSERT_NE(nullptr, predicate);
+  Expr argument = vc_trueExpr(vc);
+  const Expr actuals[] = {argument};
+  Expr application = vc_applyFun(vc, predicate, actuals, 1);
+  ASSERT_NE(nullptr, application);
+  Expr expected = vc_falseExpr(vc);
+  Expr equality = vc_eqExpr(vc, application, expected);
+  ASSERT_NE(nullptr, equality);
+  vc_assertFormula(vc, equality);
+  EXPECT_EQ(0, vc_query(vc, vc_falseExpr(vc)));
+
+  vc_DeleteExpr(equality);
+  vc_DeleteExpr(expected);
+  vc_DeleteExpr(application);
+  vc_DeleteExpr(argument);
+  vc_Destroy(vc);
 }
 
 } // namespace

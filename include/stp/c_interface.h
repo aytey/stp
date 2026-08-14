@@ -313,7 +313,9 @@ DLL_PUBLIC Expr vc_varExpr1(VC vc, const char* name, int indexwidth,
 //! Declare a nonzero-arity Bool/BitVec uninterpreted function.
 //!
 //! A width of 0 denotes Bool and a positive width denotes BitVec. The handle
-//! is registry-owned and must not be freed. NULL reports a nonfatal error.
+//! is an opaque, generation-checked registry token and must not be freed.
+//! Tokens remain safely rejectable after their owning VC is destroyed. NULL
+//! reports a nonfatal error.
 DLL_PUBLIC UFDeclHandle vc_declareFun(VC vc, const char* name,
                                       const unsigned* domainWidths,
                                       size_t domainCount,
