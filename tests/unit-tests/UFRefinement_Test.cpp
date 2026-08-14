@@ -29,7 +29,12 @@ public:
 
   bool okay() const override { return true; }
   uint8_t modelValue(uint32_t) const override { return undef_literal(); }
-  uint32_t newVar() override { return next_++; }
+  uint32_t newVar() override
+  {
+    if (rejectMutation_)
+      FatalError("test observed SAT mutation before UF leaf validation");
+    return next_++;
+  }
   uint32_t nVars() const override { return next_; }
   void printStats() const override {}
   void setVerbosity(int) override {}
@@ -39,10 +44,13 @@ public:
 
   unsigned nextVariable() const { return next_; }
   const std::vector<std::vector<int>>& clauses() const { return clauses_; }
+  void rejectMutation() { rejectMutation_ = true; }
 
 protected:
   bool addClauseInternal(const vec_literals& clause) override
   {
+    if (rejectMutation_)
+      FatalError("test observed SAT mutation before UF leaf validation");
     std::vector<int> copy;
     for (int i = 0; i < clause.size(); ++i)
       copy.push_back(toInt(clause[i]));
@@ -53,6 +61,7 @@ protected:
 
 private:
   unsigned next_;
+  bool rejectMutation_ = false;
   std::vector<std::vector<int>> clauses_;
 };
 
@@ -69,6 +78,8 @@ public:
   {
     bindings_[node] = std::vector<unsigned>(variables);
   }
+
+  void unbind(const ASTNode& node) { bindings_.erase(node); }
 
 private:
   ASTNodeToSATVar bindings_;
@@ -139,6 +150,138 @@ struct RefinementFixture
         tosat.bind(record.namedActuals[0], {1});
         tosat.bind(record.resultSymbol, {4, 5});
       }
+    }
+  }
+};
+
+// The first two actuals are equal Bool/BV constants in both applications;
+// the latter two collide through a symbol/constant equality.  This reaches
+// constant handling through the checker and adapter instead of exposing the
+// encoder's private equality helper to the test.
+struct ConstantOperandFixture
+{
+  STPMgr manager;
+  SubstitutionMap substitutions;
+  Simplifier simplifier;
+  ArrayTransformer transformer;
+  AbsRefine_CounterExample counterexample;
+  UFContext* context;
+  const UFDecl* function;
+  ASTNode predicate;
+  ASTNode x;
+  ASTNode left;
+  ASTNode right;
+  LoweredApplicationView view;
+  RecordingToSAT tosat;
+
+  ConstantOperandFixture()
+      : substitutions(&manager), simplifier(&manager, &substitutions),
+        transformer(&manager, &simplifier),
+        counterexample(&manager, &simplifier, &transformer), context(NULL),
+        function(NULL), tosat(&manager)
+  {
+    manager.UserFlags.enable_uninterpreted_functions = true;
+    context = manager.getUFContext();
+    std::string diagnostic;
+    const SourceSort boolean = SourceSort::boolean();
+    const SourceSort bv2 = SourceSort::bitVector(2);
+    function = context->declareFunction(
+        "constant_operand_f", {boolean, bv2, boolean, bv2}, bv2,
+        &diagnostic);
+    EXPECT_NE(nullptr, function) << diagnostic;
+
+    predicate = manager.CreateSourceSymbol("constant_operand_p", boolean);
+    x = manager.CreateSourceSymbol("constant_operand_x", bv2);
+    const ASTNode one = manager.CreateBVConst(2, 1);
+    left = context->apply(function, {manager.ASTTrue, one, predicate, x},
+                          &diagnostic);
+    right = context->apply(
+        function, {manager.ASTTrue, one, manager.ASTTrue, one}, &diagnostic);
+    const ASTNode root = manager.defaultNodeFactory->CreateNode(
+        NOT, manager.defaultNodeFactory->CreateNode(EQ, left, right));
+    UFLowering lowerer(&manager);
+    view = lowerer.lowerCompletedRoot(root, UFSolveScope::batch(11));
+
+    EXPECT_EQ(2u, view.applications.size());
+    counterexample.InsertIntoCounterExampleMap(predicate, manager.ASTTrue);
+    counterexample.InsertIntoCounterExampleMap(x, one);
+    tosat.bind(predicate, {0});
+    tosat.bind(x, {1, 2});
+    for (const LoweredApplicationRecord& record : view.applications)
+    {
+      const bool isLeft = record.durableHandle == left;
+      counterexample.InsertIntoCounterExampleMap(
+          record.resultSymbol, manager.CreateBVConst(2, isLeft ? 0 : 2));
+      if (isLeft)
+        tosat.bind(record.resultSymbol, {3, 4});
+      else
+        tosat.bind(record.resultSymbol, {5, 6});
+    }
+  }
+};
+
+// One exact-identical BV premise and one genuine BV premise.  The former
+// must disappear before CNF construction, while the latter is reusable from
+// the adapter's query-local equality cache.
+struct IdenticalPremiseFixture
+{
+  STPMgr manager;
+  SubstitutionMap substitutions;
+  Simplifier simplifier;
+  ArrayTransformer transformer;
+  AbsRefine_CounterExample counterexample;
+  UFContext* context;
+  const UFDecl* function;
+  ASTNode shared;
+  ASTNode x;
+  ASTNode y;
+  ASTNode left;
+  ASTNode right;
+  LoweredApplicationView view;
+  RecordingToSAT tosat;
+
+  IdenticalPremiseFixture()
+      : substitutions(&manager), simplifier(&manager, &substitutions),
+        transformer(&manager, &simplifier),
+        counterexample(&manager, &simplifier, &transformer), context(NULL),
+        function(NULL), tosat(&manager)
+  {
+    manager.UserFlags.enable_uninterpreted_functions = true;
+    context = manager.getUFContext();
+    std::string diagnostic;
+    const SourceSort bv2 = SourceSort::bitVector(2);
+    function = context->declareFunction("identical_premise_f", {bv2, bv2},
+                                        bv2, &diagnostic);
+    EXPECT_NE(nullptr, function) << diagnostic;
+    shared = manager.CreateSourceSymbol("identical_premise_shared", bv2);
+    x = manager.CreateSourceSymbol("identical_premise_x", bv2);
+    y = manager.CreateSourceSymbol("identical_premise_y", bv2);
+    left = context->apply(function, {shared, x}, &diagnostic);
+    right = context->apply(function, {shared, y}, &diagnostic);
+    const ASTNode root = manager.defaultNodeFactory->CreateNode(
+        NOT, manager.defaultNodeFactory->CreateNode(EQ, left, right));
+    UFLowering lowerer(&manager);
+    view = lowerer.lowerCompletedRoot(root, UFSolveScope::batch(12));
+
+    EXPECT_EQ(2u, view.applications.size());
+    counterexample.InsertIntoCounterExampleMap(shared,
+                                               manager.CreateBVConst(2, 0));
+    counterexample.InsertIntoCounterExampleMap(x,
+                                               manager.CreateBVConst(2, 3));
+    counterexample.InsertIntoCounterExampleMap(y,
+                                               manager.CreateBVConst(2, 3));
+    tosat.bind(shared, {0, 1});
+    tosat.bind(x, {2, 3});
+    tosat.bind(y, {4, 5});
+    for (const LoweredApplicationRecord& record : view.applications)
+    {
+      const bool isLeft = record.durableHandle == left;
+      counterexample.InsertIntoCounterExampleMap(
+          record.resultSymbol, manager.CreateBVConst(2, isLeft ? 1 : 2));
+      if (isLeft)
+        tosat.bind(record.resultSymbol, {6, 7});
+      else
+        tosat.bind(record.resultSymbol, {8, 9});
     }
   }
 };
@@ -220,6 +363,109 @@ TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
   EXPECT_EQ(2u, adapter.lemmasEmitted());
 }
 
+TEST(UFRefinement, BatchCNFFoldsBoolAndBitVectorConstantOperands)
+{
+  ConstantOperandFixture fixture;
+  UFBatchAdapter adapter(&fixture.manager);
+  adapter.beginQuery(&fixture.view);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+
+  RecordingSolver solver(7);
+  adapter.encodePendingLemma(solver, &fixture.tosat);
+
+  // The two exact constant/constant premises disappear.  Reifying p=true
+  // needs two clauses, x=1 needs seven, the BV result equality needs eleven,
+  // and the semantic implication needs one.  In particular, constants do
+  // not acquire SAT variables of their own.
+  ASSERT_EQ(21u, solver.clauses().size());
+  ASSERT_EQ(14u, solver.nextVariable());
+
+  const unsigned helperCount = solver.nextVariable() - 7;
+  for (unsigned original = 0; original < (1u << 7); ++original)
+  {
+    const bool predicate = ((original >> 0) & 1u) != 0;
+    const unsigned x = ((original >> 1) & 1u) |
+                       (((original >> 2) & 1u) << 1);
+    const unsigned leftResult = ((original >> 3) & 1u) |
+                                (((original >> 4) & 1u) << 1);
+    const unsigned rightResult = ((original >> 5) & 1u) |
+                                 (((original >> 6) & 1u) << 1);
+    const bool expected = !predicate || x != 1 || leftResult == rightResult;
+    bool encoded = false;
+    for (unsigned helpers = 0; helpers < (1u << helperCount); ++helpers)
+    {
+      std::vector<bool> assignment(solver.nextVariable(), false);
+      for (unsigned bit = 0; bit < 7; ++bit)
+        assignment[bit] = ((original >> bit) & 1u) != 0;
+      for (unsigned bit = 0; bit < helperCount; ++bit)
+        assignment[7 + bit] = ((helpers >> bit) & 1u) != 0;
+      if (satisfies(solver.clauses(), assignment))
+      {
+        encoded = true;
+        break;
+      }
+    }
+    EXPECT_EQ(expected, encoded) << "original assignment " << original;
+  }
+}
+
+TEST(UFRefinement, RejectsMalformedPreencodedLeavesBeforeSATMutation)
+{
+  RefinementFixture fixture;
+  UFBatchAdapter adapter(&fixture.manager);
+  adapter.beginQuery(&fixture.batchView);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+  ASSERT_TRUE(adapter.hasPendingLemma());
+
+  // If validation regresses behind helper allocation or clause insertion,
+  // this solver dies with a different diagnostic and the death check fails.
+  RecordingSolver solver(6);
+  solver.rejectMutation();
+  // Corrupt a conclusion leaf, which is validated after every premise.  A
+  // validate-as-you-encode implementation would already have allocated the
+  // premise helper before it discovered any of these faults.
+  const ASTNode leaf = fixture.batchView.applications[0].resultSymbol;
+  ASSERT_EQ(SourceSort::bitVector(2), leaf.GetSourceSort());
+
+  fixture.tosat.unbind(leaf);
+  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+               "not registered before the first candidate");
+
+  fixture.tosat.bind(leaf, {2});
+  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+               "wrong-width SAT mapping");
+
+  fixture.tosat.bind(leaf, {2, ~0u});
+  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+               "unencoded SAT bit");
+}
+
+TEST(UFRefinement, BatchCNFEliminatesIdenticalPremiseAndReusesCache)
+{
+  IdenticalPremiseFixture fixture;
+  UFBatchAdapter adapter(&fixture.manager);
+  adapter.beginQuery(&fixture.view);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+
+  RecordingSolver solver(10);
+  adapter.encodePendingLemma(solver, &fixture.tosat);
+  // Only x=y and the result equality remain: two BV2 XNOR/conjunction
+  // bundles (11 clauses and three helpers each), plus the implication.
+  EXPECT_EQ(23u, solver.clauses().size());
+  EXPECT_EQ(16u, solver.nextVariable());
+
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+  adapter.encodePendingLemma(solver, &fixture.tosat);
+  // Both surviving equality literals are cache hits.  The repeat contributes
+  // just another candidate-blocking implication and no new helper variable.
+  EXPECT_EQ(24u, solver.clauses().size());
+  EXPECT_EQ(16u, solver.nextVariable());
+}
+
 TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
 {
   RefinementFixture fixture;
@@ -228,7 +474,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
 
   // Positive block literal 200 has negation 201. Every helper definition
   // and the final semantic clause must contain that guard.
-  adapter.beginBlock(&fixture.persistentView, 7, 9, 200);
+  adapter.beginBlock(&fixture.persistentView, 7, 3, 9, 200);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemma(solver, &fixture.tosat);
@@ -236,19 +482,53 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   for (const std::vector<int>& clause : solver.clauses())
     EXPECT_TRUE(containsLiteral(clause, 201));
 
+  // With the block active, guarded helper definitions and the guarded final
+  // implication have exactly the batch semantics.  This checks more than
+  // merely finding the guard syntactically in every clause.
+  const unsigned helperCount = solver.nextVariable() - 6;
+  for (unsigned original = 0; original < (1u << 6); ++original)
+  {
+    const bool argumentEqual =
+        ((original >> 0) & 1u) == ((original >> 1) & 1u);
+    const bool resultEqual =
+        ((original >> 2) & 1u) == ((original >> 4) & 1u) &&
+        ((original >> 3) & 1u) == ((original >> 5) & 1u);
+    const bool expected = !argumentEqual || resultEqual;
+    bool encoded = false;
+    for (unsigned helpers = 0; helpers < (1u << helperCount); ++helpers)
+    {
+      std::vector<bool> assignment(101, false);
+      for (unsigned bit = 0; bit < 6; ++bit)
+        assignment[bit] = ((original >> bit) & 1u) != 0;
+      for (unsigned bit = 0; bit < helperCount; ++bit)
+        assignment[6 + bit] = ((helpers >> bit) & 1u) != 0;
+      assignment[100] = true;
+      if (satisfies(solver.clauses(), assignment))
+      {
+        encoded = true;
+        break;
+      }
+    }
+    EXPECT_EQ(expected, encoded) << "active original assignment " << original;
+  }
+
   // With the block inactive, its negated guard satisfies the entire bundle.
   std::vector<bool> inactive(101, false);
   EXPECT_TRUE(satisfies(solver.clauses(), inactive));
 
-  // Same epoch and block: equality helpers are cached, so only one final
-  // implication is emitted. A different block cannot reuse those helpers.
+  // Same epoch, backend, and block: equality helpers are cached, so only one
+  // final implication is emitted.
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemma(solver, &fixture.tosat);
   ASSERT_EQ(17u, solver.clauses().size());
   EXPECT_TRUE(containsLiteral(solver.clauses().back(), 201));
 
-  adapter.beginBlock(&fixture.persistentView, 7, 10, 202);
+  // Replacing only the SAT backend invalidates every cached helper even when
+  // both the semantic epoch and exact-stack block are unchanged.  All helper
+  // definitions in the new generation remain guarded by its block literal.
+  adapter.advanceBackendGeneration(4);
+  adapter.beginBlock(&fixture.persistentView, 7, 4, 9, 202);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemma(solver, &fixture.tosat);
@@ -256,17 +536,26 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   for (std::size_t i = 17; i < 33; ++i)
     EXPECT_TRUE(containsLiteral(solver.clauses()[i], 203));
 
-  // Epoch identity is also part of the cache key, and explicit epoch clear
-  // must reclaim even a cache that would otherwise have matched.
-  adapter.beginBlock(&fixture.persistentView, 8, 10, 204);
+  // A different block in the same backend cannot reuse guarded helpers.
+  adapter.beginBlock(&fixture.persistentView, 7, 4, 10, 204);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemma(solver, &fixture.tosat);
   ASSERT_EQ(49u, solver.clauses().size());
-  adapter.clearEncodingEpoch();
-  adapter.beginBlock(&fixture.persistentView, 8, 10, 206);
+  for (std::size_t i = 33; i < 49; ++i)
+    EXPECT_TRUE(containsLiteral(solver.clauses()[i], 205));
+
+  // Epoch identity is also part of the cache key, and explicit epoch clear
+  // must reclaim even a cache that would otherwise have matched.
+  adapter.beginBlock(&fixture.persistentView, 8, 4, 10, 206);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemma(solver, &fixture.tosat);
-  EXPECT_EQ(65u, solver.clauses().size());
+  ASSERT_EQ(65u, solver.clauses().size());
+  adapter.clearEncodingEpoch();
+  adapter.beginBlock(&fixture.persistentView, 8, 4, 10, 208);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+  adapter.encodePendingLemma(solver, &fixture.tosat);
+  EXPECT_EQ(81u, solver.clauses().size());
 }

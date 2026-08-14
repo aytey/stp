@@ -67,6 +67,7 @@ AddSTPGTest(FpTotalise_Test.cpp)
 AddSTPGTest(FpModelEquality_Test.cpp)
 AddSTPGTest(SourceSort_Test.cpp)
 AddSTPGTest(UninterpretedFunctionsFrontend_Test.cpp)
+AddSTPGTest(UFLowering_Test.cpp)
 AddSTPGTest(UFChecker_Test.cpp)
 AddSTPGTest(UFRefinement_Test.cpp)
 # Builds float/rounding-mode constants, which is the whole point.

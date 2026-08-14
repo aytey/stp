@@ -160,14 +160,15 @@ TEST(UninterpretedFunctionsFrontend,
   interface.startup();
   manager.UserFlags.enable_uninterpreted_functions = true;
 
-  // The first assertion has the wrong arity.  Its parser-side carrier must
-  // never become an assertion or a registered durable application.  Parsing
-  // must nevertheless continue to the independent, well-typed assertion.
+  // The first assertion has a valid application followed by one with the
+  // wrong arity. Its valid prefix and parser-side carrier must both roll back:
+  // neither may become an assertion or a registered durable application.
+  // Parsing must nevertheless continue to the independent assertion.
   const char* const input = R"(
     (set-logic QF_UFBV)
     (declare-fun f ((_ BitVec 8)) (_ BitVec 8))
     (declare-const x (_ BitVec 8))
-    (assert (= (f x x) x))
+    (assert (and (= (f x) x) (= (f x x) x)))
     (assert (= x #x00))
   )";
   SMT2ScanString(input);
@@ -193,6 +194,49 @@ TEST(UninterpretedFunctionsFrontend,
   ASSERT_EQ(1u, assertions.size());
   EXPECT_FALSE(containsApplication);
   EXPECT_FALSE(rejected);
+}
+
+TEST(UninterpretedFunctionsFrontend,
+     MalformedFormalCannotLeakLexerOrTemporaryStateAcrossParses)
+{
+  STPMgr manager;
+  Cpp_interface interface(manager, manager.defaultNodeFactory);
+  STPMgr* const savedManager = GlobalParserBM;
+  Cpp_interface* const savedInterface = GlobalParserInterface;
+  GlobalParserBM = &manager;
+  GlobalParserInterface = &interface;
+  interface.startup();
+  manager.UserFlags.enable_uninterpreted_functions = true;
+
+  // The empty formal reaches function_param_open but supplies no identifier,
+  // leaving the lexer's next-name expectation armed unless parse-abort cleanup
+  // explicitly clears it.
+  SMT2ScanString(R"(
+    (set-logic QF_UFBV)
+    (define-fun broken (() Bool) Bool true)
+  )");
+  EXPECT_NE(0, SMT2Parse());
+  smt2lex_destroy();
+
+  // A second parse on the same interface must start a fresh command and may
+  // declare/use another formal normally.
+  SMT2ScanString(R"(
+    (define-fun good ((fresh Bool)) Bool fresh)
+    (declare-const witness Bool)
+    (assert (good witness))
+  )");
+  EXPECT_EQ(0, SMT2Parse());
+  smt2lex_destroy();
+
+  const ASTVec assertions = manager.GetAsserts();
+
+  GlobalParserBM = savedManager;
+  GlobalParserInterface = savedInterface;
+
+  ASSERT_EQ(1u, assertions.size());
+  EXPECT_EQ(SYMBOL, assertions[0].GetKind());
+  EXPECT_STREQ("witness", assertions[0].GetName());
+  EXPECT_EQ(SourceSort::boolean(), assertions[0].GetSourceSort());
 }
 
 TEST(UninterpretedFunctionsFrontend, SubstitutionRebuildsDurableApplication)
@@ -263,6 +307,8 @@ TEST(UninterpretedFunctionsFrontend,
             view.applications[1].namedActuals[0]);
   EXPECT_TRUE(context->isProtected(view.applications[0].resultSymbol));
   EXPECT_TRUE(context->isProtected(view.applications[1].resultSymbol));
+  EXPECT_TRUE(context->isSolveScalar(view.applications[0].resultSymbol));
+  EXPECT_TRUE(context->isSolveScalar(view.applications[1].resultSymbol));
 }
 
 TEST(UninterpretedFunctionsFrontend,
@@ -298,16 +344,23 @@ TEST(UninterpretedFunctionsFrontend,
   EXPECT_EQ(view.applications[0].namedActuals[0],
             view.applications[1].namedActuals[0]);
   EXPECT_TRUE(context->isProtected(view.applications[0].namedActuals[0]));
+  EXPECT_TRUE(context->isSolveScalar(view.applications[0].namedActuals[0]));
   EXPECT_FALSE(containsKind(view.semanticRootWithDefinitions(&manager),
                             UF_APPLY));
 
   // The ordinary substitution funnel must not delete either a UF result or
   // its argument-name definition after the lowering barrier.
   SubstitutionMap substitutions(&manager);
-  EXPECT_FALSE(substitutions.UpdateSolverMap(
-      view.applications[0].resultSymbol, manager.CreateBVConst(8, 3)));
-  EXPECT_FALSE(substitutions.UpdateSolverMap(
-      view.applications[0].namedActuals[0], complex));
+  EXPECT_FALSE(context->activeInSolve());
+  {
+    UFContext::SolveScope scope(context);
+    EXPECT_TRUE(context->activeInSolve());
+    EXPECT_FALSE(substitutions.UpdateSolverMap(
+        view.applications[0].resultSymbol, manager.CreateBVConst(8, 3)));
+    EXPECT_FALSE(substitutions.UpdateSolverMap(
+        view.applications[0].namedActuals[0], complex));
+  }
+  EXPECT_FALSE(context->activeInSolve());
 }
 
 TEST(UninterpretedFunctionsFrontend, BooleanLoweringRetainsBoolSourceSort)
