@@ -308,6 +308,16 @@ IncrementalSolver::Impl::exactStackCheckSat(
       activeUFView.active() ? bm->getUFContextIfAny() : NULL;
   UFContext::SolveScope ufSolveScope(ufSolveContext);
 
+  // A UF leaf actual is a solve scalar even when scoped preprocessing removes
+  // every occurrence of it from the block formula.  If an earlier ordinary
+  // solve dropped that symbol's sigma0 base definition, totalization would
+  // otherwise mint unconstrained SAT bits which neither the formula walk nor
+  // encodePrepared() can discover.  Restore these definitions before the
+  // block's preprocessing trial records any new eliminations.
+  if (activeUFView.active())
+    for (const ASTNode& scalar : activeUFView.solveScalars)
+      restoreDroppedSigma0Symbol(scalar);
+
   // Plain-BV exact blocks have no extensionality state at all. Avoid creating
   // a context for them; besides the allocation, an empty context makes this
   // representation look needlessly like a theory-refinement solve.
