@@ -385,8 +385,11 @@ class Solver(object):
         name_conv = name.encode('utf-8')
 
         bv_type = _lib.vc_bvType(self.vc, width)
-        self.keys[name] = _lib.vc_varExpr(self.vc, name_conv, bv_type)
-        return Expr(self, width, self.keys[name], name=name)
+        expression = _lib.vc_varExpr(self.vc, name_conv, bv_type)
+        if not expression:
+            raise ValueError('bit-vector declaration was rejected')
+        self.keys[name] = expression
+        return Expr(self, width, expression, name=name)
 
     def bitvecs(self, names, width=32):
         """Creates one or more BitVectors variables."""
@@ -449,8 +452,11 @@ class Solver(object):
         """
         name_conv = name.encode('utf-8')
         fp_type = _lib.vc_fpType(self.vc, eb, sb)
-        self.keys[name] = _lib.vc_varExpr(self.vc, name_conv, fp_type)
-        return FloatExpr(self, eb, sb, self.keys[name], name=name)
+        expression = _lib.vc_varExpr(self.vc, name_conv, fp_type)
+        if not expression:
+            raise ValueError('floating-point declaration was rejected')
+        self.keys[name] = expression
+        return FloatExpr(self, eb, sb, expression, name=name)
 
     def fpval(self, eb, sb, value):
         """A floating-point constant of format (eb, sb) equal to the Python float
@@ -499,6 +505,8 @@ class Solver(object):
                                      _lib.vc_bvType(self.vc, index_width),
                                      _lib.vc_bvType(self.vc, value_width))
         expr = _lib.vc_varExpr(self.vc, name_conv, arr_type)
+        if not expr:
+            raise ValueError('array declaration was rejected')
         arr = ArrayExpr(self, index_width, value_width, expr, name=name)
         self.arrays[name] = arr
         return arr
@@ -577,17 +585,42 @@ class Solver(object):
         """The unsigned value of an (unboxed) expression in the current
         model, at any width. getBVUnsignedLongLong saturates at 64 bits,
         so wider values are assembled from 64-bit extracts."""
-        if width <= 64:
-            value = _lib.vc_getCounterExample(self.vc, expr)
-            return _lib.getBVUnsignedLongLong(value)
-        carrier = self._bit_carrier(expr)
-        extract = 0
-        for i in range((width - 1) // 64 + 1):
-            extractExpr = _lib.vc_bvExtract(self.vc, carrier,
-                                            min((i+1)*64, width)-1, i*64)
-            bvExpr = _lib.vc_getCounterExample(self.vc, extractExpr)
-            extract += (_lib.getBVUnsignedLongLong(bvExpr) << (64 * i))
-        return extract
+        value = _lib.vc_getCounterExample(self.vc, expr)
+        if not value:
+            raise ValueError('expression has no certified model value')
+        try:
+            if width <= 64:
+                return _lib.getBVUnsignedLongLong(value)
+            carrier = self._bit_carrier(value)
+            if not carrier:
+                raise ValueError('model value has no bit-vector carrier')
+            try:
+                result = 0
+                for i in range((width - 1) // 64 + 1):
+                    extract_expr = _lib.vc_bvExtract(
+                        self.vc, carrier, min((i + 1) * 64, width) - 1,
+                        i * 64)
+                    if not extract_expr:
+                        raise ValueError('could not slice model value')
+                    try:
+                        bv_expr = _lib.vc_getCounterExample(
+                            self.vc, extract_expr)
+                        if not bv_expr:
+                            raise ValueError(
+                                'model-value slice has no certified value')
+                        try:
+                            result += (_lib.getBVUnsignedLongLong(bv_expr)
+                                       << (64 * i))
+                        finally:
+                            _lib.vc_DeleteExpr(bv_expr)
+                    finally:
+                        _lib.vc_DeleteExpr(extract_expr)
+                return result
+            finally:
+                if carrier != value:
+                    _lib.vc_DeleteExpr(carrier)
+        finally:
+            _lib.vc_DeleteExpr(value)
 
     def model(self, key=None, expr=None):
         """
@@ -624,9 +657,13 @@ class Solver(object):
                 value = _lib.vc_getCounterExample(self.vc, expr)
                 if not value:
                     raise ValueError('expression has no certified model value')
-                boolean = _lib.vc_isBool(value)
-                if boolean >= 0:
-                    return bool(boolean)
+                try:
+                    boolean = _lib.vc_isBool(value)
+                    if boolean >= 0:
+                        return bool(boolean)
+                    raise ValueError('Boolean model value is not constant')
+                finally:
+                    _lib.vc_DeleteExpr(value)
             bits = self._counterexample_int(expr, _lib.getVWidth(expr))
             eb = _lib.vc_getExpWidth(expr)
             if eb:
@@ -736,9 +773,19 @@ class UninterpretedFunction(object):
     def __call__(self, *arguments):
         if len(arguments) != len(self.domain):
             raise ValueError('uninterpreted-function arity mismatch')
+        if not self.s.vc:
+            raise ValueError('uninterpreted-function owner was destroyed')
         raw_arguments = []
+        converted_arguments = []
         for position, (argument, width) in enumerate(zip(arguments,
                                                          self.domain)):
+            if isinstance(argument, bool) and width == 0:
+                argument = self.s.true() if argument else self.s.false()
+                converted_arguments.append(argument)
+            elif (isinstance(argument, int) and
+                  not isinstance(argument, bool) and width != 0):
+                argument = self.s.bitvecval(width, argument)
+                converted_arguments.append(argument)
             if type(argument) is not Expr or argument.s is not self.s:
                 raise ValueError(
                     'uninterpreted-function argument %d has wrong ownership '
@@ -814,11 +861,18 @@ class Expr(AnyExpr):
         return Expr(self.s, self.width, expr)
 
     def _toexpr(self, other):
-        if isinstance(other, int):
-            return self.s.bitvecval(self.width, other)
-
         if isinstance(other, bool):
-            return self.s.true() if other else self.s.false()
+            # Python bool is an int subclass.  Preserve the historical
+            # bit-vector shorthand (True == 1, False == 0), while a Bool
+            # expression such as a UF predicate must stay in Bool sort.
+            if self.width is None:
+                return self.s.true() if other else self.s.false()
+            return self.s.bitvecval(self.width, int(other))
+
+        if isinstance(other, int):
+            if self.width is None:
+                raise TypeError('an integer is not a Boolean expression')
+            return self.s.bitvecval(self.width, other)
 
         return other
 

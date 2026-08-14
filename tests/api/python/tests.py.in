@@ -160,6 +160,20 @@ class TestSTP(unittest.TestCase):
         with self.assertRaises(ValueError):
             f(b, b)
 
+    def test_uninterpreted_function_python_literals(self):
+        s = stp.Solver(uninterpreted_functions=True)
+        f = s.function('literal_f', [8, None], 8)
+        application = f(7, True)
+        predicate = s.function('literal_predicate', [None], None)
+        observed = predicate(False)
+        legacy_bitvector_bool = s.bitvec('legacy_bitvector_bool', 8)
+        s.add(application == 3, observed == False,
+              legacy_bitvector_bool == True)
+        self.assertTrue(s.check())
+        self.assertEqual(application.value, 3)
+        self.assertIs(observed.value, False)
+        self.assertEqual(legacy_bitvector_bool.value, 1)
+
     def test_uninterpreted_function_inactive_bitvector_value_is_exception(self):
         self.assert_python_probe_survives('''
             s = stp.Solver(uninterpreted_functions=True)
@@ -280,6 +294,10 @@ class TestSTP(unittest.TestCase):
         f = first.function('f', [8], 8)
         with self.assertRaises(ValueError):
             first.bitvec('f', 8)
+        with self.assertRaises(ValueError):
+            first.fp('f', 5, 11)
+        with self.assertRaises(ValueError):
+            first.array('f', 8, 8)
         # A rejected colliding symbol must not displace the UF declaration.
         self.assertIsInstance(f(first.bitvec('x', 8)), stp.Expr)
 
