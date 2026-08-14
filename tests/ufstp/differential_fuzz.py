@@ -33,7 +33,7 @@ def make_case(seed):
     width = 2 + seed % 7
     bv = "(_ BitVec %d)" % width
     zero = "#b" + "0" * width
-    family = seed % 6
+    family = seed % 7
     logic = "QF_AUFBV" if family == 4 else "QF_UFBV"
     depth = 1 + (seed // 6) % 5
     gx = nested("x", depth)
@@ -89,11 +89,21 @@ def make_case(seed):
             "(assert (= i j))",
             "(assert (distinct (f (select a i) b) (f (select a j) b)))",
         ]
-    else:
+    elif family == 5:
         expected = "sat"
         lines += [
             "(declare-fun q (%s Bool) %s)" % (bv, bv),
             "(assert (distinct (f x b) (q x b)))",
+        ]
+    else:
+        # A generated UF result connected to the formula only through a
+        # compound term must keep the SAT assignment for that connection.
+        # Vary both width and operator across seeds; every instance is SAT
+        # because f may choose exactly the compound value at (x,b).
+        expected = "sat"
+        operator = ("bvadd", "bvxor", "bvand", "bvor")[(seed // 7) % 4]
+        lines += [
+            "(assert (= (%s x u) (f x b)))" % operator,
         ]
 
     # The pushed block has a fresh congruence conflict in every family. It is
@@ -227,7 +237,8 @@ def main():
         "corpus_sha256": digest.hexdigest(),
         "families": ["nested-congruence", "noninjectivity",
                      "boolean-predicate", "interpreted-equality",
-                     "array-actual", "declaration-separation"],
+                     "array-actual", "declaration-separation",
+                     "compound-result-liveness"],
         "seconds_by_solver": {key: round(value, 6)
                               for key, value in totals.items()},
         "result": "pass",
