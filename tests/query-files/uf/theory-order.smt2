@@ -2,6 +2,8 @@
 ; RUN: %solver --uninterpreted-functions --array-equality --incremental=on -s %s 2>&1 | %OutputCheck %s
 ; CHECK: Theory coordination: EXTCHK conflict; UFCHK and ordinary replay skipped
 ; CHECK: ^unsat
+; CHECK: Theory coordination: EXTCHK skipped; UFCHK conflict; ordinary replay skipped
+; CHECK: ^unsat
 ; CHECK: Theory coordination: EXTCHK accepted; UFCHK conflict; ordinary replay skipped
 ; CHECK: ^unsat
 ;
@@ -27,8 +29,13 @@
 (assert (distinct (f x) (f y)))
 (check-sat)
 (reset-assertions)
-; This time EXTCHK accepts the same candidate before UFCHK rejects it.
-(assert (= a b))
+; Without active extensionality atoms, UFCHK owns the conflict directly.
+(assert (= x y))
+(assert (distinct (f x) (f y)))
+(check-sat)
+(reset-assertions)
+; This time EXTCHK accepts the candidate before UFCHK rejects it.
+(assert (= (store a i e1) (store b j e2)))
 (assert (= x y))
 (assert (distinct (f x) (f y)))
 (check-sat)

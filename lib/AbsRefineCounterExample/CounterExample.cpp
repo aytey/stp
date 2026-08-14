@@ -2882,8 +2882,9 @@ AbsRefine_CounterExample::CallSAT_ResultCheck(SATSolver& SatSolver,
       if (!ufTheoryAdapter->hasPendingLemma())
         FatalError("UFCHK reported a conflict without a pending lemma");
       if (bm->UserFlags.stats_flag)
-        std::cerr << "Theory coordination: EXTCHK accepted; UFCHK conflict; "
-                     "ordinary replay skipped"
+        std::cerr << "Theory coordination: EXTCHK "
+                  << (extActive ? "accepted" : "skipped")
+                  << "; UFCHK conflict; ordinary replay skipped"
                   << std::endl;
       bm->GetRunTimes()->stop(RunTimes::CounterExampleGeneration);
       return SOLVER_UNDECIDED;

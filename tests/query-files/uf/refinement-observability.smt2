@@ -5,7 +5,7 @@
 ;
 ; RUN: %solver -s --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck --check-prefix=OBS %s
 ; RUN: %solver -s --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck --check-prefix=OBS %s
-; OBS: Theory coordination: EXTCHK accepted; UFCHK conflict; ordinary replay skipped
+; OBS: Theory coordination: EXTCHK skipped; UFCHK conflict; ordinary replay skipped
 ; OBS: ^unsat
 ;
 (set-logic QF_UFBV)

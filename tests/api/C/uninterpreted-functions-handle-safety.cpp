@@ -90,8 +90,21 @@ TEST(UninterpretedFunctionsHandleSafety,
   ASSERT_TRUE(engine->bm->getUFContext()->deactivate(
       internalDeclaration, &diagnostic));
   EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(vc, declaration, actuals, 1));
-  EXPECT_GE(apiErrors, 3);
 
+  // Reset/pop-style deactivation frees the name but never recycles the
+  // public declaration identity.  A fresh declaration works while the old
+  // token remains stale even though both declarations have the same shape.
+  UFDeclHandle replacement = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, replacement);
+  EXPECT_NE(declaration, replacement);
+  Expr fresh =
+      vc_applyUninterpretedFunction(vc, replacement, actuals, 1);
+  EXPECT_NE(nullptr, fresh);
+  EXPECT_EQ(nullptr,
+            vc_applyUninterpretedFunction(vc, declaration, actuals, 1));
+  EXPECT_GE(apiErrors, 4);
+
+  vc_DeleteExpr(fresh);
   vc_DeleteExpr(x);
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
