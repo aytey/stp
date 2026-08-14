@@ -143,6 +143,11 @@ target_compile_definitions(stp PRIVATE STP_EXPORTS)
 if (BUILD_SHARED_LIBS)
     target_compile_definitions(stp INTERFACE STP_SHARED_LIB)
 endif()
+target_include_directories(stp INTERFACE
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 
 # Set the public header so it will be installed
 set_target_properties(stp PROPERTIES
@@ -308,3 +313,29 @@ install(TARGETS stp
     RUNTIME DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_FULL_INCLUDEDIR}/stp"
 )
+
+# The C++ UF surface is a family of headers under stp/UninterpretedFunctions,
+# and those headers intentionally expose typed AST values.  Installing only
+# c_interface.h/fp.hpp left that public closure unusable: its first include of
+# stp/AST/AST.h failed in an external consumer.  Preserve the source include
+# layout, then overlay the configured/generated headers which have no usable
+# source-tree spelling.
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/stp/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/stp"
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+install(FILES
+        "${PROJECT_BINARY_DIR}/include/stp/config.h"
+        "${PROJECT_BINARY_DIR}/include/stp/cpp_interface.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/stp")
+install(FILES "${PROJECT_BINARY_DIR}/include/stp/AST/ASTKind.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/stp/AST")
+
+# AST.h's public container/value definitions use these two vendored headers.
+# Install them at the exact include spellings used by the public STP headers.
+install(FILES
+        "${PROJECT_SOURCE_DIR}/lib/extlib-unordered-dense/ankerl/unordered_dense.h"
+        DESTINATION
+          "${CMAKE_INSTALL_INCLUDEDIR}/extlib-unordered-dense/ankerl")
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/lib/extlib-constbv/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/extlib-constbv"
+        FILES_MATCHING PATTERN "*.h")
