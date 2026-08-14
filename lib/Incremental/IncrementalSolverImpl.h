@@ -1596,6 +1596,12 @@ struct IncrementalSolver::Impl
   // configuration rebuilds do not advance it; a relief rebuild does.
   uint64_t encodingEpochGeneration = 0;
 
+  // Ownership generation of the concrete SAT backend.  Unlike the semantic
+  // epoch, this advances on every solver replacement (promotion, inprobing,
+  // trail retirement, and relief).  Cached UF equality/reification literals
+  // are meaningful only in the generation which allocated them.
+  uint64_t satBackendGeneration = 0;
+
   uint64_t lifetimeClauseSubmissions() const
   {
     return addMass(retiredClauseSubmissions, solver->submittedClauses());
@@ -2772,6 +2778,9 @@ struct IncrementalSolver::Impl
     retiredClauseSubmissions =
         addMass(retiredClauseSubmissions, solver->submittedClauses());
     solver.reset(makeBackend(bm->UserFlags, false));
+    ++satBackendGeneration;
+    if (ufAdapter)
+      ufAdapter->advanceBackendGeneration(satBackendGeneration);
     solver->enableRefinement(true);
     if (trailReuseAllowed)
       solver->enableTrailReuse();

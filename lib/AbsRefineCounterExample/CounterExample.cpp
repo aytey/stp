@@ -214,12 +214,12 @@ void AbsRefine_CounterExample::ConstructCounterExample(
 
   // UFCHK consumes an internal scalar candidate independently of public
   // model settings. Backends may leave an unconstrained Boolean don't-care
-  // undefined; complete every protected Boolean deterministically to false,
+  // undefined; complete every registered UF Boolean deterministically to false,
   // just as the BV path above completes undefined bits to zero.
   UFContext* ufContext = bm->getUFContextIfAny();
   if (ufContext != NULL && ufContext->activeInSolve())
   {
-    for (const ASTNode& symbol : ufContext->getProtectedSymbols())
+    for (const ASTNode& symbol : ufContext->getSolveScalars())
     {
       if (symbol.GetSourceSort().kind() != SourceSort::Kind::Bool)
         continue;
@@ -228,7 +228,7 @@ void AbsRefine_CounterExample::ConstructCounterExample(
         CounterExampleMap[symbol] = ASTFalse;
       else if (assigned->second.GetKind() != TRUE &&
                assigned->second.GetKind() != FALSE)
-        FatalError("UF protected Boolean has a non-Boolean candidate value",
+        FatalError("UF solve scalar has a non-Boolean candidate value",
                    symbol);
     }
   }

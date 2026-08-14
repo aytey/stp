@@ -50,11 +50,16 @@ EqualityKey equalityKey(ASTNode left, ASTNode right, const SourceSort& sort)
 struct PersistentScopeKey
 {
   uint64_t epoch = 0;
+  uint64_t backendGeneration = 0;
   uint64_t block = 0;
 
   bool operator<(const PersistentScopeKey& other) const
   {
-    return epoch != other.epoch ? epoch < other.epoch : block < other.block;
+    if (epoch != other.epoch)
+      return epoch < other.epoch;
+    return backendGeneration != other.backendGeneration
+               ? backendGeneration < other.backendGeneration
+               : block < other.block;
   }
 };
 
@@ -80,29 +85,22 @@ public:
                    "candidate scalar";
       return false;
     }
+    if (!context_.isSolveScalar(scalar))
+    {
+      diagnostic = "UF checker scalar was not registered as a SAT candidate "
+                   "authority";
+      return false;
+    }
     ASTNode assigned = ce_.LookupAssignedValue(scalar);
     if (assigned.IsNull() || !assigned.isConstant())
     {
-      // Generated names/results are the liveness contract itself and must be
-      // present as direct SAT scalars. Ordinary source-symbol actuals may have
-      // been eliminated by sound preprocessing; concretize those through the
-      // host's completed scalar model instead of mistaking a symbolic
-      // SolverMap definition for a candidate value.
-      if (context_.isProtected(scalar))
-      {
-        diagnostic = "UF generated scalar has no direct up-front SAT "
-                     "assignment";
-        return false;
-      }
-      assigned = expected.kind() == SourceSort::Kind::Bool
-                     ? ce_.ModelValueOfFormula(scalar)
-                     : ce_.ModelValueOfTerm(scalar);
-      if (assigned.IsNull() || !assigned.isConstant())
-      {
-        diagnostic = "UF source scalar could not be concretized from the "
-                     "candidate model";
-        return false;
-      }
+      // Every symbolic argument leaf, introduced actual name and result has
+      // one authority: the complete mapping registered in the current SAT
+      // backend.  Never fall back through SolverMap/model evaluation here;
+      // doing so would let a lemma encode one value while the checker read
+      // another.
+      diagnostic = "UF solve scalar has no direct up-front SAT assignment";
+      return false;
     }
     return UFConcreteValue::fromConstant(assigned, expected, value,
                                          diagnostic);
@@ -559,6 +557,7 @@ public:
   MutableAdapterState state;
   PersistentScopeKey activeScope;
   int positiveBlockLiteral = -1;
+  uint64_t backendGeneration = 0;
   std::map<PersistentScopeKey, std::map<EqualityKey, int>> equalityCaches;
 };
 
@@ -569,14 +568,32 @@ UFPersistentAdapter::UFPersistentAdapter(STPMgr* manager)
 }
 UFPersistentAdapter::~UFPersistentAdapter() = default;
 void UFPersistentAdapter::beginBlock(const LoweredApplicationView* view,
-                                     uint64_t epoch, uint64_t blockId,
+                                     uint64_t epoch,
+                                     uint64_t backendGeneration,
+                                     uint64_t blockId,
                                      int positiveBlockLiteral)
 {
+  // Defend the adapter boundary as well as the driver's explicit reset hook:
+  // a caller cannot accidentally reuse reification literals after replacing
+  // its SAT solver merely by forgetting the notification.
+  if (impl_->backendGeneration != backendGeneration)
+    advanceBackendGeneration(backendGeneration);
   impl_->state.clearRound();
   impl_->state.view = view;
   impl_->activeScope.epoch = epoch;
+  impl_->activeScope.backendGeneration = backendGeneration;
   impl_->activeScope.block = blockId;
   impl_->positiveBlockLiteral = positiveBlockLiteral;
+}
+void UFPersistentAdapter::advanceBackendGeneration(
+    uint64_t backendGeneration)
+{
+  if (impl_->backendGeneration == backendGeneration)
+    return;
+  clearActiveBlock();
+  impl_->equalityCaches.clear();
+  impl_->backendGeneration = backendGeneration;
+  impl_->activeScope = PersistentScopeKey();
 }
 void UFPersistentAdapter::clearActiveBlock()
 {
@@ -587,6 +604,7 @@ void UFPersistentAdapter::clearEncodingEpoch()
 {
   clearActiveBlock();
   impl_->equalityCaches.clear();
+  impl_->activeScope = PersistentScopeKey();
 }
 void UFPersistentAdapter::invalidateCertifiedModel()
 {

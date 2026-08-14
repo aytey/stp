@@ -302,6 +302,12 @@ IncrementalSolver::Impl::exactStackCheckSat(
   else if (bm->getUFContextIfAny() != NULL)
     bm->getUFContextIfAny()->releaseSolveProtection();
 
+  // Scope the solve-local UF indexes across every persistent preprocessing,
+  // encoding, candidate and refinement path, including early rejection.
+  UFContext* ufSolveContext =
+      activeUFView.active() ? bm->getUFContextIfAny() : NULL;
+  UFContext::SolveScope ufSolveScope(ufSolveContext);
+
   // Plain-BV exact blocks have no extensionality state at all. Avoid creating
   // a context for them; besides the allocation, an empty context makes this
   // representation look needlessly like a theory-refinement solve.
@@ -493,7 +499,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
       totalizeSymbol(s);
   }
   if (activeUFView.active())
-    for (const ASTNode& s : activeUFView.protectedSymbols)
+    for (const ASTNode& s : activeUFView.solveScalars)
       totalizeSymbol(s);
 
   if (uf.stats_flag)
@@ -535,13 +541,14 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // entitled to observe the resulting model. In particular, the incoming
   // derived flag may still describe an earlier query (and is false before a
   // session's first query), so restoring it would lose :produce-models.
-  const bool constructForCaller = uf.modelConstructionRequired();
+  const bool constructForCaller = uf.callerRequestedModel();
   uf.construct_counterexample_flag = true;
 
   if (activeUFView.active())
   {
     ufAdapter->beginBlock(&activeUFView, encodingEpochGeneration,
-                          activeUFView.scope.id, blockLit);
+                          satBackendGeneration, activeUFView.scope.id,
+                          blockLit);
     ce->setUFTheoryAdapter(ufAdapter.get());
   }
   else

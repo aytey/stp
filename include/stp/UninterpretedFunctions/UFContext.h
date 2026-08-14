@@ -44,6 +44,13 @@ public:
   ASTNode apply(const UFDecl* decl, const ASTVec& actuals,
                 std::string* error = NULL);
 
+  // SMT-LIB commands are transactions. Applications built while reducing a
+  // command become durable only if the outer command is accepted; a later
+  // malformed subexpression rolls back every application first introduced
+  // by that command.
+  void beginParserCommand();
+  void finishParserCommand(bool accepted);
+
   // HashingNodeFactory's backstop for rebuilds (define-fun, let and generic
   // substitutions). It validates the immutable signature/context but does not
   // require declaration liveness: a pre-existing durable node may outlive its
@@ -55,15 +62,37 @@ public:
   bool isActiveApplication(const ASTNode& application) const;
 
   // Generated lowering scalars are solve-local protected objects. The
-  // lowering view itself is adapter-owned; the context retains only this
-  // membership index so existing preprocessing components can ask the
-  // manager whether a proposed substitution/elimination is legal.
+  // lowering view itself is adapter-owned; the context retains membership
+  // indexes for preprocessing protection and explicit SAT registration.
   void beginSolveProtection();
-  void installSolveProtection(const ASTNodeSet& protectedSymbols);
+  void installSolveProtection(const ASTNodeSet& protectedSymbols,
+                              const ASTNodeSet& solveScalars);
   void releaseSolveProtection();
-  bool activeInSolve() const { return solveProtectionActive_; }
+  bool activeInSolve() const
+  {
+    return solveProtectionActive_ && !solveScalars_.empty();
+  }
   bool isProtected(const ASTNode& symbol) const;
+  bool isSolveScalar(const ASTNode& symbol) const;
   const ASTNodeSet& getProtectedSymbols() const { return protectedSymbols_; }
+  const ASTNodeSet& getSolveScalars() const { return solveScalars_; }
+
+  // Only this lexical window lets preprocessing, candidate construction and
+  // SAT registration consume the just-installed solve-local indexes.  The
+  // lowered view/certified model may outlive it for get-value, without making
+  // a later frontend command look like part of the preceding solve.
+  class DLL_PUBLIC SolveScope final
+  {
+  public:
+    explicit SolveScope(UFContext* context);
+    ~SolveScope();
+
+    SolveScope(const SolveScope&) = delete;
+    SolveScope& operator=(const SolveScope&) = delete;
+
+  private:
+    UFContext* const context_;
+  };
 
   size_t declarationCount() const { return declarations_.size(); }
   size_t activeDeclarationCount() const { return activeByName_.size(); }
@@ -81,7 +110,10 @@ private:
   std::map<ASTNode, const UFDecl*> byIdentity_;
   std::set<const UFDecl*> owned_;
   ASTNodeSet applications_;
+  std::vector<ASTNode> parserCommandApplications_;
   ASTNodeSet protectedSymbols_;
+  ASTNodeSet solveScalars_;
+  bool parserCommandActive_ = false;
   bool solveProtectionActive_ = false;
 };
 

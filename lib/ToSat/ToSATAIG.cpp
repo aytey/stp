@@ -52,7 +52,24 @@ bool ToSATAIG::CallSAT(SATSolver& satSolver, const ASTNode& input,
     return false;
 
   if (input == ASTTrue)
-    return true;
+  {
+    // A formula which preprocessing proved true can still own active UF
+    // results and argument names.  They are the sole candidate authority for
+    // the checker and future congruence lemmas, so the ordinary constant-root
+    // shortcut is legal only when there are no such scalars.  Register and
+    // solve the disconnected variables here instead of letting the model
+    // evaluator invent values for symbols which never reached SAT.
+    UFContext* uf = bm->getUFContextIfAny();
+    if (uf == NULL || !uf->activeInSolve() || uf->getSolveScalars().empty())
+      return true;
+
+    first = false;
+    delete cb;
+    cb = NULL;
+    assert(satSolver.nVars() == 0);
+    mark_variables_as_frozen(satSolver);
+    return runSolver(satSolver);
+  }
 
   first = false;
   Cnf_Dat_t* cnfData = bitblast(input, needAbsRef);
@@ -118,21 +135,6 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
   bm->GetRunTimes()->start(RunTimes::BitBlasting);
   BBNodeAIG BBFormula = bb.BBForm(input);
 
-  // Register every checker-visible UF scalar before CNF conversion. Result
-  // symbols may occur only in future congruence clauses, and Boolean AST
-  // widths are zero, so this must be an explicit max(1,width) path rather
-  // than the legacy BV-only allocator. With needAbsRef set for UF queries,
-  // the conversion retains these otherwise disconnected CIs.
-  UFContext* ufContext = bm->getUFContextIfAny();
-  if (ufContext != NULL && ufContext->activeInSolve())
-    for (const ASTNode& symbol : ufContext->getProtectedSymbols())
-    {
-      if (symbol.GetKind() != SYMBOL)
-        FatalError("UF liveness registrar received a non-symbol", symbol);
-      const unsigned width = std::max((unsigned)1, symbol.GetValueWidth());
-      for (unsigned bit = 0; bit < width; ++bit)
-        mgr.CreateSymbol(symbol, bit);
-    }
   bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
   delete cb;
@@ -263,16 +265,18 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
     }
   }
 
-  // The batch UF registrar above made all protected symbols known to the AIG
-  // map. A disconnected result CI can still receive no CNF variable; allocate
-  // its exact unconstrained SAT meaning now. A connected CI never takes this
-  // fallback, so no defining constraint is lost. Validate and freeze the full
-  // Bool/BV vector before the first candidate.
+  // Give every checker-visible scalar one complete mapping in this backend.
+  // Connected bits retain their CNF variables; missing/disconnected bits get
+  // fresh unconstrained variables, which is exactly their formula semantics.
+  // Registration happens after CNF conversion so no second AIG-side meaning
+  // can compete with the mapping the checker and lemma encoder both consume.
   UFContext* ufContext = bm->getUFContextIfAny();
   if (ufContext != NULL && ufContext->activeInSolve())
   {
-    for (const ASTNode& symbol : ufContext->getProtectedSymbols())
+    for (const ASTNode& symbol : ufContext->getSolveScalars())
     {
+      if (symbol.GetKind() != SYMBOL)
+        FatalError("UF solve-scalar registrar received a non-symbol", symbol);
       const unsigned width = std::max((unsigned)1, symbol.GetValueWidth());
       ASTNodeToSATVar::iterator found = nodeToSATVar.find(symbol);
       if (found == nodeToSATVar.end())
@@ -280,8 +284,10 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
                     .insert(std::make_pair(
                         symbol, vector<unsigned>(width, ~((unsigned)0))))
                     .first;
-      if (found->second.size() != width)
+      if (found->second.size() > width)
         FatalError("UF batch liveness mapping has the wrong width", symbol);
+      if (found->second.size() < width)
+        found->second.resize(width, ~((unsigned)0));
       for (unsigned bit = 0; bit < width; ++bit)
       {
         if (found->second[bit] == ~((unsigned)0))

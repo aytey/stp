@@ -1,4 +1,5 @@
 #include "stp/UninterpretedFunctions/UFContext.h"
+#include "stp/Globals/Globals.h"
 #include "stp/STPManager/STPManager.h"
 #include <algorithm>
 #include <cctype>
@@ -30,6 +31,7 @@ UFContext::UFContext(STPMgr* manager) : manager_(manager)
 UFContext::~UFContext()
 {
   releaseSolveProtection();
+  parserCommandApplications_.clear();
   applications_.clear();
   byIdentity_.clear();
   activeByName_.clear();
@@ -249,10 +251,35 @@ ASTNode UFContext::apply(const UFDecl* decl, const ASTVec& actuals,
   return result;
 }
 
+void UFContext::beginParserCommand()
+{
+  // A parser cannot start the next top-level command until the preceding
+  // command's closing parenthesis has committed or rolled it back.
+  assert(!parserCommandActive_);
+  parserCommandApplications_.clear();
+  parserCommandActive_ = true;
+}
+
+void UFContext::finishParserCommand(const bool accepted)
+{
+  // The UF context may have been created during a command (most commonly by
+  // its first declaration), after Cpp_interface had a context to begin. Such
+  // a command has no application prefix to transact.
+  if (!parserCommandActive_)
+    return;
+  if (!accepted)
+    for (const ASTNode& application : parserCommandApplications_)
+      applications_.erase(application);
+  parserCommandApplications_.clear();
+  parserCommandActive_ = false;
+}
+
 void UFContext::noteApplication(const ASTNode& application)
 {
   assert(application.GetKind() == UF_APPLY);
-  applications_.insert(application);
+  const bool inserted = applications_.insert(application).second;
+  if (inserted && parserCommandActive_)
+    parserCommandApplications_.push_back(application);
 }
 
 bool UFContext::isRegisteredApplication(const ASTNode& application) const
@@ -270,29 +297,61 @@ bool UFContext::isActiveApplication(const ASTNode& application) const
 
 void UFContext::beginSolveProtection()
 {
+  assert(!solveProtectionActive_);
   protectedSymbols_.clear();
-  solveProtectionActive_ = true;
+  solveScalars_.clear();
 }
 
 void UFContext::installSolveProtection(
-    const ASTNodeSet& protectedSymbols)
+    const ASTNodeSet& protectedSymbols, const ASTNodeSet& solveScalars)
 {
-  if (!solveProtectionActive_)
-    beginSolveProtection();
+  assert(!solveProtectionActive_);
+  for (const ASTNode& scalar : solveScalars)
+  {
+    if (scalar.IsNull() || !scalar.IsOwnedBy(manager_) ||
+        scalar.GetKind() != SYMBOL ||
+        protectedSymbols.find(scalar) == protectedSymbols.end())
+      FatalError("UF solve scalar is malformed or is not preprocessing "
+                 "protected",
+                 scalar);
+  }
   protectedSymbols_ = protectedSymbols;
+  solveScalars_ = solveScalars;
 }
 
 void UFContext::releaseSolveProtection()
 {
   protectedSymbols_.clear();
+  solveScalars_.clear();
   solveProtectionActive_ = false;
 }
 
 bool UFContext::isProtected(const ASTNode& symbol) const
 {
-  return solveProtectionActive_ && !symbol.IsNull() &&
-         symbol.IsOwnedBy(manager_) && symbol.GetKind() == SYMBOL &&
+  return !symbol.IsNull() && symbol.IsOwnedBy(manager_) &&
+         symbol.GetKind() == SYMBOL &&
          protectedSymbols_.find(symbol) != protectedSymbols_.end();
+}
+
+bool UFContext::isSolveScalar(const ASTNode& symbol) const
+{
+  return !symbol.IsNull() && symbol.IsOwnedBy(manager_) &&
+         symbol.GetKind() == SYMBOL &&
+         solveScalars_.find(symbol) != solveScalars_.end();
+}
+
+UFContext::SolveScope::SolveScope(UFContext* context) : context_(context)
+{
+  if (context_ == NULL)
+    return;
+  assert(!context_->solveProtectionActive_);
+  context_->solveProtectionActive_ = true;
+}
+
+UFContext::SolveScope::~SolveScope()
+{
+  if (context_ != NULL)
+    context_->solveProtectionActive_ = false;
 }
 
 } // namespace stp

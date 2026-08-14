@@ -86,7 +86,8 @@ private:
 
 // Persistent exact-stack owner. Every helper definition and semantic clause
 // carries the negated current block literal. Equality caches are partitioned
-// by encoding epoch and block identity and are dropped on epoch rotation.
+// by semantic encoding epoch, SAT-backend generation, and block identity.
+// A backend replacement invalidates them even when its AIG epoch survives.
 class DLL_PUBLIC UFPersistentAdapter final : public UFTheoryAdapter
 {
 public:
@@ -97,7 +98,9 @@ public:
   UFPersistentAdapter& operator=(const UFPersistentAdapter&) = delete;
 
   void beginBlock(const LoweredApplicationView* view, uint64_t epoch,
-                  uint64_t blockId, int positiveBlockLiteral);
+                  uint64_t backendGeneration, uint64_t blockId,
+                  int positiveBlockLiteral);
+  void advanceBackendGeneration(uint64_t backendGeneration);
   void clearActiveBlock();
   void clearEncodingEpoch();
   void invalidateCertifiedModel() override;

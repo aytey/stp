@@ -108,6 +108,11 @@ SATSolver* STP::get_new_sat_solver()
 SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
                                     const ASTNode& query)
 {
+  // Candidate construction is an implementation requirement; publication is
+  // a caller permission. TopLevelSTPAux may force construction for array/UF
+  // refinement, but nothing after this solve may interpret that as an SMT-LIB
+  // get-model/get-value request.
+  const bool constructForCaller = bm->UserFlags.callerRequestedModel();
 
   // One encoding context per actual solve. Keep it after this function
   // returns so counterexample/get-value requests reuse the exact mappings
@@ -184,6 +189,7 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
       solve_by_sat_solver(newS, original_input, arrayEqualityRewrites);
   delete newS;
 
+  bm->UserFlags.construct_counterexample_flag = constructForCaller;
   bm->UserFlags.ackermannisation = saved_ack;
   return result;
 }
@@ -294,6 +300,13 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       containsKind(original_input, UF_APPLY))
     FatalError("UF_APPLY reached ordinary batch preprocessing",
                original_input);
+
+  // Lowering has installed the current view's protected/registered scalars.
+  // Activate them for exactly the preprocessing, SAT and refinement window;
+  // retained batch model data remains readable after this scope closes.
+  UFContext* ufSolveContext =
+      batchUFView.active() ? bm->getUFContextIfAny() : NULL;
+  UFContext::SolveScope ufSolveScope(ufSolveContext);
 
   // ARRAY_EQ remains a normal, traversable AST node through query assembly
   // and macro/function substitution. Lower it only now, at the complete-query

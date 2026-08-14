@@ -77,6 +77,11 @@ public:
   ASTNodeMap nameToTerm;
   ASTVec namingDefinitions;
   ASTNodeSet protectedSymbols;
+  // Every symbolic checker leaf has exactly one concrete candidate
+  // authority: its complete Bool/BV mapping in the live SAT backend.  This
+  // is deliberately explicit rather than inferred from formula reachability;
+  // preprocessing may leave a result or name only in future UF lemmas.
+  ASTNodeSet solveScalars;
 
   bool active() const { return !applications.empty(); }
   size_t size() const { return applications.size(); }
