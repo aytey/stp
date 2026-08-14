@@ -69,7 +69,7 @@ _VC = c_void_p
 _Expr = c_void_p
 _Type = c_void_p
 _WholeCounterExample = c_void_p
-_UFDecl = c_void_p
+_UFDecl = c_uint64
 
 _set_func('get_git_version_sha', c_char_p)
 _set_func('get_git_version_tag', c_char_p)
@@ -94,10 +94,10 @@ _set_func('vc_boolType', _Type, _VC)
 _set_func('vc_arrayType', _Type, _VC, _Type, _Type)
 _set_func('vc_varExpr', _Expr, _VC, c_char_p, _Type)
 _set_func('vc_varExpr1', _Expr, _VC, c_char_p, c_int32, c_int32)
-_set_func('vc_declareFun', _UFDecl, _VC, c_char_p, POINTER(c_uint32), c_size_t,
-          c_uint32)
-_set_func('vc_applyFun', _Expr, _VC, _UFDecl, POINTER(_Expr), c_size_t)
-_set_func('vc_getUFApplicationValue', _Expr, _VC, _Expr)
+_set_func('vc_declareUninterpretedFunction', _UFDecl, _VC, c_char_p,
+          POINTER(_Type), c_size_t, _Type)
+_set_func('vc_applyUninterpretedFunction', _Expr, _VC, _UFDecl, POINTER(_Expr), c_size_t)
+_set_func('vc_getUninterpretedFunctionValue', _Expr, _VC, _Expr)
 _set_func('vc_getType', _Type, _VC, _Expr)
 _set_func('vc_getBVLength', c_int32, _VC, _Expr)
 _set_func('vc_eqExpr', _Expr, _VC, _Expr, _Expr)
@@ -431,9 +431,20 @@ class Solver(object):
         result_width = 0 if codomain is None else int(codomain)
         if result_width < 0:
             raise ValueError('function codomain width must be nonnegative')
-        raw = (c_uint32 * len(widths))(*widths)
-        declaration = _lib.vc_declareFun(
-            self.vc, name.encode('utf-8'), raw, len(widths), result_width)
+        domain_types = [(_lib.vc_boolType(self.vc) if width == 0 else
+                         _lib.vc_bvType(self.vc, width))
+                        for width in widths]
+        codomain_type = (_lib.vc_boolType(self.vc) if result_width == 0 else
+                         _lib.vc_bvType(self.vc, result_width))
+        raw = (_Type * len(domain_types))(*domain_types)
+        try:
+            declaration = _lib.vc_declareUninterpretedFunction(
+                self.vc, name.encode('utf-8'), raw, len(domain_types),
+                codomain_type)
+        finally:
+            for type_handle in domain_types:
+                _lib.vc_DeleteExpr(type_handle)
+            _lib.vc_DeleteExpr(codomain_type)
         if not declaration:
             raise ValueError('uninterpreted-function declaration was rejected')
         return UninterpretedFunction(self, name, tuple(widths), result_width,
@@ -797,7 +808,7 @@ class UninterpretedFunction(object):
                     'sort' % position)
             raw_arguments.append(argument.expr)
         raw = (_Expr * len(raw_arguments))(*raw_arguments)
-        application = _lib.vc_applyFun(
+        application = _lib.vc_applyUninterpretedFunction(
             self.s.vc, self.declaration, raw, len(raw_arguments))
         if not application:
             raise ValueError('uninterpreted-function application was rejected')

@@ -29,10 +29,9 @@ THE SOFTWARE.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <mutex>
-#include <new>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "stp/Incremental/IncrementalSolver.h"
@@ -64,75 +63,38 @@ Expr createBinaryNode(VC vc, Kind k, Expr left, Expr right);
 namespace /* anonymous namespace for static */
 {
 
-// The public C types remain ABI-compatible void pointers, but UF declaration
-// tokens must not inherit the allocator lifetime of the underlying UFDecl.
-// Keep a process-lifetime tombstone for every token and pair it with the
-// generation of the owning VC.  A destroyed VC therefore cannot make an old
-// token valid again merely because a new manager or declaration reuses an
-// address.
+// The legacy VC and Expr types remain raw pointers. UF declarations are new
+// API, however, so give them monotonic integer identities instead of allocator
+// addresses. A context owns the live id -> declaration mapping; destroying the
+// context drops the mapping, and no later declaration can reuse the id.
 struct CContextRecord
 {
   uint64_t generation = 0;
-  stp::STP* engine = NULL;
   stp::STPMgr* manager = NULL;
-  std::vector<Expr> expressions;
-  std::vector<UFDeclHandle> declarations;
+  bool tracksExpressions = false;
+  std::unordered_set<Expr> expressions;
+  std::unordered_map<UFDeclHandle, const stp::UFDecl*> declarations;
 };
 
 struct CExpressionRecord
 {
   uint64_t contextGeneration = 0;
   VC owner = NULL;
-  bool live = false;
 };
-
-struct CUFDeclRecord
-{
-  uint64_t contextGeneration = 0;
-  VC owner = NULL;
-  const stp::UFDecl* declaration = NULL;
-  bool live = false;
-};
-
-// Expr is a legacy raw ASTNode pointer, so its ABI has nowhere to carry a
-// generation.  Once such a pointer has been exposed, its storage cannot be
-// returned to the allocator without allowing an old pointer to acquire a new
-// meaning through address reuse. Destroy the AST reference promptly, retain
-// only the tiny wrapper allocation as a tombstone, and release that storage
-// at process shutdown without invoking the destructor twice.
-struct CExpressionStorageDeleter
-{
-  void operator()(stp::ASTNode* storage) const
-  {
-    ::operator delete(static_cast<void*>(storage));
-  }
-};
-
-using RetiredCExpressionStorage =
-    std::unique_ptr<stp::ASTNode, CExpressionStorageDeleter>;
 
 std::mutex cHandleMutex;
 uint64_t nextCContextGeneration = 0;
+uint64_t nextCUFDeclarationId = 0;
 std::unordered_map<VC, CContextRecord> liveCContexts;
 std::unordered_map<stp::STPMgr*, VC> contextByManager;
 std::unordered_map<Expr, CExpressionRecord> cExpressions;
-std::unordered_map<UFDeclHandle, std::unique_ptr<CUFDeclRecord>> cUFDecls;
-std::vector<RetiredCExpressionStorage> retiredCExpressionStorage;
 
-void retireCExpressionStorage(Expr expression)
+void registerCContext(VC vc, stp::STPMgr* manager)
 {
-  stp::ASTNode* const node = static_cast<stp::ASTNode*>(expression);
-  node->~ASTNode();
-  retiredCExpressionStorage.emplace_back(node);
-}
-
-void registerCContext(VC vc, stp::STP* engine, stp::STPMgr* manager)
-{
-  assert(vc != NULL && engine != NULL && manager != NULL);
+  assert(vc != NULL && manager != NULL);
   std::lock_guard<std::mutex> lock(cHandleMutex);
   CContextRecord record;
   record.generation = ++nextCContextGeneration;
-  record.engine = engine;
   record.manager = manager;
   liveCContexts[vc] = record;
   contextByManager[manager] = vc;
@@ -148,53 +110,68 @@ bool liveCContext(VC vc, CContextRecord& record)
   // Callers need identity/ownership metadata, not a copy of the potentially
   // large per-context retirement indexes.
   record.generation = found->second.generation;
-  record.engine = found->second.engine;
   record.manager = found->second.manager;
   return true;
 }
 
-void retireCContext(VC vc)
+void enableCExpressionTracking(VC vc)
 {
   std::lock_guard<std::mutex> lock(cHandleMutex);
   const std::unordered_map<VC, CContextRecord>::iterator context =
       liveCContexts.find(vc);
-  if (context == liveCContexts.end())
+  if (context == liveCContexts.end() || context->second.tracksExpressions)
     return;
-  const uint64_t generation = context->second.generation;
-  contextByManager.erase(context->second.manager);
-  for (const Expr expression : context->second.expressions)
+  context->second.tracksExpressions = true;
+
+  // The public contract requires enabling UF before declaring a function and
+  // before constructing its argument handles. Recover the context-managed
+  // handles which predate the flag as a convenience; caller-owned wrappers
+  // created before the flag deliberately remain outside the safe UF registry.
+  for (stp::ASTNode* expression : context->second.manager->persist)
   {
-    const std::unordered_map<Expr, CExpressionRecord>::iterator entry =
-        cExpressions.find(expression);
-    if (entry != cExpressions.end() && entry->second.owner == vc &&
-        entry->second.contextGeneration == generation && entry->second.live)
-    {
-      // Release the AST reference while its manager is still alive, but keep
-      // the tiny wrapper allocation as a tombstone. Reusing that address for
-      // a new Expr would otherwise give a destroyed-context pointer an ABA
-      // path analogous to the raw UFDecl bug this registry closes.
-      retireCExpressionStorage(expression);
-      entry->second.live = false;
-    }
+    if (expression == NULL || expression->IsNull())
+      continue;
+    CExpressionRecord record;
+    record.contextGeneration = context->second.generation;
+    record.owner = vc;
+    cExpressions[expression] = record;
+    context->second.expressions.insert(expression);
   }
-  for (const UFDeclHandle handle : context->second.declarations)
+}
+
+void retireCContext(VC vc)
+{
+  std::vector<stp::ASTNode*> toDelete;
   {
-    const std::unordered_map<UFDeclHandle,
-                             std::unique_ptr<CUFDeclRecord>>::iterator entry =
-        cUFDecls.find(handle);
-    if (entry != cUFDecls.end() && entry->second->owner == vc &&
-        entry->second->contextGeneration == generation)
+    std::lock_guard<std::mutex> lock(cHandleMutex);
+    const std::unordered_map<VC, CContextRecord>::iterator context =
+        liveCContexts.find(vc);
+    if (context == liveCContexts.end())
+      return;
+    contextByManager.erase(context->second.manager);
+    if (context->second.tracksExpressions)
     {
-      entry->second->live = false;
-      entry->second->declaration = NULL;
+      toDelete.reserve(context->second.expressions.size());
+      for (const Expr expression : context->second.expressions)
+      {
+        cExpressions.erase(expression);
+        toDelete.push_back(static_cast<stp::ASTNode*>(expression));
+      }
     }
+    liveCContexts.erase(context);
   }
-  liveCContexts.erase(context);
+  // AST references must be released while their owning manager is alive.
+  for (stp::ASTNode* expression : toDelete)
+    delete expression;
 }
 
 Expr registerCExpression(stp::ASTNode* node)
 {
   if (node == NULL || node->IsNull())
+    return node;
+  // UF-disabled C clients pay no registry or lock cost. This is the common
+  // legacy path and is also what keeps expression churn bounded and fast.
+  if (!node->GetNodeManager()->UserFlags.enable_uninterpreted_functions)
     return node;
   std::lock_guard<std::mutex> lock(cHandleMutex);
   const std::unordered_map<stp::STPMgr*, VC>::const_iterator owner =
@@ -205,12 +182,13 @@ Expr registerCExpression(stp::ASTNode* node)
         liveCContexts.find(owner->second);
     if (context != liveCContexts.end())
     {
+      if (!context->second.tracksExpressions)
+        return node;
       CExpressionRecord record;
       record.contextGeneration = context->second.generation;
       record.owner = owner->second;
-      record.live = true;
       cExpressions[node] = record;
-      context->second.expressions.push_back(node);
+      context->second.expressions.insert(node);
     }
   }
   return node;
@@ -235,7 +213,7 @@ bool liveCExpression(VC vc, Expr expression, stp::ASTNode*& node,
   }
   const std::unordered_map<Expr, CExpressionRecord>::const_iterator found =
       cExpressions.find(expression);
-  if (found == cExpressions.end() || !found->second.live)
+  if (found == cExpressions.end())
   {
     diagnostic = "invalid or destroyed expression handle";
     return false;
@@ -257,15 +235,9 @@ UFDeclHandle registerCUFDecl(VC vc, const stp::UFDecl* declaration)
   const std::unordered_map<VC, CContextRecord>::iterator context =
       liveCContexts.find(vc);
   if (context == liveCContexts.end())
-    return NULL;
-  std::unique_ptr<CUFDeclRecord> record(new CUFDeclRecord());
-  record->contextGeneration = context->second.generation;
-  record->owner = vc;
-  record->declaration = declaration;
-  record->live = true;
-  UFDeclHandle handle = record.get();
-  cUFDecls.insert(std::make_pair(handle, std::move(record)));
-  context->second.declarations.push_back(handle);
+    return 0;
+  const UFDeclHandle handle = ++nextCUFDeclarationId;
+  context->second.declarations.insert(std::make_pair(handle, declaration));
   return handle;
 }
 
@@ -273,7 +245,7 @@ bool liveCUFDecl(VC vc, UFDeclHandle handle, const stp::UFDecl*& declaration,
                  std::string& diagnostic)
 {
   declaration = NULL;
-  if (handle == NULL)
+  if (handle == 0)
   {
     diagnostic = "null uninterpreted-function declaration handle";
     return false;
@@ -286,24 +258,15 @@ bool liveCUFDecl(VC vc, UFDeclHandle handle, const stp::UFDecl*& declaration,
     diagnostic = "invalid or destroyed validity-checker handle";
     return false;
   }
-  const std::unordered_map<UFDeclHandle,
-                           std::unique_ptr<CUFDeclRecord>>::const_iterator
-      found = cUFDecls.find(handle);
-  if (found == cUFDecls.end() || !found->second->live ||
-      found->second->declaration == NULL)
+  const std::unordered_map<UFDeclHandle, const stp::UFDecl*>::const_iterator
+      found = context->second.declarations.find(handle);
+  if (found == context->second.declarations.end() || found->second == NULL)
   {
-    diagnostic = "invalid, stale, or destroyed uninterpreted-function "
-                 "declaration handle";
+    diagnostic = "invalid, stale, destroyed, or cross-context "
+                 "uninterpreted-function declaration handle";
     return false;
   }
-  if (found->second->owner != vc ||
-      found->second->contextGeneration != context->second.generation)
-  {
-    diagnostic = "uninterpreted-function declaration belongs to another "
-                 "context";
-    return false;
-  }
-  declaration = found->second->declaration;
+  declaration = found->second;
   return true;
 }
 
@@ -580,7 +543,7 @@ VC vc_createValidityCheckerReuse(void* _bm)
   stp::STP* stpObj =
       new stp::STP(bm);
 
-  registerCContext(static_cast<VC>(stpObj), stpObj, bm);
+  registerCContext(static_cast<VC>(stpObj), bm);
 
   // created_exprs.clear();
   vc_setFlags(stpObj, 'd');
@@ -1242,7 +1205,7 @@ Expr vc_getCounterExample(VC vc, Expr e)
 {
   if (vc != NULL && e != NULL &&
       static_cast<stp::ASTNode*>(e)->GetKind() == stp::UF_APPLY)
-    return vc_getUFApplicationValue(vc, e);
+    return vc_getUninterpretedFunctionValue(vc, e);
   materializePendingModel(vc);
   stp::STP* stp_i = (stp::STP*)vc;
   stp::ASTNode* a = (stp::ASTNode*)e;
@@ -1440,51 +1403,94 @@ Expr vc_varExpr(VC vc, const char* name, Type type)
   return output;
 }
 
-UFDeclHandle vc_declareFun(VC vc, const char* name,
-                           const unsigned* domainWidths,
-                           size_t domainCount, unsigned codomainWidth)
+static bool cTypeToUFSort(VC vc, Type type, const char* position,
+                          stp::SourceSort& sort, std::string& diagnostic)
+{
+  stp::ASTNode* node = NULL;
+  if (!liveCExpression(vc, type, node, diagnostic))
+  {
+    diagnostic = std::string(position) + " type: " + diagnostic;
+    return false;
+  }
+  if (node->GetKind() == stp::BOOLEAN)
+  {
+    sort = stp::SourceSort::boolean();
+    return true;
+  }
+  if (node->GetKind() == stp::BITVECTOR && node->Degree() == 1 &&
+      (*node)[0].GetUnsignedConst() != 0)
+  {
+    sort = stp::SourceSort::bitVector((*node)[0].GetUnsignedConst());
+    return true;
+  }
+  diagnostic = std::string(position) +
+               " type must be Bool or a nonzero-width BitVec";
+  return false;
+}
+
+UFDeclHandle vc_declareUninterpretedFunction(
+    VC vc, const char* name, const Type* domainTypes, size_t domainCount,
+    Type codomain)
 {
   if (vc == NULL || name == NULL ||
-      (domainCount != 0 && domainWidths == NULL))
+      (domainCount != 0 && domainTypes == NULL) || codomain == NULL)
   {
-    reportUFAPIError("vc_declareFun received a null required argument");
-    return NULL;
+    reportUFAPIError(
+        "vc_declareUninterpretedFunction received a null required argument");
+    return 0;
   }
 
   CContextRecord context;
   if (!liveCContext(vc, context))
   {
-    reportUFAPIError("vc_declareFun received an invalid or destroyed "
-                     "validity-checker handle");
-    return NULL;
+    reportUFAPIError("vc_declareUninterpretedFunction received an invalid or "
+                     "destroyed validity-checker handle");
+    return 0;
   }
   stp::STPMgr* b = context.manager;
+  if (!b->UserFlags.enable_uninterpreted_functions)
+  {
+    reportUFAPIError("uninterpreted functions are not enabled");
+    return 0;
+  }
+  if (domainCount == 0)
+  {
+    reportUFAPIError("zero-arity functions are ordinary symbols");
+    return 0;
+  }
   if (b->c_api_source_sorts.find(name) != b->c_api_source_sorts.end())
   {
     reportUFAPIError(std::string("name '") + name +
                      "' already denotes an ordinary symbol");
-    return NULL;
+    return 0;
   }
-
-  std::vector<stp::SourceSort> domain;
-  domain.reserve(domainCount);
-  for (size_t i = 0; i < domainCount; ++i)
-  {
-    domain.push_back(domainWidths[i] == 0
-                         ? stp::SourceSort::boolean()
-                         : stp::SourceSort::bitVector(domainWidths[i]));
-  }
-  const stp::SourceSort codomain =
-      codomainWidth == 0 ? stp::SourceSort::boolean()
-                         : stp::SourceSort::bitVector(codomainWidth);
 
   std::string diagnostic;
+  std::vector<stp::SourceSort> domainSorts;
+  domainSorts.reserve(domainCount);
+  for (size_t i = 0; i < domainCount; ++i)
+  {
+    stp::SourceSort sourceSort;
+    if (!cTypeToUFSort(vc, domainTypes[i], "domain", sourceSort, diagnostic))
+    {
+      reportUFAPIError(diagnostic);
+      return 0;
+    }
+    domainSorts.push_back(sourceSort);
+  }
+  stp::SourceSort codomainSort;
+  if (!cTypeToUFSort(vc, codomain, "codomain", codomainSort, diagnostic))
+  {
+    reportUFAPIError(diagnostic);
+    return 0;
+  }
+
   const stp::UFDecl* declaration = b->getUFContext()->declareFunction(
-      name, domain, codomain, &diagnostic);
+      name, domainSorts, codomainSort, &diagnostic);
   if (declaration == NULL)
   {
     reportUFAPIError(diagnostic);
-    return NULL;
+    return 0;
   }
   stp::STP* stp_i = static_cast<stp::STP*>(vc);
   if (stp_i->Ctr_Example->getUFTheoryAdapter() != NULL)
@@ -1492,21 +1498,23 @@ UFDeclHandle vc_declareFun(VC vc, const char* name,
   return registerCUFDecl(vc, declaration);
 }
 
-Expr vc_applyFun(VC vc, UFDeclHandle function, const Expr* arguments,
-                 size_t argumentCount)
+Expr vc_applyUninterpretedFunction(VC vc, UFDeclHandle function,
+                                   const Expr* arguments,
+                                   size_t argumentCount)
 {
-  if (vc == NULL || function == NULL ||
+  if (vc == NULL || function == 0 ||
       (argumentCount != 0 && arguments == NULL))
   {
-    reportUFAPIError("vc_applyFun received a null required argument");
+    reportUFAPIError(
+        "vc_applyUninterpretedFunction received a null required argument");
     return NULL;
   }
 
   CContextRecord context;
   if (!liveCContext(vc, context))
   {
-    reportUFAPIError("vc_applyFun received an invalid or destroyed "
-                     "validity-checker handle");
+    reportUFAPIError("vc_applyUninterpretedFunction received an invalid or "
+                     "destroyed validity-checker handle");
     return NULL;
   }
   std::string diagnostic;
@@ -1524,8 +1532,8 @@ Expr vc_applyFun(VC vc, UFDeclHandle function, const Expr* arguments,
     stp::ASTNode* actual = NULL;
     if (!liveCExpression(vc, arguments[i], actual, diagnostic))
     {
-      reportUFAPIError("vc_applyFun argument " + std::to_string(i) + ": " +
-                       diagnostic);
+      reportUFAPIError("vc_applyUninterpretedFunction argument " +
+                       std::to_string(i) + ": " + diagnostic);
       return NULL;
     }
     actuals.push_back(*actual);
@@ -1542,18 +1550,18 @@ Expr vc_applyFun(VC vc, UFDeclHandle function, const Expr* arguments,
   return wrap(application);
 }
 
-Expr vc_getUFApplicationValue(VC vc, Expr application)
+Expr vc_getUninterpretedFunctionValue(VC vc, Expr application)
 {
   if (vc == NULL || application == NULL)
   {
     reportUFAPIError(
-        "vc_getUFApplicationValue received a null required argument");
+        "vc_getUninterpretedFunctionValue received a null required argument");
     return NULL;
   }
   CContextRecord context;
   if (!liveCContext(vc, context))
   {
-    reportUFAPIError("vc_getUFApplicationValue received an invalid or "
+    reportUFAPIError("vc_getUninterpretedFunctionValue received an invalid or "
                      "destroyed validity-checker handle");
     return NULL;
   }
@@ -1561,7 +1569,7 @@ Expr vc_getUFApplicationValue(VC vc, Expr application)
   std::string diagnostic;
   if (!liveCExpression(vc, application, durable, diagnostic))
   {
-    reportUFAPIError("vc_getUFApplicationValue: " + diagnostic);
+    reportUFAPIError("vc_getUninterpretedFunctionValue: " + diagnostic);
     return NULL;
   }
   materializePendingModel(vc);
@@ -3527,7 +3535,8 @@ void vc_Destroy(VC vc)
   {
     for (vector<stp::ASTNode*>::iterator it = b->persist.begin();
          it != b->persist.end(); it++)
-      vc_DeleteExpr(*it);
+      if (*it != NULL)
+        vc_DeleteExpr(*it);
     b->persist.clear();
   }
 
@@ -3550,17 +3559,43 @@ void vc_DeleteExpr(Expr e)
 {
   if (e == NULL)
     return;
-  std::lock_guard<std::mutex> lock(cHandleMutex);
-  const std::unordered_map<Expr, CExpressionRecord>::iterator found =
-      cExpressions.find(e);
-  if (found != cExpressions.end() && found->second.live)
+  stp::ASTNode* const node = static_cast<stp::ASTNode*>(e);
+  // vc_DeleteExpr has always required a live raw pointer. Consulting its
+  // manager here lets unrelated legacy contexts retain the lock-free path
+  // even when another context in the process has enabled UF support.
+  if (node->GetNodeManager()->UserFlags.enable_uninterpreted_functions)
   {
-    found->second.live = false;
-    retireCExpressionStorage(e);
+    std::lock_guard<std::mutex> lock(cHandleMutex);
+    const std::unordered_map<Expr, CExpressionRecord>::iterator found =
+        cExpressions.find(e);
+    if (found != cExpressions.end())
+    {
+      const std::unordered_map<VC, CContextRecord>::iterator context =
+          liveCContexts.find(found->second.owner);
+      if (context != liveCContexts.end())
+      {
+        context->second.expressions.erase(e);
+        // Context-managed handles also sit in STPMgr::persist. Mark the slot
+        // empty so vc_Destroy never revisits a caller-deleted wrapper.
+        if (context->second.manager->UserFlags.cinterface_exprdelete_on_flag)
+          for (stp::ASTNode*& persisted : context->second.manager->persist)
+            if (persisted == e)
+            {
+              persisted = NULL;
+              break;
+            }
+      }
+      cExpressions.erase(found);
+      delete node;
+      return;
+    }
   }
-  // Unknown and already-destroyed handles are deliberately harmless. This
-  // keeps the UF API's validation path from turning cleanup after a rejected
-  // application into a second use-after-free.
+  // A deleted Expr is no longer a valid C handle. The live registry makes UF
+  // API validation nonfatal before deletion, but the legacy raw-pointer ABI
+  // cannot distinguish a second delete from allocator address reuse without
+  // retaining process-lifetime tombstones. Preserve the baseline ownership
+  // contract here and release untracked wrappers immediately.
+  delete node;
 }
 
 // exprkind_t mirrors stp::Kind, which is generated from ASTKind.kinds, and
@@ -3572,6 +3607,7 @@ static_assert((int)FP_ABS == (int)stp::FP_ABS, "exprkind_t drift");
 static_assert((int)FP_TO_IEEE_BV == (int)stp::FP_TO_IEEE_BV,
               "exprkind_t drift");
 static_assert((int)FP_SMT_EQ == (int)stp::FP_SMT_EQ, "exprkind_t drift");
+static_assert((int)UF_APPLY == (int)stp::UF_APPLY, "exprkind_t drift");
 static_assert((int)BOOLEAN_TYPE == (int)stp::BOOLEAN_TYPE &&
                   (int)FLOATINGPOINT_TYPE == (int)stp::FLOATINGPOINT_TYPE &&
                   (int)UNKNOWN_TYPE == (int)stp::UNKNOWN_TYPE,
@@ -3724,6 +3760,7 @@ void process_argument(const char ch, VC vc)
       break;
     case 'u':
       bm->UserFlags.enable_uninterpreted_functions = true;
+      enableCExpressionTracking(vc);
       break;
     case 'v':
       bm->UserFlags.print_nodes_flag = true;

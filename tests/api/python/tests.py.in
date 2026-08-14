@@ -284,7 +284,7 @@ class TestSTP(unittest.TestCase):
             live = stp.Solver(uninterpreted_functions=True)
             x = live.bitvec('x', 8)
             raw = (_stp_native._Expr * 1)(x.expr)
-            result = _stp_native._lib.vc_applyFun(live.vc, stale, raw, 1)
+            result = _stp_native._lib.vc_applyUninterpretedFunction(live.vc, stale, raw, 1)
             if result:
                 raise AssertionError('destroyed declaration was accepted')
         ''')

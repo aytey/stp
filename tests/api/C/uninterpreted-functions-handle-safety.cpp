@@ -34,6 +34,8 @@ THE SOFTWARE.
 #include <cstdint>
 #include <cstdlib>
 #include <gtest/gtest.h>
+#include <initializer_list>
+#include <vector>
 
 namespace
 {
@@ -41,6 +43,24 @@ namespace
 int apiErrors = 0;
 void countAPIError(const char*) { ++apiErrors; }
 void ignoreAPIError(const char*) {}
+
+UFDeclHandle declareFunction(VC vc, const char* name,
+                             std::initializer_list<unsigned> domainWidths,
+                             unsigned codomainWidth)
+{
+  std::vector<Type> domain;
+  domain.reserve(domainWidths.size());
+  for (const unsigned width : domainWidths)
+    domain.push_back(width == 0 ? vc_boolType(vc) : vc_bvType(vc, width));
+  Type codomain = codomainWidth == 0 ? vc_boolType(vc)
+                                     : vc_bvType(vc, codomainWidth);
+  const UFDeclHandle declaration = vc_declareUninterpretedFunction(
+      vc, name, domain.data(), domain.size(), codomain);
+  for (const Type type : domain)
+    vc_DeleteExpr(type);
+  vc_DeleteExpr(codomain);
+  return declaration;
+}
 
 TEST(UninterpretedFunctionsHandleSafety,
      InvalidAndInactiveDeclarationHandlesAreNonfatal)
@@ -50,16 +70,17 @@ TEST(UninterpretedFunctionsHandleSafety,
 
   VC vc = vc_createValidityChecker();
   vc_setFlag(vc, 'u');
-  const unsigned domain[] = {8};
-  UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
-  ASSERT_NE(nullptr, declaration);
+  UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, declaration);
   Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
   const Expr actuals[] = {x};
 
-  UFDeclHandle impossible =
-      reinterpret_cast<UFDeclHandle>(static_cast<uintptr_t>(1));
-  EXPECT_EQ(nullptr, vc_applyFun(vc, impossible, actuals, 1));
-  EXPECT_EQ(nullptr, vc_applyFun(vc, static_cast<UFDeclHandle>(x), actuals, 1));
+  UFDeclHandle impossible = UINT64_MAX;
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(vc, impossible, actuals, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(
+                         vc, static_cast<UFDeclHandle>(
+                                 reinterpret_cast<uintptr_t>(x)),
+                         actuals, 1));
 
   stp::STP* engine = static_cast<stp::STP*>(vc);
   std::string diagnostic;
@@ -68,7 +89,7 @@ TEST(UninterpretedFunctionsHandleSafety,
   ASSERT_NE(nullptr, internalDeclaration);
   ASSERT_TRUE(engine->bm->getUFContext()->deactivate(
       internalDeclaration, &diagnostic));
-  EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, actuals, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(vc, declaration, actuals, 1));
   EXPECT_GE(apiErrors, 3);
 
   vc_DeleteExpr(x);
@@ -86,11 +107,10 @@ TEST(UninterpretedFunctionsHandleSafety,
   VC other = vc_createValidityChecker();
   vc_setFlag(owner, 'u');
   vc_setFlag(other, 'u');
-  const unsigned domain[] = {8};
-  UFDeclHandle fromOwner = vc_declareFun(owner, "owner_f", domain, 1, 8);
-  UFDeclHandle fromOther = vc_declareFun(other, "other_f", domain, 1, 8);
-  ASSERT_NE(nullptr, fromOwner);
-  ASSERT_NE(nullptr, fromOther);
+  UFDeclHandle fromOwner = declareFunction(owner, "owner_f", {8}, 8);
+  UFDeclHandle fromOther = declareFunction(other, "other_f", {8}, 8);
+  ASSERT_NE(0u, fromOwner);
+  ASSERT_NE(0u, fromOther);
 
   Expr ownerX = vc_varExpr(owner, "owner_x", vc_bvType(owner, 8));
   Expr otherX = vc_varExpr(other, "other_x", vc_bvType(other, 8));
@@ -98,16 +118,16 @@ TEST(UninterpretedFunctionsHandleSafety,
 
   // Isolate declaration ownership from actual ownership: each call has only
   // one foreign input.
-  EXPECT_EQ(nullptr, vc_applyFun(other, fromOwner, otherActuals, 1));
-  EXPECT_EQ(nullptr, vc_applyFun(owner, fromOwner, otherActuals, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(other, fromOwner, otherActuals, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(owner, fromOwner, otherActuals, 1));
 
   vc_DeleteExpr(ownerX);
   vc_Destroy(owner);
 
   // A declaration token whose owning checker is gone remains rejectable when
   // presented to a live checker; rejection must not inspect freed storage.
-  EXPECT_EQ(nullptr, vc_applyFun(other, fromOwner, otherActuals, 1));
-  Expr validApplication = vc_applyFun(other, fromOther, otherActuals, 1);
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(other, fromOwner, otherActuals, 1));
+  Expr validApplication = vc_applyUninterpretedFunction(other, fromOther, otherActuals, 1);
   EXPECT_NE(nullptr, validApplication);
   EXPECT_GE(apiErrors, 3);
 
@@ -124,13 +144,12 @@ TEST(UninterpretedFunctionsHandleSafety, NullActualStorageIsNonfatal)
 
   VC vc = vc_createValidityChecker();
   vc_setFlag(vc, 'u');
-  const unsigned domain[] = {8};
-  UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
-  ASSERT_NE(nullptr, declaration);
+  UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, declaration);
   const Expr nullActual[] = {nullptr};
 
-  EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, nullptr, 1));
-  EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, nullActual, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(vc, declaration, nullptr, 1));
+  EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(vc, declaration, nullActual, 1));
   EXPECT_EQ(2, apiErrors);
 
   vc_Destroy(vc);
@@ -144,11 +163,10 @@ TEST(UninterpretedFunctionsHandleSafety, InvalidActualPointerDoesNotCrash)
         vc_registerErrorHandler(ignoreAPIError);
         VC vc = vc_createValidityChecker();
         vc_setFlag(vc, 'u');
-        const unsigned domain[] = {8};
-        UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
+        UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
         Expr invalid = reinterpret_cast<Expr>(static_cast<uintptr_t>(1));
         const Expr actuals[] = {invalid};
-        Expr result = vc_applyFun(vc, declaration, actuals, 1);
+        Expr result = vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
         if (result != nullptr)
           std::_Exit(2);
         vc_Destroy(vc);
@@ -164,12 +182,11 @@ TEST(UninterpretedFunctionsHandleSafety, DestroyedActualPointerDoesNotCrash)
         vc_registerErrorHandler(ignoreAPIError);
         VC vc = vc_createValidityChecker();
         vc_setFlag(vc, 'u');
-        const unsigned domain[] = {8};
-        UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
+        UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
         Expr destroyed = vc_varExpr(vc, "x", vc_bvType(vc, 8));
         vc_DeleteExpr(destroyed);
         const Expr actuals[] = {destroyed};
-        Expr result = vc_applyFun(vc, declaration, actuals, 1);
+        Expr result = vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
         if (result != nullptr)
           std::_Exit(2);
         vc_Destroy(vc);
@@ -190,13 +207,11 @@ TEST(UninterpretedFunctionsHandleSafety,
         vc_setFlag(target, 'u');
         Expr destroyedOwnerActual =
             vc_varExpr(owner, "x", vc_bvType(owner, 8));
-        const unsigned domain[] = {8};
-        UFDeclHandle declaration =
-            vc_declareFun(target, "f", domain, 1, 8);
+        UFDeclHandle declaration = declareFunction(target, "f", {8}, 8);
         vc_Destroy(owner);
 
         const Expr actuals[] = {destroyedOwnerActual};
-        Expr result = vc_applyFun(target, declaration, actuals, 1);
+        Expr result = vc_applyUninterpretedFunction(target, declaration, actuals, 1);
         if (result != nullptr)
           std::_Exit(2);
         vc_Destroy(target);
@@ -213,14 +228,13 @@ TEST(UninterpretedFunctionsHandleSafety,
         vc_registerErrorHandler(ignoreAPIError);
         VC vc = vc_createValidityChecker();
         vc_setFlag(vc, 'u');
-        const unsigned domain[] = {8};
-        UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
+        UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
         Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
         const Expr actuals[] = {x};
-        Expr application = vc_applyFun(vc, declaration, actuals, 1);
+        Expr application = vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
         vc_DeleteExpr(application);
 
-        Expr value = vc_getUFApplicationValue(vc, application);
+        Expr value = vc_getUninterpretedFunctionValue(vc, application);
         if (value != nullptr)
           std::_Exit(2);
         vc_DeleteExpr(x);
@@ -231,36 +245,41 @@ TEST(UninterpretedFunctionsHandleSafety,
 }
 
 TEST(UninterpretedFunctionsHandleSafety,
-     DestroyedActualCannotBecomeValidThroughAddressReuse)
+     DeletedExpressionChurnLeavesTheContextUsable)
 {
   vc_registerErrorHandler(countAPIError);
   apiErrors = 0;
 
   VC vc = vc_createValidityChecker();
   vc_setFlag(vc, 'u');
-  const unsigned domain[] = {8};
-  UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
-  ASSERT_NE(nullptr, declaration);
-  Type bv8 = vc_bvType(vc, 8);
-  Expr stale = vc_varExpr(vc, "stale_x", bv8);
-  ASSERT_NE(nullptr, stale);
-  vc_DeleteExpr(stale);
+  vc_setInterfaceFlags(vc, EXPRDELETE, 0);
+  UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, declaration);
 
-  // Expr is a legacy raw pointer, so the C layer quarantines only its tiny
-  // wrapper storage after destruction. This bounded churn proves that an old
-  // actual cannot become a newly allocated expression through pointer ABA.
-  for (unsigned attempt = 0; attempt < 128; ++attempt)
+  // Deleted raw Expr wrappers are released immediately rather than retained
+  // as process-lifetime tombstones. Their pointer values may therefore be
+  // reused; using a wrapper after vc_DeleteExpr follows the legacy invalid-
+  // handle contract. Exercise enough live-registry insert/erase churn to catch
+  // leaks in the supported ownership path, then prove the context still works.
+  for (unsigned attempt = 0; attempt < 100000; ++attempt)
   {
-    Expr replacement = vc_varExpr(vc, "replacement_x", bv8);
-    ASSERT_NE(nullptr, replacement);
-    EXPECT_NE(stale, replacement);
-    const Expr staleActuals[] = {stale};
-    EXPECT_EQ(nullptr, vc_applyFun(vc, declaration, staleActuals, 1));
-    vc_DeleteExpr(replacement);
+    Expr argument = vc_bvConstExprFromInt(vc, 8, attempt & 0xffu);
+    const Expr actuals[] = {argument};
+    Expr application =
+        vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
+    ASSERT_NE(nullptr, application);
+    vc_DeleteExpr(application);
+    vc_DeleteExpr(argument);
   }
 
-  EXPECT_GE(apiErrors, 128);
-  vc_DeleteExpr(bv8);
+  Expr argument = vc_bvConstExprFromInt(vc, 8, 7);
+  const Expr actuals[] = {argument};
+  Expr application =
+      vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
+  EXPECT_NE(nullptr, application);
+  EXPECT_EQ(0, apiErrors);
+  vc_DeleteExpr(application);
+  vc_DeleteExpr(argument);
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
 }
@@ -270,29 +289,25 @@ TEST(UninterpretedFunctionsHandleSafety,
 {
   vc_registerErrorHandler(countAPIError);
   apiErrors = 0;
-  const unsigned domain[] = {8};
-
   VC original = vc_createValidityChecker();
   vc_setFlag(original, 'u');
-  UFDeclHandle stale = vc_declareFun(original, "old_f", domain, 1, 8);
-  ASSERT_NE(nullptr, stale);
+  UFDeclHandle stale = declareFunction(original, "old_f", {8}, 8);
+  ASSERT_NE(0u, stale);
   vc_Destroy(original);
 
-  // Churn both managers and declarations. Opaque declaration tokens are
-  // process-lifetime tombstones, so a replacement token must never reuse the
-  // stale token's identity and the stale generation must remain rejectable on
-  // every live checker regardless of allocator address reuse underneath it.
+  // Churn both managers and declarations. Monotonic value identities never
+  // reuse the stale token and require no process-lifetime heap tombstone.
   for (unsigned attempt = 0; attempt < 128; ++attempt)
   {
     VC live = vc_createValidityChecker();
     vc_setFlag(live, 'u');
     UFDeclHandle replacement =
-        vc_declareFun(live, "replacement_f", domain, 1, 8);
-    ASSERT_NE(nullptr, replacement);
+        declareFunction(live, "replacement_f", {8}, 8);
+    ASSERT_NE(0u, replacement);
     EXPECT_NE(stale, replacement);
     Expr x = vc_varExpr(live, "x", vc_bvType(live, 8));
     const Expr actuals[] = {x};
-    EXPECT_EQ(nullptr, vc_applyFun(live, stale, actuals, 1));
+    EXPECT_EQ(nullptr, vc_applyUninterpretedFunction(live, stale, actuals, 1));
     vc_DeleteExpr(x);
     vc_Destroy(live);
   }
@@ -308,18 +323,17 @@ TEST(UninterpretedFunctionsHandleSafety,
 
   VC vc = vc_createValidityChecker();
   vc_setFlag(vc, 'u');
-  const unsigned domain[] = {8};
-  UFDeclHandle declaration = vc_declareFun(vc, "f", domain, 1, 8);
-  ASSERT_NE(nullptr, declaration);
-  EXPECT_EQ(nullptr, vc_declareFun(vc, "f", domain, 1, 8));
+  UFDeclHandle declaration = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, declaration);
+  EXPECT_EQ(0u, declareFunction(vc, "f", {8}, 8));
   EXPECT_EQ(nullptr, vc_varExpr(vc, "f", vc_bvType(vc, 8)));
 
   Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
   const Expr actuals[] = {x};
-  Expr application = vc_applyFun(vc, declaration, actuals, 1);
+  Expr application = vc_applyUninterpretedFunction(vc, declaration, actuals, 1);
   EXPECT_NE(nullptr, application);
 
-  EXPECT_EQ(nullptr, vc_declareFun(vc, "x", domain, 1, 8));
+  EXPECT_EQ(0u, declareFunction(vc, "x", {8}, 8));
   Expr xAgain = vc_varExpr(vc, "x", vc_bvType(vc, 8));
   ASSERT_NE(nullptr, xAgain);
   EXPECT_EQ(getExprID(x), getExprID(xAgain));
@@ -337,12 +351,11 @@ TEST(UninterpretedFunctionsHandleSafety,
 {
   VC vc = vc_createValidityChecker();
   vc_setFlag(vc, 'u');
-  const unsigned domain[] = {0};
-  UFDeclHandle predicate = vc_declareFun(vc, "predicate", domain, 1, 0);
-  ASSERT_NE(nullptr, predicate);
+  UFDeclHandle predicate = declareFunction(vc, "predicate", {0}, 0);
+  ASSERT_NE(0u, predicate);
   Expr argument = vc_trueExpr(vc);
   const Expr actuals[] = {argument};
-  Expr application = vc_applyFun(vc, predicate, actuals, 1);
+  Expr application = vc_applyUninterpretedFunction(vc, predicate, actuals, 1);
   ASSERT_NE(nullptr, application);
   Expr expected = vc_falseExpr(vc);
   Expr equality = vc_eqExpr(vc, application, expected);

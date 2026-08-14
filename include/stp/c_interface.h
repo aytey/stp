@@ -104,8 +104,12 @@ typedef void* VC;
 typedef void* Expr;
 typedef void* Type;
 typedef void* WholeCounterExample;
-typedef void* UFDeclHandle;
 #endif
+
+//! Opaque, nonzero identity of a context-owned UF declaration. Identities are
+//! monotonic and never reused; zero is the invalid handle. They are values,
+//! not pointers, and callers neither dereference nor free them.
+typedef uint64_t UFDeclHandle;
 
 /////////////////////////////////////////////////////////////////////////////
 /// START API
@@ -312,27 +316,32 @@ DLL_PUBLIC Expr vc_varExpr1(VC vc, const char* name, int indexwidth,
 
 //! Declare a nonzero-arity Bool/BitVec uninterpreted function.
 //!
-//! A width of 0 denotes Bool and a positive width denotes BitVec. The handle
-//! is an opaque, generation-checked registry token and must not be freed.
-//! Tokens remain safely rejectable after their owning VC is destroyed. NULL
-//! reports a nonfatal error.
-DLL_PUBLIC UFDeclHandle vc_declareFun(VC vc, const char* name,
-                                      const unsigned* domainWidths,
-                                      size_t domainCount,
-                                      unsigned codomainWidth);
+//! Each domain Type and the codomain must be a Bool or nonzero-width BitVec
+//! type owned by this VC. Enable UF support before constructing these handles.
+//! The returned declaration identity is context-owned, must not be freed, and
+//! remains globally unique even after the VC is destroyed. Zero reports a
+//! nonfatal error.
+DLL_PUBLIC UFDeclHandle vc_declareUninterpretedFunction(
+    VC vc, const char* name, const Type* domain, size_t domainCount,
+    Type codomain);
 
-//! Build a durable typed uninterpreted-function application. The returned
-//! Expr is caller-owned and is released with vc_DeleteExpr. NULL reports a
-//! nonfatal arity, sort, stale-handle, or cross-context error.
-DLL_PUBLIC Expr vc_applyFun(VC vc, UFDeclHandle function,
-                            const Expr* arguments, size_t argumentCount);
+//! Build a durable typed uninterpreted-function application.
+//!
+//! The underlying UF_APPLY node has context lifetime; this C Expr wrapper is
+//! caller-owned until vc_DeleteExpr or vc_Destroy, whichever comes first.
+//! Enable UF support before constructing argument handles. NULL reports a
+//! nonfatal arity, sort, invalid-handle, or live cross-context error. As with
+//! every legacy raw Expr, using a wrapper after vc_DeleteExpr is invalid.
+DLL_PUBLIC Expr vc_applyUninterpretedFunction(
+    VC vc, UFDeclHandle function, const Expr* arguments,
+    size_t argumentCount);
 
 //! Evaluate a durable UF_APPLY in the most recently certified model.
 //!
 //! Returns a caller-owned Bool/BitVec constant, or NULL after a nonfatal
 //! diagnostic when the handle is stale, inactive, cross-context, not active
 //! in that solve, or no certified model exists. No lowered symbol is exposed.
-DLL_PUBLIC Expr vc_getUFApplicationValue(VC vc, Expr application);
+DLL_PUBLIC Expr vc_getUninterpretedFunctionValue(VC vc, Expr application);
 
 //! \brief Returns the type of the given expression.
 //!
@@ -1629,6 +1638,9 @@ enum exprkind_t
   FP_ISNEGATIVE,
   FP_ISPOSITIVE,
   FP_SMT_EQ, //!< SMT-LIB '=' over floats: +0 and -0 distinct, all NaNs equal.
+  //! Durable uninterpreted-function application. ARRAY_EQ is the unexposed
+  //! internal kind between FP_SMT_EQ and UF_APPLY.
+  UF_APPLY = FP_SMT_EQ + 2,
 };
 
 //! \brief Returns the expression-kind of the given expression.
