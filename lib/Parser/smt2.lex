@@ -87,6 +87,11 @@
   // nonfatal. Feature-off lexing remains byte-for-byte on the legacy path.
   static thread_local bool ufDeclarationNamePending = false;
 
+  // Set by the grammar immediately after the '(' that opens one define-fun
+  // formal. The following identifier is a declaration site, not a reference
+  // to a top-level function, UF, or symbol.
+  static thread_local bool functionParameterNamePending = false;
+
 #ifdef _MSC_VER
   #include <io.h>
   // defining isatty to avoid dll symbol export inconsistencies
@@ -130,6 +135,18 @@ namespace stp
   // it and the grammar re-tokenises the text by hand -- so it has to ask the
   // gate itself rather than being answered by it. See tryRegisterFpSortAlias.
   bool SMT2FloatTokensActive() { return floatTokensActive; }
+
+  void SMT2ExpectFunctionParameterName()
+  {
+    assert(!functionParameterNamePending);
+    functionParameterNamePending = true;
+  }
+
+  void SMT2ResetCommandLexerState()
+  {
+    ufDeclarationNamePending = false;
+    functionParameterNamePending = false;
+  }
 
   // Whether the token a diagnostic is about is a floating-point name that the
   // gate demoted for want of an FP set-logic. Matched against the offending
@@ -175,19 +192,39 @@ namespace stp
     stp::ASTNode nptr;
     bool found = false;
 
-    if (const stp::ASTNode* let = stp::GlobalParserInterface->letMgr->lookupLet(s)) // Lets shadow everything else.
+    if (functionParameterNamePending)
     {
-      nptr = *let;
+      functionParameterNamePending = false;
+      // Preserve the existing rejection of duplicate formals: an earlier
+      // formal with this spelling is already a binder, not a global name to
+      // be shadowed. Every other spelling is returned unresolved here.
+      if (!stp::GlobalParserInterface->LookupTemporarySymbol(s, nptr))
+      {
+        smt2lval.str = new std::string(s);
+        return STRING_TOK;
+      }
       found = true;
     }
-    // Checking the functions before the symbols saves a symbol-table
-    // probe in files built almost entirely from define-funs. A name can't
-    // legally be both, so the order isn't observable on valid input. One
-    // map probe resolves the name; the token carries the resolved function
-    // so the grammar never probes again, and the sort of the stored body
-    // (memoised on the node) classifies the token.
-    else
+
+    if (!found)
     {
+      if (const stp::ASTNode* let =
+              stp::GlobalParserInterface->letMgr->lookupLet(s))
+      {
+        nptr = *let;
+        found = true;
+      }
+      // Function formals are lexical binders and therefore resolve before
+      // all top-level namespaces. Lets remain first because a nested let may
+      // shadow a formal in the define-fun body.
+      else if (stp::GlobalParserInterface->LookupTemporarySymbol(s, nptr))
+        found = true;
+    }
+    if (!found)
+    {
+      // Checking functions before ordinary top-level symbols saves a symbol
+      // table probe in files built almost entirely from define-funs. Legal
+      // top-level input cannot occupy both namespaces.
       if (stp::GlobalParserInterface->hasFunctions())
       {
         const stp::Cpp_interface::Function* fn =

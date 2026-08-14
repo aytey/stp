@@ -304,7 +304,7 @@ namespace stp
   }
 
   int yyerror(const char *s) {
-    cout << "(error \"" << smt2_diagnostic(s) << "\")" << endl;
+    stp::GlobalParserInterface->rejectCurrentCommand(smt2_diagnostic(s));
     return 1;
   }
 
@@ -1348,6 +1348,12 @@ namespace stp
   std::vector<unsigned> *widthvec;
 };
 
+/* Successful reductions transfer/delete strings in their grammar actions.
+   Values discarded by Bison during recovery or parse abort remain Bison's
+   responsibility; release them here so malformed commands do not leak their
+   identifier/string lookahead. */
+%destructor { delete $$; } <str>
+
 %start cmd
 
 %type <node> status
@@ -1578,11 +1584,18 @@ cmd: commands END
 }
 ;
 
-commands: commands LPAREN_TOK cmdi RPAREN_TOK
+command_open:
+LPAREN_TOK
+{
+  stp::GlobalParserInterface->beginCurrentCommand();
+}
+;
+
+commands: commands command_open cmdi RPAREN_TOK
 {
   stp::GlobalParserInterface->finishCurrentCommand();
 }
-| LPAREN_TOK cmdi RPAREN_TOK
+| command_open cmdi RPAREN_TOK
 {
   stp::GlobalParserInterface->finishCurrentCommand();
 }
@@ -1862,8 +1875,15 @@ cmdi:
 
 ;
 
+function_param_open:
+LPAREN_TOK
+{
+  stp::SMT2ExpectFunctionParameterName();
+}
+;
+
 function_param:
-LPAREN_TOK STRING_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK RPAREN_TOK
+function_param_open STRING_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK RPAREN_TOK
 {
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(), stp::SourceSort::bitVector($6)));
@@ -1871,7 +1891,7 @@ LPAREN_TOK STRING_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TO
   delete $2;
 }
 |
-LPAREN_TOK STRING_TOK BOOL_TOK RPAREN_TOK
+function_param_open STRING_TOK BOOL_TOK RPAREN_TOK
 {
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(), stp::SourceSort::boolean()));
@@ -1879,7 +1899,7 @@ LPAREN_TOK STRING_TOK BOOL_TOK RPAREN_TOK
   delete $2;
 }
 |
-LPAREN_TOK STRING_TOK an_fp_sort RPAREN_TOK
+function_param_open STRING_TOK an_fp_sort RPAREN_TOK
 {
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(),
@@ -1889,7 +1909,7 @@ LPAREN_TOK STRING_TOK an_fp_sort RPAREN_TOK
   delete $3;
 }
 |
-LPAREN_TOK STRING_TOK ROUNDINGMODE_TOK RPAREN_TOK
+function_param_open STRING_TOK ROUNDINGMODE_TOK RPAREN_TOK
 {
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(), stp::SourceSort::roundingMode()));
@@ -3601,6 +3621,11 @@ namespace stp {
     // Each SMT2Parse is one script: the floating-point keywords start
     // disabled and turn on at an FP set-logic.
     SMT2SetFloatTokens(false);
-    return smt2parse();
+    SMT2ResetCommandLexerState();
+    const int result = smt2parse();
+    if (result != 0)
+      GlobalParserInterface->abortCurrentCommand();
+    SMT2ResetCommandLexerState();
+    return result;
   }
 }

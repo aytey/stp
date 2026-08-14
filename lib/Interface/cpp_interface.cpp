@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/cpp_interface.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/Parser/LetMgr.h"
+#include "stp/Parser/parser.h"
 #include "stp/Printer/printers.h"
 #include "stp/Sat/SATSolverFactory.h"
 #include "stp/Util/GitSHA1.h"
@@ -70,6 +71,7 @@ void Cpp_interface::init()
   session_touched = false;
   model_valid = false;
   current_command_rejected = false;
+  current_command_active = false;
   incremental_from_start =
       bm.UserFlags.incremental_mode == UserDefinedFlags::IncrementalMode::ON;
   session_incremental = incremental_from_start;
@@ -494,6 +496,18 @@ bool Cpp_interface::LookupSymbol(const char* const name, ASTNode& output)
   return false;
 }
 
+bool Cpp_interface::LookupTemporarySymbol(const char* const name,
+                                          ASTNode& output)
+{
+  const std::string_view sv(name);
+  for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+  {
+    if ((*it)->lookupTemporarySymbol(sv, output))
+      return true;
+  }
+  return false;
+}
+
 bool Cpp_interface::isSymbolAlreadyDeclared(char* name)
 {
   ASTNode ignored;
@@ -550,8 +564,10 @@ void Cpp_interface::addSymbol(ASTNode& s)
 
 void Cpp_interface::addTemporarySymbol(ASTNode& s)
 {
-  frames.back()->addSymbol(s);
-  session_touched = true;
+  // A formal is parser-local scratch, not a declaration. The successful
+  // storeFunction call is what makes the command observable and marks the
+  // session touched; a rejected define-fun leaves neither behind.
+  frames.back()->addTemporarySymbol(s);
 }
 
 bool Cpp_interface::validateTopLevelDeclarationName(
@@ -630,15 +646,55 @@ void Cpp_interface::unsupported()
   flush(cout);
 }
 
+void Cpp_interface::beginCurrentCommand()
+{
+  // A prior parse may have aborted while reducing a formal declaration. Its
+  // command and lexer state are not part of this new top-level command.
+  if (current_command_active)
+    abortCurrentCommand();
+  SMT2ResetCommandLexerState();
+  current_command_active = true;
+  current_command_rejected = false;
+  if (UFContext* context = bm.getUFContextIfAny())
+    context->beginParserCommand();
+}
+
+void Cpp_interface::abortCurrentCommand()
+{
+  if (current_command_active)
+  {
+    if (UFContext* context = bm.getUFContextIfAny())
+      context->finishParserCommand(false);
+    frames.back()->clearTemporarySymbols();
+  }
+  current_command_rejected = false;
+  current_command_active = false;
+  SMT2ResetCommandLexerState();
+}
+
 void Cpp_interface::rejectCurrentCommand(const std::string& diagnostic)
 {
+  // One command has one rejection response. Continue reducing with typed
+  // carriers, but do not emit a diagnostic for every malformed descendant.
+  if (current_command_rejected)
+    return;
   current_command_rejected = true;
   error(diagnostic);
 }
 
 void Cpp_interface::finishCurrentCommand()
 {
+  if (current_command_active)
+  {
+    if (UFContext* context = bm.getUFContextIfAny())
+      context->finishParserCommand(!current_command_rejected);
+    // Function formals are command-local even if error recovery skipped a
+    // define-fun production's ordinary removal loop.
+    frames.back()->clearTemporarySymbols();
+  }
   current_command_rejected = false;
+  current_command_active = false;
+  SMT2ResetCommandLexerState();
 }
 
 void Cpp_interface::resetSolver()
@@ -671,6 +727,12 @@ void Cpp_interface::discardExtensionalitySolveState()
 // Can clear away the base frame..
 void Cpp_interface::reset()
 {
+  // reset destroys the current frame and UF context itself, so close its
+  // accepted command transaction while both are still alive. The grammar's
+  // outer finish becomes a harmless no-op after init().
+  if (current_command_active)
+    finishCurrentCommand();
+
   popToFirstLevel();
 
   if (frames.size() > 0)
@@ -828,6 +890,12 @@ void Cpp_interface::popAssumptionFrame()
 
 void Cpp_interface::checkSatAssuming(const ASTVec& assumptions)
 {
+  // The parser reduces a malformed UF subexpression to a typed carrier so it
+  // can reach this outer boundary. Rejection is transactional: in particular
+  // do not push, invalidate a model, solve the base stack, or print a verdict.
+  if (current_command_rejected)
+    return;
+
   // An internal assertion level holding exactly the assumptions. push()
   // inherits a known-UNSAT verdict from the level below, and a SAT answer
   // propagates to the levels beneath, so the verdict cache keeps working
@@ -1023,6 +1091,11 @@ Cpp_interface::Cpp_interface(STPMgr& bm_)
 
 void Cpp_interface::cleanUp()
 {
+  // exit and reset perform cleanup from inside their command action and do
+  // not return through the ordinary closing-parenthesis reduction.
+  if (current_command_active)
+    finishCurrentCommand();
+
   letMgr->cleanupParserSymbolTable();
   cache.clear();
 
@@ -1604,8 +1677,35 @@ void Cpp_interface::SolverFrame::addSymbol(const ASTNode& symbol)
   _symbol_bindings[std::string(symbol.GetName())].push_back(symbol);
 }
 
+void Cpp_interface::SolverFrame::addTemporarySymbol(const ASTNode& symbol)
+{
+  addSymbol(symbol);
+  _temporary_symbol_bindings[std::string(symbol.GetName())].push_back(symbol);
+}
+
+void Cpp_interface::SolverFrame::clearTemporarySymbols()
+{
+  while (!_temporary_symbol_bindings.empty())
+  {
+    const ASTNode symbol = _temporary_symbol_bindings.begin()->second.back();
+    const bool removed = removeSymbol(symbol);
+    assert(removed);
+    (void)removed;
+  }
+}
+
 bool Cpp_interface::SolverFrame::removeSymbol(const ASTNode& symbol)
 {
+  const auto temporary =
+      _temporary_symbol_bindings.find(std::string_view(symbol.GetName()));
+  if (temporary != _temporary_symbol_bindings.end() &&
+      !temporary->second.empty() && temporary->second.back() == symbol)
+  {
+    temporary->second.pop_back();
+    if (temporary->second.empty())
+      _temporary_symbol_bindings.erase(temporary);
+  }
+
   const auto binding = _symbol_bindings.find(std::string_view(symbol.GetName()));
   if (binding == _symbol_bindings.end() || binding->second.empty() ||
       binding->second.back() != symbol)
@@ -1660,6 +1760,16 @@ bool Cpp_interface::SolverFrame::lookupSymbol(std::string_view name,
 {
   const auto found = _symbol_bindings.find(name);
   if (found == _symbol_bindings.end() || found->second.empty())
+    return false;
+  output = found->second.back();
+  return true;
+}
+
+bool Cpp_interface::SolverFrame::lookupTemporarySymbol(
+    const std::string_view name, ASTNode& output) const
+{
+  const auto found = _temporary_symbol_bindings.find(name);
+  if (found == _temporary_symbol_bindings.end() || found->second.empty())
     return false;
   output = found->second.back();
   return true;

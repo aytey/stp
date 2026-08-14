@@ -63,6 +63,17 @@ void SMT2SetFloatTokens(bool enable);
 // the grammar, so it has to consult the gate itself.
 bool SMT2FloatTokensActive();
 
+// The next ordinary identifier is the declaration site of a define-fun
+// formal.  The lexer must return its spelling rather than resolving it in a
+// top-level namespace; once installed, that temporary binding takes
+// precedence while the function body is parsed.
+void SMT2ExpectFunctionParameterName();
+
+// Clear command-local lexer expectations after parser recovery/abort and
+// before the next top-level command. This includes declaration-name and
+// define-fun-formal latches, neither of which may leak across commands.
+void SMT2ResetCommandLexerState();
+
 // Whether `text` is a floating-point name that the gate above handed to the
 // grammar as an ordinary undeclared identifier. The grammar cannot tell that
 // apart from a genuine typo, so its diagnostics ask this and append a hint

@@ -177,9 +177,12 @@ private:
 
     void addSortAlias(const std::string& name);
     void addSymbol(const ASTNode& symbol);
+    void addTemporarySymbol(const ASTNode& symbol);
+    void clearTemporarySymbols();
     void addUFDeclaration(const UFDecl* declaration);
     bool removeSymbol(const ASTNode& symbol);
     bool lookupSymbol(std::string_view name, ASTNode& output) const;
+    bool lookupTemporarySymbol(std::string_view name, ASTNode& output) const;
 
     // Take over every declaration made in `donor`, leaving it empty. Used
     // for :global-declarations true, where a pop removes the assertion
@@ -199,6 +202,9 @@ private:
     ankerl::unordered_dense::map<std::string, std::vector<ASTNode>,
                                  TransparentStringHash, std::equal_to<>>
         _symbol_bindings;
+    ankerl::unordered_dense::map<std::string, std::vector<ASTNode>,
+                                 TransparentStringHash, std::equal_to<>>
+        _temporary_symbol_bindings;
     ankerl::unordered_dense::map<std::string, Function>*
         _global_function_context;
     std::map<std::string, std::pair<unsigned, unsigned>>*
@@ -281,6 +287,7 @@ private:
   // other side effect in the rejected command) from entering solver state.
   // It is cleared exactly at the outer command boundary.
   bool current_command_rejected;
+  bool current_command_active;
 
   // Unless --incremental=on or an explicit threshold overrides it, pure
   // QF_BV/QF_ABV sessions delay the persistent driver until solve 32; other
@@ -437,6 +444,7 @@ public:
 
   DLL_PUBLIC ASTNode LookupOrCreateSymbol(std::string name);
   DLL_PUBLIC bool LookupSymbol(const char* const name, ASTNode& output);
+  DLL_PUBLIC bool LookupTemporarySymbol(const char* name, ASTNode& output);
   DLL_PUBLIC bool isSymbolAlreadyDeclared(char* name);
   DLL_PUBLIC void setPrintSuccess(bool ps);
   DLL_PUBLIC bool isSymbolAlreadyDeclared(std::string name);
@@ -501,6 +509,8 @@ public:
 
   // Nonfatal SMT-LIB command rejection used by the typed UF funnel.  No
   // malformed UF_APPLY or fresh placeholder is constructed or registered.
+  DLL_PUBLIC void beginCurrentCommand();
+  DLL_PUBLIC void abortCurrentCommand();
   DLL_PUBLIC void rejectCurrentCommand(const std::string& diagnostic);
   DLL_PUBLIC void finishCurrentCommand();
   bool currentCommandRejected() const { return current_command_rejected; }
