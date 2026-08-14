@@ -168,6 +168,40 @@ ASTNode STPMgr::introducedSymbol(const std::string& name,
   return symbol;
 }
 
+ASTNode STPMgr::CreateDeterministicSourceVariable(
+    const SourceSort& sourceSort, const std::string& prefix,
+    const ASTNode& key)
+{
+  if (!(sourceSort.kind() == SourceSort::Kind::Bool ||
+        (sourceSort.kind() == SourceSort::Kind::BitVector &&
+         sourceSort.bitVectorWidth() > 0)))
+    FatalError("CreateDeterministicSourceVariable requires Bool or nonzero "
+               "BitVector");
+  if (key.IsNull() || !key.IsOwnedBy(this))
+    FatalError("CreateDeterministicSourceVariable requires a live local key");
+
+  std::ostringstream name;
+  name << '@' << prefix << "_k" << key.GetNodeNum();
+  const std::map<std::string, ASTNode>::const_iterator found =
+      _introduced_by_name.find(name.str());
+  if (found != _introduced_by_name.end())
+  {
+    if (found->second.GetSourceSort() != sourceSort)
+      FatalError("a deterministic introduced symbol was requested at two "
+                 "different source sorts",
+                 found->second);
+    return found->second;
+  }
+
+  if (LookupSymbol(name.str().c_str()))
+    FatalError("a symbol in STP's reserved deterministic namespace already "
+               "exists");
+  const ASTNode symbol = CreateSourceSymbol(name.str().c_str(), sourceSort);
+  noteIntroducedSymbol(symbol);
+  _introduced_by_name[name.str()] = symbol;
+  return symbol;
+}
+
 void STPMgr::indexSymbolName(ASTSymbol* symbol)
 {
   _symbol_name_index[symbol->GetName()].push_back(symbol);

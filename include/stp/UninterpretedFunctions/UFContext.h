@@ -39,6 +39,7 @@ public:
   const UFDecl* lookupIdentity(const ASTNode& identity) const;
   bool isActive(const UFDecl* decl) const;
   bool owns(const UFDecl* decl) const;
+  std::vector<const UFDecl*> activeDeclarations() const;
 
   ASTNode apply(const UFDecl* decl, const ASTVec& actuals,
                 std::string* error = NULL);
@@ -52,6 +53,17 @@ public:
   void noteApplication(const ASTNode& application);
   bool isRegisteredApplication(const ASTNode& application) const;
   bool isActiveApplication(const ASTNode& application) const;
+
+  // Generated lowering scalars are solve-local protected objects. The
+  // lowering view itself is adapter-owned; the context retains only this
+  // membership index so existing preprocessing components can ask the
+  // manager whether a proposed substitution/elimination is legal.
+  void beginSolveProtection();
+  void installSolveProtection(const ASTNodeSet& protectedSymbols);
+  void releaseSolveProtection();
+  bool activeInSolve() const { return solveProtectionActive_; }
+  bool isProtected(const ASTNode& symbol) const;
+  const ASTNodeSet& getProtectedSymbols() const { return protectedSymbols_; }
 
   size_t declarationCount() const { return declarations_.size(); }
   size_t activeDeclarationCount() const { return activeByName_.size(); }
@@ -69,6 +81,8 @@ private:
   std::map<ASTNode, const UFDecl*> byIdentity_;
   std::set<const UFDecl*> owned_;
   ASTNodeSet applications_;
+  ASTNodeSet protectedSymbols_;
+  bool solveProtectionActive_ = false;
 };
 
 } // namespace stp

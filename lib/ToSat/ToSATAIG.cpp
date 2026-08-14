@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 #include "stp/ToSat/ToSATAIG.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
+#include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 
@@ -116,6 +117,22 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
 
   bm->GetRunTimes()->start(RunTimes::BitBlasting);
   BBNodeAIG BBFormula = bb.BBForm(input);
+
+  // Register every checker-visible UF scalar before CNF conversion. Result
+  // symbols may occur only in future congruence clauses, and Boolean AST
+  // widths are zero, so this must be an explicit max(1,width) path rather
+  // than the legacy BV-only allocator. With needAbsRef set for UF queries,
+  // the conversion retains these otherwise disconnected CIs.
+  UFContext* ufContext = bm->getUFContextIfAny();
+  if (ufContext != NULL && ufContext->activeInSolve())
+    for (const ASTNode& symbol : ufContext->getProtectedSymbols())
+    {
+      if (symbol.GetKind() != SYMBOL)
+        FatalError("UF liveness registrar received a non-symbol", symbol);
+      const unsigned width = std::max((unsigned)1, symbol.GetValueWidth());
+      for (unsigned bit = 0; bit < width; ++bit)
+        mgr.CreateSymbol(symbol, bit);
+    }
   bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
   delete cb;
@@ -243,6 +260,34 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
         satSolver.setFrozen(v[i]);
       }
       nodeToSATVar.insert(make_pair(*it, v));
+    }
+  }
+
+  // The batch UF registrar above made all protected symbols known to the AIG
+  // map. A disconnected result CI can still receive no CNF variable; allocate
+  // its exact unconstrained SAT meaning now. A connected CI never takes this
+  // fallback, so no defining constraint is lost. Validate and freeze the full
+  // Bool/BV vector before the first candidate.
+  UFContext* ufContext = bm->getUFContextIfAny();
+  if (ufContext != NULL && ufContext->activeInSolve())
+  {
+    for (const ASTNode& symbol : ufContext->getProtectedSymbols())
+    {
+      const unsigned width = std::max((unsigned)1, symbol.GetValueWidth());
+      ASTNodeToSATVar::iterator found = nodeToSATVar.find(symbol);
+      if (found == nodeToSATVar.end())
+        found = nodeToSATVar
+                    .insert(std::make_pair(
+                        symbol, vector<unsigned>(width, ~((unsigned)0))))
+                    .first;
+      if (found->second.size() != width)
+        FatalError("UF batch liveness mapping has the wrong width", symbol);
+      for (unsigned bit = 0; bit < width; ++bit)
+      {
+        if (found->second[bit] == ~((unsigned)0))
+          found->second[bit] = satSolver.newVar();
+        satSolver.setFrozen(found->second[bit]);
+      }
     }
   }
 }

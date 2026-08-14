@@ -831,6 +831,12 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
 
   switch (k)
   {
+    case UF_APPLY:
+      FatalError("BBTerm: UF_APPLY crossed the completed-root lowering "
+                 "barrier",
+                 term);
+      break;
+
     case BVNOT:
     {
       // bitwise complement
@@ -1422,6 +1428,12 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
   BBNode result;
   switch (k)
   {
+
+    case UF_APPLY:
+      FatalError("BBForm: UF_APPLY crossed the completed-root lowering "
+                 "barrier",
+                 form);
+      break;
 
     case TRUE:
     {

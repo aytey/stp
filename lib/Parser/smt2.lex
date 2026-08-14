@@ -351,7 +351,12 @@ bv{DIGIT}+             { smt2lval.str = new std::string(smt2text+2); return BVCO
 "assert"                  { return ASSERT_TOK; }
 "check-sat"               { return CHECK_SAT_TOK; }
 "check-sat-assuming"      { return CHECK_SAT_ASSUMING_TOK;}
-"declare-const"           { return DECLARE_CONST_TOK;}
+"declare-const"           {
+                              ufDeclarationNamePending =
+                                  stp::GlobalParserInterface->getUserFlags()
+                                      .enable_uninterpreted_functions;
+                              return DECLARE_CONST_TOK;
+                            }
 "declare-fun"             {
                               ufDeclarationNamePending =
                                   stp::GlobalParserInterface->getUserFlags()
@@ -359,7 +364,12 @@ bv{DIGIT}+             { smt2lval.str = new std::string(smt2text+2); return BVCO
                               return DECLARE_FUNCTION_TOK;
                             }
 "declare-sort"            { return DECLARE_SORT_TOK;}
-"define-fun"              { return DEFINE_FUNCTION_TOK; }
+"define-fun"              {
+                              ufDeclarationNamePending =
+                                  stp::GlobalParserInterface->getUserFlags()
+                                      .enable_uninterpreted_functions;
+                              return DEFINE_FUNCTION_TOK;
+                            }
 "echo"                    { return ECHO_TOK;}
 "exit"                    { return EXIT_TOK;}
 "get-assertions"          { return GET_ASSERTIONS_TOK;}

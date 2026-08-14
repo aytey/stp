@@ -1,9 +1,26 @@
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/STPManager/STPManager.h"
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 
 namespace stp
 {
+
+namespace
+{
+bool isRenderableExternalName(const std::string& name)
+{
+  // UF models quote every external declaration name. SMT-LIB quoted symbols
+  // have no escape for either delimiter character and admit only printable
+  // characters. Rejecting at declaration keeps every later model operation
+  // total and nonfatal.
+  for (const unsigned char c : name)
+    if (c == '|' || c == '\\' || !std::isprint(c))
+      return false;
+  return true;
+}
+} // namespace
 
 UFContext::UFContext(STPMgr* manager) : manager_(manager)
 {
@@ -12,6 +29,7 @@ UFContext::UFContext(STPMgr* manager) : manager_(manager)
 
 UFContext::~UFContext()
 {
+  releaseSolveProtection();
   applications_.clear();
   byIdentity_.clear();
   activeByName_.clear();
@@ -39,6 +57,12 @@ UFContext::declareFunction(const std::string& name,
   if (name.empty())
   {
     setError(error, "uninterpreted-function name must not be empty");
+    return NULL;
+  }
+  if (!isRenderableExternalName(name))
+  {
+    setError(error, "uninterpreted-function name is not representable as an "
+                    "SMT-LIB2 quoted symbol");
     return NULL;
   }
   if (STPMgr::isReservedSymbolName(name.c_str()))
@@ -130,6 +154,19 @@ bool UFContext::isActive(const UFDecl* decl) const
   const std::map<std::string, const UFDecl*>::const_iterator found =
       activeByName_.find(decl->name());
   return found != activeByName_.end() && found->second == decl;
+}
+
+std::vector<const UFDecl*> UFContext::activeDeclarations() const
+{
+  std::vector<const UFDecl*> result;
+  result.reserve(activeByName_.size());
+  for (const std::pair<const std::string, const UFDecl*>& entry :
+       activeByName_)
+    result.push_back(entry.second);
+  std::sort(result.begin(), result.end(),
+            [](const UFDecl* left, const UFDecl* right)
+            { return left->id() < right->id(); });
+  return result;
 }
 
 bool UFContext::validateApplicationChildren(ASTChildren children,
@@ -229,6 +266,33 @@ bool UFContext::isActiveApplication(const ASTNode& application) const
 {
   return isRegisteredApplication(application) && application.Degree() >= 1 &&
          isActive(lookupIdentity(application[0]));
+}
+
+void UFContext::beginSolveProtection()
+{
+  protectedSymbols_.clear();
+  solveProtectionActive_ = true;
+}
+
+void UFContext::installSolveProtection(
+    const ASTNodeSet& protectedSymbols)
+{
+  if (!solveProtectionActive_)
+    beginSolveProtection();
+  protectedSymbols_ = protectedSymbols;
+}
+
+void UFContext::releaseSolveProtection()
+{
+  protectedSymbols_.clear();
+  solveProtectionActive_ = false;
+}
+
+bool UFContext::isProtected(const ASTNode& symbol) const
+{
+  return solveProtectionActive_ && !symbol.IsNull() &&
+         symbol.IsOwnedBy(manager_) && symbol.GetKind() == SYMBOL &&
+         protectedSymbols_.find(symbol) != protectedSymbols_.end();
 }
 
 } // namespace stp
