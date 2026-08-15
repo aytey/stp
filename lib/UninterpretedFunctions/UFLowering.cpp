@@ -96,6 +96,19 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
   // persistent block reconstruct the identical semantic root.
   ASTNodeMap scalarNames;
 
+  // A compound actual cannot be named while the walk is running: whether the
+  // name is needed depends on how many applications its declaration turns out
+  // to have, and the last of them may not have been reached yet. Each one is
+  // parked here against the slot it will fill.
+  struct PendingName
+  {
+    size_t record;
+    size_t argument;
+    ASTNode lowered;
+    SourceSort sort;
+  };
+  std::vector<PendingName> pendingNames;
+
   // Rewrite the completed root once, bottom-up. The explicit walk keeps its
   // frames on the heap (input controls AST depth), visits each shared DAG node
   // once, and guarantees that a nested UF application has become its scalar
@@ -163,28 +176,13 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
             continue;
           }
 
-          ASTNode name;
-          const ASTNodeMap::const_iterator found = scalarNames.find(lowered);
-          if (found != scalarNames.end())
-            name = found->second;
-          else
-          {
-            name = manager_->CreateDeterministicSourceVariable(
-                expected, "uf_arg", lowered);
-            if (name.GetSourceSort() != expected)
-              FatalError("UF lowering allocated an argument name at the wrong "
-                         "SourceSort",
-                         name);
-            scalarNames.insert(std::make_pair(lowered, name));
-            view.nameToTerm.insert(std::make_pair(name, lowered));
-            view.protectedSymbols.insert(name);
-            view.solveScalars.insert(name);
-            view.namingDefinitions.push_back(
-                manager_->defaultNodeFactory->CreateNode(
-                    expected.kind() == SourceSort::Kind::Bool ? IFF : EQ, name,
-                    lowered));
-          }
-          record.namedActuals.push_back(name);
+          PendingName pending;
+          pending.record = record.stableOrder;
+          pending.argument = record.namedActuals.size();
+          pending.lowered = lowered;
+          pending.sort = expected;
+          pendingNames.push_back(pending);
+          record.namedActuals.push_back(ASTNode());
         }
 
         const SourceSort& codomain = declaration->signature().codomain();
@@ -204,6 +202,73 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
         view.applications.push_back(record);
         return record.resultSymbol;
       });
+
+  // Only a declaration with two or more lowered applications can ever produce
+  // a congruence lemma, and a name for a compound actual exists solely so that
+  // such a lemma has a scalar to equate. Naming one for a lone application
+  // costs a protected symbol and a defining equality that drag the whole
+  // argument expression into the bit-blast, where nothing can observe it.
+  //
+  // Two rounds, so that the decision does not depend on the order the walk
+  // reached things: every name a comparable record needs is created first, and
+  // a lone application sharing one of those terms then reuses it and stays
+  // readable for free. Only an actual left without a name after both rounds
+  // makes its record unobservable.
+  std::map<const UFDecl*, size_t> applicationsPerDeclaration;
+  for (const LoweredApplicationRecord& record : view.applications)
+    applicationsPerDeclaration[record.declaration]++;
+
+  const auto comparable = [&](const PendingName& pending) {
+    return applicationsPerDeclaration[view.applications[pending.record]
+                                          .declaration] > 1;
+  };
+
+  for (const PendingName& pending : pendingNames)
+  {
+    if (!comparable(pending))
+      continue;
+    ASTNode name;
+    const ASTNodeMap::const_iterator found = scalarNames.find(pending.lowered);
+    if (found != scalarNames.end())
+      name = found->second;
+    else
+    {
+      name = manager_->CreateDeterministicSourceVariable(pending.sort, "uf_arg",
+                                                         pending.lowered);
+      if (name.GetSourceSort() != pending.sort)
+        FatalError("UF lowering allocated an argument name at the wrong "
+                   "SourceSort",
+                   name);
+      scalarNames.insert(std::make_pair(pending.lowered, name));
+      view.nameToTerm.insert(std::make_pair(name, pending.lowered));
+      view.protectedSymbols.insert(name);
+      view.solveScalars.insert(name);
+      view.namingDefinitions.push_back(
+          manager_->defaultNodeFactory->CreateNode(
+              pending.sort.kind() == SourceSort::Kind::Bool ? IFF : EQ, name,
+              pending.lowered));
+    }
+    view.applications[pending.record].namedActuals[pending.argument] = name;
+  }
+
+  for (const PendingName& pending : pendingNames)
+  {
+    if (comparable(pending))
+      continue;
+    LoweredApplicationRecord& record = view.applications[pending.record];
+    const ASTNodeMap::const_iterator found = scalarNames.find(pending.lowered);
+    if (found != scalarNames.end())
+      record.namedActuals[pending.argument] = found->second;
+    else
+      record.observableArguments = false;
+  }
+
+  // An unobservable record keeps its durable handle, its result symbol and its
+  // lowered actuals; what it does not keep is a half-filled scalar tuple that
+  // no checker round may read.
+  for (LoweredApplicationRecord& record : view.applications)
+    if (!record.observableArguments)
+      record.namedActuals.clear();
 
   // This checks the whole barrier once, including the naming definitions.
   // Scanning every progressively larger actual separately would turn a

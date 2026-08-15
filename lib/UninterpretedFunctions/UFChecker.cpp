@@ -289,7 +289,9 @@ UFCheckPlan UFChecker::validate(
         !record.durableHandle.IsOwnedBy(record.declaration->owner()) ||
         !record.resultSymbol.IsOwnedBy(record.declaration->owner()) ||
         record.loweredActuals.size() != record.declaration->signature().arity() ||
-        record.namedActuals.size() != record.declaration->signature().arity())
+        record.namedActuals.size() !=
+            (record.observableArguments ? record.declaration->signature().arity()
+                                        : 0))
     {
       plan.diagnostic_ =
           "UFCHK received a malformed lowered application view";
@@ -322,10 +324,19 @@ UFCheckPlan UFChecker::validate(
     for (size_t i = 0; i < signature.arity(); ++i)
     {
       if (record.loweredActuals[i].IsNull() ||
-          record.namedActuals[i].IsNull() ||
           !record.loweredActuals[i].IsOwnedBy(record.declaration->owner()) ||
+          record.loweredActuals[i].GetSourceSort() != signature.domain()[i])
+      {
+        plan.diagnostic_ = "UFCHK argument record is not a typed canonical "
+                           "scalar pair";
+        return plan;
+      }
+      // An unobservable record has no scalar tuple at all; the canonical-leaf
+      // obligation applies to the records a candidate round actually reads.
+      if (!record.observableArguments)
+        continue;
+      if (record.namedActuals[i].IsNull() ||
           !record.namedActuals[i].IsOwnedBy(record.declaration->owner()) ||
-          record.loweredActuals[i].GetSourceSort() != signature.domain()[i] ||
           record.namedActuals[i].GetSourceSort() != signature.domain()[i] ||
           (record.namedActuals[i].GetKind() != SYMBOL &&
            !record.namedActuals[i].isConstant()))
@@ -345,6 +356,24 @@ UFCheckPlan UFChecker::validate(
       return plan;
     }
     plan.recordsByDecl_[declarationIt->second].push_back(&record);
+  }
+
+  // Lowering withholds a scalar tuple only where no congruence lemma can ever
+  // mention it. Once a declaration reaches two applications every one of them
+  // must be readable, or a real conflict would go unnoticed and an unsound
+  // model would be certified.
+  for (const std::vector<const LoweredApplicationRecord*>& records :
+       plan.recordsByDecl_)
+  {
+    if (records.size() < 2)
+      continue;
+    for (const LoweredApplicationRecord* record : records)
+      if (!record->observableArguments)
+      {
+        plan.diagnostic_ = "UFCHK found a comparable declaration with an "
+                           "unreadable application";
+        return plan;
+      }
   }
 
   plan.valid_ = true;
@@ -376,8 +405,24 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
         plan.recordsByDecl_[declarationIndex];
     ObservationTable table;
     table.reserve(records.size());
+    // A declaration whose single application has no readable argument tuple is
+    // interpreted by the constant its result took: total, and by construction
+    // in agreement with that one application, which is all any interpretation
+    // of it has to satisfy.
+    bool constantInterpretation = false;
+    UFConcreteValue constantValue;
     for (const LoweredApplicationRecord* record : records)
     {
+      if (!record->observableArguments)
+      {
+        if (!readScalar(record->resultSymbol,
+                        declaration->signature().codomain(), candidate,
+                        constantValue, out.diagnostic))
+          return out;
+        constantInterpretation = true;
+        continue;
+      }
+
       UFConcreteTuple tuple;
       tuple.reserve(record->namedActuals.size());
       for (size_t i = 0; i < record->namedActuals.size(); ++i)
@@ -449,7 +494,9 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     UFFunctionModelSeed function;
     function.declaration = declaration;
     function.defaultValue =
-        UFConcreteValue::zero(declaration->signature().codomain());
+        constantInterpretation
+            ? constantValue
+            : UFConcreteValue::zero(declaration->signature().codomain());
     function.cases.reserve(table.size());
     for (const auto& entry : table)
     {

@@ -61,6 +61,12 @@ struct DLL_PUBLIC LoweredApplicationRecord
   ASTNode resultSymbol;
   UFSolveScope scope;
   size_t stableOrder = 0;
+  // Whether the checker can read this application's argument tuple, i.e.
+  // whether every actual is a constant or a registered solve scalar. False
+  // when lowering declined to name a compound actual because the declaration
+  // has too few applications for any congruence lemma to mention it; such a
+  // record carries no namedActuals and is interpreted by a constant.
+  bool observableArguments = true;
 };
 
 // Value object owned by a solve-mode adapter. It deliberately contains no SAT
