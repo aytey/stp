@@ -36,7 +36,8 @@ import struct
 from .library_path import PATHS
 
 __all__ = [
-    'AnyExpr', 'ArrayExpr', 'Expr', 'FloatExpr', 'UninterpretedFunction',
+    'AnyExpr', 'ArrayExpr', 'Expr', 'FloatExpr', 'RoundingModeExpr', 'Sort',
+    'UninterpretedFunction',
     'Solver', 'stp', 'add', 'array',
     'bitvec', 'bitvecs', 'check', 'model',
     'RNE', 'RTP', 'RTN', 'RTZ', 'RNA',
@@ -49,6 +50,108 @@ RTP = 2   # round toward positive
 RTN = 4   # round toward negative
 RTZ = 8   # round toward zero
 RNA = 16  # round nearest, ties to away
+
+_MODES = (RNE, RTP, RTN, RTZ, RNA)
+_MODE_NAMES = {RNE: 'RNE', RTP: 'RTP', RTN: 'RTN', RTZ: 'RTZ', RNA: 'RNA'}
+
+
+class Sort(object):
+    """A sort in an uninterpreted-function signature.
+
+    Solver.function() also accepts the older shorthand -- a positive integer
+    for a bit-vector width, None or 0 for Bool -- which is exactly
+    Sort.bitvec(n) and Sort.bool(). Floating-point and rounding-mode sorts
+    have no integer spelling, which is why this class exists: a float is two
+    numbers and a rounding mode is neither a number nor a width.
+    """
+
+    BOOL = 'Bool'
+    BITVEC = 'BitVec'
+    FLOAT = 'FloatingPoint'
+    ROUNDING_MODE = 'RoundingMode'
+
+    def __init__(self, kind, first=0, second=0):
+        self.kind = kind
+        self.first = first
+        self.second = second
+
+    @staticmethod
+    def bool():
+        return Sort(Sort.BOOL)
+
+    @staticmethod
+    def bitvec(width):
+        if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+            raise ValueError('a bit-vector sort needs a positive width')
+        return Sort(Sort.BITVEC, width)
+
+    @staticmethod
+    def float(eb, sb):
+        """A float of format (eb, sb); sb counts the hidden significand bit,
+        so float(8, 24) is an IEEE single and float(11, 53) a double."""
+        if (not isinstance(eb, int) or not isinstance(sb, int) or
+                isinstance(eb, bool) or isinstance(sb, bool) or
+                eb < 2 or sb < 2):
+            raise ValueError('a floating-point sort needs at least 2 exponent '
+                             'and 2 significand bits')
+        return Sort(Sort.FLOAT, eb, sb)
+
+    @staticmethod
+    def rounding_mode():
+        return Sort(Sort.ROUNDING_MODE)
+
+    @staticmethod
+    def _coerce(sort, what):
+        """The declared sort, from either spelling."""
+        if isinstance(sort, Sort):
+            return sort
+        if sort is None or sort == 0:
+            return Sort.bool()
+        if isinstance(sort, int) and not isinstance(sort, bool) and sort > 0:
+            return Sort.bitvec(sort)
+        raise ValueError(
+            '%s must be a Sort, or the shorthand None/0 for Bool or a '
+            'positive integer for a BitVec width' % what)
+
+    @property
+    def width(self):
+        """The packed carrier width: 0 for Bool, the declared width for a
+        bit-vector, eb + sb for a float, 5 for a rounding mode. This is not
+        the sort -- two sorts can share a carrier -- but it is what the C
+        layer measures values in."""
+        if self.kind == Sort.BOOL:
+            return 0
+        if self.kind == Sort.BITVEC:
+            return self.first
+        if self.kind == Sort.FLOAT:
+            return self.first + self.second
+        return 5
+
+    def _materialize(self, vc):
+        if self.kind == Sort.BOOL:
+            return _lib.vc_boolType(vc)
+        if self.kind == Sort.BITVEC:
+            return _lib.vc_bvType(vc, self.first)
+        if self.kind == Sort.FLOAT:
+            return _lib.vc_fpType(vc, self.first, self.second)
+        return _lib.vc_fpRoundingModeType(vc)
+
+    def __eq__(self, other):
+        return (isinstance(other, Sort) and self.kind == other.kind and
+                self.first == other.first and self.second == other.second)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash((self.kind, self.first, self.second))
+
+    def __repr__(self):
+        if self.kind == Sort.BITVEC:
+            return '(_ BitVec %d)' % self.first
+        if self.kind == Sort.FLOAT:
+            return '(_ FloatingPoint %d %d)' % (self.first, self.second)
+        return self.kind
 
 
 for path in PATHS:
@@ -236,6 +339,8 @@ _set_func('vc_getSigWidth', c_int32, _Expr)
 _set_func('vc_fpConstFromBits', _Expr, _VC, c_int32, c_int32, _Expr)
 _set_func('vc_fpEqExpr', _Expr, _VC, _Expr, _Expr)
 _set_func('vc_fpRoundingMode', _Expr, _VC, c_int32)
+_set_func('vc_fpRoundingModeType', _Type, _VC)
+_set_func('vc_fpRoundingModeVar', _Expr, _VC, c_char_p)
 _set_func('vc_fpAbsExpr', _Expr, _VC, _Expr)
 _set_func('vc_fpNegExpr', _Expr, _VC, _Expr)
 _set_func('vc_fpAddExpr', _Expr, _VC, _Expr, _Expr, _Expr)
@@ -412,38 +517,27 @@ class Solver(object):
         return Expr(self, width, expr)
 
     def function(self, name, domain, codomain):
-        """Declare a Bool/BitVec uninterpreted function.
+        """Declare an uninterpreted function.
 
-        Sorts are written as positive bit widths; ``None`` or ``0`` denotes
-        Bool. The domain must be non-empty. Applications are durable Expr
+        Each sort is a Sort -- Sort.bool(), Sort.bitvec(w), Sort.float(eb, sb)
+        or Sort.rounding_mode() -- or the older shorthand, a positive integer
+        for a bit-vector width and None or 0 for Bool. Array sorts are not
+        supported. The domain must be non-empty. Applications are durable
         handles and ``app.value`` reads only a certified active solve value.
         """
         if not self.uninterpreted_functions:
             raise ValueError(
                 'uninterpreted functions were not enabled (construct Solver '
                 'with uninterpreted_functions=True)')
-        widths = []
-        for sort in domain:
-            width = 0 if sort is None else int(sort)
-            if width < 0:
-                raise ValueError(
-                    'domain sort %d of %r must be None or 0 for Bool, or a '
-                    'positive BitVec width' % (len(widths), name))
-            widths.append(width)
-        if not widths:
+        sorts = [Sort._coerce(sort, 'domain sort %d of %r' % (position, name))
+                 for position, sort in enumerate(domain)]
+        if not sorts:
             raise ValueError(
                 '%r needs at least one domain sort; a zero-arity declaration '
                 'is an ordinary symbol, not an uninterpreted function' % name)
-        result_width = 0 if codomain is None else int(codomain)
-        if result_width < 0:
-            raise ValueError(
-                'the codomain of %r must be None or 0 for Bool, or a positive '
-                'BitVec width' % name)
-        domain_types = [(_lib.vc_boolType(self.vc) if width == 0 else
-                         _lib.vc_bvType(self.vc, width))
-                        for width in widths]
-        codomain_type = (_lib.vc_boolType(self.vc) if result_width == 0 else
-                         _lib.vc_bvType(self.vc, result_width))
+        result = Sort._coerce(codomain, 'the codomain of %r' % name)
+        domain_types = [sort._materialize(self.vc) for sort in sorts]
+        codomain_type = result._materialize(self.vc)
         raw = (_Type * len(domain_types))(*domain_types)
         try:
             declaration = _lib.vc_declareUninterpretedFunction(
@@ -457,8 +551,24 @@ class Solver(object):
             raise ValueError(
                 'the declaration of %r was rejected by the solver (check the '
                 'name, solver lifetime, and supported sorts)' % name)
-        return UninterpretedFunction(self, name, tuple(widths), result_width,
+        return UninterpretedFunction(self, name, tuple(sorts), result,
                                      declaration)
+
+    def rounding_mode_var(self, name):
+        """A symbolic rounding mode, constrained to the five legal modes."""
+        expression = _lib.vc_fpRoundingModeVar(self.vc, name.encode('utf-8'))
+        if not expression:
+            raise ValueError('rounding-mode declaration was rejected')
+        self.keys[name] = expression
+        return RoundingModeExpr(self, expression, name=name)
+
+    def rounding_mode_val(self, mode):
+        """One of the five rounding modes (RNE, RTP, RTN, RTZ, RNA) as an
+        expression."""
+        if mode not in _MODES:
+            raise ValueError('%r is not one of RNE, RTP, RTN, RTZ, RNA'
+                             % (mode,))
+        return RoundingModeExpr(self, _lib.vc_fpRoundingMode(self.vc, mode))
 
     def rounding_mode_expr(self):
         """The current rounding-mode expression (self.rounding_mode, default RNE)."""
@@ -782,7 +892,13 @@ class Solver(object):
 
 
 class UninterpretedFunction(object):
-    """A context-owned UF declaration; calling it creates a durable handle."""
+    """A context-owned UF declaration; calling it creates a durable handle.
+
+    ``domain`` is a tuple of Sort and ``codomain`` is a Sort, whatever
+    spelling Solver.function() was given. Calling the declaration returns an
+    expression of the codomain's sort: an Expr, a FloatExpr or a
+    RoundingModeExpr.
+    """
 
     def __init__(self, solver, name, domain, codomain, declaration):
         self.s = solver
@@ -790,6 +906,58 @@ class UninterpretedFunction(object):
         self.domain = domain
         self.codomain = codomain
         self.declaration = declaration
+
+    def _actual(self, position, argument, sort):
+        """One argument, as an expression of the declared sort.
+
+        Each sort accepts its own natural Python shorthand -- a bool, an int,
+        a float, or one of the five rounding-mode constants -- and otherwise
+        wants a wrapped expression of that sort from this Solver. The sort is
+        what disambiguates an int: at a bit-vector position it is a value, and
+        at a rounding-mode position only the five mode constants are ints at
+        all.
+        """
+        if sort.kind == Sort.BOOL:
+            if isinstance(argument, bool):
+                argument = self.s.true() if argument else self.s.false()
+            wanted = Expr
+        elif sort.kind == Sort.BITVEC:
+            if isinstance(argument, int) and not isinstance(argument, bool):
+                argument = self.s.bitvecval(sort.first, argument)
+            wanted = Expr
+        elif sort.kind == Sort.FLOAT:
+            if isinstance(argument, float) or (
+                    isinstance(argument, int) and
+                    not isinstance(argument, bool)):
+                argument = self.s.fpval(sort.first, sort.second,
+                                        float(argument))
+            wanted = FloatExpr
+        else:
+            if (isinstance(argument, int) and not isinstance(argument, bool)
+                    and argument in _MODES):
+                argument = self.s.rounding_mode_val(argument)
+            wanted = RoundingModeExpr
+
+        if type(argument) is not wanted or argument.s is not self.s:
+            raise ValueError(
+                'argument %d of %s must be a %s from the same Solver, or a '
+                'Python value matching the declared sort %r'
+                % (position, self.name, wanted.__name__, sort))
+        if self._sort_of(argument) != sort:
+            raise ValueError(
+                'argument %d of %s has sort %r but the declaration requires '
+                '%r' % (position, self.name, self._sort_of(argument), sort))
+        return argument
+
+    @staticmethod
+    def _sort_of(argument):
+        """The declared sort a wrapped expression denotes."""
+        if isinstance(argument, FloatExpr):
+            return Sort.float(argument.eb, argument.sb)
+        if isinstance(argument, RoundingModeExpr):
+            return Sort.rounding_mode()
+        return (Sort.bool() if argument.width is None
+                else Sort.bitvec(argument.width))
 
     def __call__(self, *arguments):
         if len(arguments) != len(self.domain):
@@ -801,33 +969,15 @@ class UninterpretedFunction(object):
                  len(arguments)))
         if not self.s.vc:
             raise ValueError('the Solver owning %s was destroyed' % self.name)
+        # Coerced arguments are held until the application is built: they
+        # own the C handles the call borrows.
+        converted = []
         raw_arguments = []
-        converted_arguments = []
-        for position, (argument, width) in enumerate(zip(arguments,
-                                                         self.domain)):
-            if isinstance(argument, bool) and width == 0:
-                argument = self.s.true() if argument else self.s.false()
-                converted_arguments.append(argument)
-            elif (isinstance(argument, int) and
-                  not isinstance(argument, bool) and width != 0):
-                argument = self.s.bitvecval(width, argument)
-                converted_arguments.append(argument)
-            if type(argument) is not Expr or argument.s is not self.s:
-                raise ValueError(
-                    'argument %d of %s must be a Bool/BitVec Expr from the '
-                    'same Solver, or a bool/int matching the declared sort'
-                    % (position, self.name))
-            actual_width = 0 if argument.width is None else argument.width
-            if actual_width != width:
-                raise ValueError(
-                    'argument %d of %s has sort %s but the declaration '
-                    'requires %s'
-                    % (position, self.name,
-                       'Bool' if actual_width == 0
-                       else '(_ BitVec %d)' % actual_width,
-                       'Bool' if width == 0
-                       else '(_ BitVec %d)' % width))
-            raw_arguments.append(argument.expr)
+        for position, (argument, sort) in enumerate(zip(arguments,
+                                                        self.domain)):
+            actual = self._actual(position, argument, sort)
+            converted.append(actual)
+            raw_arguments.append(actual.expr)
         raw = (_Expr * len(raw_arguments))(*raw_arguments)
         application = _lib.vc_applyUninterpretedFunction(
             self.s.vc, self.declaration, raw, len(raw_arguments))
@@ -836,7 +986,12 @@ class UninterpretedFunction(object):
                 'the application of %s was rejected by the solver (a '
                 'declaration or expression handle may be stale, foreign, or '
                 'invalid)' % self.name)
-        width = None if self.codomain == 0 else self.codomain
+        if self.codomain.kind == Sort.FLOAT:
+            return FloatExpr(self.s, self.codomain.first,
+                             self.codomain.second, application)
+        if self.codomain.kind == Sort.ROUNDING_MODE:
+            return RoundingModeExpr(self.s, application)
+        width = None if self.codomain.kind == Sort.BOOL else self.codomain.first
         return Expr(self.s, width, application)
 
 
@@ -1337,6 +1492,72 @@ class FloatExpr(AnyExpr):
     # No list of bit-vector methods to refuse: FloatExpr does not inherit
     # them (see AnyExpr). Bit-level work goes through to_ieee_bits(), which
     # returns an Expr and has every one of them.
+
+
+class RoundingModeExpr(AnyExpr):
+    """A value of SMT-LIB's RoundingMode sort.
+
+    The sort has exactly five values and no operations of its own: a rounding
+    mode is something you hand to a floating-point operation, or to an
+    uninterpreted function declared over Sort.rounding_mode(). It is
+    deliberately not an Expr -- its five-bit carrier is not a bit-vector any
+    more than a float's packed bits are, and offering bvadd on a rounding mode
+    would be offering nonsense.
+
+    ``value`` reads back one of RNE, RTP, RTN, RTZ, RNA.
+    """
+
+    def __init__(self, s, expr, name=None):
+        AnyExpr.__init__(self, s, 5, expr, name=name)
+
+    def _coerce(self, other):
+        """A RoundingModeExpr passes through; one of the five mode constants
+        becomes the corresponding expression."""
+        if isinstance(other, RoundingModeExpr):
+            return other
+        if (isinstance(other, int) and not isinstance(other, bool) and
+                other in _MODES):
+            return self.s.rounding_mode_val(other)
+        return None
+
+    def eq(self, other):
+        """Equality of rounding modes. The sort has five values and each is
+        one bit pattern, so this is both carrier equality and value equality
+        -- there is no second notion here as there is for floats."""
+        right = self._coerce(other)
+        if right is None:
+            raise TypeError('a rounding mode compares only with another '
+                            'rounding mode or one of RNE, RTP, RTN, RTZ, RNA')
+        return Expr(self.s, None,
+                    _lib.vc_eqExpr(self.s.vc, self.expr, right.expr))
+
+    def ne(self, other):
+        return Expr(self.s, None,
+                    _lib.vc_notExpr(self.s.vc, self.eq(other).expr))
+
+    # As FloatExpr: build a formula for the operands this understands, and
+    # defer politely for anything else so containment tests still work.
+    def __eq__(self, other):
+        if self._coerce(other) is None:
+            return NotImplemented
+        return self.eq(other)
+
+    def __ne__(self, other):
+        if self._coerce(other) is None:
+            return NotImplemented
+        return self.ne(other)
+
+    # Defining __eq__ suppresses the default hash; hash by identity, as Expr
+    # and FloatExpr do. == builds a formula, so value hashing cannot exist.
+    __hash__ = object.__hash__
+
+    @property
+    def value(self):
+        """The mode in the current model: one of RNE, RTP, RTN, RTZ, RNA."""
+        return self.s.model(expr=self)
+
+    def __repr__(self):
+        return 'RoundingModeExpr(%s)' % (self.name or '<term>')
 
 
 class ArrayExpr(Expr):

@@ -181,7 +181,8 @@ public:
   // ARRAY_EQ, which is lowered only after the complete query is assembled.
   bool enable_array_equality = false;
 
-  // Decide nonzero-arity Bool/BitVec/RoundingMode uninterpreted functions
+  // Decide nonzero-arity uninterpreted functions over Bool, BitVec,
+  // RoundingMode and FloatingPoint
   // using the UFSTP v2 dynamic-Ackermann reference profile. Logic names never
   // toggle this runtime semantic option -- though the UF+FP logic names are
   // only accepted while it is set, since they exist to let one query name

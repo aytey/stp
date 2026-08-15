@@ -51,33 +51,82 @@ public:
   enum class Kind
   {
     Bool,
-    BitVector
+    BitVector,
+    FloatingPoint,
+    RoundingMode
   };
 
-  static Sort boolean() { return Sort(Kind::Bool, 0); }
+  static Sort boolean() { return Sort(Kind::Bool, 0, 0); }
 
   static Sort bitVector(unsigned width)
   {
     if (width == 0)
       throw std::invalid_argument("a bit-vector sort needs a nonzero width");
-    return Sort(Kind::BitVector, width);
+    return Sort(Kind::BitVector, width, 0);
   }
 
+  // significand counts the hidden bit, as SMT-LIB's (_ FloatingPoint eb sb)
+  // does: floatingPoint(8, 24) is an IEEE single and floatingPoint(11, 53) a
+  // double. The lower bound is the one vc_fpType enforces, checked here so a
+  // bad format is an exception rather than a fatal error.
+  static Sort floatingPoint(unsigned exponent, unsigned significand)
+  {
+    if (exponent < 2 || significand < 2)
+      throw std::invalid_argument("a floating-point sort needs at least 2 "
+                                  "exponent and 2 significand bits");
+    return Sort(Kind::FloatingPoint, exponent, significand);
+  }
+
+  static Sort roundingMode() { return Sort(Kind::RoundingMode, 0, 0); }
+
   Kind kind() const { return kind_; }
-  unsigned width() const { return width_; }
+  // The bit-vector width; zero for every other sort. A float's format is two
+  // numbers and is read with the accessors below rather than through this.
+  unsigned width() const { return kind_ == Kind::BitVector ? first_ : 0; }
+
+  unsigned exponentWidth() const
+  {
+    if (kind_ != Kind::FloatingPoint)
+      throw std::invalid_argument("only a floating-point sort has an "
+                                  "exponent width");
+    return first_;
+  }
+
+  unsigned significandWidth() const
+  {
+    if (kind_ != Kind::FloatingPoint)
+      throw std::invalid_argument("only a floating-point sort has a "
+                                  "significand width");
+    return second_;
+  }
 
 private:
   friend class Context;
-  Sort(Kind kind, unsigned width) : kind_(kind), width_(width) {}
+  Sort(Kind kind, unsigned first, unsigned second)
+      : kind_(kind), first_(first), second_(second)
+  {
+  }
 
   Type materialize(VC vc) const
   {
-    return kind_ == Kind::Bool ? vc_boolType(vc)
-                               : vc_bvType(vc, static_cast<int>(width_));
+    switch (kind_)
+    {
+      case Kind::Bool:
+        return vc_boolType(vc);
+      case Kind::FloatingPoint:
+        return vc_fpType(vc, static_cast<int>(first_),
+                         static_cast<int>(second_));
+      case Kind::RoundingMode:
+        return vc_fpRoundingModeType(vc);
+      case Kind::BitVector:
+        break;
+    }
+    return vc_bvType(vc, static_cast<int>(first_));
   }
 
   Kind kind_;
-  unsigned width_;
+  unsigned first_;
+  unsigned second_;
 };
 
 class Function final

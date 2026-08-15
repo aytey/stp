@@ -1412,19 +1412,32 @@ static bool cTypeToUFSort(VC vc, Type type, const char* position,
     diagnostic = std::string(position) + " type: " + diagnostic;
     return false;
   }
-  if (node->GetKind() == stp::BOOLEAN)
+  // A type handle has to be a type: a value expression of the right sort is
+  // not one, and accepting it would let vc_bvType's discipline slip.
+  switch (node->GetKind())
   {
-    sort = stp::SourceSort::boolean();
-    return true;
+    case stp::BOOLEAN:
+    case stp::BITVECTOR:
+    case stp::FLOATINGPOINT:
+    case stp::ROUNDINGMODE:
+    case stp::ARRAY:
+      break;
+    default:
+      diagnostic = std::string(position) + " type is not a sort";
+      return false;
   }
-  if (node->GetKind() == stp::BITVECTOR && node->Degree() == 1 &&
-      (*node)[0].GetUnsignedConst() != 0)
-  {
-    sort = stp::SourceSort::bitVector((*node)[0].GetUnsignedConst());
+
+  // Every type node the C API hands out already denotes its SourceSort, so
+  // ask it rather than re-deriving one here, and put the answer through the
+  // same admission gate the parser uses. The two frontends drifting apart is
+  // exactly what went wrong before: an .smt2 file could declare a sort that
+  // this function, with its own hand-rolled list, refused.
+  sort = node->GetSourceSort();
+  if (stp::UFSignature::isSupportedSort(sort))
     return true;
-  }
-  diagnostic = std::string(position) +
-               " type must be Bool or a nonzero-width BitVec";
+  diagnostic = std::string(position) + " type " + sourceSortToSMTLib(sort) +
+               " is unsupported (" +
+               stp::UFSignature::supportedSortsPhrase() + ")";
   return false;
 }
 

@@ -316,15 +316,21 @@ DLL_PUBLIC Expr vc_varExpr(VC vc, const char* name, Type type);
 DLL_PUBLIC Expr vc_varExpr1(VC vc, const char* name, int indexwidth,
                             int valuewidth);
 
-//! \brief Declares a nonzero-arity Bool/BitVec uninterpreted function and
-//!        returns its context-owned identity.
+//! \brief Declares a nonzero-arity uninterpreted function and returns its
+//!        context-owned identity.
 //!
 //! Call vc_setFlag(vc, 'u') before constructing any Type or Expr handle that
 //! will be supplied to the UF API. Each domain entry and the codomain must be
-//! a live Type owned by this VC, constructed with vc_boolType or vc_bvType;
-//! bit-vector widths must be positive. Array, FloatingPoint and RoundingMode
-//! types are not accepted. domainCount must be at least one: SMT-LIB treats a
+//! a live Type owned by this VC, constructed with vc_boolType, vc_bvType,
+//! vc_fpType or vc_fpRoundingModeType; bit-vector widths must be positive.
+//! Array types are not accepted, because an uninterpreted function is decided
+//! by comparing concrete argument values and a counterexample gives an array
+//! only as a partial map. domainCount must be at least one: SMT-LIB treats a
 //! zero-arity declare-fun as an ordinary symbol, which vc_varExpr represents.
+//!
+//! A FloatingPoint position is compared by *value*, not by bit pattern: every
+//! NaN is one value, so f(NaN) and f(NaN) agree however each was built, while
+//! -0 and +0 are distinct arguments.
 //!
 //! The Type array and its elements are borrowed for this call; ownership is
 //! not transferred. The declaration copies the name and source sorts, so the
@@ -346,7 +352,9 @@ DLL_PUBLIC UFDeclHandle vc_declareUninterpretedFunction(
 //! function must be a live declaration identity owned by this VC. arguments
 //! is borrowed for this call and each entry must be a live UF-tracked Expr
 //! from the same VC; no ownership is transferred. The argument count and
-//! every Bool/BitVec source sort must match the declaration exactly.
+//! every source sort must match the declaration exactly -- a float argument
+//! must have the declared format, and a rounding mode the RoundingMode sort
+//! rather than a bare 5-bit vector.
 //!
 //! The returned Expr denotes the public UF_APPLY itself, never a temporary
 //! lowered SAT symbol. Its underlying hash-consed node has context lifetime;
@@ -369,7 +377,9 @@ DLL_PUBLIC Expr vc_applyUninterpretedFunction(
 //! another query, or declaration changes can invalidate the certified map.
 //! vc_getCounterExample dispatches UF_APPLY handles through this same map.
 //!
-//! Success returns a caller-owned Bool/BitVec constant wrapper, released with
+//! Success returns a caller-owned constant wrapper of the declared codomain
+//! sort -- a Boolean, a bit-vector literal, a floating-point constant of the
+//! declared format, or one of the five rounding modes -- released with
 //! vc_DeleteExpr. A non-application, stale/inactive/cross-context wrapper,
 //! unobserved application, or missing/invalidated certified model reports a
 //! nonfatal diagnostic through vc_registerErrorHandler (or stderr) and

@@ -322,3 +322,158 @@ TEST(UninterpretedFunctionsCAPI, ValuesOfFormulasContainingBoolApplications)
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
 }
+
+// The sorts the C API used to refuse. Its converter had its own hand-rolled
+// list, strictly narrower than the one an .smt2 file gets, so a signature the
+// parser accepted could not be built here at all.
+TEST(UninterpretedFunctionsCAPI, FloatingPointAndRoundingModeSignatures)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+
+  Type single = vc_fpType(vc, 8, 24);
+  Type mode = vc_fpRoundingModeType(vc);
+  Type bv4 = vc_bvType(vc, 4);
+
+  const Type toBits[] = {single};
+  UFDeclHandle f = vc_declareUninterpretedFunction(vc, "f", toBits, 1, bv4);
+  EXPECT_NE(0u, f);
+  const Type fromBits[] = {bv4};
+  UFDeclHandle k = vc_declareUninterpretedFunction(vc, "k", fromBits, 1, mode);
+  EXPECT_NE(0u, k);
+  const Type fromMode[] = {mode};
+  UFDeclHandle q =
+      vc_declareUninterpretedFunction(vc, "q", fromMode, 1, single);
+  EXPECT_NE(0u, q);
+  EXPECT_EQ(0, errors);
+
+  // An application at a float codomain is a float of the declared format,
+  // not its packed carrier: it has to be usable as a floating-point operand.
+  Expr rne = vc_fpRoundingMode(vc, VC_RM_RNE);
+  const Expr atRne[] = {rne};
+  Expr qRne = vc_applyUninterpretedFunction(vc, q, atRne, 1);
+  ASSERT_NE(nullptr, qRne);
+  EXPECT_EQ(8, vc_getExpWidth(qRne));
+  EXPECT_EQ(24, vc_getSigWidth(qRne));
+  Expr isNaNOfResult = vc_fpIsNaNExpr(vc, qRne);
+  ASSERT_NE(nullptr, isNaNOfResult);
+
+  // Congruence over a float argument is congruence over its *value*. x and y
+  // are both NaN, which is one value however each was built, so f(x) and f(y)
+  // must agree -- the query below is valid.
+  Expr x = vc_varExpr(vc, "x", single);
+  Expr y = vc_varExpr(vc, "y", single);
+  const Expr atX[] = {x};
+  const Expr atY[] = {y};
+  Expr fx = vc_applyUninterpretedFunction(vc, f, atX, 1);
+  Expr fy = vc_applyUninterpretedFunction(vc, f, atY, 1);
+  ASSERT_NE(nullptr, fx);
+  ASSERT_NE(nullptr, fy);
+  vc_assertFormula(vc, vc_fpIsNaNExpr(vc, x));
+  vc_assertFormula(vc, vc_fpIsNaNExpr(vc, y));
+  Expr congruent = vc_eqExpr(vc, fx, fy);
+  EXPECT_EQ(1, vc_query(vc, congruent)); // 1: valid
+  vc_DeleteExpr(congruent);
+
+  vc_DeleteExpr(isNaNOfResult);
+  vc_DeleteExpr(qRne);
+  vc_DeleteExpr(rne);
+  vc_DeleteExpr(fy);
+  vc_DeleteExpr(fx);
+  vc_DeleteExpr(y);
+  vc_DeleteExpr(x);
+  vc_DeleteExpr(bv4);
+  vc_DeleteExpr(mode);
+  vc_DeleteExpr(single);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+// Reading a float and a rounding mode back out of a certified model, at the
+// declared sort rather than as the packed carrier the checker solved them as.
+TEST(UninterpretedFunctionsCAPI, FloatingPointAndRoundingModeModelValues)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+  vc_setFlag(vc, 'c');
+
+  Type single = vc_fpType(vc, 8, 24);
+  Type mode = vc_fpRoundingModeType(vc);
+  Type bv4 = vc_bvType(vc, 4);
+  const Type fromBits[] = {bv4};
+  UFDeclHandle k = vc_declareUninterpretedFunction(vc, "k", fromBits, 1, mode);
+  UFDeclHandle q =
+      vc_declareUninterpretedFunction(vc, "q", fromBits, 1, single);
+  ASSERT_NE(0u, k);
+  ASSERT_NE(0u, q);
+
+  Expr index = vc_bvConstExprFromInt(vc, 4, 3);
+  const Expr at[] = {index};
+  Expr kAt = vc_applyUninterpretedFunction(vc, k, at, 1);
+  Expr qAt = vc_applyUninterpretedFunction(vc, q, at, 1);
+  ASSERT_NE(nullptr, kAt);
+  ASSERT_NE(nullptr, qAt);
+
+  Expr rtz = vc_fpRoundingMode(vc, VC_RM_RTZ);
+  Expr nan = vc_fpNaN(vc, single);
+  vc_assertFormula(vc, vc_eqExpr(vc, kAt, rtz));
+  vc_assertFormula(vc, vc_fpIsNaNExpr(vc, qAt));
+  Expr falseQuery = vc_falseExpr(vc);
+  ASSERT_EQ(0, vc_query(vc, falseQuery)); // 0: invalid, i.e. satisfiable
+  vc_DeleteExpr(falseQuery);
+
+  // A rounding mode comes back as one of the five, never as a bare 5-bit
+  // vector: all-zeros and the twenty-six other patterns denote no mode.
+  Expr modeValue = vc_getUninterpretedFunctionValue(vc, kAt);
+  ASSERT_NE(nullptr, modeValue);
+  EXPECT_EQ((unsigned)VC_RM_RTZ, getBVUnsigned(modeValue));
+  vc_DeleteExpr(modeValue);
+
+  // A float comes back at the declared format.
+  Expr floatValue = vc_getUninterpretedFunctionValue(vc, qAt);
+  ASSERT_NE(nullptr, floatValue);
+  EXPECT_EQ(8, vc_getExpWidth(floatValue));
+  EXPECT_EQ(24, vc_getSigWidth(floatValue));
+  vc_DeleteExpr(floatValue);
+
+  vc_DeleteExpr(nan);
+  vc_DeleteExpr(rtz);
+  vc_DeleteExpr(qAt);
+  vc_DeleteExpr(kAt);
+  vc_DeleteExpr(index);
+  vc_DeleteExpr(bv4);
+  vc_DeleteExpr(mode);
+  vc_DeleteExpr(single);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+// Array stays refused, and so does anything that is not a sort at all: a
+// value expression of the right sort is not a Type.
+TEST(UninterpretedFunctionsCAPI, ArraysAndNonSortsAreStillRejected)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+
+  Type bv8 = vc_bvType(vc, 8);
+  Type array = vc_arrayType(vc, bv8, bv8);
+  EXPECT_EQ(0u, vc_declareUninterpretedFunction(vc, "a", &array, 1, bv8));
+  EXPECT_EQ(0u, vc_declareUninterpretedFunction(vc, "r", &bv8, 1, array));
+
+  Expr notAType = vc_varExpr(vc, "v", bv8);
+  Type disguised = (Type)notAType;
+  EXPECT_EQ(0u, vc_declareUninterpretedFunction(vc, "d", &disguised, 1, bv8));
+  EXPECT_EQ(3, errors);
+
+  vc_DeleteExpr(notAType);
+  vc_DeleteExpr(array);
+  vc_DeleteExpr(bv8);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
