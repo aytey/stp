@@ -257,8 +257,9 @@ UFCandidateOutcome checkOneCandidate(
   {
     UFConcreteValue value;
     if (!candidate.read(record.resultSymbol,
-                        record.declaration->signature().codomain(), value,
-                        state.diagnostic))
+                        UFSignature::loweringSort(
+                            record.declaration->signature().codomain()),
+                        value, state.diagnostic))
       return UFCandidateOutcome::InternalError;
     state.handleValues.insert(std::make_pair(record.durableHandle, value));
   }
@@ -273,9 +274,12 @@ UFCandidateOutcome checkOneCandidate(
   return UFCandidateOutcome::Consistent;
 }
 
+// As in UFLemma: CNF leaves live at the lowering sort, where FloatingPoint
+// never appears.
 bool supportedSort(const SourceSort& sort)
 {
-  return UFSignature::isSupportedSort(sort);
+  return UFSignature::isSupportedSort(sort) &&
+         sort.kind() != SourceSort::Kind::FloatingPoint;
 }
 
 // How many SAT bits one scalar of this sort occupies. Bool is a single

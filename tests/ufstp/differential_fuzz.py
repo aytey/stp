@@ -12,6 +12,12 @@ The RoundingMode families are mode-biased rather than value-biased: the sort
 has five values and its carrier thirty-two, so what is worth generating is
 tuples that exhaust the modes, which is what forces a result symbol to be
 pinned rather than merely constrained.
+
+The FloatingPoint families are NaN-biased for the same reason. Bit patterns
+are not what distinguishes floating-point values: NaN has many encodings and
+is one value, while the two zeros share an fp.eq and are two. Generating
+those two cases against each other is what tells a semantic quotient from a
+convenient normalisation.
 """
 
 import argparse
@@ -35,7 +41,7 @@ def nested(term, depth):
     return term
 
 
-FAMILIES = 9
+FAMILIES = 11
 
 MODES = ("RNE", "RTZ", "RTP", "RTN", "RNA")
 
@@ -136,6 +142,35 @@ def make_case(seed):
         lines += ["(declare-fun kr (%s Bool) RoundingMode)" % bv]
         lines += ["(assert (distinct (kr x b) %s))" % mode
                   for mode in excluded]
+    elif family == 9:
+        # FloatingPoint in a domain position, NaN against the zeros. Two NaNs
+        # are one value however they are spelled, so congruence binds; -0 and
+        # +0 are two values that merely compare fp.eq, so it does not.
+        nan_biased = (seed // FAMILIES) % 2 == 0
+        expected = "unsat" if nan_biased else "sat"
+        lines += [
+            "(declare-fun kf ((_ FloatingPoint 8 24) Bool) %s)" % bv,
+            "(declare-const fu (_ FloatingPoint 8 24))",
+            "(declare-const fv (_ FloatingPoint 8 24))",
+        ]
+        if nan_biased:
+            lines += ["(assert (fp.isNaN fu))", "(assert (fp.isNaN fv))"]
+        else:
+            lines += ["(assert (fp.isZero fu))",
+                      "(assert (fp.isNegative fu))",
+                      "(assert (fp.isZero fv))",
+                      "(assert (fp.isPositive fv))"]
+        lines += ["(assert (= b c))",
+                  "(assert (distinct (kf fu b) (kf fv c)))"]
+    elif family == 10:
+        # FloatingPoint in a result position. = is identity and is reflexive
+        # whatever the result is; fp.eq is IEEE equality and is false at NaN,
+        # so a result need not be fp.eq to itself.
+        reflexive = (seed // FAMILIES) % 2 == 0
+        expected = "unsat" if reflexive else "sat"
+        lines += ["(declare-fun kg (%s Bool) (_ FloatingPoint 8 24))" % bv]
+        lines += ["(assert (distinct (kg x b) (kg x b)))"] if reflexive else [
+            "(assert (not (fp.eq (kg x b) (kg x b))))"]
     else:
         # A generated UF result connected to the formula only through a
         # compound term must keep the SAT assignment for that connection.
@@ -261,9 +296,16 @@ def main():
             totals[name] += elapsed
             observed[name] = verdicts
             if verdicts != expected:
+                # Which side diverged is the first question, so say it: the
+                # expected verdicts are derived by construction, STP is what
+                # is under test, and a reference disagreeing with a
+                # construction-derived expectation is a finding about that
+                # reference rather than about STP.
+                side = ("STP" if name.startswith("stp-")
+                        else "reference solver")
                 raise RuntimeError(
-                    "seed %d disagreed for %s: expected %r, got %r" %
-                    (seed, name, expected, verdicts))
+                    "seed %d: %s %s disagreed: expected %r, got %r\n%s" %
+                    (seed, side, name, expected, verdicts, path.read_text()))
         cases.append({"seed": seed, "expected": expected,
                       "observed": observed})
 
@@ -280,7 +322,9 @@ def main():
                      "boolean-predicate", "interpreted-equality",
                      "array-actual", "declaration-separation",
                      "compound-result-liveness", "rounding-mode-actual",
-                     "rounding-mode-result-exhaustion"],
+                     "rounding-mode-result-exhaustion",
+                     "floating-point-nan-actual",
+                     "floating-point-result-identity"],
         "seconds_by_solver": {key: round(value, 6)
                               for key, value in totals.items()},
         "result": "pass",

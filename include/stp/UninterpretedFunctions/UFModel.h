@@ -26,6 +26,13 @@ public:
   static ASTNode concreteValue(STPMgr* manager,
                                const UFConcreteValue& value);
 
+  // As above, for a value stored at a signature position's *lowering* sort
+  // and published at its declared one. The two differ only for
+  // FloatingPoint, which is solved as its canonical packed carrier and
+  // becomes a float again here.
+  static ASTNode concreteValue(STPMgr* manager, const UFConcreteValue& value,
+                               const SourceSort& declared);
+
   // Evaluate one context-owned, active, registered durable application from
   // the most recently certified solve map. Failures are nonfatal and leave
   // value undefined.

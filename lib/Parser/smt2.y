@@ -446,6 +446,11 @@ namespace stp
           application = stp::GlobalParserInterface->CreateRMConst(
               stp::symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
           break;
+        case stp::SourceSort::Kind::FloatingPoint:
+          application = stp::GlobalParserInterface->CreateFPSpecialConst(
+              stp::FPSpecial::PlusZero, resultSort.exponentWidth(),
+              resultSort.significandWidth());
+          break;
         default:
           application = stp::GlobalParserInterface->CreateZeroConst(
               resultSort.packedWidth());
@@ -2522,7 +2527,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
   const stp::SourceSort sort =
       stp::SourceSort::floatingPoint($1->exp_bits, $1->sig_bits);
   $$ = new stp::parsed_uf_sort(
-      sort, stp::sourceSortToSMTLib(sort), false);
+      sort, stp::sourceSortToSMTLib(sort), true);
   delete $1;
 }
 | ROUNDINGMODE_TOK
@@ -2567,7 +2572,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
   const stp::SourceSort sort =
       stp::SourceSort::floatingPoint($1->exp_bits, $1->sig_bits);
   $$ = new stp::parsed_uf_sort(
-      sort, stp::sourceSortToSMTLib(sort), false);
+      sort, stp::sourceSortToSMTLib(sort), true);
   delete $1;
 }
 | ROUNDINGMODE_TOK

@@ -41,18 +41,20 @@ void printSort(std::ostream& os, const SourceSort& sort)
   os << sourceSortToSMTLib(sort);
 }
 
+// Seed values are stored at the lowering sort; `declared` is the signature
+// sort they will be published at. The two differ only for FloatingPoint.
 void requireValueSort(const UFConcreteValue& value,
-                      const SourceSort& expected)
+                      const SourceSort& declared)
 {
-  if (value.sort() != expected)
+  if (value.sort() != UFSignature::loweringSort(declared))
     FatalError("UF model seed contains a value at the wrong SourceSort");
 }
 
 void printValue(std::ostream& os, STPMgr* manager,
-                const UFConcreteValue& value)
+                const UFConcreteValue& value, const SourceSort& declared)
 {
-  const ASTNode constant = UFModel::concreteValue(manager, value);
-  if (value.sort().kind() == SourceSort::Kind::Bool)
+  const ASTNode constant = UFModel::concreteValue(manager, value, declared);
+  if (declared.kind() == SourceSort::Kind::Bool)
   {
     os << (constant.GetKind() == TRUE ? "true" : "false");
     return;
@@ -61,12 +63,19 @@ void printValue(std::ostream& os, STPMgr* manager,
   // define-fun this text goes into has to name the mode; a bit-vector
   // literal there is not a term of the sort. concreteValue has already
   // refused any carrier that names none.
-  if (value.sort().kind() == SourceSort::Kind::RoundingMode)
+  if (declared.kind() == SourceSort::Kind::RoundingMode)
   {
     const char* name = printer::roundingModeName(constant.GetUnsignedConst());
     if (name == NULL)
       FatalError("UF model holds a RoundingMode value that denotes no mode");
     os << name;
+    return;
+  }
+  // Likewise a float: (fp #bS #bE #bM) at the declared format, not the packed
+  // carrier the checker solved it as.
+  if (declared.kind() == SourceSort::Kind::FloatingPoint)
+  {
+    printer::outputFloatingPointSMTLIB2(constant, os, constant);
     return;
   }
   printer::outputBitVecSMTLIB2(constant, os);
@@ -86,11 +95,33 @@ void printCondition(std::ostream& os, STPMgr* manager,
       os << ' ';
     requireValueSort(arguments[i], signature.domain()[i]);
     os << "(= x" << i << ' ';
-    printValue(os, manager, arguments[i]);
+    printValue(os, manager, arguments[i], signature.domain()[i]);
     os << ')';
   }
   if (arguments.size() > 1)
     os << ')';
+}
+
+// A floating-point actual as the checker would have bucketed it: its
+// canonical packed bits.
+//
+// The value arrives either as a float constant or as the bare carrier the SAT
+// assignment materialised, so it is lifted to the declared sort first --
+// which is where NaN gets quotiented, since STPMgr::CreateFPConst interns
+// every NaN pattern as the one canonical quiet NaN -- and then taken back
+// through the same FP_TO_IEEE_BV boundary UF lowering puts on the argument
+// side. Over a constant that folds rather than building a circuit; a null
+// return means it did not, which the caller reports rather than guessing.
+ASTNode canonicalConstant(STPMgr* manager, const ASTNode& constant,
+                          const SourceSort& declared)
+{
+  if (constant.GetKind() != BVCONST ||
+      constant.GetValueWidth() != declared.packedWidth())
+    return ASTNode();
+  const ASTNode packed = manager->defaultNodeFactory->CreateTerm(
+      FP_TO_IEEE_BV, declared.packedWidth(),
+      manager->LiftSourceValue(constant, declared));
+  return packed.GetKind() == BVCONST ? packed : ASTNode();
 }
 
 bool seedFunctionBefore(const UFFunctionModelSeed* left,
@@ -135,6 +166,20 @@ ASTNode UFModel::concreteValue(STPMgr* manager,
   return manager->LiftSourceValue(carrier, sort);
 }
 
+ASTNode UFModel::concreteValue(STPMgr* manager, const UFConcreteValue& value,
+                               const SourceSort& declared)
+{
+  if (value.sort() != UFSignature::loweringSort(declared))
+    FatalError("UF concrete-value conversion received a value at the wrong "
+               "lowering sort");
+  const ASTNode solved = concreteValue(manager, value);
+  if (declared.kind() != SourceSort::Kind::FloatingPoint)
+    return solved;
+  // A float was solved as its canonical packed bits. Crossing back is the
+  // same reinterpretation the formula got, done on a constant.
+  return manager->LiftSourceValue(solved, declared);
+}
+
 bool UFModel::evaluateApplication(STPMgr* manager,
                                   const UFTheoryAdapter* adapter,
                                   const ASTNode& durableHandle,
@@ -174,13 +219,14 @@ bool UFModel::evaluateApplication(STPMgr* manager,
                  "certified solve";
     return false;
   }
-  if (concrete.sort() != durableHandle.GetSourceSort())
+  const SourceSort declared = durableHandle.GetSourceSort();
+  if (concrete.sort() != UFSignature::loweringSort(declared))
   {
     diagnostic = "certified uninterpreted-function value has the wrong "
                  "SourceSort";
     return false;
   }
-  value = concreteValue(manager, concrete);
+  value = concreteValue(manager, concrete, declared);
   return true;
 }
 
@@ -219,14 +265,36 @@ bool UFModel::evaluateApplicationInTerm(
     return false;
   }
 
-  // The actuals, as the seed keys them.
+  // The actuals, as the seed keys them -- which is at the lowering sort, and
+  // canonicalised.
+  //
+  // This is the quiet half of the boundary. The checker observed the
+  // canonically-packed actual, so a query that supplies a differently
+  // payloaded NaN for the same argument is asking about the same value and
+  // must reach the same case. Keying the seed with the raw constant instead
+  // would fall through to the default, and model evaluation would disagree
+  // with the interpretation the define-fun printed -- silently, because both
+  // answers are well-sorted.
   UFConcreteTuple arguments;
   arguments.reserve(actualValues.size());
   for (size_t i = 0; i < actualValues.size(); ++i)
   {
+    const SourceSort& declared = signature.domain()[i];
+    ASTNode actual = actualValues[i];
+    if (declared.kind() == SourceSort::Kind::FloatingPoint)
+    {
+      actual = canonicalConstant(manager, actual, declared);
+      if (actual.IsNull())
+      {
+        diagnostic = "uninterpreted-function application was given a "
+                     "floating-point actual that does not fold to a "
+                     "canonical value";
+        return false;
+      }
+    }
     UFConcreteValue argument;
-    if (!UFConcreteValue::fromConstant(actualValues[i], signature.domain()[i],
-                                       argument, diagnostic))
+    if (!UFConcreteValue::fromConstant(
+            actual, UFSignature::loweringSort(declared), argument, diagnostic))
       return false;
     arguments.push_back(argument);
   }
@@ -250,7 +318,11 @@ bool UFModel::evaluateApplicationInTerm(
   }
   if (function == NULL)
   {
-    value = concreteValue(manager, UFConcreteValue::zero(signature.codomain()));
+    value = concreteValue(
+        manager,
+        UFConcreteValue::zero(
+            UFSignature::loweringSort(signature.codomain())),
+        signature.codomain());
     return true;
   }
 
@@ -258,12 +330,12 @@ bool UFModel::evaluateApplicationInTerm(
     if (entry.arguments == arguments)
     {
       requireValueSort(entry.result, signature.codomain());
-      value = concreteValue(manager, entry.result);
+      value = concreteValue(manager, entry.result, signature.codomain());
       return true;
     }
 
   requireValueSort(function->defaultValue, signature.codomain());
-  value = concreteValue(manager, function->defaultValue);
+  value = concreteValue(manager, function->defaultValue, signature.codomain());
   return true;
 }
 
@@ -353,8 +425,8 @@ UFModel::defaultSeed(const std::vector<const UFDecl*>& declarations)
       FatalError("UF default model received a null declaration");
     UFFunctionModelSeed function;
     function.declaration = declaration;
-    function.defaultValue =
-        UFConcreteValue::zero(declaration->signature().codomain());
+    function.defaultValue = UFConcreteValue::zero(
+        UFSignature::loweringSort(declaration->signature().codomain()));
     seed.functions.push_back(function);
   }
   return seed;
@@ -406,10 +478,10 @@ void UFModel::printSMTLIB2(std::ostream& os,
       os << "(ite ";
       printCondition(os, manager, signature, modelCase.arguments);
       os << ' ';
-      printValue(os, manager, modelCase.result);
+      printValue(os, manager, modelCase.result, signature.codomain());
       os << ' ';
     }
-    printValue(os, manager, function->defaultValue);
+    printValue(os, manager, function->defaultValue, signature.codomain());
     for (size_t i = 0; i < function->cases.size(); ++i)
       os << ')';
     os << ")\n";

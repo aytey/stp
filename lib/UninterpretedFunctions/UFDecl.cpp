@@ -5,8 +5,8 @@ namespace stp
 
 const char* UFSignature::supportedSortsPhrase()
 {
-  return "only Bool, RoundingMode and nonzero-width bit-vector sorts are "
-         "supported";
+  return "only Bool, RoundingMode, FloatingPoint and nonzero-width "
+         "bit-vector sorts are supported";
 }
 
 bool UFSignature::isSupportedSort(const SourceSort& sort)
@@ -17,11 +17,23 @@ bool UFSignature::isSupportedSort(const SourceSort& sort)
   // second notion of "equal". What it does need is the pin -- see
   // UFLowering::lowerCompletedRoot -- because the carrier has thirty-two
   // patterns and the sort has five.
+  //
+  // FloatingPoint is admitted on the opposite basis: its carrier's
+  // bit-equality is *not* its equality, so it is never solved at its own
+  // sort. See loweringSort.
   if (sort.kind() == SourceSort::Kind::Bool ||
-      sort.kind() == SourceSort::Kind::RoundingMode)
+      sort.kind() == SourceSort::Kind::RoundingMode ||
+      sort.kind() == SourceSort::Kind::FloatingPoint)
     return true;
   return sort.kind() == SourceSort::Kind::BitVector &&
          sort.bitVectorWidth() > 0;
+}
+
+SourceSort UFSignature::loweringSort(const SourceSort& sort)
+{
+  if (sort.kind() == SourceSort::Kind::FloatingPoint)
+    return SourceSort::bitVector(sort.packedWidth());
+  return sort;
 }
 
 bool UFSignature::validate(const std::vector<SourceSort>& domain,

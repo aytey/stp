@@ -44,9 +44,6 @@ TEST(UninterpretedFunctionsFrontend, IsDisabledByDefault)
 TEST(UninterpretedFunctionsFrontend, SignatureUsesRestrictedSourceSorts)
 {
   EXPECT_THROW(UFSignature({}, SourceSort::boolean()), std::invalid_argument);
-  EXPECT_THROW(UFSignature({SourceSort::floatingPoint(8, 24)},
-                           SourceSort::boolean()),
-               std::invalid_argument);
   EXPECT_THROW(UFSignature({SourceSort::bitVector(8)},
                            SourceSort::array(SourceSort::bitVector(8),
                                              SourceSort::bitVector(8))),
@@ -60,15 +57,36 @@ TEST(UninterpretedFunctionsFrontend, SignatureUsesRestrictedSourceSorts)
   EXPECT_EQ(17u, signature.domain()[1].bitVectorWidth());
   EXPECT_EQ(3u, signature.codomain().bitVectorWidth());
 
-  // RoundingMode used to sit alongside the throwing rows above. It is now
-  // admitted in both positions; the row is kept, inverted, so that a
-  // regression which re-rejected the sort fails here.
+  // RoundingMode and FloatingPoint used to sit alongside the throwing rows
+  // above. Both are now admitted in either position; the rows are kept,
+  // inverted, so that a regression which re-rejected a sort fails here.
   const UFSignature mode({SourceSort::roundingMode()},
                          SourceSort::roundingMode());
   ASSERT_EQ(1u, mode.arity());
   EXPECT_EQ(SourceSort::Kind::RoundingMode, mode.domain()[0].kind());
   EXPECT_EQ(SourceSort::Kind::RoundingMode, mode.codomain().kind());
   EXPECT_EQ(5u, mode.codomain().packedWidth());
+
+  const UFSignature floats({SourceSort::floatingPoint(8, 24)},
+                           SourceSort::floatingPoint(11, 53));
+  ASSERT_EQ(1u, floats.arity());
+  EXPECT_EQ(SourceSort::Kind::FloatingPoint, floats.domain()[0].kind());
+  EXPECT_EQ(SourceSort::Kind::FloatingPoint, floats.codomain().kind());
+
+  // Admitted at its own sort, but never *solved* at it: a float is compared
+  // as its canonical packed carrier, because SMT-LIB's = on floats identifies
+  // every NaN and byte equality does not.
+  EXPECT_EQ(SourceSort::bitVector(32),
+            UFSignature::loweringSort(floats.domain()[0]));
+  EXPECT_EQ(SourceSort::bitVector(64),
+            UFSignature::loweringSort(floats.codomain()));
+  // Every other admitted sort is solved exactly as declared.
+  EXPECT_EQ(SourceSort::boolean(),
+            UFSignature::loweringSort(SourceSort::boolean()));
+  EXPECT_EQ(SourceSort::roundingMode(),
+            UFSignature::loweringSort(SourceSort::roundingMode()));
+  EXPECT_EQ(SourceSort::bitVector(17),
+            UFSignature::loweringSort(SourceSort::bitVector(17)));
 }
 
 TEST(UninterpretedFunctionsFrontend,
@@ -78,7 +96,6 @@ TEST(UninterpretedFunctionsFrontend,
   manager.UserFlags.enable_uninterpreted_functions = true;
   UFContext* context = manager.getUFContext();
   const SourceSort bv8 = SourceSort::bitVector(8);
-  const SourceSort fp = SourceSort::floatingPoint(8, 24);
   const SourceSort array = SourceSort::array(bv8, bv8);
   std::string diagnostic;
 
@@ -87,25 +104,25 @@ TEST(UninterpretedFunctionsFrontend,
   EXPECT_EQ("uninterpreted functions: declaration of empty: a zero-arity "
             "declaration is an ordinary symbol, not an uninterpreted function",
             diagnostic);
-  EXPECT_EQ(nullptr,
-            context->declareFunction("fp", {fp}, bv8, &diagnostic));
-  EXPECT_EQ("uninterpreted functions: declaration of fp: unsupported domain "
-            "sort (_ FloatingPoint 8 24) at argument 0 (only Bool, "
-            "RoundingMode and nonzero-width bit-vector sorts are supported)",
-            diagnostic);
-  // The RoundingMode row that used to sit here is now admitted; it moved to
-  // RoundingModeSignaturesAreAdmitted below, where the registry is expected
-  // to change rather than stay empty.
+  // The RoundingMode and FloatingPoint rows that used to sit here are now
+  // admitted; they moved to the positive tests below, where the registry is
+  // expected to change rather than stay empty.
   EXPECT_EQ(nullptr,
             context->declareFunction("array", {array}, bv8, &diagnostic));
+  EXPECT_EQ("uninterpreted functions: declaration of array: unsupported "
+            "domain sort (Array (_ BitVec 8) (_ BitVec 8)) at argument 0 "
+            "(only Bool, RoundingMode, FloatingPoint and nonzero-width "
+            "bit-vector sorts are supported)",
+            diagnostic);
   EXPECT_EQ(nullptr, context->declareFunction(
                          "unknown", {SourceSort::unknown()}, bv8,
                          &diagnostic));
   EXPECT_EQ(nullptr,
-            context->declareFunction("result", {bv8}, fp, &diagnostic));
+            context->declareFunction("result", {bv8}, array, &diagnostic));
   EXPECT_EQ("uninterpreted functions: declaration of result: unsupported "
-            "result sort (_ FloatingPoint 8 24) (only Bool, RoundingMode and "
-            "nonzero-width bit-vector sorts are supported)",
+            "result sort (Array (_ BitVec 8) (_ BitVec 8)) (only Bool, "
+            "RoundingMode, FloatingPoint and nonzero-width bit-vector sorts "
+            "are supported)",
             diagnostic);
   EXPECT_EQ(0u, context->declarationCount());
   EXPECT_EQ(0u, context->registeredApplicationCount());

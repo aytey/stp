@@ -40,9 +40,14 @@ EqualityKey keyFor(ASTNode left, ASTNode right, const SourceSort& sort)
   return key;
 }
 
+// What a lemma atom may be stated over. This is the *lowering* sort list, not
+// the signature one: FloatingPoint is an admitted signature sort but is never
+// a lemma sort, because a float is quotiented to its packed carrier before it
+// reaches the checker at all.
 bool supported(const SourceSort& sort)
 {
-  return UFSignature::isSupportedSort(sort);
+  return UFSignature::isSupportedSort(sort) &&
+         sort.kind() != SourceSort::Kind::FloatingPoint;
 }
 
 } // namespace
@@ -72,7 +77,13 @@ bool UFLemmaOracle::buildAndValidate(const UFCongruenceConflict& conflict,
     diagnostic = "UF lemma certificate has no result conflict";
     return false;
   }
-  const SourceSort& codomain = conflict.declaration->signature().codomain();
+  // Certificates are stated at the lowering sort, which is what the CNF
+  // encoder can build equalities over. It differs from the declared sort only
+  // for FloatingPoint, whose bit-equality is not its equality -- so a float
+  // reaches this oracle already quotiented to its canonical packed bits, and
+  // never as a float.
+  const SourceSort codomain = UFSignature::loweringSort(
+      conflict.declaration->signature().codomain());
   if (!supported(codomain) || conflict.leftResult.GetSourceSort() != codomain ||
       conflict.rightResult.GetSourceSort() != codomain ||
       conflict.leftResultValue.sort() != codomain ||
@@ -88,7 +99,9 @@ bool UFLemmaOracle::buildAndValidate(const UFCongruenceConflict& conflict,
   {
     if (argument.position != expectedPosition++ ||
         argument.position >= conflict.declaration->signature().arity() ||
-        argument.sort != conflict.declaration->signature().domain()[argument.position] ||
+        argument.sort != UFSignature::loweringSort(
+                             conflict.declaration->signature()
+                                 .domain()[argument.position]) ||
         argument.concreteValue.sort() != argument.sort ||
         argument.leftTheory.IsNull() || argument.rightTheory.IsNull() ||
         argument.leftTheory.GetSourceSort() != argument.sort ||

@@ -607,6 +607,17 @@ bool BVTypeCheck_term_kind(const ASTNode& n, const Kind& k)
         if (n.GetType() != BOOLEAN_TYPE)
           FatalError("BVTypeCheck: Bool UF_APPLY has a non-Bool carrier", n);
       }
+      // A float-codomain application derives its format from the same
+      // declaration identity its sort comes from, so it types as a float
+      // rather than as its packed carrier. Every other admitted sort has a
+      // bit-vector carrier of the packed width.
+      else if (sort.kind() == SourceSort::Kind::FloatingPoint)
+      {
+        if (n.GetType() != FLOATINGPOINT_TYPE ||
+            n.GetExpWidth() != sort.exponentWidth() ||
+            n.GetSigWidth() != sort.significandWidth())
+          FatalError("BVTypeCheck: float UF_APPLY has the wrong format", n);
+      }
       else if (n.GetType() != BITVECTOR_TYPE ||
                n.GetValueWidth() != sort.packedWidth())
         FatalError("BVTypeCheck: UF_APPLY has the wrong carrier width", n);

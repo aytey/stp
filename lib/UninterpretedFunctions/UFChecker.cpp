@@ -363,16 +363,23 @@ UFCheckPlan UFChecker::validate(
       return plan;
     }
     const UFSignature& signature = record.declaration->signature();
-    if (record.resultSymbol.GetSourceSort() != signature.codomain())
+    // Every scalar in a record is at the *lowering* sort. It coincides with
+    // the declared sort everywhere but FloatingPoint, which the core never
+    // sees: it is solved as its canonical packed carrier and only becomes a
+    // float again at the model boundary.
+    if (record.resultSymbol.GetSourceSort() !=
+        UFSignature::loweringSort(signature.codomain()))
     {
       plan.diagnostic_ = "UFCHK result symbol has the wrong SourceSort";
       return plan;
     }
     for (size_t i = 0; i < signature.arity(); ++i)
     {
+      const SourceSort solved =
+          UFSignature::loweringSort(signature.domain()[i]);
       if (record.loweredActuals[i].IsNull() ||
           !record.loweredActuals[i].IsOwnedBy(record.declaration->owner()) ||
-          record.loweredActuals[i].GetSourceSort() != signature.domain()[i])
+          record.loweredActuals[i].GetSourceSort() != solved)
       {
         plan.diagnostic_ = "UFCHK argument record is not a typed canonical "
                            "scalar pair";
@@ -384,7 +391,7 @@ UFCheckPlan UFChecker::validate(
         continue;
       if (record.namedActuals[i].IsNull() ||
           !record.namedActuals[i].IsOwnedBy(record.declaration->owner()) ||
-          record.namedActuals[i].GetSourceSort() != signature.domain()[i] ||
+          record.namedActuals[i].GetSourceSort() != solved ||
           (record.namedActuals[i].GetKind() != SYMBOL &&
            !record.namedActuals[i].isConstant()))
       {
@@ -464,8 +471,9 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
       if (!record->observableArguments)
       {
         if (!readScalar(record->resultSymbol,
-                        declaration->signature().codomain(), candidate,
-                        constantValue, out.diagnostic))
+                        UFSignature::loweringSort(
+                            declaration->signature().codomain()),
+                        candidate, constantValue, out.diagnostic))
           return out;
         constantInterpretation = true;
         continue;
@@ -477,15 +485,17 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
       {
         UFConcreteValue value;
         if (!readScalar(record->namedActuals[i],
-                        declaration->signature().domain()[i], candidate,
-                        value, out.diagnostic))
+                        UFSignature::loweringSort(
+                            declaration->signature().domain()[i]),
+                        candidate, value, out.diagnostic))
           return out;
         tuple.push_back(value);
       }
       UFConcreteValue result;
       if (!readScalar(record->resultSymbol,
-                      declaration->signature().codomain(), candidate, result,
-                      out.diagnostic))
+                      UFSignature::loweringSort(
+                          declaration->signature().codomain()),
+                      candidate, result, out.diagnostic))
         return out;
 
       const ObservationTable::const_iterator found = table.find(tuple);
@@ -528,7 +538,8 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
       {
         UFCongruenceArgument argument;
         argument.position = i;
-        argument.sort = declaration->signature().domain()[i];
+        argument.sort =
+            UFSignature::loweringSort(declaration->signature().domain()[i]);
         argument.leftTheory = representative.loweredActuals[i];
         argument.rightTheory = record->loweredActuals[i];
         argument.leftScalar = representative.namedActuals[i];
@@ -554,7 +565,8 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     function.defaultValue =
         constantInterpretation
             ? constantValue
-            : UFConcreteValue::zero(declaration->signature().codomain());
+            : UFConcreteValue::zero(UFSignature::loweringSort(
+                  declaration->signature().codomain()));
     function.cases.reserve(table.size());
     for (const auto& entry : table)
     {

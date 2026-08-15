@@ -252,6 +252,38 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
         manager_->roundingModeValidConstraint(scalar));
   };
 
+  // An actual, as the checker will compare it. Only a float moves: it becomes
+  // its canonical packed bits, which is the sort's own equality rather than
+  // the carrier's, so two NaNs of different payloads compare equal and the
+  // two zeros stay apart. A constant takes the same boundary as everything
+  // else -- it needs no special case, because a float constant is already
+  // interned canonically (STPMgr::CreateFPConst quotients NaN) and the
+  // boundary folds over it rather than building a circuit.
+  const auto canonicalActual = [&](const ASTNode& lowered,
+                                   const SourceSort& declared) -> ASTNode {
+    if (declared.kind() != SourceSort::Kind::FloatingPoint)
+      return lowered;
+    return manager_->defaultNodeFactory->CreateTerm(
+        FP_TO_IEEE_BV, declared.packedWidth(), lowered);
+  };
+
+  // A result, as the formula that replaces the application will see it. The
+  // exact inverse of canonicalActual: the three-child to_fp reinterprets the
+  // solved bits at the declared format.
+  const auto theoryResult = [&](const ASTNode& result,
+                                const SourceSort& declared) -> ASTNode {
+    if (declared.kind() != SourceSort::Kind::FloatingPoint)
+      return result;
+    const ASTNode reinterpreted = manager_->defaultNodeFactory->CreateTerm(
+        FP_TOFP, declared.packedWidth(),
+        manager_->CreateBVConst(32, declared.exponentWidth()),
+        manager_->CreateBVConst(32, declared.significandWidth()), result);
+    if (reinterpreted.GetSourceSort() != declared)
+      FatalError("UF lowering rebuilt a float result at the wrong SourceSort",
+                 reinterpreted);
+    return reinterpreted;
+  };
+
   // A compound actual cannot be named while the walk is running: whether the
   // name is needed depends on how many applications its declaration turns out
   // to have, and the last of them may not have been reached yet. Each one is
@@ -314,21 +346,32 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
               lowered.GetSourceSort() != expected)
             FatalError("UF lowering crossed a SourceSort boundary",
                        application);
-          record.loweredActuals.push_back(lowered);
 
-          if (isLeafActual(lowered))
+          // From here down the record speaks the lowering sort. For every
+          // sort but FloatingPoint that is the declared sort unchanged; a
+          // float crosses into its canonical packed carrier here and does not
+          // cross back until the model boundary.
+          const SourceSort solved = UFSignature::loweringSort(expected);
+          const ASTNode scalar = canonicalActual(lowered, expected);
+          if (scalar.GetSourceSort() != solved)
+            FatalError("UF lowering produced an actual at the wrong lowering "
+                       "sort",
+                       scalar);
+          record.loweredActuals.push_back(scalar);
+
+          if (isLeafActual(scalar))
           {
-            record.namedActuals.push_back(lowered);
+            record.namedActuals.push_back(scalar);
             // A source symbol is already its own canonical scalar name, but it
             // still participates in future direct-CNF lemmas. Protect/register it
             // exactly like an introduced name so ordinary preprocessing cannot
             // substitute it away and leave the lemma talking about an unlinked
             // fresh SAT value. Constants need no mapping or protection.
-            if (lowered.GetKind() == SYMBOL)
+            if (scalar.GetKind() == SYMBOL)
             {
-              view.protectedSymbols.insert(lowered);
-              view.solveScalars.insert(lowered);
-              pinIfRoundingMode(lowered);
+              view.protectedSymbols.insert(scalar);
+              view.solveScalars.insert(scalar);
+              pinIfRoundingMode(scalar);
             }
             continue;
           }
@@ -336,8 +379,8 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
           PendingName pending;
           pending.record = record.stableOrder;
           pending.argument = record.namedActuals.size();
-          pending.lowered = lowered;
-          pending.sort = expected;
+          pending.lowered = scalar;
+          pending.sort = solved;
           pendingNames.push_back(pending);
           record.namedActuals.push_back(ASTNode());
         }
@@ -347,9 +390,10 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
           FatalError("UF lowering found a durable result with the wrong "
                      "SourceSort",
                      application);
+        const SourceSort solvedCodomain = UFSignature::loweringSort(codomain);
         record.resultSymbol = manager_->CreateDeterministicSourceVariable(
-            codomain, "uf_result", application);
-        if (record.resultSymbol.GetSourceSort() != codomain)
+            solvedCodomain, "uf_result", application);
+        if (record.resultSymbol.GetSourceSort() != solvedCodomain)
           FatalError("UF lowering allocated a result at the wrong SourceSort",
                      record.resultSymbol);
         view.protectedSymbols.insert(record.resultSymbol);
@@ -358,7 +402,12 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
         view.handleToResult.insert(
             std::make_pair(application, record.resultSymbol));
         view.applications.push_back(record);
-        return record.resultSymbol;
+        // A float result is solved as a packed bit-vector but the formula it
+        // replaces expects a float, so it goes back in through the exact
+        // inverse of the boundary its arguments came through: the three-child
+        // "reinterpret these bits" to_fp. Every other sort is returned as
+        // itself.
+        return theoryResult(record.resultSymbol, codomain);
       });
 
   // Only a declaration with two or more lowered applications can ever produce

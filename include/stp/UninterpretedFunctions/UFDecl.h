@@ -40,6 +40,20 @@ public:
   // The parenthetical the diagnostics share; kept beside the gate so the two
   // cannot drift.
   static const char* supportedSortsPhrase();
+
+  // The sort a signature position is *solved* at, as against the sort it is
+  // declared at. The two differ only for FloatingPoint.
+  //
+  // The UF core's currency is a concrete scalar compared by its bytes, and
+  // that is the sort's own equality for Bool, BitVec and RoundingMode. It is
+  // not for floats: SMT-LIB's = on floats is identity of values, and the NaN
+  // value has many representations, so bit-level bucketing would certify a
+  // model in which f(NaN) and f(NaN) differ. A float therefore enters and
+  // leaves the core through FP_TO_IEEE_BV -- pack o unpack, which collapses
+  // NaN payloads while keeping the two zeros apart -- and everything inside
+  // sees only Bool, BitVec and RoundingMode. This is the one function that
+  // says so.
+  static SourceSort loweringSort(const SourceSort& sort);
   static bool validate(const std::vector<SourceSort>& domain,
                        const SourceSort& codomain, std::string* error = NULL);
 
