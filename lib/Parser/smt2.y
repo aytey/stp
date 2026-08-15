@@ -303,13 +303,39 @@ namespace stp
     return o.str();
   }
 
+  void reportRedeclaredName();
+
   int yyerror(const char *s) {
+    if (stp::SMT2DeclassifiedNamePending())
+    {
+      // Bison ran past a declassified declare-fun name and hit a syntax
+      // error before any var_decl action consumed the record: a malformed
+      // zero-arity declaration shape. The legacy grammar died AT the name,
+      // so the name-position error is the whole pinned response, whatever
+      // `s` says. Return rather than throw: the grammar has no error
+      // productions, so bison now abandons the parse itself and reclaims
+      // its stack through the %destructor rules. (Nothing but bison calls
+      // yyerror while a record is pending: only sort rules sit between the
+      // name and the action, and those fail through fatal_yyerror below;
+      // the lexer's illegal-character rule handles its own case.)
+      reportRedeclaredName();
+      return 1;
+    }
     stp::GlobalParserInterface->rejectCurrentCommand(smt2_diagnostic(s));
     return 1;
   }
 
   int fatal_yyerror(const char *s) 
   {
+    if (stp::SMT2DeclassifiedNamePending())
+    {
+      // A sort rule inside a zero-arity declaration over a known name is
+      // rejecting a width or format. The legacy grammar never reached it:
+      // it died at the name. Print that error alone and unwind to
+      // SMT2Parse() -- neither the sort's own message nor FatalError's exit.
+      reportRedeclaredName();
+      throw stp::DeclassifiedNameAbandon();
+    }
     yyerror(s);
     stp::FatalError(smt2_diagnostic(s).c_str());
   }
@@ -412,6 +438,22 @@ namespace stp
     }
     return stp::GlobalParserInterface->newNode(application);
   }
+
+  // The zero-arity var_decl actions: a declassified declare-fun name means
+  // the legacy grammar rejected this declaration AT the name, so replicate
+  // that error and abandon. YYABORT does not reclaim the aborting rule's own
+  // right-hand side, so the action releases what it owns first (see
+  // "Cleanup: popping" in the generated parser).
+#define ABANDON_IF_REDECLARED_ZERO_ARITY(release)                            \
+  do                                                                        \
+  {                                                                         \
+    if (stp::SMT2DeclassifiedNamePending())                                 \
+    {                                                                       \
+      reportRedeclaredName();                                               \
+      release;                                                              \
+      YYABORT;                                                              \
+    }                                                                       \
+  } while (0)
 
   static bool acceptTopLevelDeclarationName(const std::string& name)
   {
@@ -2286,10 +2328,12 @@ LPAREN_TOK ARRAY_TOK an_array_sort_component an_array_sort_component RPAREN_TOK
 var_decl:
 STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY(delete $1);
   declareScalarSymbol($1, stp::SourceSort::bitVector($7));
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK STRING_TOK
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY((delete $1, delete $4));
   // The sort position holds a bare name: a define-sort alias. (This used to
   // match any TERM symbol, so `(declare-fun y () x)` with x a variable
   // "worked" as an alias use.)
@@ -2303,10 +2347,12 @@ STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TO
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK BOOL_TOK
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY(delete $1);
   declareScalarSymbol($1, stp::SourceSort::boolean());
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK an_array_sort
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY((delete $1, delete $4));
   // An array over any pairing of bitvector, floating-point and RoundingMode
   // index/element sorts. A float element's format lives on the array node
   // -- a read off it inherits the format (see deriveFPFormat) -- while a
@@ -2317,12 +2363,14 @@ STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TO
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK an_fp_sort
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY((delete $1, delete $4));
   declareScalarSymbol(
       $1, stp::SourceSort::floatingPoint($4->exp_bits, $4->sig_bits));
   delete $4;
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK ROUNDINGMODE_TOK
 {
+  ABANDON_IF_REDECLARED_ZERO_ARITY(delete $1);
   // A rounding mode is carried as a 5-bit one-hot bitvector, so a variable of
   // that sort is a 5-bit symbol. Declaring it as anything else -- or, as
   // before, not declaring it at all -- leaves every use of the name
@@ -2393,6 +2441,11 @@ STRING_TOK LPAREN_TOK
     delete $1;
     YYABORT;
   }
+  // The first domain token proves this declaration is nonzero-arity: the
+  // only shape that continues into the nonfatal UF declaration funnel over
+  // a known name. Retire the lexer's record of the classification the name
+  // would have carried; the funnel reports collisions itself.
+  stp::SMT2ConsumeDeclassifiedName();
   $$ = $1;
 }
 ;
@@ -3658,6 +3711,26 @@ TERMID_TOK
 
 %%
 
+// The pinned response to `(declare-fun name ...)` over an already-known
+// name in every shape but the nonzero-arity one: exactly the syntax error
+// bison raised when the lexer classified the name into a typed token that
+// no var_decl alternative accepts -- same message, same token-kind name
+// (from the parser's own symbol table, so it tracks the grammar), same
+// token text as recorded by the lexer at the name -- through the same
+// rejection path an ordinary syntax error takes. The caller abandons the
+// parse. Defined after the grammar because yytname and YYTRANSLATE live in
+// the generated parser body.
+void reportRedeclaredName()
+{
+  std::ostringstream o;
+  o << "syntax error: line " << stp::SMT2DeclassifiedNameLine()
+    << " syntax error, unexpected "
+    << yytname[YYTRANSLATE(stp::SMT2DeclassifiedNameToken())]
+    << ", expecting STRING_TOK  token: " << stp::SMT2DeclassifiedNameText();
+  stp::SMT2ConsumeDeclassifiedName();
+  stp::GlobalParserInterface->rejectCurrentCommand(o.str());
+}
+
 namespace stp {
   int SMT2Parse() {
     GlobalParserInterface->letMgr->frameMode = true;
@@ -3665,7 +3738,15 @@ namespace stp {
     // disabled and turn on at an FP set-logic.
     SMT2SetFloatTokens(false);
     SMT2ResetCommandLexerState();
-    const int result = smt2parse();
+    int result;
+    try
+    {
+      result = smt2parse();
+    }
+    catch (const stp::DeclassifiedNameAbandon&)
+    {
+      result = 1;
+    }
     if (result != 0)
       GlobalParserInterface->abortCurrentCommand();
     SMT2ResetCommandLexerState();

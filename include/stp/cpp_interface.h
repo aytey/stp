@@ -496,8 +496,12 @@ public:
   DLL_PUBLIC void addTemporarySymbol(ASTNode& s);
 
   // Check the shared top-level name space before the parser mutates a frame.
-  // With UF enabled declaration-name lexing deliberately reaches this
-  // semantic check even for already classified names.
+  // With UF enabled, a NONZERO-ARITY declare-fun name is deliberately lexed
+  // unclassified so that a collision reaches this semantic check and is
+  // reported nonfatally. Every UF-free shape (zero-arity declare-fun,
+  // declare-const, define-fun) keeps the legacy classified-token syntax error
+  // at the name instead; for those this check is a backstop the lexer
+  // normally pre-empts.
   DLL_PUBLIC bool validateTopLevelDeclarationName(
       const std::string& name, std::string* diagnostic = NULL);
 
