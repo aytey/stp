@@ -85,6 +85,16 @@ uint64_t pairsAmong(const uint64_t n)
   return n < 2 ? 0 : (n % 2 == 0 ? (n / 2) * (n - 1) : n * ((n - 1) / 2));
 }
 
+bool hasFloatingPointPosition(const UFSignature& signature)
+{
+  if (signature.codomain().kind() == SourceSort::Kind::FloatingPoint)
+    return true;
+  for (const SourceSort& sort : signature.domain())
+    if (sort.kind() == SourceSort::Kind::FloatingPoint)
+      return true;
+  return false;
+}
+
 } // namespace
 
 // Eager congruence (UFSTP OPT-02/OPT-03). The constraints are built as AST and
@@ -139,6 +149,32 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
   {
     if (mode == Mode::AUTO)
     {
+      // A pair count is only a proxy for what a pair costs, and for a
+      // floating-point position the proxy is wrong in the expensive
+      // direction. Measured on the collision family at
+      // --uf-ackermann=on against off (Release, CaDiCaL): a bit-vector
+      // signature gets faster the more pairs there are -- 0.33x the lazy
+      // time at 20 applications, 0.11x at 60 -- while a float signature gets
+      // steadily worse, 1.5x at 10 and 5.4x at 60, with no crossover in
+      // sight. A float codomain alone does it too, at 5.4x by 60.
+      //
+      // The reason is visible in the node counts. Where the actuals are
+      // bit-vectors, the query's own (= a b) is a substitutable equality:
+      // equality propagation collapses the actuals onto one node, every
+      // eagerly installed premise becomes reflexive, and the whole encoding
+      // dissolves before SAT -- the formula reaches constant-bit propagation
+      // at a node size of 1. Where they are floats, (= a b) is FP_SMT_EQ, a
+      // predicate rather than a substitution, and the link from an actual to
+      // its canonical name runs through a pack/unpack circuit. Nothing
+      // collapses (node size 3394, 131076 nodes before AIG rewrite at 40
+      // applications), so every one of the C(n,2) constraints is paid in
+      // full while the dynamic loop would have earned two or three lemmas.
+      //
+      // So the automatic policy declines these. --uf-ackermann=on still
+      // forces them: the encoding is correct, it is only a bad trade, and a
+      // caller who knows their query benefits should be able to ask.
+      if (hasFloatingPointPosition(candidate.second->signature()))
+        continue;
       if (candidate.first > budget)
         break; // and every later declaration is at least as expensive
       budget -= candidate.first;
