@@ -17,8 +17,8 @@ bool UFSignature::validate(const std::vector<SourceSort>& domain,
   if (domain.empty())
   {
     if (error != NULL)
-      *error = "uninterpreted-function declarations must have a non-empty "
-               "domain; zero-arity declare-fun is an ordinary symbol";
+      *error = "a zero-arity declaration is an ordinary symbol, not an "
+               "uninterpreted function";
     return false;
   }
 
@@ -27,8 +27,10 @@ bool UFSignature::validate(const std::vector<SourceSort>& domain,
     if (!isSupportedSort(domain[i]))
     {
       if (error != NULL)
-        *error = "uninterpreted-function domain sort " +
-                 std::to_string(i) + " must be Bool or a non-empty BitVec";
+        *error = "unsupported domain sort " +
+                 sourceSortToSMTLib(domain[i]) + " at argument " +
+                 std::to_string(i) + " (only Bool and nonzero-width "
+                 "bit-vector sorts are supported)";
       return false;
     }
   }
@@ -36,8 +38,9 @@ bool UFSignature::validate(const std::vector<SourceSort>& domain,
   if (!isSupportedSort(codomain))
   {
     if (error != NULL)
-      *error = "uninterpreted-function codomain must be Bool or a non-empty "
-               "BitVec";
+      *error = "unsupported result sort " + sourceSortToSMTLib(codomain) +
+               " (only Bool and nonzero-width bit-vector sorts are "
+               "supported)";
     return false;
   }
   return true;

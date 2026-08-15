@@ -1,11 +1,11 @@
 ; RUN: %solver --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck %s
-; CHECK: signatures do not support Array
-; CHECK: signatures do not support FloatingPoint
-; CHECK: signatures do not support RoundingMode
-; CHECK: signature sort 'UnknownSort' is unknown or unsupported
-; CHECK: BitVec domain sorts must have positive width
-; CHECK: signatures do not support Array
+; CHECK: unsupported domain sort \(Array \(_ BitVec 8\) \(_ BitVec 8\)\) at argument 0 of bad-array
+; CHECK: unsupported domain sort \(_ FloatingPoint 8 24\) at argument 0 of bad-fp
+; CHECK: unsupported domain sort RoundingMode at argument 0 of bad-rm
+; CHECK: unsupported domain sort UnknownSort at argument 0 of bad-unknown \(unknown
+; CHECK: unsupported domain sort \(_ BitVec 0\) at argument 0 of bad-zero
+; CHECK: unsupported result sort \(Array \(_ BitVec 8\) \(_ BitVec 8\)\) of bad-result
 ; CHECK: ^sat
 ; CHECK: REACHED-END
 ;

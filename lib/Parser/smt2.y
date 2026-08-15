@@ -356,11 +356,33 @@ namespace stp
    return n;
    }
 
-  static stp::SourceSort parsedUFSort(unsigned encoded)
+  static std::string unsupportedUFDomainSort(
+      const std::string& name, const stp::parsed_uf_sort& sort,
+      const size_t argument)
   {
-    assert(encoded != std::numeric_limits<unsigned>::max());
-    return encoded == 0 ? stp::SourceSort::boolean()
-                        : stp::SourceSort::bitVector(encoded);
+    std::string diagnostic =
+        "uninterpreted functions: unsupported domain sort " + sort.spelling +
+        " at argument " + std::to_string(argument) + " of " + name;
+    diagnostic += sort.known
+                      ? " (only Bool and nonzero-width bit-vector sorts are "
+                        "supported)"
+                      : " (unknown; only Bool and nonzero-width bit-vector "
+                        "sorts are supported)";
+    return diagnostic;
+  }
+
+  static std::string unsupportedUFResultSort(
+      const std::string& name, const stp::parsed_uf_sort& sort)
+  {
+    std::string diagnostic =
+        "uninterpreted functions: unsupported result sort " + sort.spelling +
+        " of " + name;
+    diagnostic += sort.known
+                      ? " (only Bool and nonzero-width bit-vector sorts are "
+                        "supported)"
+                      : " (unknown; only Bool and nonzero-width bit-vector "
+                        "sorts are supported)";
+    return diagnostic;
   }
 
   static ASTNode* applyParsedUF(const stp::UFDecl* declaration,
@@ -1345,7 +1367,8 @@ namespace stp
      outlives the token that carries it. */
   const stp::Cpp_interface::Function *fn;
   const stp::UFDecl *ufdecl;
-  std::vector<unsigned> *widthvec;
+  stp::parsed_uf_sort *ufsort;
+  std::vector<stp::parsed_uf_sort> *ufsortvec;
 };
 
 /* Successful reductions transfer/delete strings in their grammar actions.
@@ -1353,6 +1376,7 @@ namespace stp
    responsibility; release them here so malformed commands do not leak their
    identifier/string lookahead. */
 %destructor { delete $$; } <str>
+%destructor { delete $$; } <ufsort> <ufsortvec>
 
 %start cmd
 
@@ -1363,8 +1387,8 @@ namespace stp
 %type <uintval> an_fp_const
 %type <str> info_flag
 %type <str> uf_decl_name function_def_name
-%type <widthvec> uf_domain_sorts
-%type <uintval> uf_sort uf_codomain_sort
+%type <ufsortvec> uf_domain_sorts
+%type <ufsort> uf_sort uf_codomain_sort
 
 %type <fp_size> an_fp_sort
 %type <arr_component> an_array_sort_component
@@ -2309,30 +2333,41 @@ STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TO
 }
 | uf_decl_name uf_domain_sorts RPAREN_TOK uf_codomain_sort
 {
-  const unsigned invalid = std::numeric_limits<unsigned>::max();
-  bool valid = $4 != invalid;
+  bool valid = true;
   std::vector<stp::SourceSort> domain;
   domain.reserve($2->size());
-  for (unsigned encoded : *$2)
+  for (size_t i = 0; i < $2->size(); ++i)
   {
-    if (encoded == invalid)
+    const stp::parsed_uf_sort& parsed = (*$2)[i];
+    if (!parsed.supported)
     {
+      if (valid)
+        stp::GlobalParserInterface->rejectCurrentCommand(
+            unsupportedUFDomainSort(*$1, parsed, i));
       valid = false;
       continue;
     }
-    domain.push_back(parsedUFSort(encoded));
+    domain.push_back(parsed.sort);
+  }
+  if (!$4->supported)
+  {
+    if (valid)
+      stp::GlobalParserInterface->rejectCurrentCommand(
+          unsupportedUFResultSort(*$1, *$4));
+    valid = false;
   }
   if (valid)
   {
     std::string diagnostic;
     const stp::UFDecl* declaration =
         stp::GlobalParserInterface->declareScopedUninterpretedFunction(
-            *$1, domain, parsedUFSort($4), &diagnostic);
+            *$1, domain, $4->sort, &diagnostic);
     if (declaration == NULL)
       stp::GlobalParserInterface->rejectCurrentCommand(diagnostic);
   }
   delete $1;
   delete $2;
+  delete $4;
 }
 ;
 
@@ -2365,12 +2400,14 @@ STRING_TOK LPAREN_TOK
 uf_domain_sorts:
 uf_sort
 {
-  $$ = new std::vector<unsigned>();
-  $$->push_back($1);
+  $$ = new std::vector<stp::parsed_uf_sort>();
+  $$->push_back(std::move(*$1));
+  delete $1;
 }
 | uf_domain_sorts uf_sort
 {
-  $1->push_back($2);
+  $1->push_back(std::move(*$2));
+  delete $2;
   $$ = $1;
 }
 ;
@@ -2379,45 +2416,44 @@ uf_sort:
 LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
   if ($4 == 0)
-  {
-    stp::GlobalParserInterface->rejectCurrentCommand(
-        "uninterpreted-function BitVec domain sorts must have positive width");
-    $$ = std::numeric_limits<unsigned>::max();
-  }
+    $$ = new stp::parsed_uf_sort(stp::SourceSort::unknown(),
+                                 "(_ BitVec 0)", false);
   else
-    $$ = $4;
+  {
+    const stp::SourceSort sort = stp::SourceSort::bitVector($4);
+    $$ = new stp::parsed_uf_sort(
+        sort, stp::sourceSortToSMTLib(sort), true);
+  }
 }
 | BOOL_TOK
 {
-  $$ = 0;
+  $$ = new stp::parsed_uf_sort(stp::SourceSort::boolean(), "Bool", true);
 }
 | an_array_sort
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support Array");
+  const stp::SourceSort sort = $1->sourceSort();
+  $$ = new stp::parsed_uf_sort(
+      sort, stp::sourceSortToSMTLib(sort), false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 | an_fp_sort
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support FloatingPoint");
+  const stp::SourceSort sort =
+      stp::SourceSort::floatingPoint($1->exp_bits, $1->sig_bits);
+  $$ = new stp::parsed_uf_sort(
+      sort, stp::sourceSortToSMTLib(sort), false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 | ROUNDINGMODE_TOK
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support RoundingMode");
-  $$ = std::numeric_limits<unsigned>::max();
+  $$ = new stp::parsed_uf_sort(
+      stp::SourceSort::roundingMode(), "RoundingMode", false);
 }
 | STRING_TOK
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signature sort '" + *$1 +
-      "' is unknown or unsupported");
+  $$ = new stp::parsed_uf_sort(
+      stp::SourceSort::unknown(), *$1, false, false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 ;
 
@@ -2425,45 +2461,44 @@ uf_codomain_sort:
 LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
   if ($4 == 0)
-  {
-    stp::GlobalParserInterface->rejectCurrentCommand(
-        "uninterpreted-function BitVec codomain must have positive width");
-    $$ = std::numeric_limits<unsigned>::max();
-  }
+    $$ = new stp::parsed_uf_sort(stp::SourceSort::unknown(),
+                                 "(_ BitVec 0)", false);
   else
-    $$ = $4;
+  {
+    const stp::SourceSort sort = stp::SourceSort::bitVector($4);
+    $$ = new stp::parsed_uf_sort(
+        sort, stp::sourceSortToSMTLib(sort), true);
+  }
 }
 | BOOL_TOK
 {
-  $$ = 0;
+  $$ = new stp::parsed_uf_sort(stp::SourceSort::boolean(), "Bool", true);
 }
 | an_array_sort
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support Array");
+  const stp::SourceSort sort = $1->sourceSort();
+  $$ = new stp::parsed_uf_sort(
+      sort, stp::sourceSortToSMTLib(sort), false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 | an_fp_sort
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support FloatingPoint");
+  const stp::SourceSort sort =
+      stp::SourceSort::floatingPoint($1->exp_bits, $1->sig_bits);
+  $$ = new stp::parsed_uf_sort(
+      sort, stp::sourceSortToSMTLib(sort), false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 | ROUNDINGMODE_TOK
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signatures do not support RoundingMode");
-  $$ = std::numeric_limits<unsigned>::max();
+  $$ = new stp::parsed_uf_sort(
+      stp::SourceSort::roundingMode(), "RoundingMode", false);
 }
 | STRING_TOK
 {
-  stp::GlobalParserInterface->rejectCurrentCommand(
-      "uninterpreted-function signature sort '" + *$1 +
-      "' is unknown or unsupported");
+  $$ = new stp::parsed_uf_sort(
+      stp::SourceSort::unknown(), *$1, false, false);
   delete $1;
-  $$ = std::numeric_limits<unsigned>::max();
 }
 ;
 

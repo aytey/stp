@@ -61,8 +61,15 @@ TEST(UninterpretedFunctionsFrontend,
 
   EXPECT_EQ(nullptr,
             context->declareFunction("empty", {}, bv8, &diagnostic));
+  EXPECT_EQ("uninterpreted functions: declaration of empty: a zero-arity "
+            "declaration is an ordinary symbol, not an uninterpreted function",
+            diagnostic);
   EXPECT_EQ(nullptr,
             context->declareFunction("fp", {fp}, bv8, &diagnostic));
+  EXPECT_EQ("uninterpreted functions: declaration of fp: unsupported domain "
+            "sort (_ FloatingPoint 8 24) at argument 0 (only Bool and "
+            "nonzero-width bit-vector sorts are supported)",
+            diagnostic);
   EXPECT_EQ(nullptr,
             context->declareFunction("rm", {rm}, bv8, &diagnostic));
   EXPECT_EQ(nullptr,
@@ -72,6 +79,10 @@ TEST(UninterpretedFunctionsFrontend,
                          &diagnostic));
   EXPECT_EQ(nullptr,
             context->declareFunction("result", {bv8}, fp, &diagnostic));
+  EXPECT_EQ("uninterpreted functions: declaration of result: unsupported "
+            "result sort (_ FloatingPoint 8 24) (only Bool and nonzero-width "
+            "bit-vector sorts are supported)",
+            diagnostic);
   EXPECT_EQ(0u, context->declarationCount());
   EXPECT_EQ(0u, context->registeredApplicationCount());
 }
@@ -134,10 +145,19 @@ TEST(UninterpretedFunctionsFrontend, FailedApplicationsRegisterNothing)
       second.CreateSourceSymbol("foreign", SourceSort::bitVector(8));
   EXPECT_EQ(UNDEFINED,
             context->apply(declaration, ASTVec(), &diagnostic).GetKind());
+  EXPECT_EQ("uninterpreted functions: f expects 1 argument but was applied "
+            "to 0",
+            diagnostic);
   EXPECT_EQ(UNDEFINED,
             context->apply(declaration, {wrong}, &diagnostic).GetKind());
+  EXPECT_EQ("uninterpreted functions: argument 0 of f has sort Bool but the "
+            "declaration requires (_ BitVec 8)",
+            diagnostic);
   EXPECT_EQ(UNDEFINED,
             context->apply(declaration, {foreign}, &diagnostic).GetKind());
+  EXPECT_EQ("uninterpreted functions: argument 0 of f belongs to another "
+            "context",
+            diagnostic);
   EXPECT_EQ(0u, context->registeredApplicationCount());
 
   ASSERT_TRUE(context->deactivate(declaration, &diagnostic));

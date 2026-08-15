@@ -1,6 +1,6 @@
 ; RUN: %solver --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck %s
-; CHECK: argument 0 has the wrong source sort
+; CHECK: argument 0 of f has sort Bool but the declaration requires \(_ BitVec 8\)
 ; CHECK: ^sat
 ; CHECK: REACHED-END
 ;

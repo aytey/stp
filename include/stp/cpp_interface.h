@@ -35,6 +35,7 @@ THE SOFTWARE.
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace stp
@@ -98,6 +99,25 @@ struct array_sort
   {
     return SourceSort::array(index.sourceSort(), elem.sourceSort());
   }
+};
+
+// Command-local semantic carrier for one sort in a nonzero-arity
+// declare-fun. Keeping unsupported sorts as data lets the enclosing
+// declaration report its name and argument position without parser-global
+// latches, while still postponing every mutation until the signature is valid.
+struct parsed_uf_sort
+{
+  parsed_uf_sort(SourceSort sourceSort, std::string display,
+                 bool isSupported, bool isKnown = true)
+      : sort(std::move(sourceSort)), spelling(std::move(display)),
+        supported(isSupported), known(isKnown)
+  {
+  }
+
+  SourceSort sort;
+  std::string spelling;
+  bool supported;
+  bool known;
 };
 
 // Heterogeneous string hash: lets a string-keyed table be probed with a

@@ -76,7 +76,8 @@ UFContext::declareFunction(const std::string& name,
   std::string signatureError;
   if (!UFSignature::validate(domain, codomain, &signatureError))
   {
-    setError(error, signatureError);
+    setError(error, "uninterpreted functions: declaration of " + name +
+                        ": " + signatureError);
     return NULL;
   }
   if (activeByName_.find(name) != activeByName_.end())
@@ -174,10 +175,9 @@ std::vector<const UFDecl*> UFContext::activeDeclarations() const
 bool UFContext::validateApplicationChildren(ASTChildren children,
                                             std::string* error) const
 {
-  if (children.size() < 2)
+  if (children.empty())
   {
-    setError(error, "UF_APPLY requires a declaration identity and at least "
-                    "one actual argument");
+    setError(error, "UF_APPLY requires a declaration identity");
     return false;
   }
   if (!children[0].IsOwnedBy(manager_))
@@ -193,20 +193,32 @@ bool UFContext::validateApplicationChildren(ASTChildren children,
   }
   if (children.size() - 1 != decl->signature().arity())
   {
-    setError(error, "uninterpreted-function application arity mismatch");
+    const size_t expected = decl->signature().arity();
+    const size_t actual = children.size() - 1;
+    setError(error, "uninterpreted functions: " + decl->name() + " expects " +
+                        std::to_string(expected) +
+                        (expected == 1 ? " argument" : " arguments") +
+                        " but was applied to " + std::to_string(actual));
     return false;
   }
   for (size_t i = 1; i < children.size(); ++i)
   {
     if (!children[i].IsOwnedBy(manager_))
     {
-      setError(error, "uninterpreted-function actual belongs to another context");
+      setError(error, "uninterpreted functions: argument " +
+                          std::to_string(i - 1) + " of " + decl->name() +
+                          " belongs to another context");
       return false;
     }
-    if (children[i].GetSourceSort() != decl->signature().domain()[i - 1])
+    const SourceSort& expected = decl->signature().domain()[i - 1];
+    const SourceSort actual = children[i].GetSourceSort();
+    if (actual != expected)
     {
-      setError(error, "uninterpreted-function argument " +
-                      std::to_string(i - 1) + " has the wrong source sort");
+      setError(error, "uninterpreted functions: argument " +
+                          std::to_string(i - 1) + " of " + decl->name() +
+                          " has sort " + sourceSortToSMTLib(actual) +
+                          " but the declaration requires " +
+                          sourceSortToSMTLib(expected));
       return false;
     }
   }

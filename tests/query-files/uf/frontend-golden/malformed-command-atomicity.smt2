@@ -1,7 +1,7 @@
 ; RUN: %solver --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck %s
-; CHECK-NEXT: ^\(error ".*arity mismatch"\)
-; CHECK-NEXT: ^\(error ".*arity mismatch"\)
+; CHECK-NEXT: ^\(error ".*f expects 1 argument but was applied to 2"\)
+; CHECK-NEXT: ^\(error ".*f expects 1 argument but was applied to 2"\)
 ; CHECK-NEXT: ^sat
 ; CHECK-NEXT: ^"REACHED-END"
 ;

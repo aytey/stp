@@ -36,18 +36,9 @@ void printQuotedSymbol(std::ostream& os, const std::string& name)
 
 void printSort(std::ostream& os, const SourceSort& sort)
 {
-  if (sort.kind() == SourceSort::Kind::Bool)
-  {
-    os << "Bool";
-    return;
-  }
-  if (sort.kind() == SourceSort::Kind::BitVector &&
-      sort.bitVectorWidth() > 0)
-  {
-    os << "(_ BitVec " << sort.bitVectorWidth() << ')';
-    return;
-  }
-  FatalError("UF model tried to print an unsupported SourceSort");
+  if (!UFSignature::isSupportedSort(sort))
+    FatalError("UF model tried to print an unsupported SourceSort");
+  os << sourceSortToSMTLib(sort);
 }
 
 void requireValueSort(const UFConcreteValue& value,

@@ -5,6 +5,22 @@
 
 using namespace stp;
 
+TEST(SourceSort, prints_canonical_smtlib_spelling)
+{
+  EXPECT_EQ("Unknown", sourceSortToSMTLib(SourceSort::unknown()));
+  EXPECT_EQ("Bool", sourceSortToSMTLib(SourceSort::boolean()));
+  EXPECT_EQ("(_ BitVec 17)",
+            sourceSortToSMTLib(SourceSort::bitVector(17)));
+  EXPECT_EQ("(_ FloatingPoint 8 24)",
+            sourceSortToSMTLib(SourceSort::floatingPoint(8, 24)));
+  EXPECT_EQ("RoundingMode",
+            sourceSortToSMTLib(SourceSort::roundingMode()));
+  EXPECT_EQ("(Array (_ FloatingPoint 8 24) RoundingMode)",
+            sourceSortToSMTLib(SourceSort::array(
+                SourceSort::floatingPoint(8, 24),
+                SourceSort::roundingMode())));
+}
+
 TEST(SourceSort, distinguishes_equal_width_float_formats)
 {
   const SourceSort single = SourceSort::floatingPoint(8, 24);

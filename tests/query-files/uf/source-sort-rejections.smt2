@@ -4,10 +4,10 @@
 ;
 ; RUN: %solver --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck %s
-; CHECK: uninterpreted-function BitVec domain sorts must have positive width
-; CHECK: uninterpreted-function signatures do not support Array
-; CHECK: uninterpreted-function signatures do not support FloatingPoint
-; CHECK: uninterpreted-function signatures do not support RoundingMode
+; CHECK: unsupported domain sort \(_ BitVec 0\) at argument 0 of bad-zero
+; CHECK: unsupported domain sort \(Array \(_ BitVec 4\) \(_ BitVec 4\)\) at argument 0 of bad-array
+; CHECK: unsupported result sort \(_ FloatingPoint 8 24\) of bad-fp
+; CHECK: unsupported domain sort RoundingMode at argument 0 of bad-rm
 ; CHECK: ^sat
 ; CHECK: ^"REACHED-END"
 ;
