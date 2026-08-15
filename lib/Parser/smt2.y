@@ -2346,7 +2346,15 @@ STRING_TOK LPAREN_TOK
   if (!stp::GlobalParserInterface->getUserFlags()
            .enable_uninterpreted_functions)
   {
-    yyerror("syntax error, unexpected LPAREN_TOK, expecting RPAREN_TOK");
+    // The first domain token selected this branch, and the legacy grammar
+    // rejected the declaration at that token. Use Bison's generated symbol
+    // table so the diagnostic retains the exact token name. yytname and
+    // YYTRANSLATE are available throughout STP's supported Bison range;
+    // yysymbol_name and the prefixed empty-token enum are newer additions.
+    std::string message = "syntax error, unexpected ";
+    message += yychar < 0 ? "end of file" : yytname[YYTRANSLATE(yychar)];
+    message += ", expecting RPAREN_TOK";
+    yyerror(message.c_str());
     delete $1;
     YYABORT;
   }
