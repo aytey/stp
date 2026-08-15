@@ -2187,49 +2187,54 @@ AbsRefine_CounterExample::GetCounterExampleArray(bool t, const ASTNode& e)
   return entries;
 }
 
-// TODO printing of expressions.
 // TODO move to printer file.
+//
+// One (term value) pair of a get-value response. `n` is any non-array term
+// the caller asked about, printed back as SMT-LIB2 followed by the value the
+// model gives it. Arrays are the caller's to refuse: they have no value
+// spelling here, and (get-model) prints their completed interpretations.
 void AbsRefine_CounterExample::PrintSMTLIB2(std::ostream& os, const ASTNode& n)
 {
-  if (n.GetKind() == SYMBOL)
+  if (n.GetType() == stp::ARRAY_TYPE)
+    FatalError("get-value: an array-valued term has no printable value", n);
+
+  os << "( ";
+  // SMT-LIB2 requires the term back verbatim, not just a name: a symbol
+  // prints as |x| exactly as it did when this only accepted symbols, and a
+  // compound term prints as itself.
+  printer::SMTLIB2_Print1(os, n, 0, false);
+  os << " ";
+
+  if (bm->isRoundingModeSortedTerm(n))
   {
-    os << "( ";
-
-    os << "|";
-    n.nodeprint(os);
-    os << "| ";
-
-    if (bm->isRoundingModeSymbol(n))
-    {
-      // A RoundingMode value must print as a mode name -- a legal term of
-      // the sort -- not as its raw 5-bit carrier. The declaration pinned the
-      // symbol one-hot, so the model value always names a mode; anything
-      // else would be a bug, but print the bits rather than crash.
-      const ASTNode v = TermToConstTermUsingModel(n, false);
-      const char* name = printer::roundingModeName(v.GetUnsignedConst());
-      if (name != NULL)
-        os << name;
-      else
-        printer::outputBitVecSMTLIB2(v, os);
-    }
-    else if (n.GetType() == stp::FLOATINGPOINT_TYPE)
-      // A floating-point value must be printed in floating-point syntax
-      // (fp #bS #bE #bM), not as the raw packed bit-vector -- the get-model
-      // path (outputLine) does this; get-value must match, or it hands back a
-      // bit-vector literal where an operand of floating-point sort is expected.
-      printer::outputFloatingPointSMTLIB2(TermToConstTermUsingModel(n, false),
-                                          os, n);
-    else if (n.GetType() == stp::BITVECTOR_TYPE)
-      printer::outputBitVecSMTLIB2(TermToConstTermUsingModel(n, false), os);
+    // A RoundingMode value must print as a mode name -- a legal term of
+    // the sort -- not as its raw 5-bit carrier. Every rounding mode a query
+    // can name is pinned one-hot, so the model value always names a mode;
+    // anything else would be a bug, but print the bits rather than crash.
+    const ASTNode v = TermToConstTermUsingModel(n, false);
+    const char* name = printer::roundingModeName(v.GetUnsignedConst());
+    if (name != NULL)
+      os << name;
     else
-    {
-      if (ASTTrue == ComputeFormulaUsingModel(n))
-        os << "true";
-      else
-        os << "false";
-    }
-    os << " )";
+      printer::outputBitVecSMTLIB2(v, os);
   }
+  else if (n.GetType() == stp::FLOATINGPOINT_TYPE)
+    // A floating-point value must be printed in floating-point syntax
+    // (fp #bS #bE #bM), not as the raw packed bit-vector -- the get-model
+    // path (outputLine) does this; get-value must match, or it hands back a
+    // bit-vector literal where an operand of floating-point sort is expected.
+    printer::outputFloatingPointSMTLIB2(TermToConstTermUsingModel(n, false),
+                                        os, n);
+  else if (n.GetType() == stp::BITVECTOR_TYPE)
+    printer::outputBitVecSMTLIB2(TermToConstTermUsingModel(n, false), os);
+  else
+  {
+    if (ASTTrue == ComputeFormulaUsingModel(n))
+      os << "true";
+    else
+      os << "false";
+  }
+  os << " )";
 }
 
 //todo does it need to be member?

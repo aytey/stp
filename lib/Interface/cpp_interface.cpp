@@ -1478,8 +1478,14 @@ void Cpp_interface::getValue(const ASTVec& v)
       os << " )" << std::endl;
       continue;
     }
-    if (n.GetKind() != SYMBOL ||
-        (n.GetType() == ARRAY_TYPE && bm.UserFlags.enable_array_equality))
+    // SMT-LIB 2.6 3.9.1 asks for the value of arbitrary well-sorted terms,
+    // not just of variables, and the model evaluator decides all of them --
+    // including terms built over uninterpreted applications. The one shape
+    // with no value to print is an array: (get-model) prints the completed
+    // array interpretations instead. That refusal is unconditional, because
+    // reaching the printer with an array aborted the process rather than
+    // answering when array equality happened to be disabled.
+    if (n.GetType() == ARRAY_TYPE)
     {
       unsupported();
       return;
