@@ -3,8 +3,8 @@
 ; modes the coordinator must report that UFCHK, rather than EXTCHK or ordinary
 ; replay, owns the conflict which closes this query.
 ;
-; RUN: %solver -s --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck --check-prefix=OBS %s
-; RUN: %solver -s --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck --check-prefix=OBS %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --incremental=off %s 2>&1 | %OutputCheck --check-prefix=OBS %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --incremental=on %s 2>&1 | %OutputCheck --check-prefix=OBS %s
 ; OBS: Theory coordination: EXTCHK skipped; UFCHK conflict; ordinary replay skipped
 ; OBS: ^unsat
 ;

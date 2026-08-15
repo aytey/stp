@@ -82,6 +82,10 @@ public:
   ASTNodeMap handleToResult;
   ASTNodeMap nameToTerm;
   ASTVec namingDefinitions;
+  // Pairwise congruence constraints installed before the first solve for the
+  // declarations the eager policy selected. Empty in the reference profile,
+  // where every congruence clause is earned by a refuted candidate.
+  ASTVec congruenceConstraints;
   ASTNodeSet protectedSymbols;
   // Every symbolic checker leaf has exactly one concrete candidate
   // authority: its complete Bool/BV mapping in the live SAT backend.  This
@@ -92,8 +96,9 @@ public:
   bool active() const { return !applications.empty(); }
   size_t size() const { return applications.size(); }
 
-  // Attach the query/block-local name definitions to the lowered semantic
-  // formula. Result symbols intentionally have no eager UF definition.
+  // Attach the query/block-local name definitions, and any eagerly selected
+  // congruence constraints, to the lowered semantic formula. Result symbols
+  // intentionally have no eager UF definition.
   ASTNode semanticRootWithDefinitions(STPMgr* manager) const;
 };
 
@@ -109,6 +114,10 @@ public:
                                             const UFSolveScope& scope) const;
 
 private:
+  // Fills view.congruenceConstraints for the declarations the eager policy
+  // selects. A no-op in the reference profile.
+  void installEagerCongruence(LoweredApplicationView& view) const;
+
   STPMgr* const manager_;
 };
 

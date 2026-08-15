@@ -1,7 +1,7 @@
-; RUN: %solver -s --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck --check-prefix=BATCH %s
-; RUN: %solver -s --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck --check-prefix=BATCH %s
-; RUN: %solver -s --uninterpreted-functions --uf-lemmas-per-round=1 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=SINGLE %s
-; RUN: %solver -s --uninterpreted-functions --uf-lemmas-per-round=1 --incremental=on %s 2>&1 | %OutputCheck --check-prefix=SINGLE %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --incremental=off %s 2>&1 | %OutputCheck --check-prefix=BATCH %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --incremental=on %s 2>&1 | %OutputCheck --check-prefix=BATCH %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-lemmas-per-round=1 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=SINGLE %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-lemmas-per-round=1 --incremental=on %s 2>&1 | %OutputCheck --check-prefix=SINGLE %s
 ;
 ; BATCH: UF: installed congruence lemma 1 for f
 ; BATCH: UF: installed congruence lemma 2 for f

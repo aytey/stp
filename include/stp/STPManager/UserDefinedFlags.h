@@ -198,6 +198,30 @@ public:
   // the one-lemma-per-round reference profile.
   unsigned uf_lemmas_per_round = 8;
 
+  // Whether to install a declaration's pairwise congruence constraints before
+  // the first solve instead of waiting for a candidate to earn them.
+  //
+  // AUTO -- the default -- selects declarations whose pair count the policy
+  // predicts is worth encoding up front, cheapest first, until the budget
+  // below is spent. ON selects every declaration whatever the count. OFF is
+  // the UFSTP reference profile: no congruence clause exists until a
+  // candidate is refuted. The dynamic checker runs in every mode, so an
+  // eagerly encoded declaration that still produced a conflict would be
+  // caught rather than silently answered.
+  enum class UFEagerMode
+  {
+    AUTO = 0,
+    ON,
+    OFF
+  };
+  UFEagerMode uf_eager_mode = UFEagerMode::AUTO;
+
+  // The AUTO budget, in congruence constraints. A declaration costs
+  // C(v, 2) + c*v, where c counts its applications whose actuals are all
+  // constants: two such applications either are the same hash-consed handle
+  // or differ in some position, so they never need a constraint between them.
+  unsigned uf_eager_budget = 4096;
+
   // construct the counterexample in terms of original variable based
   // on the counterexample returned by SAT solver
   bool print_counterexample_flag = false;

@@ -1,5 +1,5 @@
-; RUN: %solver --uninterpreted-functions --array-equality --incremental=off -s %s 2>&1 | %OutputCheck %s
-; RUN: %solver --uninterpreted-functions --array-equality --incremental=on -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --uninterpreted-functions --uf-ackermann=off --array-equality --incremental=off -s %s 2>&1 | %OutputCheck %s
+; RUN: %solver --uninterpreted-functions --uf-ackermann=off --array-equality --incremental=on -s %s 2>&1 | %OutputCheck %s
 ; CHECK: Theory coordination: EXTCHK conflict; UFCHK and ordinary replay skipped
 ; CHECK: ^unsat
 ; CHECK: Theory coordination: EXTCHK skipped; UFCHK conflict; ordinary replay skipped

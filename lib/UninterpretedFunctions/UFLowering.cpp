@@ -47,19 +47,145 @@ ASTNode
 LoweredApplicationView::semanticRootWithDefinitions(STPMgr* manager) const
 {
   assert(manager != NULL);
-  if (namingDefinitions.empty())
+  if (namingDefinitions.empty() && congruenceConstraints.empty())
     return semanticRoot;
   ASTVec conjuncts;
-  conjuncts.reserve(namingDefinitions.size() + 1);
+  conjuncts.reserve(namingDefinitions.size() + congruenceConstraints.size() +
+                    1);
   conjuncts.push_back(semanticRoot);
   conjuncts.insert(conjuncts.end(), namingDefinitions.begin(),
                    namingDefinitions.end());
+  conjuncts.insert(conjuncts.end(), congruenceConstraints.begin(),
+                   congruenceConstraints.end());
   return manager->defaultNodeFactory->CreateNode(AND, conjuncts);
 }
 
 UFLowering::UFLowering(STPMgr* manager) : manager_(manager)
 {
   assert(manager_ != NULL);
+}
+
+namespace
+{
+
+bool allActualsConstant(const LoweredApplicationRecord& record)
+{
+  for (const ASTNode& actual : record.namedActuals)
+    if (!actual.isConstant())
+      return false;
+  return true;
+}
+
+// C(n, 2) without overflowing on an absurd application count.
+uint64_t pairsAmong(const uint64_t n)
+{
+  return n < 2 ? 0 : (n % 2 == 0 ? (n / 2) * (n - 1) : n * ((n - 1) / 2));
+}
+
+} // namespace
+
+// Eager congruence (UFSTP OPT-02/OPT-03). The constraints are built as AST and
+// conjoined to the semantic root rather than encoded straight to CNF, which
+// buys three things: both solve modes pick them up through the one function
+// that already attaches naming definitions, a persistent block inherits its
+// guard with no new guard logic, and ordinary preprocessing gets to simplify
+// or delete constraints whose results nothing constrains.
+void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
+{
+  typedef UserDefinedFlags::UFEagerMode Mode;
+  const Mode mode = manager_->UserFlags.uf_eager_mode;
+  if (mode == Mode::OFF || view.applications.empty())
+    return;
+
+  std::map<const UFDecl*, std::vector<const LoweredApplicationRecord*>>
+      byDeclaration;
+  for (const LoweredApplicationRecord& record : view.applications)
+  {
+    // A record with no readable argument tuple belongs to a declaration with
+    // one application, which has no pairs to constrain anyway.
+    if (record.observableArguments)
+      byDeclaration[record.declaration].push_back(&record);
+  }
+
+  // Cost of each candidate declaration, cheapest first: two applications
+  // whose actuals are all constants are either the same durable handle or
+  // differ in some position, so they never need a constraint between them.
+  std::vector<std::pair<uint64_t, const UFDecl*>> selection;
+  for (const auto& entry : byDeclaration)
+  {
+    uint64_t constantArgued = 0;
+    for (const LoweredApplicationRecord* record : entry.second)
+      if (allActualsConstant(*record))
+        constantArgued++;
+    const uint64_t symbolic = entry.second.size() - constantArgued;
+    const uint64_t cost = pairsAmong(symbolic) + constantArgued * symbolic;
+    if (cost != 0)
+      selection.push_back(std::make_pair(cost, entry.first));
+  }
+  std::sort(selection.begin(), selection.end(),
+            [](const std::pair<uint64_t, const UFDecl*>& left,
+               const std::pair<uint64_t, const UFDecl*>& right) {
+              if (left.first != right.first)
+                return left.first < right.first;
+              return left.second->id() < right.second->id();
+            });
+
+  NodeFactory* const factory = manager_->defaultNodeFactory;
+  uint64_t budget = manager_->UserFlags.uf_eager_budget;
+  for (const std::pair<uint64_t, const UFDecl*>& candidate : selection)
+  {
+    if (mode == Mode::AUTO)
+    {
+      if (candidate.first > budget)
+        break; // and every later declaration is at least as expensive
+      budget -= candidate.first;
+    }
+
+    const std::vector<const LoweredApplicationRecord*>& records =
+        byDeclaration[candidate.second];
+    const UFSignature& signature = candidate.second->signature();
+    for (size_t i = 0; i < records.size(); ++i)
+      for (size_t j = i + 1; j < records.size(); ++j)
+      {
+        const LoweredApplicationRecord& left = *records[i];
+        const LoweredApplicationRecord& right = *records[j];
+        ASTVec premise;
+        bool impossible = false;
+        for (size_t k = 0; k < signature.arity() && !impossible; ++k)
+        {
+          const ASTNode& leftActual = left.namedActuals[k];
+          const ASTNode& rightActual = right.namedActuals[k];
+          if (leftActual == rightActual)
+            continue; // reflexive, and already true
+          if (leftActual.isConstant() && rightActual.isConstant())
+          {
+            // Distinct constants in one position: these two can never be
+            // congruent, so the pair needs no constraint at all.
+            impossible = true;
+            continue;
+          }
+          premise.push_back(factory->CreateNode(
+              signature.domain()[k].kind() == SourceSort::Kind::Bool ? IFF : EQ,
+              leftActual, rightActual));
+        }
+        if (impossible)
+          continue;
+
+        const ASTNode conclusion = factory->CreateNode(
+            signature.codomain().kind() == SourceSort::Kind::Bool ? IFF : EQ,
+            left.resultSymbol, right.resultSymbol);
+        // Two distinct handles whose actuals all lowered to the same scalars
+        // are unconditionally congruent, so the implication collapses.
+        view.congruenceConstraints.push_back(
+            premise.empty()
+                ? conclusion
+                : factory->CreateNode(IMPLIES,
+                                      premise.size() == 1
+                                          ? premise[0]
+                                          : factory->CreateNode(AND, premise),
+                                      conclusion));
+      }
+  }
 }
 
 LoweredApplicationView
@@ -269,6 +395,8 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
   for (LoweredApplicationRecord& record : view.applications)
     if (!record.observableArguments)
       record.namedActuals.clear();
+
+  installEagerCongruence(view);
 
   // This checks the whole barrier once, including the naming definitions.
   // Scanning every progressively larger actual separately would turn a
