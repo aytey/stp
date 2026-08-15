@@ -37,7 +37,10 @@ public:
   virtual UFCandidateOutcome
   checkCandidate(AbsRefine_CounterExample& counterexample) = 0;
   virtual bool hasPendingLemma() const = 0;
-  virtual void encodePendingLemma(SATSolver& solver, ToSATBase* tosat) = 0;
+  // Installs every lemma the last refuted candidate produced. All of them are
+  // validated before any of them mutates SAT, so the batch is as atomic as a
+  // single clause was.
+  virtual void encodePendingLemmas(SATSolver& solver, ToSATBase* tosat) = 0;
 
   virtual bool hasCertifiedModel() const = 0;
   virtual void invalidateCertifiedModel() = 0;
@@ -68,7 +71,7 @@ public:
   UFCandidateOutcome
   checkCandidate(AbsRefine_CounterExample& counterexample) override;
   bool hasPendingLemma() const override;
-  void encodePendingLemma(SATSolver& solver, ToSATBase* tosat) override;
+  void encodePendingLemmas(SATSolver& solver, ToSATBase* tosat) override;
   bool hasCertifiedModel() const override;
   void invalidateCertifiedModel() override;
   const UFFunctionModelSeedSet* certifiedModelSeed() const override;
@@ -109,7 +112,7 @@ public:
   UFCandidateOutcome
   checkCandidate(AbsRefine_CounterExample& counterexample) override;
   bool hasPendingLemma() const override;
-  void encodePendingLemma(SATSolver& solver, ToSATBase* tosat) override;
+  void encodePendingLemmas(SATSolver& solver, ToSATBase* tosat) override;
   bool hasCertifiedModel() const override;
   const UFFunctionModelSeedSet* certifiedModelSeed() const override;
   bool lookupCertifiedApplication(const ASTNode& durableHandle,

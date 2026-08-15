@@ -331,7 +331,7 @@ TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
   ASSERT_TRUE(adapter.hasPendingLemma());
 
   RecordingSolver solver(6);
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   EXPECT_FALSE(adapter.hasPendingLemma());
   EXPECT_EQ(1u, adapter.lemmasEmitted());
   // Bool XNOR: 4; two BV-bit XNORs plus their conjunction: 11;
@@ -368,7 +368,7 @@ TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
   // and submits only the new candidate-blocking implication.
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   EXPECT_EQ(17u, solver.clauses().size());
   EXPECT_EQ(2u, adapter.lemmasEmitted());
 }
@@ -382,7 +382,7 @@ TEST(UFRefinement, BatchCNFFoldsBoolAndBitVectorConstantOperands)
             adapter.checkCandidate(fixture.counterexample));
 
   RecordingSolver solver(7);
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
 
   // The two exact constant/constant premises disappear. p=true aliases p's
   // existing literal, while x=1 needs only a three-clause conjunction of its
@@ -429,7 +429,7 @@ TEST(UFRefinement, PersistentCNFGuardsEveryFoldedEqualityHelper)
             adapter.checkCandidate(fixture.counterexample));
 
   RecordingSolver solver(7);
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(15u, solver.clauses().size());
   ASSERT_EQ(11u, solver.nextVariable());
   for (const std::vector<int>& clause : solver.clauses())
@@ -456,15 +456,15 @@ TEST(UFRefinement, RejectsMalformedPreencodedLeavesBeforeSATMutation)
   ASSERT_EQ(SourceSort::bitVector(2), leaf.GetSourceSort());
 
   fixture.tosat.unbind(leaf);
-  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+  EXPECT_DEATH(adapter.encodePendingLemmas(solver, &fixture.tosat),
                "not registered before the first candidate");
 
   fixture.tosat.bind(leaf, {2});
-  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+  EXPECT_DEATH(adapter.encodePendingLemmas(solver, &fixture.tosat),
                "wrong-width SAT mapping");
 
   fixture.tosat.bind(leaf, {2, ~0u});
-  EXPECT_DEATH(adapter.encodePendingLemma(solver, &fixture.tosat),
+  EXPECT_DEATH(adapter.encodePendingLemmas(solver, &fixture.tosat),
                "unencoded SAT bit");
 }
 
@@ -477,7 +477,7 @@ TEST(UFRefinement, BatchCNFEliminatesIdenticalPremiseAndReusesCache)
             adapter.checkCandidate(fixture.counterexample));
 
   RecordingSolver solver(10);
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   // Only x=y and the result equality remain: two BV2 XNOR/conjunction
   // bundles (11 clauses and three helpers each), plus the implication.
   EXPECT_EQ(23u, solver.clauses().size());
@@ -485,7 +485,7 @@ TEST(UFRefinement, BatchCNFEliminatesIdenticalPremiseAndReusesCache)
 
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   // Both surviving equality literals are cache hits.  The repeat contributes
   // just another candidate-blocking implication and no new helper variable.
   EXPECT_EQ(24u, solver.clauses().size());
@@ -503,7 +503,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   adapter.beginBlock(&fixture.persistentView, 7, 3, 9, 200);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(16u, solver.clauses().size());
   for (const std::vector<int>& clause : solver.clauses())
     EXPECT_TRUE(containsLiteral(clause, 201));
@@ -546,7 +546,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   // final implication is emitted.
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(17u, solver.clauses().size());
   EXPECT_TRUE(containsLiteral(solver.clauses().back(), 201));
 
@@ -557,7 +557,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   adapter.beginBlock(&fixture.persistentView, 7, 4, 9, 202);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(33u, solver.clauses().size());
   for (std::size_t i = 17; i < 33; ++i)
     EXPECT_TRUE(containsLiteral(solver.clauses()[i], 203));
@@ -566,7 +566,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   adapter.beginBlock(&fixture.persistentView, 7, 4, 10, 204);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(49u, solver.clauses().size());
   for (std::size_t i = 33; i < 49; ++i)
     EXPECT_TRUE(containsLiteral(solver.clauses()[i], 205));
@@ -576,12 +576,12 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   adapter.beginBlock(&fixture.persistentView, 8, 4, 10, 206);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   ASSERT_EQ(65u, solver.clauses().size());
   adapter.clearEncodingEpoch();
   adapter.beginBlock(&fixture.persistentView, 8, 4, 10, 208);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
-  adapter.encodePendingLemma(solver, &fixture.tosat);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
   EXPECT_EQ(81u, solver.clauses().size());
 }

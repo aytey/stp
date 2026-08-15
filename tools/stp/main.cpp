@@ -308,6 +308,13 @@ void ExtraMain::create_options()
                "decide Bool/bit-vector uninterpreted functions by dynamic "
                "Ackermann refinement")
       ->group(refinement_group);
+  app.add_option("--uf-lemmas-per-round",
+                 bm->UserFlags.uf_lemmas_per_round,
+                 "how many congruence lemmas one refuted candidate may "
+                 "install (0: every conflict it exposes; 1: the "
+                 "one-lemma-per-round reference profile)")
+      ->group(refinement_group)
+      ->capture_default_str();
 
   const char* const bb_group = "Bit-blasting options";
   bool_arg("--bb.div-v1", bm->UserFlags.division_variant_1,

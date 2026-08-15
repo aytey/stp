@@ -113,6 +113,15 @@ private:
   const uint64_t version_;
 };
 
+// One validated congruence clause waiting to be installed, with the
+// declaration whose candidate it refutes: that name is what the `-s` trace
+// prints when the clause goes in.
+struct PendingLemma
+{
+  UFAbstractLemma lemma;
+  const UFDecl* declaration = NULL;
+};
+
 struct MutableAdapterState
 {
   explicit MutableAdapterState(STPMgr* manager_) : manager(manager_) {}
@@ -121,11 +130,9 @@ struct MutableAdapterState
   const LoweredApplicationView* view = NULL;
   UFCheckPlan checkPlan;
   std::string checkPlanDiagnostic;
-  UFAbstractLemma pendingLemma;
-  // The declaration the pending lemma refutes a candidate of: named in the
-  // `-s` trace when the lemma is installed. Valid exactly while `pending`.
-  const UFDecl* pendingDeclaration = NULL;
-  bool pending = false;
+  // Every lemma the last refuted candidate produced, in the checker's
+  // deterministic conflict order. Empty exactly when no candidate is pending.
+  std::vector<PendingLemma> pending;
   bool certified = false;
   UFFunctionModelSeedSet seed;
   std::map<ASTNode, UFConcreteValue> handleValues;
@@ -136,9 +143,7 @@ struct MutableAdapterState
 
   void clearRound()
   {
-    pending = false;
-    pendingDeclaration = NULL;
-    pendingLemma = UFAbstractLemma();
+    pending.clear();
     certified = false;
     seed = UFFunctionModelSeedSet();
     handleValues.clear();
@@ -198,7 +203,9 @@ UFCandidateOutcome checkOneCandidate(
   const uint64_t version = ++state.nextCandidateVersion;
   state.candidateCheckCount++;
   CounterExampleCandidate candidate(counterexample, *context, version);
-  UFCheckResult result = UFChecker::check(state.checkPlan, candidate);
+  UFCheckResult result = UFChecker::check(
+      state.checkPlan, candidate,
+      state.manager->UserFlags.uf_lemmas_per_round);
   if (result.status == UFCheckResult::Status::InternalError)
   {
     state.diagnostic = result.diagnostic;
@@ -206,17 +213,33 @@ UFCandidateOutcome checkOneCandidate(
   }
   if (result.hasConflict())
   {
-    if (!UFLemmaOracle::buildAndValidate(result.conflict,
-                                         state.pendingLemma,
-                                         state.diagnostic))
-      return UFCandidateOutcome::InternalError;
-    if (state.pendingLemma.candidateVersion != version)
+    if (result.conflicts.empty())
     {
-      state.diagnostic = "UF lemma retained the wrong candidate version";
+      state.diagnostic = "UFCHK reported a conflict with no certificate";
       return UFCandidateOutcome::InternalError;
     }
-    state.pendingDeclaration = result.conflict.declaration;
-    state.pending = true;
+    // Each conflict is refuted by the same unchanged candidate, so all of
+    // them are built and validated here, before the encoder is allowed to
+    // touch SAT at all. A single failure abandons the whole batch.
+    state.pending.reserve(result.conflicts.size());
+    for (const UFCongruenceConflict& conflict : result.conflicts)
+    {
+      PendingLemma entry;
+      if (!UFLemmaOracle::buildAndValidate(conflict, entry.lemma,
+                                           state.diagnostic))
+      {
+        state.pending.clear();
+        return UFCandidateOutcome::InternalError;
+      }
+      if (entry.lemma.candidateVersion != version)
+      {
+        state.pending.clear();
+        state.diagnostic = "UF lemma retained the wrong candidate version";
+        return UFCandidateOutcome::InternalError;
+      }
+      entry.declaration = conflict.declaration;
+      state.pending.push_back(entry);
+    }
     return UFCandidateOutcome::Conflict;
   }
 
@@ -506,20 +529,14 @@ ClauseTerm equalityTerm(SATSolver& solver,
   return ClauseTerm::satLiteral(result);
 }
 
-void encodeLemma(MutableAdapterState& state, SATSolver& solver,
-                 ToSATBase* tosat, int guardLiteral,
-                 std::map<EqualityKey, int>& cache)
+void encodeOneLemma(MutableAdapterState& state, const PendingLemma& entry,
+                    SATSolver& solver,
+                    ToSATBase::ASTNodeToSATVar& bindings, int guardLiteral,
+                    std::map<EqualityKey, int>& cache)
 {
-  if (!state.pending || tosat == NULL)
-    FatalError("UF lemma encoding began without a pending certificate");
-  ToSATBase::ASTNodeToSATVar& bindings =
-      tosat->SATVar_to_SymbolIndexMap();
-  validateLemmaBeforeMutation(state.pendingLemma, bindings, solver,
-                              guardLiteral);
-
   std::vector<ClauseTerm> body;
-  body.reserve(state.pendingLemma.premise.size() + 1);
-  for (const UFEqualityAtom& premise : state.pendingLemma.premise)
+  body.reserve(entry.lemma.premise.size() + 1);
+  for (const UFEqualityAtom& premise : entry.lemma.premise)
   {
     const ClauseTerm equality =
         equalityTerm(solver, bindings, premise, guardLiteral, cache);
@@ -532,22 +549,16 @@ void encodeLemma(MutableAdapterState& state, SATSolver& solver,
     body.push_back(negate(equality));
   }
   const ClauseTerm conclusion = equalityTerm(
-      solver, bindings, state.pendingLemma.conclusion, guardLiteral, cache);
+      solver, bindings, entry.lemma.conclusion, guardLiteral, cache);
   if (conclusion.constant)
   {
     if (conclusion.value)
       FatalError("UF conflicting conclusion is structurally true",
-                 state.pendingLemma.conclusion.left);
+                 entry.lemma.conclusion.left);
   }
   else
     body.push_back(conclusion);
   addGuardedClause(solver, body, guardLiteral);
-  // Some backends detect at insertion time that this validated blocking
-  // clause closes the entire instance.  That is a normal refinement outcome:
-  // leave the solver in its UNSAT state so the coordinator's next solve can
-  // certify it, rather than misclassifying progress as an internal error.
-  state.pending = false;
-  state.pendingLemma = UFAbstractLemma();
   state.emittedLemmaCount++;
   // Observability under -s: the reference profile installs no congruence
   // clause up front, so every lemma here was earned by a refuted candidate.
@@ -557,12 +568,40 @@ void encodeLemma(MutableAdapterState& state, SATSolver& solver,
   if (state.manager->UserFlags.stats_flag)
     std::cerr << "UF: installed congruence lemma " << state.emittedLemmaCount
               << " for "
-              << (state.pendingDeclaration != NULL
-                      ? state.pendingDeclaration->name()
-                      : std::string("<unknown>"))
+              << (entry.declaration != NULL ? entry.declaration->name()
+                                            : std::string("<unknown>"))
               << (guardLiteral >= 0 ? " (block guarded)" : " (query local)")
               << std::endl;
-  state.pendingDeclaration = NULL;
+}
+
+void encodeLemmas(MutableAdapterState& state, SATSolver& solver,
+                  ToSATBase* tosat, int guardLiteral,
+                  std::map<EqualityKey, int>& cache)
+{
+  if (state.pending.empty() || tosat == NULL)
+    FatalError("UF lemma encoding began without a pending certificate");
+  ToSATBase::ASTNodeToSATVar& bindings = tosat->SATVar_to_SymbolIndexMap();
+
+  // Validate the whole batch before any of it mutates SAT. Splitting the two
+  // loops is what keeps the batch as atomic as a single clause was: a lemma
+  // the encoder would reject cannot leave earlier clauses of the same
+  // candidate behind.
+  for (const PendingLemma& entry : state.pending)
+    validateLemmaBeforeMutation(entry.lemma, bindings, solver, guardLiteral);
+
+  for (const PendingLemma& entry : state.pending)
+    encodeOneLemma(state, entry, solver, bindings, guardLiteral, cache);
+
+  // Some backends detect at insertion time that a validated blocking clause
+  // closes the entire instance. That is a normal refinement outcome: leave the
+  // solver in its UNSAT state so the coordinator's next solve can certify it,
+  // rather than misclassifying progress as an internal error. The rest of the
+  // batch is still installed -- every clause is a theory consequence, so
+  // adding one to an already-closed instance changes nothing.
+  if (state.manager->UserFlags.stats_flag && state.pending.size() > 1)
+    std::cerr << "UF: candidate refuted by " << state.pending.size()
+              << " congruence lemmas" << std::endl;
+  state.pending.clear();
 }
 
 bool lookupCertified(const MutableAdapterState& state,
@@ -612,10 +651,13 @@ UFCandidateOutcome UFBatchAdapter::checkCandidate(
 {
   return checkOneCandidate(impl_->state, counterexample);
 }
-bool UFBatchAdapter::hasPendingLemma() const { return impl_->state.pending; }
-void UFBatchAdapter::encodePendingLemma(SATSolver& solver, ToSATBase* tosat)
+bool UFBatchAdapter::hasPendingLemma() const
 {
-  encodeLemma(impl_->state, solver, tosat, -1, impl_->equalityCache);
+  return !impl_->state.pending.empty();
+}
+void UFBatchAdapter::encodePendingLemmas(SATSolver& solver, ToSATBase* tosat)
+{
+  encodeLemmas(impl_->state, solver, tosat, -1, impl_->equalityCache);
 }
 bool UFBatchAdapter::hasCertifiedModel() const
 {
@@ -726,17 +768,17 @@ UFCandidateOutcome UFPersistentAdapter::checkCandidate(
 }
 bool UFPersistentAdapter::hasPendingLemma() const
 {
-  return impl_->state.pending;
+  return !impl_->state.pending.empty();
 }
-void UFPersistentAdapter::encodePendingLemma(SATSolver& solver,
-                                             ToSATBase* tosat)
+void UFPersistentAdapter::encodePendingLemmas(SATSolver& solver,
+                                              ToSATBase* tosat)
 {
   if (!active())
     FatalError("persistent UF lemma has no active block scope");
   std::map<EqualityKey, int>& cache =
       impl_->equalityCaches[impl_->activeScope];
-  encodeLemma(impl_->state, solver, tosat,
-              impl_->positiveBlockLiteral ^ 1, cache);
+  encodeLemmas(impl_->state, solver, tosat,
+               impl_->positiveBlockLiteral ^ 1, cache);
 }
 bool UFPersistentAdapter::hasCertifiedModel() const
 {

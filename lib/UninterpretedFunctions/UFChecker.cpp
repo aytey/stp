@@ -381,7 +381,8 @@ UFCheckPlan UFChecker::validate(
 }
 
 UFCheckResult UFChecker::check(const UFCheckPlan& plan,
-                               const UFScalarCandidate& candidate)
+                               const UFScalarCandidate& candidate,
+                               const size_t maxConflicts)
 {
   UFCheckResult out;
   const uint64_t candidateVersion = candidate.version();
@@ -456,26 +457,26 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
       if (found->second.result == result)
         continue;
 
+      // Every later record in a bucket conflicts against that bucket's one
+      // representative, so a record yields at most one conflict and each
+      // conflict names its own result symbol. Two conflicts from a single
+      // candidate can therefore never canonicalise to the same lemma, and no
+      // duplicate filter is needed here or in the encoder.
       const LoweredApplicationRecord& representative =
           *found->second.record;
       out.status = UFCheckResult::Status::Conflict;
-      out.conflict.declaration = declaration;
-      out.conflict.representativeHandle = representative.durableHandle;
-      out.conflict.conflictingHandle = record->durableHandle;
-      out.conflict.representativeOrder = representative.stableOrder;
-      out.conflict.conflictingOrder = record->stableOrder;
-      out.conflict.leftResult = representative.resultSymbol;
-      out.conflict.rightResult = record->resultSymbol;
-      out.conflict.leftResultValue = found->second.result;
-      out.conflict.rightResultValue = result;
-      if (candidate.version() != candidateVersion)
-      {
-        out.status = UFCheckResult::Status::InternalError;
-        out.diagnostic = "UFCHK candidate changed during one logical check";
-        return out;
-      }
-      out.conflict.candidateVersion = candidateVersion;
-      out.conflict.stableConflictOrder = conflictOrder;
+      UFCongruenceConflict conflict;
+      conflict.declaration = declaration;
+      conflict.representativeHandle = representative.durableHandle;
+      conflict.conflictingHandle = record->durableHandle;
+      conflict.representativeOrder = representative.stableOrder;
+      conflict.conflictingOrder = record->stableOrder;
+      conflict.leftResult = representative.resultSymbol;
+      conflict.rightResult = record->resultSymbol;
+      conflict.leftResultValue = found->second.result;
+      conflict.rightResultValue = result;
+      conflict.candidateVersion = candidateVersion;
+      conflict.stableConflictOrder = conflictOrder;
       for (size_t i = 0; i < tuple.size(); ++i)
       {
         UFCongruenceArgument argument;
@@ -486,10 +487,20 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
         argument.leftScalar = representative.namedActuals[i];
         argument.rightScalar = record->namedActuals[i];
         argument.concreteValue = tuple[i];
-        out.conflict.arguments.push_back(argument);
+        conflict.arguments.push_back(argument);
       }
-      return out;
+      out.conflicts.push_back(conflict);
+      if (maxConflicts != 0 && out.conflicts.size() >= maxConflicts)
+        break;
     }
+
+    if (maxConflicts != 0 && out.conflicts.size() >= maxConflicts)
+      break;
+
+    // A conflicting candidate publishes no model, so stop paying for one --
+    // including the case sort -- from the first conflict onwards.
+    if (!out.conflicts.empty())
+      continue;
 
     UFFunctionModelSeed function;
     function.declaration = declaration;
@@ -516,12 +527,23 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     out.modelSeed.functions.push_back(function);
   }
 
+  // One version test covers the whole scan, conflicting or not: a candidate
+  // that moved under it invalidates every conflict collected as well as any
+  // seed, because the lemmas are only false against the assignment they were
+  // read from.
   if (candidate.version() != candidateVersion)
   {
     out.status = UFCheckResult::Status::InternalError;
     out.diagnostic = "UFCHK candidate changed during one logical check";
+    out.conflicts.clear();
     out.modelSeed = UFFunctionModelSeedSet();
     return out;
+  }
+  if (!out.conflicts.empty())
+  {
+    out.modelSeed = UFFunctionModelSeedSet();
+    out.modelSeed.candidateVersion = candidateVersion;
+    return out; // status is already Conflict
   }
   out.status = UFCheckResult::Status::Consistent;
   return out;
@@ -529,9 +551,10 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
 
 UFCheckResult UFChecker::check(
     const std::vector<const UFDecl*>& activeDeclarations,
-    const LoweredApplicationView& view, const UFScalarCandidate& candidate)
+    const LoweredApplicationView& view, const UFScalarCandidate& candidate,
+    const size_t maxConflicts)
 {
-  return check(validate(activeDeclarations, view), candidate);
+  return check(validate(activeDeclarations, view), candidate, maxConflicts);
 }
 
 } // namespace stp

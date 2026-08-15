@@ -622,7 +622,7 @@ IncrementalSolver::Impl::exactStackCheckSat(
     }
     else if (activeUFView.active() && ufAdapter->hasPendingLemma())
     {
-      ufAdapter->encodePendingLemma(*solver, tosat);
+      ufAdapter->encodePendingLemmas(*solver, tosat);
       res = ce->CallSAT_ResultCheck(*solver, bm->ASTTrue, semantic, prepared,
                                     tosat, true);
     }

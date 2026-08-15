@@ -102,25 +102,151 @@ TEST(UFChecker, ReturnsStableUnaryConflictAndValidatedLemma)
       fixture.context->activeDeclarations(), fixture.view, candidate);
 
   ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
-  EXPECT_EQ(42u, result.conflict.candidateVersion);
-  EXPECT_EQ(fixture.f, result.conflict.declaration);
-  EXPECT_EQ(fixture.fx, result.conflict.representativeHandle);
-  EXPECT_EQ(fixture.fy, result.conflict.conflictingHandle);
-  ASSERT_EQ(1u, result.conflict.arguments.size());
+  EXPECT_EQ(42u, result.conflicts[0].candidateVersion);
+  EXPECT_EQ(fixture.f, result.conflicts[0].declaration);
+  EXPECT_EQ(fixture.fx, result.conflicts[0].representativeHandle);
+  EXPECT_EQ(fixture.fy, result.conflicts[0].conflictingHandle);
+  ASSERT_EQ(1u, result.conflicts[0].arguments.size());
   EXPECT_EQ(UFConcreteValue::fromUInt(8, 3),
-            result.conflict.arguments[0].concreteValue);
+            result.conflicts[0].arguments[0].concreteValue);
   EXPECT_EQ(1u, result.stats.insertions);
   EXPECT_EQ(1u, result.stats.comparisons);
 
   UFAbstractLemma lemma;
   std::string diagnostic;
-  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflict, lemma,
+  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflicts[0], lemma,
                                               diagnostic))
       << diagnostic;
   ASSERT_EQ(1u, lemma.premise.size());
   EXPECT_FALSE(lemma.evaluate(false, {true}));
   EXPECT_TRUE(lemma.evaluate(true, {true}));
   EXPECT_TRUE(lemma.evaluate(false, {false}));
+}
+
+namespace
+{
+
+// Four applications of one function, all reachable from a single root so the
+// lowering keeps them in one view. Handed a candidate that gives every actual
+// the same value and every result a different one, the bucket holds one
+// representative and three records that disagree with it.
+struct CollidingFixture
+{
+  STPMgr manager;
+  UFContext* context;
+  const UFDecl* f;
+  std::vector<ASTNode> arguments;
+  std::vector<ASTNode> applications;
+  LoweredApplicationView view;
+
+  CollidingFixture() : context(NULL), f(NULL)
+  {
+    manager.UserFlags.enable_uninterpreted_functions = true;
+    context = manager.getUFContext();
+    std::string diagnostic;
+    f = context->declareFunction("f", {SourceSort::bitVector(8)},
+                                 SourceSort::bitVector(8), &diagnostic);
+    ASTVec conjuncts;
+    for (size_t i = 0; i < 4; ++i)
+    {
+      const ASTNode argument = manager.CreateSourceSymbol(
+          ("a" + std::to_string(i)).c_str(), SourceSort::bitVector(8));
+      arguments.push_back(argument);
+      applications.push_back(context->apply(f, {argument}, &diagnostic));
+      conjuncts.push_back(manager.defaultNodeFactory->CreateNode(
+          EQ, applications.back(), manager.CreateBVConst(8, i)));
+    }
+    const ASTNode root =
+        manager.defaultNodeFactory->CreateNode(AND, conjuncts);
+    UFLowering lowerer(&manager);
+    view = lowerer.lowerCompletedRoot(root, UFSolveScope::batch(40));
+  }
+
+  // Every argument reads 7; result i reads i, so records 1..3 each disagree
+  // with record 0.
+  Candidate collidingCandidate(uint64_t version) const
+  {
+    Candidate result(version);
+    for (const LoweredApplicationRecord& record : view.applications)
+    {
+      result.set(record.namedActuals[0], UFConcreteValue::fromUInt(8, 7));
+      for (size_t i = 0; i < applications.size(); ++i)
+        if (record.durableHandle == applications[i])
+          result.set(record.resultSymbol, UFConcreteValue::fromUInt(8, i));
+    }
+    return result;
+  }
+};
+
+} // namespace
+
+TEST(UFChecker, CollectsEveryConflictOneCandidateExposes)
+{
+  CollidingFixture fixture;
+  const UFCheckResult result =
+      UFChecker::check(fixture.context->activeDeclarations(), fixture.view,
+                       fixture.collidingCandidate(7));
+
+  ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
+  // One bucket, one representative, three records disagreeing with it.
+  ASSERT_EQ(3u, result.conflicts.size());
+  EXPECT_EQ(1u, result.stats.insertions);
+  EXPECT_EQ(3u, result.stats.comparisons);
+
+  // Every conflict is against that one representative, is stamped with the
+  // candidate it was read from, and reports a strictly increasing order.
+  size_t previousOrder = 0;
+  for (const UFCongruenceConflict& conflict : result.conflicts)
+  {
+    EXPECT_EQ(fixture.f, conflict.declaration);
+    EXPECT_EQ(result.conflicts[0].representativeHandle,
+              conflict.representativeHandle);
+    EXPECT_NE(conflict.representativeHandle, conflict.conflictingHandle);
+    EXPECT_EQ(7u, conflict.candidateVersion);
+    EXPECT_LT(previousOrder, conflict.stableConflictOrder);
+    previousOrder = conflict.stableConflictOrder;
+
+    UFAbstractLemma lemma;
+    std::string diagnostic;
+    ASSERT_TRUE(UFLemmaOracle::buildAndValidate(conflict, lemma, diagnostic))
+        << diagnostic;
+    // Each one independently rejects the candidate it came from.
+    EXPECT_FALSE(lemma.evaluate(false, std::vector<bool>(
+                                           lemma.premise.size(), true)));
+  }
+
+  // A conflicting candidate publishes no model.
+  EXPECT_TRUE(result.modelSeed.functions.empty());
+}
+
+TEST(UFChecker, ConflictCapStopsTheScanAndIsAPrefix)
+{
+  CollidingFixture fixture;
+  const std::vector<const UFDecl*> declarations =
+      fixture.context->activeDeclarations();
+  const UFCheckPlan plan = UFChecker::validate(declarations, fixture.view);
+  ASSERT_TRUE(plan.valid()) << plan.diagnostic();
+
+  const UFCheckResult unlimited =
+      UFChecker::check(plan, fixture.collidingCandidate(9), 0);
+  ASSERT_EQ(3u, unlimited.conflicts.size());
+
+  for (size_t cap = 1; cap <= 3; ++cap)
+  {
+    const UFCheckResult capped =
+        UFChecker::check(plan, fixture.collidingCandidate(9), cap);
+    ASSERT_TRUE(capped.hasConflict()) << capped.diagnostic;
+    ASSERT_EQ(cap, capped.conflicts.size());
+    // Capping only stops the scan early: what it does report is the same
+    // prefix, in the same order, as the uncapped run.
+    for (size_t i = 0; i < cap; ++i)
+    {
+      EXPECT_EQ(unlimited.conflicts[i].conflictingHandle,
+                capped.conflicts[i].conflictingHandle);
+      EXPECT_EQ(unlimited.conflicts[i].stableConflictOrder,
+                capped.conflicts[i].stableConflictOrder);
+    }
+  }
 }
 
 TEST(UFChecker, PreparedPlanIsReusableAndRejectsMalformedViews)
@@ -237,11 +363,11 @@ TEST(UFChecker, SupportsMixedBooleanAndBitVectorTuples)
       UFChecker::check(context->activeDeclarations(), view, candidate);
   ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
   EXPECT_EQ(SourceSort::Kind::Bool,
-            result.conflict.arguments[0].concreteValue.sort().kind());
+            result.conflicts[0].arguments[0].concreteValue.sort().kind());
   EXPECT_EQ(5u,
-            result.conflict.arguments[1].concreteValue.sort().bitVectorWidth());
+            result.conflicts[0].arguments[1].concreteValue.sort().bitVectorWidth());
   EXPECT_EQ(SourceSort::Kind::Bool,
-            result.conflict.leftResultValue.sort().kind());
+            result.conflicts[0].leftResultValue.sort().kind());
 }
 
 TEST(UFChecker, PreservesValuesWiderThanMachineWords)
@@ -286,9 +412,9 @@ TEST(UFChecker, PreservesValuesWiderThanMachineWords)
       UFChecker::check(context->activeDeclarations(), view, candidate);
   ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
   EXPECT_EQ(129u,
-            result.conflict.arguments[0].concreteValue.sort().bitVectorWidth());
-  EXPECT_NE(result.conflict.leftResultValue,
-            result.conflict.rightResultValue);
+            result.conflicts[0].arguments[0].concreteValue.sort().bitVectorWidth());
+  EXPECT_NE(result.conflicts[0].leftResultValue,
+            result.conflicts[0].rightResultValue);
 }
 
 TEST(UFChecker, OmitsOnlyIdenticalAndDuplicatePremises)
@@ -323,7 +449,7 @@ TEST(UFChecker, OmitsOnlyIdenticalAndDuplicatePremises)
       UFChecker::check(context->activeDeclarations(), view, candidate);
   ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
   UFAbstractLemma lemma;
-  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflict, lemma,
+  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflicts[0], lemma,
                                               diagnostic))
       << diagnostic;
   // Position 0 is reflexive. Positions 1 and 2 both normalize to x=y and
@@ -363,7 +489,7 @@ TEST(UFChecker, DeduplicatesExactlyRepeatedPremiseAtoms)
       UFChecker::check(context->activeDeclarations(), view, candidate);
   ASSERT_TRUE(result.hasConflict());
   UFAbstractLemma lemma;
-  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflict, lemma,
+  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflicts[0], lemma,
                                               diagnostic));
   ASSERT_EQ(1u, lemma.premise.size());
   EXPECT_EQ(0u, lemma.premise[0].originalPosition);

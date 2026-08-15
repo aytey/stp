@@ -127,7 +127,9 @@ public:
   };
 
   Status status = Status::InternalError;
-  UFCongruenceConflict conflict;
+  // Every conflict the candidate exposes, in the deterministic order the scan
+  // met them. A conflicting candidate has no model seed.
+  std::vector<UFCongruenceConflict> conflicts;
   UFFunctionModelSeedSet modelSeed;
   UFCheckStats stats;
   std::string diagnostic;
@@ -164,15 +166,19 @@ public:
   validate(const std::vector<const UFDecl*>& activeDeclarations,
            const LoweredApplicationView& view);
 
+  // maxConflicts caps how many conflicts one candidate may yield; 0 is
+  // unlimited. Stopping early costs nothing but extra refinement rounds, so
+  // the cap exists to bound clause growth, not to keep the scan cheap.
   static UFCheckResult check(const UFCheckPlan& plan,
-                             const UFScalarCandidate& candidate);
+                             const UFScalarCandidate& candidate,
+                             size_t maxConflicts = 0);
 
   // Convenience for isolated callers and unit tests. Solve-mode adapters use
   // validate() once and the prepared overload above for every candidate.
   static UFCheckResult
   check(const std::vector<const UFDecl*>& activeDeclarations,
         const LoweredApplicationView& view,
-        const UFScalarCandidate& candidate);
+        const UFScalarCandidate& candidate, size_t maxConflicts = 0);
 };
 
 } // namespace stp

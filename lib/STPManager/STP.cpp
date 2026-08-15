@@ -990,7 +990,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     }
     else if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
     {
-      batchUFAdapter->encodePendingLemma(NewSolver, satBase);
+      batchUFAdapter->encodePendingLemmas(NewSolver, satBase);
       res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
                                              semantic_input, original_input,
                                              satBase, true);
