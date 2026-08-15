@@ -47,14 +47,17 @@ ASTNode
 LoweredApplicationView::semanticRootWithDefinitions(STPMgr* manager) const
 {
   assert(manager != NULL);
-  if (namingDefinitions.empty() && congruenceConstraints.empty())
+  if (namingDefinitions.empty() && sortConstraints.empty() &&
+      congruenceConstraints.empty())
     return semanticRoot;
   ASTVec conjuncts;
-  conjuncts.reserve(namingDefinitions.size() + congruenceConstraints.size() +
-                    1);
+  conjuncts.reserve(namingDefinitions.size() + sortConstraints.size() +
+                    congruenceConstraints.size() + 1);
   conjuncts.push_back(semanticRoot);
   conjuncts.insert(conjuncts.end(), namingDefinitions.begin(),
                    namingDefinitions.end());
+  conjuncts.insert(conjuncts.end(), sortConstraints.begin(),
+                   sortConstraints.end());
   conjuncts.insert(conjuncts.end(), congruenceConstraints.begin(),
                    congruenceConstraints.end());
   return manager->defaultNodeFactory->CreateNode(AND, conjuncts);
@@ -222,6 +225,33 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
   // persistent block reconstruct the identical semantic root.
   ASTNodeMap scalarNames;
 
+  // Pin every RoundingMode scalar this lowering makes the checker's authority
+  // for -- introduced results, introduced argument names, and the leaf
+  // symbols it registers as solve scalars in their own right. The sort has
+  // five values and its carrier thirty-two, so an unpinned one lets a model
+  // name no mode at all: the generated define-fun would print a term of no
+  // sort, and model evaluation could hand an illegal mode to an enclosing
+  // floating-point operation as a constant operand.
+  //
+  // FpTotalise pins the same symbols out of the semantic root when it runs,
+  // and an OR of five equalities is idempotent, so at worst this adds a
+  // duplicate conjunct. What it buys is that the pin arrives with the symbol
+  // instead of with a later pass: the persistent path decides whether to run
+  // that pass from the *raw* block, and reset-assertions can retract a
+  // declaration's own pin while keeping the declaration.
+  //
+  // Pins are appended in walk order rather than collected from
+  // view.solveScalars, so that an identical block rebuilds an identical
+  // conjunction without depending on a hash set's iteration order.
+  ASTNodeSet pinnedRoundingModes;
+  const auto pinIfRoundingMode = [&](const ASTNode& scalar) {
+    if (!manager_->isRoundingModeSymbol(scalar) ||
+        !pinnedRoundingModes.insert(scalar).second)
+      return;
+    view.sortConstraints.push_back(
+        manager_->roundingModeValidConstraint(scalar));
+  };
+
   // A compound actual cannot be named while the walk is running: whether the
   // name is needed depends on how many applications its declaration turns out
   // to have, and the last of them may not have been reached yet. Each one is
@@ -298,6 +328,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
             {
               view.protectedSymbols.insert(lowered);
               view.solveScalars.insert(lowered);
+              pinIfRoundingMode(lowered);
             }
             continue;
           }
@@ -323,6 +354,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
                      record.resultSymbol);
         view.protectedSymbols.insert(record.resultSymbol);
         view.solveScalars.insert(record.resultSymbol);
+        pinIfRoundingMode(record.resultSymbol);
         view.handleToResult.insert(
             std::make_pair(application, record.resultSymbol));
         view.applications.push_back(record);
@@ -369,6 +401,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
       view.nameToTerm.insert(std::make_pair(name, pending.lowered));
       view.protectedSymbols.insert(name);
       view.solveScalars.insert(name);
+      pinIfRoundingMode(name);
       view.namingDefinitions.push_back(
           manager_->defaultNodeFactory->CreateNode(
               pending.sort.kind() == SourceSort::Kind::Bool ? IFF : EQ, name,

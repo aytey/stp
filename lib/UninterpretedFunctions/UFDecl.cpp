@@ -3,9 +3,22 @@
 namespace stp
 {
 
+const char* UFSignature::supportedSortsPhrase()
+{
+  return "only Bool, RoundingMode and nonzero-width bit-vector sorts are "
+         "supported";
+}
+
 bool UFSignature::isSupportedSort(const SourceSort& sort)
 {
-  if (sort.kind() == SourceSort::Kind::Bool)
+  // RoundingMode joins Bool and BitVec because its carrier's bit-equality is
+  // its own equality: each of the five modes is exactly one 5-bit one-hot
+  // pattern, so nothing in the checker or the lemma encoder has to learn a
+  // second notion of "equal". What it does need is the pin -- see
+  // UFLowering::lowerCompletedRoot -- because the carrier has thirty-two
+  // patterns and the sort has five.
+  if (sort.kind() == SourceSort::Kind::Bool ||
+      sort.kind() == SourceSort::Kind::RoundingMode)
     return true;
   return sort.kind() == SourceSort::Kind::BitVector &&
          sort.bitVectorWidth() > 0;
@@ -29,8 +42,7 @@ bool UFSignature::validate(const std::vector<SourceSort>& domain,
       if (error != NULL)
         *error = "unsupported domain sort " +
                  sourceSortToSMTLib(domain[i]) + " at argument " +
-                 std::to_string(i) + " (only Bool and nonzero-width "
-                 "bit-vector sorts are supported)";
+                 std::to_string(i) + " (" + supportedSortsPhrase() + ")";
       return false;
     }
   }
@@ -39,8 +51,7 @@ bool UFSignature::validate(const std::vector<SourceSort>& domain,
   {
     if (error != NULL)
       *error = "unsupported result sort " + sourceSortToSMTLib(codomain) +
-               " (only Bool and nonzero-width bit-vector sorts are "
-               "supported)";
+               " (" + supportedSortsPhrase() + ")";
     return false;
   }
   return true;

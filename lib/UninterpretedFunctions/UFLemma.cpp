@@ -18,9 +18,11 @@ struct EqualityKey
     if (sort.kind() != other.sort.kind())
       return static_cast<int>(sort.kind()) <
              static_cast<int>(other.sort.kind());
-    if (sort.kind() == SourceSort::Kind::BitVector &&
-        sort.bitVectorWidth() != other.sort.bitVectorWidth())
-      return sort.bitVectorWidth() < other.sort.bitVectorWidth();
+    // Bool is the one admitted sort with no carrier width to compare;
+    // everything else is separated by its packed width within a kind.
+    if (sort.kind() != SourceSort::Kind::Bool &&
+        sort.packedWidth() != other.sort.packedWidth())
+      return sort.packedWidth() < other.sort.packedWidth();
     if (left != other.left)
       return left < other.left;
     return right < other.right;
@@ -40,9 +42,7 @@ EqualityKey keyFor(ASTNode left, ASTNode right, const SourceSort& sort)
 
 bool supported(const SourceSort& sort)
 {
-  return sort.kind() == SourceSort::Kind::Bool ||
-         (sort.kind() == SourceSort::Kind::BitVector &&
-          sort.bitVectorWidth() > 0);
+  return UFSignature::isSupportedSort(sort);
 }
 
 } // namespace

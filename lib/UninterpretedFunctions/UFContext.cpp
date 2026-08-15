@@ -258,7 +258,7 @@ ASTNode UFContext::apply(const UFDecl* decl, const ASTVec& actuals,
     result = manager_->defaultNodeFactory->CreateNode(UF_APPLY, children);
   else
     result = manager_->defaultNodeFactory->CreateTerm(
-        UF_APPLY, resultSort.bitVectorWidth(), children);
+        UF_APPLY, resultSort.packedWidth(), children);
   noteApplication(result);
   return result;
 }

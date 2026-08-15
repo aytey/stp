@@ -28,9 +28,11 @@ struct EqualityKey
     if (sort.kind() != other.sort.kind())
       return static_cast<int>(sort.kind()) <
              static_cast<int>(other.sort.kind());
-    if (sort.kind() == SourceSort::Kind::BitVector &&
-        sort.bitVectorWidth() != other.sort.bitVectorWidth())
-      return sort.bitVectorWidth() < other.sort.bitVectorWidth();
+    // Bool is the one admitted sort with no carrier width to compare;
+    // everything else is separated by its packed width within a kind.
+    if (sort.kind() != SourceSort::Kind::Bool &&
+        sort.packedWidth() != other.sort.packedWidth())
+      return sort.packedWidth() < other.sort.packedWidth();
     if (left != other.left)
       return left < other.left;
     return right < other.right;
@@ -273,14 +275,15 @@ UFCandidateOutcome checkOneCandidate(
 
 bool supportedSort(const SourceSort& sort)
 {
-  return sort.kind() == SourceSort::Kind::Bool ||
-         (sort.kind() == SourceSort::Kind::BitVector &&
-          sort.bitVectorWidth() > 0);
+  return UFSignature::isSupportedSort(sort);
 }
 
+// How many SAT bits one scalar of this sort occupies. Bool is a single
+// literal; everything else is its packed carrier, which is exactly what the
+// solve-scalar registrar in ToSATAIG allocates from GetValueWidth().
 unsigned scalarWidth(const SourceSort& sort)
 {
-  return sort.kind() == SourceSort::Kind::Bool ? 1 : sort.bitVectorWidth();
+  return sort.kind() == SourceSort::Kind::Bool ? 1 : sort.packedWidth();
 }
 
 const char* validateLeaf(
@@ -296,9 +299,9 @@ const char* validateLeaf(
                  ? NULL
                  : "UF CNF Boolean constant is malformed";
     return leaf.GetKind() == BVCONST &&
-                   leaf.GetValueWidth() == sort.bitVectorWidth()
+                   leaf.GetValueWidth() == sort.packedWidth()
                ? NULL
-               : "UF CNF bit-vector constant is malformed";
+               : "UF CNF scalar constant is malformed";
   }
   if (leaf.GetKind() != SYMBOL)
     return "UF CNF leaf is neither a constant nor a symbol";

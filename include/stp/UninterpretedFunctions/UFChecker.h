@@ -20,9 +20,20 @@ public:
   UFConcreteValue() = default;
 
   static UFConcreteValue boolean(bool value);
+  // Any non-Bool admitted sort, stored as its packed carrier: a bit-vector's
+  // own bits, a rounding mode's one-hot five, a float's IEEE interchange
+  // encoding. The sort travels with the bytes, so two values of different
+  // sorts never compare equal however their carriers line up.
+  static UFConcreteValue scalar(const SourceSort& sort,
+                                const std::vector<uint8_t>& bytes);
   static UFConcreteValue bitVector(unsigned width,
                                    const std::vector<uint8_t>& bytes);
   static UFConcreteValue fromUInt(unsigned width, uint64_t value);
+  // One of the five one-hot RoundingMode encodings, as a value of that sort.
+  static UFConcreteValue fromMode(unsigned encoding);
+  // The interpretation to give a case nothing observed: all-zeros, except for
+  // RoundingMode, whose all-zero carrier denotes no mode at all and which
+  // therefore defaults to RNE.
   static UFConcreteValue zero(const SourceSort& sort);
   static bool fromConstant(const ASTNode& constant, const SourceSort& sort,
                            UFConcreteValue& value, std::string& diagnostic);

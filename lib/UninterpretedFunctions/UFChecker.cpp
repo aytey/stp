@@ -1,4 +1,5 @@
 #include "stp/UninterpretedFunctions/UFChecker.h"
+#include "stp/FloatBlaster/rounding_modes.h"
 #include "extlib-constbv/constantbv.h"
 #include "extlib-unordered-dense/ankerl/unordered_dense.h"
 #include <algorithm>
@@ -11,16 +12,17 @@ namespace
 
 bool supportedSort(const SourceSort& sort)
 {
-  return sort.kind() == SourceSort::Kind::Bool ||
-         (sort.kind() == SourceSort::Kind::BitVector &&
-          sort.bitVectorWidth() > 0);
+  return UFSignature::isSupportedSort(sort);
 }
 
+// Bool occupies one byte; every other admitted sort is stored as its packed
+// carrier, so RoundingMode is five bits in one byte and a float is its IEEE
+// interchange width.
 size_t byteWidth(const SourceSort& sort)
 {
   return sort.kind() == SourceSort::Kind::Bool
              ? 1
-             : (sort.bitVectorWidth() + 7) / 8;
+             : (sort.packedWidth() + 7) / 8;
 }
 
 int compareSort(const SourceSort& left, const SourceSort& right)
@@ -31,9 +33,12 @@ int compareSort(const SourceSort& left, const SourceSort& right)
     return lk < rk ? -1 : 1;
   if (lk == 0)
     return 0;
-  if (left.bitVectorWidth() == right.bitVectorWidth())
+  // Two values of the same packed width but different sorts never meet in
+  // one comparison: a tuple position has one signature sort, and the model
+  // order this feeds only ever sorts tuples of the same signature.
+  if (left.packedWidth() == right.packedWidth())
     return 0;
-  return left.bitVectorWidth() < right.bitVectorWidth() ? -1 : 1;
+  return left.packedWidth() < right.packedWidth() ? -1 : 1;
 }
 
 bool readScalar(const ASTNode& scalar, const SourceSort& expected,
@@ -102,20 +107,26 @@ UFConcreteValue UFConcreteValue::boolean(bool value)
   return out;
 }
 
-UFConcreteValue UFConcreteValue::bitVector(
-    unsigned width, const std::vector<uint8_t>& bytes)
+UFConcreteValue UFConcreteValue::scalar(const SourceSort& sort,
+                                        const std::vector<uint8_t>& bytes)
 {
-  assert(width > 0);
+  assert(sort.isScalar() && sort.packedWidth() > 0);
+  const unsigned width = sort.packedWidth();
   UFConcreteValue out;
-  out.sort_ = SourceSort::bitVector(width);
+  out.sort_ = sort;
   out.bytes_ = bytes;
   out.bytes_.resize((width + 7) / 8, 0);
-  if (out.bytes_.size() > (width + 7) / 8)
-    out.bytes_.resize((width + 7) / 8);
   const unsigned used = width % 8;
   if (used != 0)
     out.bytes_.back() &= static_cast<uint8_t>((1u << used) - 1u);
   return out;
+}
+
+UFConcreteValue UFConcreteValue::bitVector(
+    unsigned width, const std::vector<uint8_t>& bytes)
+{
+  assert(width > 0);
+  return scalar(SourceSort::bitVector(width), bytes);
 }
 
 UFConcreteValue UFConcreteValue::fromUInt(unsigned width, uint64_t value)
@@ -130,10 +141,23 @@ UFConcreteValue UFConcreteValue::zero(const SourceSort& sort)
 {
   if (sort.kind() == SourceSort::Kind::Bool)
     return boolean(false);
-  assert(sort.kind() == SourceSort::Kind::BitVector &&
-         sort.bitVectorWidth() > 0);
-  return bitVector(sort.bitVectorWidth(),
-                   std::vector<uint8_t>(byteWidth(sort), 0));
+  assert(supportedSort(sort));
+  // All-zeros is a value of every admitted sort but one. A rounding mode is
+  // one-hot, so the all-zero carrier denotes no mode: it would print as the
+  // else branch of a generated define-fun that is then not a legal term, and
+  // it would be handed to an enclosing operator as a constant operand when a
+  // nested application falls through to the default. RNE is the arbitrary
+  // choice SMT-LIB itself makes wherever a mode is implied.
+  if (sort.kind() == SourceSort::Kind::RoundingMode)
+    return fromMode(symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+  return scalar(sort, std::vector<uint8_t>(byteWidth(sort), 0));
+}
+
+UFConcreteValue UFConcreteValue::fromMode(unsigned encoding)
+{
+  assert(symbolic_fp::isRoundingModeEncoding(encoding));
+  std::vector<uint8_t> bytes(1, static_cast<uint8_t>(encoding));
+  return scalar(SourceSort::roundingMode(), bytes);
 }
 
 bool UFConcreteValue::fromConstant(const ASTNode& constant,
@@ -146,7 +170,17 @@ bool UFConcreteValue::fromConstant(const ASTNode& constant,
     diagnostic = "UFCHK constant was requested at an unsupported SourceSort";
     return false;
   }
-  if (constant.GetSourceSort() != sort)
+  // A model answers with the *carrier* of a source-sorted leaf -- a plain
+  // BVCONST -- because that is what the SAT assignment materialises, while a
+  // constant written in the query still carries its own sort. Both spell the
+  // same value, so accept either: the leaf node's sort has already been
+  // checked by whoever asked, and what is converted here is that leaf's
+  // value. Widths must still agree exactly.
+  const SourceSort constantSort = constant.GetSourceSort();
+  const bool isCarrier = sort.kind() != SourceSort::Kind::Bool &&
+                         constantSort.kind() == SourceSort::Kind::BitVector &&
+                         constantSort.bitVectorWidth() == sort.packedWidth();
+  if (constantSort != sort && !isCarrier)
   {
     diagnostic = "UFCHK constant does not match its expected SourceSort";
     return false;
@@ -161,18 +195,31 @@ bool UFConcreteValue::fromConstant(const ASTNode& constant,
     value = boolean(constant.GetKind() == TRUE);
     return true;
   }
-  if (constant.GetKind() != BVCONST ||
-      constant.GetValueWidth() != sort.bitVectorWidth())
+  const unsigned width = sort.packedWidth();
+  if (constant.GetKind() != BVCONST || constant.GetValueWidth() != width)
   {
-    diagnostic = "UFCHK expected a concrete bit-vector value";
+    diagnostic = "UFCHK expected a concrete scalar value";
+    return false;
+  }
+  // Bucketing by raw bytes is only the sort's own equality where every
+  // representable carrier denotes a value. RoundingMode is the one admitted
+  // sort where it is not: twenty-seven of its thirty-two patterns denote no
+  // mode. Every RoundingMode scalar the checker can reach is pinned one-hot
+  // -- by its declaration, by UF lowering, and again by FpTotalise -- so a
+  // value that is not is a broken invariant, not an input the checker should
+  // quietly bucket.
+  if (sort.kind() == SourceSort::Kind::RoundingMode &&
+      !symbolic_fp::isRoundingModeEncoding(constant.GetUnsignedConst()))
+  {
+    diagnostic = "UFCHK read a RoundingMode carrier that denotes no mode";
     return false;
   }
   std::vector<uint8_t> bytes(byteWidth(sort), 0);
   const CBV bits = constant.GetBVConst();
-  for (unsigned i = 0; i < sort.bitVectorWidth(); ++i)
+  for (unsigned i = 0; i < width; ++i)
     if (CONSTANTBV::BitVector_bit_test(bits, i))
       bytes[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
-  value = bitVector(sort.bitVectorWidth(), bytes);
+  value = scalar(sort, bytes);
   return true;
 }
 

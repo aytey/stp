@@ -172,11 +172,15 @@ ASTNode STPMgr::CreateDeterministicSourceVariable(
     const SourceSort& sourceSort, const std::string& prefix,
     const ASTNode& key)
 {
+  // Bool, or any scalar sort with a carrier to blast: BitVec, RoundingMode
+  // and FloatingPoint all answer packedWidth(). A symbol whose sort needs a
+  // side condition to denote (RoundingMode is one-hot in five of thirty-two
+  // patterns) is still created here; asserting that condition belongs to
+  // whoever introduces the symbol, not to the factory.
   if (!(sourceSort.kind() == SourceSort::Kind::Bool ||
-        (sourceSort.kind() == SourceSort::Kind::BitVector &&
-         sourceSort.bitVectorWidth() > 0)))
-    FatalError("CreateDeterministicSourceVariable requires Bool or nonzero "
-               "BitVector");
+        (sourceSort.isScalar() && sourceSort.packedWidth() > 0)))
+    FatalError("CreateDeterministicSourceVariable requires Bool or a "
+               "nonzero-width scalar source sort");
   if (key.IsNull() || !key.IsOwnedBy(this))
     FatalError("CreateDeterministicSourceVariable requires a live local key");
 

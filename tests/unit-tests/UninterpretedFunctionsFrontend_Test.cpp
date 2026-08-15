@@ -47,9 +47,6 @@ TEST(UninterpretedFunctionsFrontend, SignatureUsesRestrictedSourceSorts)
   EXPECT_THROW(UFSignature({SourceSort::floatingPoint(8, 24)},
                            SourceSort::boolean()),
                std::invalid_argument);
-  EXPECT_THROW(UFSignature({SourceSort::roundingMode()},
-                           SourceSort::boolean()),
-               std::invalid_argument);
   EXPECT_THROW(UFSignature({SourceSort::bitVector(8)},
                            SourceSort::array(SourceSort::bitVector(8),
                                              SourceSort::bitVector(8))),
@@ -62,6 +59,16 @@ TEST(UninterpretedFunctionsFrontend, SignatureUsesRestrictedSourceSorts)
   EXPECT_EQ(SourceSort::Kind::Bool, signature.domain()[0].kind());
   EXPECT_EQ(17u, signature.domain()[1].bitVectorWidth());
   EXPECT_EQ(3u, signature.codomain().bitVectorWidth());
+
+  // RoundingMode used to sit alongside the throwing rows above. It is now
+  // admitted in both positions; the row is kept, inverted, so that a
+  // regression which re-rejected the sort fails here.
+  const UFSignature mode({SourceSort::roundingMode()},
+                         SourceSort::roundingMode());
+  ASSERT_EQ(1u, mode.arity());
+  EXPECT_EQ(SourceSort::Kind::RoundingMode, mode.domain()[0].kind());
+  EXPECT_EQ(SourceSort::Kind::RoundingMode, mode.codomain().kind());
+  EXPECT_EQ(5u, mode.codomain().packedWidth());
 }
 
 TEST(UninterpretedFunctionsFrontend,
@@ -72,7 +79,6 @@ TEST(UninterpretedFunctionsFrontend,
   UFContext* context = manager.getUFContext();
   const SourceSort bv8 = SourceSort::bitVector(8);
   const SourceSort fp = SourceSort::floatingPoint(8, 24);
-  const SourceSort rm = SourceSort::roundingMode();
   const SourceSort array = SourceSort::array(bv8, bv8);
   std::string diagnostic;
 
@@ -84,11 +90,12 @@ TEST(UninterpretedFunctionsFrontend,
   EXPECT_EQ(nullptr,
             context->declareFunction("fp", {fp}, bv8, &diagnostic));
   EXPECT_EQ("uninterpreted functions: declaration of fp: unsupported domain "
-            "sort (_ FloatingPoint 8 24) at argument 0 (only Bool and "
-            "nonzero-width bit-vector sorts are supported)",
+            "sort (_ FloatingPoint 8 24) at argument 0 (only Bool, "
+            "RoundingMode and nonzero-width bit-vector sorts are supported)",
             diagnostic);
-  EXPECT_EQ(nullptr,
-            context->declareFunction("rm", {rm}, bv8, &diagnostic));
+  // The RoundingMode row that used to sit here is now admitted; it moved to
+  // RoundingModeSignaturesAreAdmitted below, where the registry is expected
+  // to change rather than stay empty.
   EXPECT_EQ(nullptr,
             context->declareFunction("array", {array}, bv8, &diagnostic));
   EXPECT_EQ(nullptr, context->declareFunction(
@@ -97,11 +104,46 @@ TEST(UninterpretedFunctionsFrontend,
   EXPECT_EQ(nullptr,
             context->declareFunction("result", {bv8}, fp, &diagnostic));
   EXPECT_EQ("uninterpreted functions: declaration of result: unsupported "
-            "result sort (_ FloatingPoint 8 24) (only Bool and nonzero-width "
-            "bit-vector sorts are supported)",
+            "result sort (_ FloatingPoint 8 24) (only Bool, RoundingMode and "
+            "nonzero-width bit-vector sorts are supported)",
             diagnostic);
   EXPECT_EQ(0u, context->declarationCount());
   EXPECT_EQ(0u, context->registeredApplicationCount());
+}
+
+TEST(UninterpretedFunctionsFrontend, RoundingModeSignaturesAreAdmitted)
+{
+  STPMgr manager;
+  manager.UserFlags.enable_uninterpreted_functions = true;
+  UFContext* context = manager.getUFContext();
+  const SourceSort rm = SourceSort::roundingMode();
+  const SourceSort bv8 = SourceSort::bitVector(8);
+  std::string diagnostic;
+
+  const UFDecl* toMode =
+      context->declareFunction("toMode", {bv8}, rm, &diagnostic);
+  ASSERT_NE(nullptr, toMode) << diagnostic;
+  const UFDecl* fromMode =
+      context->declareFunction("fromMode", {rm}, bv8, &diagnostic);
+  ASSERT_NE(nullptr, fromMode) << diagnostic;
+  EXPECT_EQ(2u, context->declarationCount());
+
+  // Declaring a RoundingMode-sorted identity is enough to make the manager
+  // report the floating-point theory, which is what routes the query to
+  // FpTotalise and to the mode-aware model printers.
+  EXPECT_TRUE(manager.has_floating_point_theory);
+
+  const ASTNode x = manager.CreateSourceSymbol("x", bv8);
+  const ASTNode application = context->apply(toMode, {x}, &diagnostic);
+  ASSERT_FALSE(application.IsNull()) << diagnostic;
+  EXPECT_EQ(UF_APPLY, application.GetKind());
+  // The carrier is the packed one -- five bits -- while the source sort stays
+  // RoundingMode. BVTypeCheck's UF_APPLY rule enforces exactly this pairing.
+  EXPECT_EQ(SourceSort::Kind::RoundingMode,
+            application.GetSourceSort().kind());
+  EXPECT_EQ(BITVECTOR_TYPE, application.GetType());
+  EXPECT_EQ(5u, application.GetValueWidth());
+  EXPECT_TRUE(BVTypeCheck(application));
 }
 
 TEST(UninterpretedFunctionsFrontend, DurableApplicationsAreTypedAndHashConsed)

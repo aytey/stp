@@ -19,9 +19,10 @@ namespace stp
 class UFContext;
 class STPMgr;
 
-// An immutable, ordered source-language signature. The reference profile
-// deliberately admits only Bool and non-empty BitVec sorts; carrier widths
-// are not a substitute for this distinction (Bool has carrier width zero).
+// An immutable, ordered source-language signature. Carrier widths are not a
+// substitute for the sorts themselves: Bool has carrier width zero, and
+// RoundingMode's 5-bit carrier has thirty-two patterns where the sort has
+// five values.
 class DLL_PUBLIC UFSignature final
 {
 public:
@@ -31,7 +32,14 @@ public:
   const SourceSort& codomain() const { return codomain_; }
   size_t arity() const { return domain_.size(); }
 
+  // The single admission gate for a signature position. Everything in the UF
+  // core -- the checker, the lemma oracle, the CNF encoder, the model printer
+  // and BVTypeCheck's UF_APPLY rule -- asks this rather than repeating the
+  // sort list, so admitting a sort is one edit rather than six.
   static bool isSupportedSort(const SourceSort& sort);
+  // The parenthetical the diagnostics share; kept beside the gate so the two
+  // cannot drift.
+  static const char* supportedSortsPhrase();
   static bool validate(const std::vector<SourceSort>& domain,
                        const SourceSort& codomain, std::string* error = NULL);
 

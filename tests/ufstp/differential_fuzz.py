@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic UFSTP differential campaign.
 
-The generated corpus exercises nested applications, Bool/BV signatures,
-define-fun specialization, let resolution, non-injectivity, interpreted
-equalities, arrays-as-actuals, and guarded push/pop checks.  Every case is
-run through both STP solve adapters and one or more independent SMT solvers.
-Any unknown/error, timeout, or verdict disagreement is a hard failure.
+The generated corpus exercises nested applications, Bool/BV/RoundingMode
+signatures, define-fun specialization, let resolution, non-injectivity,
+interpreted equalities, arrays-as-actuals, and guarded push/pop checks.
+Every case is run through both STP solve adapters and one or more independent
+SMT solvers.  Any unknown/error, timeout, or verdict disagreement is a hard
+failure.
+
+The RoundingMode families are mode-biased rather than value-biased: the sort
+has five values and its carrier thirty-two, so what is worth generating is
+tuples that exhaust the modes, which is what forces a result symbol to be
+pinned rather than merely constrained.
 """
 
 import argparse
@@ -29,12 +35,22 @@ def nested(term, depth):
     return term
 
 
+FAMILIES = 9
+
+MODES = ("RNE", "RTZ", "RTP", "RTN", "RNA")
+
+
 def make_case(seed):
     width = 2 + seed % 7
     bv = "(_ BitVec %d)" % width
     zero = "#b" + "0" * width
-    family = seed % 7
-    logic = "QF_AUFBV" if family == 4 else "QF_UFBV"
+    family = seed % FAMILIES
+    if family == 4:
+        logic = "QF_AUFBV"
+    elif family >= 7:
+        logic = "QF_UFBVFP"
+    else:
+        logic = "QF_UFBV"
     depth = 1 + (seed // 6) % 5
     gx = nested("x", depth)
     gy = nested("y", depth)
@@ -95,6 +111,31 @@ def make_case(seed):
             "(declare-fun q (%s Bool) %s)" % (bv, bv),
             "(assert (distinct (f x b) (q x b)))",
         ]
+    elif family == 7:
+        # RoundingMode in a domain position. Its carrier's bit-equality is the
+        # sort's own equality, so congruence binds exactly when the two modes
+        # are forced equal and not when they are forced apart.
+        congruent = (seed // FAMILIES) % 2 == 0
+        expected = "unsat" if congruent else "sat"
+        lines += [
+            "(declare-fun km (RoundingMode Bool) %s)" % bv,
+            "(declare-const r RoundingMode)",
+            "(declare-const s RoundingMode)",
+            "(assert (%s r s))" % ("=" if congruent else "distinct"),
+            "(assert (= b c))",
+            "(assert (distinct (km r b) (km s c)))",
+        ]
+    elif family == 8:
+        # RoundingMode in a result position, exhausted. Ruling out all five
+        # modes is unsatisfiable only if the introduced result symbol is
+        # pinned to them; ruling out four leaves exactly one and must stay
+        # satisfiable, so an over-constrained pin fails here too.
+        exhaustive = (seed // FAMILIES) % 2 == 0
+        excluded = MODES if exhaustive else MODES[:4]
+        expected = "unsat" if exhaustive else "sat"
+        lines += ["(declare-fun kr (%s Bool) RoundingMode)" % bv]
+        lines += ["(assert (distinct (kr x b) %s))" % mode
+                  for mode in excluded]
     else:
         # A generated UF result connected to the formula only through a
         # compound term must keep the SAT assignment for that connection.
@@ -238,7 +279,8 @@ def main():
         "families": ["nested-congruence", "noninjectivity",
                      "boolean-predicate", "interpreted-equality",
                      "array-actual", "declaration-separation",
-                     "compound-result-liveness"],
+                     "compound-result-liveness", "rounding-mode-actual",
+                     "rounding-mode-result-exhaustion"],
         "seconds_by_solver": {key: round(value, 6)
                               for key, value in totals.items()},
         "result": "pass",

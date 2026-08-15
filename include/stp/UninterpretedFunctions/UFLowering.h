@@ -82,6 +82,13 @@ public:
   ASTNodeMap handleToResult;
   ASTNodeMap nameToTerm;
   ASTVec namingDefinitions;
+  // Side conditions without which a solve scalar would denote nothing. Only
+  // RoundingMode needs one today: its 5-bit carrier has thirty-two patterns
+  // and the sort has five values, so every RoundingMode scalar this lowering
+  // registers is pinned one-hot here. FpTotalise pins the same symbols when
+  // it runs, and the constraint is idempotent, but relying on that would make
+  // a model's legality depend on a pass ordering rather than on lowering.
+  ASTVec sortConstraints;
   // Pairwise congruence constraints installed before the first solve for the
   // declarations the eager policy selected. Empty in the reference profile,
   // where every congruence clause is earned by a refuted candidate.

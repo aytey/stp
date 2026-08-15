@@ -660,10 +660,13 @@ class AbsRefine_CounterExample::EvaluationDriver
     return StepResult::Pushed;
   }
 
-  /* One actual of an uninterpreted-function application, whose domain sorts
-   * may be Bool or bit-vector. Each is needed as a constant to key the
-   * certified function seed, so a bit-vector actual is requested strictly
-   * (ArrayReadFlag false) rather than being allowed back as a symbolic read.
+  /* One actual of an uninterpreted-function application. Each is needed as a
+   * constant to key the certified function seed, so anything but a Bool is
+   * requested strictly (ArrayReadFlag false) rather than being allowed back
+   * as a symbolic read. Bool is the only admitted domain sort that is not a
+   * bit-vector carrier: RoundingMode is BITVECTOR_TYPE (five bits) and a
+   * float is FLOATINGPOINT_TYPE, and both belong on the term walk, so the
+   * split is on the carrier's type rather than on the source sort.
    * Both walks reach this, so the resume phase is the caller's own.
    */
   template <typename ResumePhase>

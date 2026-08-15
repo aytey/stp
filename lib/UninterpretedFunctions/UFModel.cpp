@@ -53,9 +53,23 @@ void printValue(std::ostream& os, STPMgr* manager,
 {
   const ASTNode constant = UFModel::concreteValue(manager, value);
   if (value.sort().kind() == SourceSort::Kind::Bool)
+  {
     os << (constant.GetKind() == TRUE ? "true" : "false");
-  else
-    printer::outputBitVecSMTLIB2(constant, os);
+    return;
+  }
+  // A rounding mode denotes one of five modes, not a 5-bit number, so the
+  // define-fun this text goes into has to name the mode; a bit-vector
+  // literal there is not a term of the sort. concreteValue has already
+  // refused any carrier that names none.
+  if (value.sort().kind() == SourceSort::Kind::RoundingMode)
+  {
+    const char* name = printer::roundingModeName(constant.GetUnsignedConst());
+    if (name == NULL)
+      FatalError("UF model holds a RoundingMode value that denotes no mode");
+    os << name;
+    return;
+  }
+  printer::outputBitVecSMTLIB2(constant, os);
 }
 
 void printCondition(std::ostream& os, STPMgr* manager,
@@ -100,11 +114,10 @@ ASTNode UFModel::concreteValue(STPMgr* manager,
   const SourceSort& sort = value.sort();
   if (sort.kind() == SourceSort::Kind::Bool)
     return value.booleanValue() ? manager->ASTTrue : manager->ASTFalse;
-  if (sort.kind() != SourceSort::Kind::BitVector ||
-      sort.bitVectorWidth() == 0)
+  if (!UFSignature::isSupportedSort(sort))
     FatalError("UF concrete-value conversion received an unsupported sort");
 
-  const unsigned width = sort.bitVectorWidth();
+  const unsigned width = sort.packedWidth();
   const std::vector<uint8_t>& bytes = value.bytes();
   if (bytes.size() != (width + 7) / 8)
     FatalError("UF concrete-value conversion received malformed bytes");
@@ -113,7 +126,13 @@ ASTNode UFModel::concreteValue(STPMgr* manager,
   for (unsigned i = 0; i < width; ++i)
     if ((bytes[i / 8] & static_cast<uint8_t>(1u << (i % 8))) != 0)
       CONSTANTBV::BitVector_Bit_On(bits, i);
-  return manager->CreateBVConst(bits, width); // consumes bits
+  const ASTNode carrier = manager->CreateBVConst(bits, width); // consumes bits
+  // The checker's currency is the packed carrier; a model has to hand back a
+  // term of the declared sort. LiftSourceValue is the funnel that already
+  // does this for every other model boundary, and it refuses a carrier that
+  // denotes nothing -- an all-zero "rounding mode", say -- rather than
+  // publishing it.
+  return manager->LiftSourceValue(carrier, sort);
 }
 
 bool UFModel::evaluateApplication(STPMgr* manager,

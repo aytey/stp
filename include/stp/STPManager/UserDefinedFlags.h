@@ -181,9 +181,11 @@ public:
   // ARRAY_EQ, which is lowered only after the complete query is assembled.
   bool enable_array_equality = false;
 
-  // Decide nonzero-arity Bool/BitVec uninterpreted functions using the
-  // UFSTP v2 dynamic-Ackermann reference profile. Logic names never toggle
-  // this runtime semantic option.
+  // Decide nonzero-arity Bool/BitVec/RoundingMode uninterpreted functions
+  // using the UFSTP v2 dynamic-Ackermann reference profile. Logic names never
+  // toggle this runtime semantic option -- though the UF+FP logic names are
+  // only accepted while it is set, since they exist to let one query name
+  // both fragments.
   bool enable_uninterpreted_functions = false;
 
   // How many congruence lemmas one refuted candidate may install before the

@@ -390,10 +390,10 @@ namespace stp
         "uninterpreted functions: unsupported domain sort " + sort.spelling +
         " at argument " + std::to_string(argument) + " of " + name;
     diagnostic += sort.known
-                      ? " (only Bool and nonzero-width bit-vector sorts are "
-                        "supported)"
-                      : " (unknown; only Bool and nonzero-width bit-vector "
-                        "sorts are supported)";
+                      ? " (" + std::string(
+                            stp::UFSignature::supportedSortsPhrase()) + ")"
+                      : " (unknown; " + std::string(
+                            stp::UFSignature::supportedSortsPhrase()) + ")";
     return diagnostic;
   }
 
@@ -404,10 +404,10 @@ namespace stp
         "uninterpreted functions: unsupported result sort " + sort.spelling +
         " of " + name;
     diagnostic += sort.known
-                      ? " (only Bool and nonzero-width bit-vector sorts are "
-                        "supported)"
-                      : " (unknown; only Bool and nonzero-width bit-vector "
-                        "sorts are supported)";
+                      ? " (" + std::string(
+                            stp::UFSignature::supportedSortsPhrase()) + ")"
+                      : " (unknown; " + std::string(
+                            stp::UFSignature::supportedSortsPhrase()) + ")";
     return diagnostic;
   }
 
@@ -428,13 +428,29 @@ namespace stp
       // canonical constant and discard the command at its outer boundary;
       // unlike the v1 sketch this creates neither a fresh malformed
       // placeholder nor a UF application/registration.
+      //
+      // The enclosing production reduces before the command is discarded and
+      // sort-checks its operands, so the placeholder has to be a term of the
+      // declared sort and not merely of that sort's carrier width -- a bare
+      // five-bit zero where a RoundingMode is expected turns this nonfatal
+      // rejection into a fatal "operands of the same sort" error.
       const stp::SourceSort resultSort =
           declaration == NULL ? stp::SourceSort::boolean()
                               : declaration->signature().codomain();
-      application = resultSort.kind() == stp::SourceSort::Kind::Bool
-                        ? stp::GlobalParserInterface->CreateNode(FALSE)
-                        : stp::GlobalParserInterface->CreateZeroConst(
-                              resultSort.bitVectorWidth());
+      switch (resultSort.kind())
+      {
+        case stp::SourceSort::Kind::Bool:
+          application = stp::GlobalParserInterface->CreateNode(FALSE);
+          break;
+        case stp::SourceSort::Kind::RoundingMode:
+          application = stp::GlobalParserInterface->CreateRMConst(
+              stp::symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+          break;
+        default:
+          application = stp::GlobalParserInterface->CreateZeroConst(
+              resultSort.packedWidth());
+          break;
+      }
     }
     return stp::GlobalParserInterface->newNode(application);
   }
@@ -1879,13 +1895,25 @@ cmdi:
       // Anything more (a Real declaration, arithmetic over reals) has no
       // production and is a syntax error, so accepting the name here cannot
       // answer a query STP could not decide.
+      // The UF+FP names are gated on the feature exactly as QF_UFBV is, and
+      // are floating-point logics in their own right: without them no query
+      // can name a fragment admitting both uninterpreted functions and the
+      // floating-point keywords, and outside an FP logic "RoundingMode" is
+      // not even a token (see SMT2SetFloatTokens below).
+      const bool uf_fp_logic =
+            (0 == strcmp($2->c_str(),"QF_UFFP") ||
+             0 == strcmp($2->c_str(),"QF_UFBVFP") ||
+             0 == strcmp($2->c_str(),"QF_UFABVFP")) &&
+            stp::GlobalParserInterface->getUserFlags()
+                .enable_uninterpreted_functions;
       const bool fp_logic =
             0 == strcmp($2->c_str(),"QF_FP") ||
             0 == strcmp($2->c_str(),"QF_BVFP") ||
             0 == strcmp($2->c_str(),"QF_ABVFP") ||
             0 == strcmp($2->c_str(),"QF_FPLRA") ||
             0 == strcmp($2->c_str(),"QF_BVFPLRA") ||
-            0 == strcmp($2->c_str(),"QF_ABVFPLRA");
+            0 == strcmp($2->c_str(),"QF_ABVFPLRA") ||
+            uf_fp_logic;
       if (!(
             0 == strcmp($2->c_str(),"QF_BV") ||
             0 == strcmp($2->c_str(),"QF_ABV") ||
@@ -2500,7 +2528,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 | ROUNDINGMODE_TOK
 {
   $$ = new stp::parsed_uf_sort(
-      stp::SourceSort::roundingMode(), "RoundingMode", false);
+      stp::SourceSort::roundingMode(), "RoundingMode", true);
 }
 | STRING_TOK
 {
@@ -2545,7 +2573,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 | ROUNDINGMODE_TOK
 {
   $$ = new stp::parsed_uf_sort(
-      stp::SourceSort::roundingMode(), "RoundingMode", false);
+      stp::SourceSort::roundingMode(), "RoundingMode", true);
 }
 | STRING_TOK
 {

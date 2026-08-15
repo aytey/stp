@@ -17,8 +17,10 @@ python3 tests/ufstp/performance.py \
 
 `differential_fuzz.py` covers nested congruence, non-injectivity, Boolean
 predicates, interpreted equality, arrays as actuals, declaration separation,
-and compound-result liveness. Every case runs in both STP modes and through
-each named reference solver:
+compound-result liveness, and RoundingMode in both signature positions --
+including result tuples that exhaust all five modes, which is what forces an
+introduced result symbol to be pinned rather than merely constrained. Every
+case runs in both STP modes and through each named reference solver:
 
 ```sh
 python3 tests/ufstp/differential_fuzz.py \

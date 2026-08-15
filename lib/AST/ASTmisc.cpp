@@ -608,8 +608,8 @@ bool BVTypeCheck_term_kind(const ASTNode& n, const Kind& k)
           FatalError("BVTypeCheck: Bool UF_APPLY has a non-Bool carrier", n);
       }
       else if (n.GetType() != BITVECTOR_TYPE ||
-               n.GetValueWidth() != sort.bitVectorWidth())
-        FatalError("BVTypeCheck: BitVec UF_APPLY has the wrong width", n);
+               n.GetValueWidth() != sort.packedWidth())
+        FatalError("BVTypeCheck: UF_APPLY has the wrong carrier width", n);
       break;
     }
 

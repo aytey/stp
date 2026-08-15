@@ -20,7 +20,9 @@ class UFTheoryAdapter;
 class DLL_PUBLIC UFModel final
 {
 public:
-  // Build a source-sort-correct Bool/BV constant in manager.
+  // Build a constant of the value's own source sort in manager: a Boolean, a
+  // bit-vector literal, or a rounding-mode constant. A carrier that denotes
+  // no value of the sort is refused rather than published.
   static ASTNode concreteValue(STPMgr* manager,
                                const UFConcreteValue& value);
 

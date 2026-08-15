@@ -1,10 +1,13 @@
+#include "stp/FloatBlaster/rounding_modes.h"
 #include "stp/STPManager/STPManager.h"
 #include "stp/UninterpretedFunctions/UFChecker.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/UninterpretedFunctions/UFLemma.h"
+#include "stp/UninterpretedFunctions/UFModel.h"
 
 #include <gtest/gtest.h>
 #include <map>
+#include <sstream>
 
 using namespace stp;
 
@@ -524,4 +527,213 @@ TEST(UFChecker, ProducesDefaultSeedForDeclarationWithoutObservation)
   EXPECT_TRUE(result.modelSeed.functions[1].cases.empty());
   EXPECT_EQ(UFConcreteValue::boolean(false),
             result.modelSeed.functions[1].defaultValue);
+}
+
+namespace
+{
+
+// Whether `needle` occurs anywhere in `haystack`. The DAGs here are tiny, so
+// a plain memoised walk is enough.
+bool reaches(const ASTNode& haystack, const ASTNode& needle,
+             ASTNodeSet* seen = NULL)
+{
+  ASTNodeSet local;
+  if (seen == NULL)
+    seen = &local;
+  if (haystack == needle)
+    return true;
+  if (!seen->insert(haystack).second)
+    return false;
+  for (const ASTNode& child : haystack.GetChildren())
+    if (reaches(child, needle, seen))
+      return true;
+  return false;
+}
+
+// A RoundingMode signature in both positions, with two applications so the
+// declaration is comparable and both actuals stay readable.
+struct RoundingModeFixture
+{
+  STPMgr manager;
+  UFContext* context;
+  const UFDecl* k;
+  ASTNode r;
+  ASTNode s;
+  ASTNode kr;
+  ASTNode ks;
+  LoweredApplicationView view;
+
+  RoundingModeFixture() : context(NULL), k(NULL)
+  {
+    manager.UserFlags.enable_uninterpreted_functions = true;
+    context = manager.getUFContext();
+    std::string diagnostic;
+    k = context->declareFunction("k", {SourceSort::roundingMode()},
+                                 SourceSort::roundingMode(), &diagnostic);
+    r = manager.CreateSourceSymbol("r", SourceSort::roundingMode());
+    s = manager.CreateSourceSymbol("s", SourceSort::roundingMode());
+    kr = context->apply(k, {r}, &diagnostic);
+    ks = context->apply(k, {s}, &diagnostic);
+    const ASTNode root = manager.defaultNodeFactory->CreateNode(EQ, kr, ks);
+    UFLowering lowerer(&manager);
+    view = lowerer.lowerCompletedRoot(root, UFSolveScope::batch(1));
+  }
+
+  // Both actuals read the same mode; the two results read the modes given.
+  Candidate candidate(uint64_t version, unsigned argument,
+                      unsigned leftResult, unsigned rightResult) const
+  {
+    Candidate result(version);
+    for (const LoweredApplicationRecord& record : view.applications)
+    {
+      const bool isLeft = record.durableHandle == kr;
+      result.set(record.namedActuals[0], UFConcreteValue::fromMode(argument));
+      result.set(record.resultSymbol,
+                 UFConcreteValue::fromMode(isLeft ? leftResult : rightResult));
+    }
+    return result;
+  }
+};
+
+} // namespace
+
+TEST(UFChecker, RoundingModeDefaultsToALegalMode)
+{
+  using namespace symbolic_fp;
+  const UFConcreteValue value =
+      UFConcreteValue::zero(SourceSort::roundingMode());
+  EXPECT_EQ(SourceSort::roundingMode(), value.sort());
+  EXPECT_EQ(UFConcreteValue::fromMode(ROUND_NEAREST_TIES_TO_EVEN), value);
+
+  // All-zeros is the natural default and is exactly what must not happen: it
+  // is not one of the five one-hot encodings, so it denotes no mode.
+  STPMgr manager;
+  const ASTNode constant = UFModel::concreteValue(&manager, value);
+  EXPECT_EQ(SourceSort::Kind::RoundingMode, constant.GetSourceSort().kind());
+  EXPECT_EQ(static_cast<unsigned>(ROUND_NEAREST_TIES_TO_EVEN),
+            constant.GetUnsignedConst());
+}
+
+TEST(UFChecker, RoundingModeValuesAcceptCarriersAndRejectNonModes)
+{
+  using namespace symbolic_fp;
+  STPMgr manager;
+  const SourceSort rm = SourceSort::roundingMode();
+  UFConcreteValue value;
+  std::string diagnostic;
+
+  // A constant written in the query keeps the sort ...
+  ASSERT_TRUE(UFConcreteValue::fromConstant(
+      manager.CreateRMConst(ROUND_TOWARD_ZERO), rm, value, diagnostic))
+      << diagnostic;
+  EXPECT_EQ(UFConcreteValue::fromMode(ROUND_TOWARD_ZERO), value);
+
+  // ... while a SAT assignment materialises the bare 5-bit carrier. Both name
+  // the same value and both have to key the same observation bucket.
+  ASSERT_TRUE(UFConcreteValue::fromConstant(
+      manager.CreateBVConst(5, ROUND_TOWARD_ZERO), rm, value, diagnostic))
+      << diagnostic;
+  EXPECT_EQ(UFConcreteValue::fromMode(ROUND_TOWARD_ZERO), value);
+
+  // A carrier that is not one-hot denotes nothing. Bucketing it by its bytes
+  // would make the checker certify an interpretation naming no mode, so it is
+  // refused instead.
+  EXPECT_FALSE(UFConcreteValue::fromConstant(manager.CreateBVConst(5, 0), rm,
+                                             value, diagnostic));
+  EXPECT_NE(std::string::npos, diagnostic.find("denotes no mode"));
+  EXPECT_FALSE(UFConcreteValue::fromConstant(manager.CreateBVConst(5, 3), rm,
+                                             value, diagnostic));
+  // The width still has to match exactly; a wider carrier is not a mode.
+  EXPECT_FALSE(UFConcreteValue::fromConstant(manager.CreateBVConst(8, 1), rm,
+                                             value, diagnostic));
+}
+
+TEST(UFChecker, RoundingModeLoweringPinsEverySolveScalar)
+{
+  RoundingModeFixture fixture;
+  // Two results and two leaf actuals, each pinned exactly once.
+  EXPECT_EQ(4u, fixture.view.solveScalars.size());
+  EXPECT_EQ(4u, fixture.view.sortConstraints.size());
+  for (const ASTNode& constraint : fixture.view.sortConstraints)
+  {
+    EXPECT_EQ(OR, constraint.GetKind());
+    EXPECT_EQ(5u, constraint.Degree()); // one equality per legal mode
+  }
+  // The pin reaches both solve modes through the one funnel that already
+  // carries naming definitions.
+  const ASTNode complete =
+      fixture.view.semanticRootWithDefinitions(&fixture.manager);
+  for (const ASTNode& constraint : fixture.view.sortConstraints)
+    EXPECT_TRUE(reaches(complete, constraint));
+}
+
+TEST(UFChecker, RoundingModeCongruenceAndSeed)
+{
+  using namespace symbolic_fp;
+  RoundingModeFixture fixture;
+
+  // Same argument mode, different result modes: a conflict, at RoundingMode.
+  const Candidate conflicting = fixture.candidate(
+      3, ROUND_TOWARD_ZERO, ROUND_TOWARD_POSITIVE, ROUND_TOWARD_NEGATIVE);
+  const UFCheckResult refuted = UFChecker::check(
+      fixture.context->activeDeclarations(), fixture.view, conflicting);
+  ASSERT_TRUE(refuted.hasConflict()) << refuted.diagnostic;
+  ASSERT_EQ(1u, refuted.conflicts[0].arguments.size());
+  EXPECT_EQ(SourceSort::roundingMode(),
+            refuted.conflicts[0].arguments[0].sort);
+  UFAbstractLemma lemma;
+  std::string diagnostic;
+  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(refuted.conflicts[0], lemma,
+                                              diagnostic))
+      << diagnostic;
+  EXPECT_EQ(SourceSort::roundingMode(), lemma.conclusion.sort);
+
+  // Agreeing results: consistent, and the seed's uncovered cases default to a
+  // mode that exists.
+  const Candidate consistent = fixture.candidate(
+      4, ROUND_TOWARD_ZERO, ROUND_TOWARD_POSITIVE, ROUND_TOWARD_POSITIVE);
+  const UFCheckResult certified = UFChecker::check(
+      fixture.context->activeDeclarations(), fixture.view, consistent);
+  ASSERT_TRUE(certified.consistent()) << certified.diagnostic;
+  ASSERT_EQ(1u, certified.modelSeed.functions.size());
+  EXPECT_EQ(UFConcreteValue::fromMode(ROUND_NEAREST_TIES_TO_EVEN),
+            certified.modelSeed.functions[0].defaultValue);
+
+  // Every mode in the printed interpretation is named, not spelled as a
+  // five-bit literal, or the define-fun is not a legal SMT-LIB term.
+  std::ostringstream printed;
+  UFModel::printSMTLIB2(printed, certified.modelSeed);
+  EXPECT_EQ("(define-fun |k| ((x0 RoundingMode)) RoundingMode\n"
+            "  (ite (= x0 RTZ) RTP RNE))\n",
+            printed.str());
+}
+
+TEST(UFChecker, RoundingModeApplicationInTermCompletesToALegalMode)
+{
+  using namespace symbolic_fp;
+  RoundingModeFixture fixture;
+
+  // No adapter at all: nothing was certified for this declaration, so the
+  // application is completed with the codomain's default. It is handed to the
+  // enclosing operator as a constant operand, so an illegal mode here would
+  // not merely print badly -- it would be evaluated.
+  ASTNode value;
+  std::string diagnostic;
+  ASSERT_TRUE(UFModel::evaluateApplicationInTerm(
+      &fixture.manager, NULL, fixture.kr,
+      {fixture.manager.CreateRMConst(ROUND_TOWARD_ZERO)}, value, diagnostic))
+      << diagnostic;
+  EXPECT_EQ(SourceSort::Kind::RoundingMode, value.GetSourceSort().kind());
+  EXPECT_EQ(static_cast<unsigned>(ROUND_NEAREST_TIES_TO_EVEN),
+            value.GetUnsignedConst());
+
+  // The actual may equally arrive as its bare carrier, which is what the
+  // counterexample walk produces for a RoundingMode symbol.
+  ASSERT_TRUE(UFModel::evaluateApplicationInTerm(
+      &fixture.manager, NULL, fixture.kr,
+      {fixture.manager.CreateBVConst(5, ROUND_TOWARD_ZERO)}, value,
+      diagnostic))
+      << diagnostic;
+  EXPECT_EQ(static_cast<unsigned>(ROUND_NEAREST_TIES_TO_EVEN),
+            value.GetUnsignedConst());
 }
