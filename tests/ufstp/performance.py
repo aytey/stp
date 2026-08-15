@@ -3,8 +3,10 @@
 
 This is acceptance evidence, not a pass/fail micro-optimization target.  It
 checks every answer while timing the six M7 families named by T-PERF-01 in
-both fresh-query and persistent exact-stack modes.  Two fixed scales make
-unexpected nonlinear regressions visible in the emitted JSON.
+both fresh-query and persistent exact-stack modes, plus one family each for
+the floating-point and rounding-mode sorts, which do not scale like the
+bit-vector ones.  Two fixed scales make unexpected nonlinear regressions
+visible in the emitted JSON.
 """
 
 import argparse
@@ -132,6 +134,54 @@ def epoch_rebuild(size):
     return "\n".join(lines) + "\n", expected
 
 
+def float_congruence(size):
+    """Congruence over a floating-point argument, at the sort's own equality.
+
+    The other families are bit-vector, and the two sorts do not scale alike:
+    a float actual reaches the checker through a pack/unpack boundary, and
+    the query's own (= a b) is FP_SMT_EQ, which equality propagation cannot
+    substitute through. Both cost more as the family grows, so the trend is
+    worth its own row rather than being assumed to follow the bit-vector one.
+    """
+    lines = [
+        "(set-logic QF_UFBVFP)",
+        "(declare-fun ff ((_ FloatingPoint 8 24)) (_ BitVec 16))",
+    ]
+    for index in range(size):
+        lines.append("(declare-const w%d (_ FloatingPoint 8 24))" % index)
+    for index in range(1, size):
+        lines.append("(assert (= w0 w%d))" % index)
+    lines.append("(assert (distinct %s))"
+                 % " ".join("(ff w%d)" % index for index in range(size)))
+    lines += ["(check-sat)", "(exit)"]
+    return "\n".join(lines) + "\n", ["unsat"]
+
+
+def rounding_mode_exhaustion(size):
+    """A rounding-mode result, ruled out mode by mode.
+
+    Each block excludes all five modes of one application, so it is
+    unsatisfiable only because the introduced result symbol is pinned to
+    them. This is the shape that grows the pin rather than the congruence
+    machinery.
+    """
+    modes = ("RNE", "RTP", "RTN", "RTZ", "RNA")
+    lines = [
+        "(set-logic QF_UFBVFP)",
+        "(declare-fun kk ((_ BitVec 16)) RoundingMode)",
+    ]
+    expected = []
+    for index in range(size):
+        lines.append("(push 1)")
+        for mode in modes:
+            lines.append("(assert (distinct (kk %s) %s))" % (bv(index), mode))
+        lines += ["(check-sat)", "(pop 1)"]
+        expected.append("unsat")
+    lines += ["(check-sat)", "(exit)"]
+    expected.append("sat")
+    return "\n".join(lines) + "\n", expected
+
+
 FAMILIES = {
     "durable-traversal-lowering": durable_traversal,
     "define-fun-reuse": define_fun_reuse,
@@ -139,6 +189,8 @@ FAMILIES = {
     "persistent-identical-block-reuse": identical_block_reuse,
     "pop-scope": pop_scope,
     "encoding-epoch-rebuild": epoch_rebuild,
+    "float-congruence": float_congruence,
+    "rounding-mode-exhaustion": rounding_mode_exhaustion,
 }
 
 

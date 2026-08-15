@@ -6,8 +6,12 @@ pins the exact generated inputs.
 
 `performance.py` exercises durable lowering, `define-fun` reuse, nested
 `let`, identical-query reuse, pop scoping, and encoding-epoch rebuilds in
-both batch and persistent modes. It is an answer-checked trend benchmark,
-not a wall-clock threshold:
+both batch and persistent modes, plus one family each for floating-point
+congruence and rounding-mode exhaustion. Those two are separate rows because
+the sorts do not scale like the bit-vector ones: a float actual reaches the
+checker through a pack/unpack boundary, and the query's own `(= a b)` over
+floats is `FP_SMT_EQ`, which equality propagation cannot substitute through.
+It is an answer-checked trend benchmark, not a wall-clock threshold:
 
 ```sh
 python3 tests/ufstp/performance.py \
