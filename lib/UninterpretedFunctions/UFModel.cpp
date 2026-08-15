@@ -165,6 +165,89 @@ bool UFModel::evaluateApplication(STPMgr* manager,
   return true;
 }
 
+bool UFModel::evaluateApplicationInTerm(
+    STPMgr* manager, const UFTheoryAdapter* adapter,
+    const ASTNode& durableHandle, const std::vector<ASTNode>& actualValues,
+    ASTNode& value, std::string& diagnostic)
+{
+  // An application the solve reached has a certified value; prefer it.
+  if (evaluateApplication(manager, adapter, durableHandle, value, diagnostic))
+    return true;
+
+  value = ASTNode();
+  if (manager == NULL || durableHandle.IsNull() ||
+      !durableHandle.IsOwnedBy(manager) ||
+      durableHandle.GetKind() != UF_APPLY || durableHandle.Degree() == 0)
+  {
+    diagnostic = "uninterpreted-function application belongs to another "
+                 "context or is invalid";
+    return false;
+  }
+  UFContext* context = manager->getUFContextIfAny();
+  const UFDecl* declaration =
+      context == NULL ? NULL : context->lookupIdentity(durableHandle[0]);
+  if (declaration == NULL)
+  {
+    diagnostic = "expression is not a registered durable "
+                 "uninterpreted-function application";
+    return false;
+  }
+  const UFSignature& signature = declaration->signature();
+  if (actualValues.size() != signature.arity())
+  {
+    diagnostic = "uninterpreted-function application was given the wrong "
+                 "number of evaluated actuals";
+    return false;
+  }
+
+  // The actuals, as the seed keys them.
+  UFConcreteTuple arguments;
+  arguments.reserve(actualValues.size());
+  for (size_t i = 0; i < actualValues.size(); ++i)
+  {
+    UFConcreteValue argument;
+    if (!UFConcreteValue::fromConstant(actualValues[i], signature.domain()[i],
+                                       argument, diagnostic))
+      return false;
+    arguments.push_back(argument);
+  }
+
+  // The certified seed is a total function: a case per observed tuple, then a
+  // default. Nothing certified for this declaration means no application of
+  // it was observed, so any constant interpretation is consistent.
+  const UFFunctionModelSeedSet* seed =
+      (adapter != NULL && adapter->hasCertifiedModel())
+          ? adapter->certifiedModelSeed()
+          : NULL;
+  const UFFunctionModelSeed* function = NULL;
+  if (seed != NULL)
+  {
+    for (const UFFunctionModelSeed& candidate : seed->functions)
+      if (candidate.declaration == declaration)
+      {
+        function = &candidate;
+        break;
+      }
+  }
+  if (function == NULL)
+  {
+    value = concreteValue(manager, UFConcreteValue::zero(signature.codomain()));
+    return true;
+  }
+
+  for (const UFModelCase& entry : function->cases)
+    if (entry.arguments == arguments)
+    {
+      requireValueSort(entry.result, signature.codomain());
+      value = concreteValue(manager, entry.result);
+      return true;
+    }
+
+  requireValueSort(function->defaultValue, signature.codomain());
+  value = concreteValue(manager, function->defaultValue);
+  return true;
+}
+
 bool UFModel::completePublicRoot(STPMgr* manager,
                                  const UFTheoryAdapter& adapter,
                                  ASTNode& completed,

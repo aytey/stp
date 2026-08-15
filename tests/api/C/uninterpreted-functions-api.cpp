@@ -189,3 +189,136 @@ TEST(UninterpretedFunctionsCAPI, CertifiedDurableValuePersistentMode)
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
 }
+
+// Reading the model value of a term that *contains* an application, rather
+// than an application itself. The enclosing operator needs a constant
+// operand, so refusing is not an option here as it is at the root: an
+// application the certified solve never reached is completed through the
+// certified function seed. Before this was handled, every case below aborted
+// the process from the counterexample walk.
+TEST(UninterpretedFunctionsCAPI, ValuesOfTermsContainingApplications)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+
+  UFDeclHandle f = declareFunction(vc, "f", {8}, 8);
+  ASSERT_NE(0u, f);
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+  Expr seven = vc_bvConstExprFromInt(vc, 8, 7);
+  const Expr atX[] = {x};
+  const Expr atSeven[] = {seven};
+  Expr fx = vc_applyUninterpretedFunction(vc, f, atX, 1);
+  ASSERT_NE(nullptr, fx);
+  // Same argument tuple as fx once x is pinned to 7, but a distinct durable
+  // node that the solve never reaches.
+  Expr fSeven = vc_applyUninterpretedFunction(vc, f, atSeven, 1);
+  ASSERT_NE(nullptr, fSeven);
+
+  vc_assertFormula(vc, vc_eqExpr(vc, x, seven));
+  vc_assertFormula(vc, vc_eqExpr(vc, fx, vc_bvConstExprFromInt(vc, 8, 3)));
+  Expr falseQuery = vc_falseExpr(vc);
+  ASSERT_EQ(0, vc_query(vc, falseQuery));
+  vc_DeleteExpr(falseQuery);
+
+  Expr one = vc_bvConstExprFromInt(vc, 8, 1);
+
+  // A bit-vector operator over a certified application.
+  Expr sum = vc_bvPlusExpr(vc, 8, fx, one);
+  Expr value = vc_getCounterExample(vc, sum);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(4u, getBVUnsigned(value));
+  vc_DeleteExpr(value);
+
+  // A predicate over a certified application reaches the formula walk.
+  Expr predicate = vc_eqExpr(vc, fx, vc_bvConstExprFromInt(vc, 8, 3));
+  value = vc_getCounterExample(vc, predicate);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(1, vc_isBool(value));
+  vc_DeleteExpr(value);
+
+  // Congruence across the certified/uncertified boundary: f(7) was never
+  // reached, but it shares f(x)'s argument tuple and must share its value.
+  // Completing with an arbitrary constant instead would break this.
+  Expr uncertifiedSum = vc_bvPlusExpr(vc, 8, fSeven, one);
+  value = vc_getCounterExample(vc, uncertifiedSum);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(4u, getBVUnsigned(value));
+  vc_DeleteExpr(value);
+
+  // The root accessor keeps its strict contract: an application the solve
+  // never reached still has no public value of its own.
+  EXPECT_EQ(nullptr, vc_getUninterpretedFunctionValue(vc, fSeven));
+
+  vc_DeleteExpr(uncertifiedSum);
+  vc_DeleteExpr(predicate);
+  vc_DeleteExpr(sum);
+  vc_DeleteExpr(one);
+  vc_DeleteExpr(fSeven);
+  vc_DeleteExpr(fx);
+  vc_DeleteExpr(seven);
+  vc_DeleteExpr(x);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+// A Bool-codomain application nested in a formula reaches the formula walk
+// rather than the term walk, and used to abort there with a different
+// diagnostic than the bit-vector case.
+TEST(UninterpretedFunctionsCAPI, ValuesOfFormulasContainingBoolApplications)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'u');
+
+  UFDeclHandle g = declareFunction(vc, "g", {0}, 0);
+  ASSERT_NE(0u, g);
+  Expr p = vc_varExpr(vc, "p", vc_boolType(vc));
+  Expr q = vc_varExpr(vc, "q", vc_boolType(vc));
+  const Expr atP[] = {p};
+  Expr gp = vc_applyUninterpretedFunction(vc, g, atP, 1);
+  ASSERT_NE(nullptr, gp);
+
+  vc_assertFormula(vc, gp);
+  Expr falseQuery = vc_falseExpr(vc);
+  ASSERT_EQ(0, vc_query(vc, falseQuery));
+  vc_DeleteExpr(falseQuery);
+
+  // g(p) is asserted, so it holds; its negation must therefore be false.
+  // vc_isBool answers 1 for true, 0 for false and -1 for "not a Boolean".
+  Expr value = vc_getCounterExample(vc, gp);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(1, vc_isBool(value));
+  vc_DeleteExpr(value);
+
+  Expr negated = vc_notExpr(vc, gp);
+  value = vc_getCounterExample(vc, negated);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(0, vc_isBool(value));
+  vc_DeleteExpr(value);
+  vc_DeleteExpr(negated);
+
+  // With g(p) true, both of these reduce to q's own model value.
+  Expr qValue = vc_getCounterExample(vc, q);
+  ASSERT_NE(nullptr, qValue);
+  const int expected = vc_isBool(qValue);
+  ASSERT_NE(-1, expected);
+  vc_DeleteExpr(qValue);
+
+  for (Expr nested : {vc_andExpr(vc, gp, q), vc_iffExpr(vc, gp, q)})
+  {
+    Expr nestedValue = vc_getCounterExample(vc, nested);
+    ASSERT_NE(nullptr, nestedValue);
+    EXPECT_EQ(expected, vc_isBool(nestedValue));
+    vc_DeleteExpr(nestedValue);
+    vc_DeleteExpr(nested);
+  }
+
+  vc_DeleteExpr(gp);
+  vc_DeleteExpr(q);
+  vc_DeleteExpr(p);
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}

@@ -660,6 +660,21 @@ class AbsRefine_CounterExample::EvaluationDriver
     return StepResult::Pushed;
   }
 
+  /* One actual of an uninterpreted-function application, whose domain sorts
+   * may be Bool or bit-vector. Each is needed as a constant to key the
+   * certified function seed, so a bit-vector actual is requested strictly
+   * (ArrayReadFlag false) rather than being allowed back as a symbolic read.
+   * Both walks reach this, so the resume phase is the caller's own.
+   */
+  template <typename ResumePhase>
+  StepResult requestUFActual(Frame& f, const ResumePhase resume,
+                             const ASTNode& actual)
+  {
+    if (actual.GetType() == BOOLEAN_TYPE)
+      return requestFormula(f, resume, actual);
+    return requestTerm(f, resume, actual, false);
+  }
+
   /* One step of ComputeFormulaUsingModel, which accepts a non-constant
    * formula and checks if the formula is ASTTrue or ASTFalse w.r.t to a
    * model.
@@ -903,6 +918,36 @@ class AbsRefine_CounterExample::EvaluationDriver
         assert(blasted != form);
 
         return requestFormula(f, Frame::FormulaPhase::AfterFpBlast, blasted);
+      }
+      case UF_APPLY:
+      {
+        // A Bool-codomain application reaches the formula walk rather than the
+        // term walk; the resolution is otherwise identical to the UF_APPLY arm
+        // of stepTerm, which documents it.
+        if (f.formulaPhase == Frame::FormulaPhase::AfterOperand)
+        {
+          f.parts.push_back(result);
+          f.i++;
+        }
+        else
+        {
+          f.parts.reserve(form.Degree() - 1);
+          f.i = 1;
+        }
+
+        if (f.i < form.Degree())
+          return requestUFActual(f, Frame::FormulaPhase::AfterOperand,
+                                 form[f.i]);
+
+        ASTNode value;
+        std::string diagnostic;
+        if (!UFModel::evaluateApplicationInTerm(bm, owner.getUFTheoryAdapter(),
+                                                form, f.parts, value,
+                                                diagnostic))
+          FatalError(
+              (" ComputeFormulaUsingModel: " + diagnostic + ": ").c_str(),
+              form);
+        return finish(value);
       }
       default:
         cerr << _kind_names[k];
@@ -1316,6 +1361,40 @@ class AbsRefine_CounterExample::EvaluationDriver
         }
 
         return finish(result);
+      }
+      case UF_APPLY:
+      {
+        // Child 0 is the declaration identity, which is not a value; children
+        // 1.. are the actuals. Evaluate each actual to a constant -- a Bool
+        // one through the formula walk, as everywhere else -- then resolve the
+        // application against the certified model. Reaching here at all means
+        // the application sits inside a larger term, so refusing is not an
+        // option: the enclosing operator needs a constant operand. UFModel
+        // completes an application the solve never reached through the
+        // certified function seed rather than failing.
+        if (f.termPhase == Frame::TermPhase::AfterOperand)
+        {
+          f.parts.push_back(result);
+          f.i++;
+        }
+        else
+        {
+          f.parts.reserve(term.Degree() - 1);
+          f.i = 1;
+        }
+
+        if (f.i < term.Degree())
+          return requestUFActual(f, Frame::TermPhase::AfterOperand,
+                                 term[f.i]);
+
+        ASTNode value;
+        std::string diagnostic;
+        if (!UFModel::evaluateApplicationInTerm(bm, owner.getUFTheoryAdapter(),
+                                                term, f.parts, value,
+                                                diagnostic))
+          FatalError(("TermToConstTermUsingModel: " + diagnostic + ": ").c_str(),
+                     term);
+        return finish(value);
       }
       default:
       {
