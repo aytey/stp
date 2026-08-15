@@ -6,6 +6,7 @@
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "extlib-constbv/constantbv.h"
 #include <algorithm>
+#include <iostream>
 #include <map>
 #include <set>
 #include <sstream>
@@ -121,6 +122,9 @@ struct MutableAdapterState
   UFCheckPlan checkPlan;
   std::string checkPlanDiagnostic;
   UFAbstractLemma pendingLemma;
+  // The declaration the pending lemma refutes a candidate of: named in the
+  // `-s` trace when the lemma is installed. Valid exactly while `pending`.
+  const UFDecl* pendingDeclaration = NULL;
   bool pending = false;
   bool certified = false;
   UFFunctionModelSeedSet seed;
@@ -133,6 +137,7 @@ struct MutableAdapterState
   void clearRound()
   {
     pending = false;
+    pendingDeclaration = NULL;
     pendingLemma = UFAbstractLemma();
     certified = false;
     seed = UFFunctionModelSeedSet();
@@ -210,6 +215,7 @@ UFCandidateOutcome checkOneCandidate(
       state.diagnostic = "UF lemma retained the wrong candidate version";
       return UFCandidateOutcome::InternalError;
     }
+    state.pendingDeclaration = result.conflict.declaration;
     state.pending = true;
     return UFCandidateOutcome::Conflict;
   }
@@ -543,6 +549,20 @@ void encodeLemma(MutableAdapterState& state, SATSolver& solver,
   state.pending = false;
   state.pendingLemma = UFAbstractLemma();
   state.emittedLemmaCount++;
+  // Observability under -s: the reference profile installs no congruence
+  // clause up front, so every lemma here was earned by a refuted candidate.
+  // One line per installation names the declaration and the host: a batch
+  // lemma is query-local, a persistent one carries the exact-stack block
+  // guard.
+  if (state.manager->UserFlags.stats_flag)
+    std::cerr << "UF: installed congruence lemma " << state.emittedLemmaCount
+              << " for "
+              << (state.pendingDeclaration != NULL
+                      ? state.pendingDeclaration->name()
+                      : std::string("<unknown>"))
+              << (guardLiteral >= 0 ? " (block guarded)" : " (query local)")
+              << std::endl;
+  state.pendingDeclaration = NULL;
 }
 
 bool lookupCertified(const MutableAdapterState& state,
