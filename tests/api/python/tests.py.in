@@ -160,6 +160,59 @@ class TestSTP(unittest.TestCase):
         with self.assertRaises(ValueError):
             f(b, b)
 
+    def test_uninterpreted_function_diagnostics_are_actionable(self):
+        def expect_message(action, expected):
+            with self.assertRaises(ValueError) as raised:
+                action()
+            self.assertEqual(str(raised.exception), expected)
+
+        disabled = stp.Solver()
+        expect_message(
+            lambda: disabled.function('off', [8], 8),
+            'uninterpreted functions were not enabled (construct Solver with '
+            'uninterpreted_functions=True)')
+
+        s = stp.Solver(uninterpreted_functions=True)
+        expect_message(
+            lambda: s.function('negative-domain', [-1], 8),
+            "domain sort 0 of 'negative-domain' must be None or 0 for Bool, "
+            'or a positive BitVec width')
+        expect_message(
+            lambda: s.function('zero', [], 8),
+            "'zero' needs at least one domain sort; a zero-arity declaration "
+            'is an ordinary symbol, not an uninterpreted function')
+        expect_message(
+            lambda: s.function('negative-result', [8], -1),
+            "the codomain of 'negative-result' must be None or 0 for Bool, "
+            'or a positive BitVec width')
+
+        f = s.function('diagnostic_f', [8], 8)
+        expect_message(
+            lambda: f(),
+            'diagnostic_f expects 1 argument, got 0')
+        expect_message(
+            lambda: f(s.true()),
+            'argument 0 of diagnostic_f has sort Bool but the declaration '
+            'requires (_ BitVec 8)')
+
+        other = stp.Solver(uninterpreted_functions=True)
+        expect_message(
+            lambda: f(other.bitvec('foreign', 8)),
+            'argument 0 of diagnostic_f must be a Bool/BitVec Expr from the '
+            'same Solver, or a bool/int matching the declared sort')
+        expect_message(
+            lambda: s.function('diagnostic_f', [8], 8),
+            "the declaration of 'diagnostic_f' was rejected by the solver "
+            '(check the name, solver lifetime, and supported sorts)')
+
+        x = s.bitvec('diagnostic_x', 8)
+        f.declaration = 1
+        expect_message(
+            lambda: f(x),
+            'the application of diagnostic_f was rejected by the solver (a '
+            'declaration or expression handle may be stale, foreign, or '
+            'invalid)')
+
     def test_uninterpreted_function_python_literals(self):
         s = stp.Solver(uninterpreted_functions=True)
         f = s.function('literal_f', [8, None], 8)

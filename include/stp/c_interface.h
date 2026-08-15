@@ -107,8 +107,10 @@ typedef void* WholeCounterExample;
 #endif
 
 //! Opaque, nonzero identity of a context-owned UF declaration. Identities are
-//! monotonic and never reused; zero is the invalid handle. They are values,
-//! not pointers, and callers neither dereference nor free them.
+//! allocated monotonically across the process and never reused; zero is the
+//! invalid handle. They are values, not pointers: callers never dereference,
+//! cast, or free them. Destroying the owning VC retires its registry entry, so
+//! a stale or cross-context identity can be rejected without dereferencing it.
 typedef uint64_t UFDeclHandle;
 
 /////////////////////////////////////////////////////////////////////////////
@@ -314,33 +316,64 @@ DLL_PUBLIC Expr vc_varExpr(VC vc, const char* name, Type type);
 DLL_PUBLIC Expr vc_varExpr1(VC vc, const char* name, int indexwidth,
                             int valuewidth);
 
-//! Declare a nonzero-arity Bool/BitVec uninterpreted function.
+//! \brief Declares a nonzero-arity Bool/BitVec uninterpreted function and
+//!        returns its context-owned identity.
 //!
-//! Each domain Type and the codomain must be a Bool or nonzero-width BitVec
-//! type owned by this VC. Enable UF support before constructing these handles.
-//! The returned declaration identity is context-owned, must not be freed, and
-//! remains globally unique even after the VC is destroyed. Zero reports a
-//! nonfatal error.
+//! Call vc_setFlag(vc, 'u') before constructing any Type or Expr handle that
+//! will be supplied to the UF API. Each domain entry and the codomain must be
+//! a live Type owned by this VC, constructed with vc_boolType or vc_bvType;
+//! bit-vector widths must be positive. Array, FloatingPoint and RoundingMode
+//! types are not accepted. domainCount must be at least one: SMT-LIB treats a
+//! zero-arity declare-fun as an ordinary symbol, which vc_varExpr represents.
+//!
+//! The Type array and its elements are borrowed for this call; ownership is
+//! not transferred. The declaration copies the name and source sorts, so the
+//! caller may release UF-tracked Type wrappers afterwards with vc_DeleteExpr.
+//! The returned UFDeclHandle is immutable, owned by the VC, is not an Expr,
+//! must not be passed to vc_DeleteExpr, and remains safely rejectable after
+//! the VC is destroyed. Ordinary symbols and UFs share one namespace.
+//!
+//! On a null/foreign/destroyed Type, unsupported or empty signature, invalid
+//! or colliding name, disabled feature, or other validation failure, no
+//! declaration is registered. A nonfatal diagnostic is sent to the handler
+//! installed with vc_registerErrorHandler (or stderr), and zero is returned.
 DLL_PUBLIC UFDeclHandle vc_declareUninterpretedFunction(
     VC vc, const char* name, const Type* domain, size_t domainCount,
     Type codomain);
 
-//! Build a durable typed uninterpreted-function application.
+//! \brief Builds a durable, exactly typed application of a declared UF.
 //!
-//! The underlying UF_APPLY node has context lifetime; this C Expr wrapper is
-//! caller-owned until vc_DeleteExpr or vc_Destroy, whichever comes first.
-//! Enable UF support before constructing argument handles. NULL reports a
-//! nonfatal arity, sort, invalid-handle, or live cross-context error. As with
-//! every legacy raw Expr, using a wrapper after vc_DeleteExpr is invalid.
+//! function must be a live declaration identity owned by this VC. arguments
+//! is borrowed for this call and each entry must be a live UF-tracked Expr
+//! from the same VC; no ownership is transferred. The argument count and
+//! every Bool/BitVec source sort must match the declaration exactly.
+//!
+//! The returned Expr denotes the public UF_APPLY itself, never a temporary
+//! lowered SAT symbol. Its underlying hash-consed node has context lifetime;
+//! this wrapper is caller-owned until vc_DeleteExpr or vc_Destroy, whichever
+//! comes first. As with every legacy raw Expr, a wrapper is invalid after
+//! vc_DeleteExpr.
+//!
+//! A bad/stale/cross-context declaration, bad argument handle, arity mismatch
+//! or sort mismatch builds and registers nothing, reports a nonfatal
+//! diagnostic through vc_registerErrorHandler (or stderr), and returns NULL.
 DLL_PUBLIC Expr vc_applyUninterpretedFunction(
     VC vc, UFDeclHandle function, const Expr* arguments,
     size_t argumentCount);
 
-//! Evaluate a durable UF_APPLY in the most recently certified model.
+//! \brief Evaluates a durable UF_APPLY in the most recently certified model.
 //!
-//! Returns a caller-owned Bool/BitVec constant, or NULL after a nonfatal
-//! diagnostic when the handle is stale, inactive, cross-context, not active
-//! in that solve, or no certified model exists. No lowered symbol is exposed.
+//! The application must be a live wrapper owned by this VC, must have been
+//! reachable from the public root of the most recent satisfiable query, and
+//! that query's UF model must still be certified. Assertion/stack changes,
+//! another query, or declaration changes can invalidate the certified map.
+//! vc_getCounterExample dispatches UF_APPLY handles through this same map.
+//!
+//! Success returns a caller-owned Bool/BitVec constant wrapper, released with
+//! vc_DeleteExpr. A non-application, stale/inactive/cross-context wrapper,
+//! unobserved application, or missing/invalidated certified model reports a
+//! nonfatal diagnostic through vc_registerErrorHandler (or stderr) and
+//! returns NULL. No internal lowered symbol is exposed.
 DLL_PUBLIC Expr vc_getUninterpretedFunctionValue(VC vc, Expr application);
 
 //! \brief Returns the type of the given expression.
@@ -1490,8 +1523,11 @@ DLL_PUBLIC Expr getChild(Expr e, int n);
 //!
 DLL_PUBLIC int vc_isBool(Expr e);
 
-//! \brief Registers the given error handler function to be called for each
-//!        fatal error that occures while running STP.
+//! \brief Registers the error handler called for fatal STP errors and for
+//!        documented nonfatal validation failures such as UF API misuse.
+//!
+//! The callback is process-global and is invoked synchronously. Passing NULL
+//! restores the default reporting path (stderr for nonfatal UF validation).
 //!
 DLL_PUBLIC void
 vc_registerErrorHandler(void (*error_hdlr)(const char* err_msg));
@@ -1512,7 +1548,10 @@ DLL_PUBLIC void vc_Destroy(VC vc);
 //! Only for expressions the caller owns. Do NOT pass expressions returned by
 //! the vc_fp* constructors (or the type/true/false constructors): those are
 //! owned by the checker and freed by vc_Destroy -- deleting one here frees
-//! it twice.
+//! it twice. Exception: after vc_setFlag(vc, 'u') has enabled UF handle
+//! tracking, wrappers constructed subsequently are tracked and may be released
+//! explicitly; vc_declareUninterpretedFunction documents this for its borrowed
+//! Type arguments.
 //!
 DLL_PUBLIC void vc_DeleteExpr(Expr e);
 

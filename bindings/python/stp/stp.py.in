@@ -419,18 +419,26 @@ class Solver(object):
         handles and ``app.value`` reads only a certified active solve value.
         """
         if not self.uninterpreted_functions:
-            raise ValueError('uninterpreted functions were not enabled')
+            raise ValueError(
+                'uninterpreted functions were not enabled (construct Solver '
+                'with uninterpreted_functions=True)')
         widths = []
         for sort in domain:
             width = 0 if sort is None else int(sort)
             if width < 0:
-                raise ValueError('function domain widths must be nonnegative')
+                raise ValueError(
+                    'domain sort %d of %r must be None or 0 for Bool, or a '
+                    'positive BitVec width' % (len(widths), name))
             widths.append(width)
         if not widths:
-            raise ValueError('zero-arity functions are ordinary symbols')
+            raise ValueError(
+                '%r needs at least one domain sort; a zero-arity declaration '
+                'is an ordinary symbol, not an uninterpreted function' % name)
         result_width = 0 if codomain is None else int(codomain)
         if result_width < 0:
-            raise ValueError('function codomain width must be nonnegative')
+            raise ValueError(
+                'the codomain of %r must be None or 0 for Bool, or a positive '
+                'BitVec width' % name)
         domain_types = [(_lib.vc_boolType(self.vc) if width == 0 else
                          _lib.vc_bvType(self.vc, width))
                         for width in widths]
@@ -446,7 +454,9 @@ class Solver(object):
                 _lib.vc_DeleteExpr(type_handle)
             _lib.vc_DeleteExpr(codomain_type)
         if not declaration:
-            raise ValueError('uninterpreted-function declaration was rejected')
+            raise ValueError(
+                'the declaration of %r was rejected by the solver (check the '
+                'name, solver lifetime, and supported sorts)' % name)
         return UninterpretedFunction(self, name, tuple(widths), result_width,
                                      declaration)
 
@@ -783,9 +793,14 @@ class UninterpretedFunction(object):
 
     def __call__(self, *arguments):
         if len(arguments) != len(self.domain):
-            raise ValueError('uninterpreted-function arity mismatch')
+            expected = len(self.domain)
+            raise ValueError(
+                '%s expects %d %s, got %d' %
+                (self.name, expected,
+                 'argument' if expected == 1 else 'arguments',
+                 len(arguments)))
         if not self.s.vc:
-            raise ValueError('uninterpreted-function owner was destroyed')
+            raise ValueError('the Solver owning %s was destroyed' % self.name)
         raw_arguments = []
         converted_arguments = []
         for position, (argument, width) in enumerate(zip(arguments,
@@ -799,19 +814,28 @@ class UninterpretedFunction(object):
                 converted_arguments.append(argument)
             if type(argument) is not Expr or argument.s is not self.s:
                 raise ValueError(
-                    'uninterpreted-function argument %d has wrong ownership '
-                    'or source sort' % position)
+                    'argument %d of %s must be a Bool/BitVec Expr from the '
+                    'same Solver, or a bool/int matching the declared sort'
+                    % (position, self.name))
             actual_width = 0 if argument.width is None else argument.width
             if actual_width != width:
                 raise ValueError(
-                    'uninterpreted-function argument %d has wrong source '
-                    'sort' % position)
+                    'argument %d of %s has sort %s but the declaration '
+                    'requires %s'
+                    % (position, self.name,
+                       'Bool' if actual_width == 0
+                       else '(_ BitVec %d)' % actual_width,
+                       'Bool' if width == 0
+                       else '(_ BitVec %d)' % width))
             raw_arguments.append(argument.expr)
         raw = (_Expr * len(raw_arguments))(*raw_arguments)
         application = _lib.vc_applyUninterpretedFunction(
             self.s.vc, self.declaration, raw, len(raw_arguments))
         if not application:
-            raise ValueError('uninterpreted-function application was rejected')
+            raise ValueError(
+                'the application of %s was rejected by the solver (a '
+                'declaration or expression handle may be stale, foreign, or '
+                'invalid)' % self.name)
         width = None if self.codomain == 0 else self.codomain
         return Expr(self.s, width, application)
 
