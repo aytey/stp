@@ -1459,7 +1459,16 @@ void Cpp_interface::getValue(const ASTVec& v)
           getUninterpretedApplicationValue(n, &diagnostic);
       if (value.GetKind() == UNDEFINED)
       {
-        unsupported();
+        // A durable application the certified solve never reached, or one
+        // whose model has since been invalidated, has no public value. That
+        // is a request the current model cannot answer, not a feature the
+        // solver lacks, so the single SMT-LIB response is the computed
+        // reason -- never the internal result symbol and never a guess.
+        // The whole command is rejected: nothing buffered in `os` prints.
+        if (diagnostic.empty())
+          diagnostic = "uninterpreted-function application has no certified "
+                       "value";
+        rejectCurrentCommand(diagnostic);
         return;
       }
       os << "( ";
