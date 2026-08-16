@@ -594,6 +594,42 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     std::sort(function.cases.begin(), function.cases.end(),
               [](const UFModelCase& left, const UFModelCase& right)
               { return left.arguments < right.arguments; });
+    // Publish the commonest observed value as the else branch and drop every
+    // case that agrees with it. The published interpretation is unchanged --
+    // a dropped case falls through to exactly the value it named -- but a
+    // function that took one value at all but a few of its observed points
+    // now prints those few rather than one ite per point.
+    //
+    // A declaration interpreted by a constant keeps that constant: the record
+    // that produced it has no readable tuple, so it has no case of its own and
+    // only the else branch can satisfy it. Ties go to the smaller value, so
+    // the choice stays a function of the candidate alone.
+    if (!constantInterpretation && !function.cases.empty())
+    {
+      std::map<UFConcreteValue, size_t> byResult;
+      for (const UFModelCase& modelCase : function.cases)
+        byResult[modelCase.result]++;
+      // std::map orders by UFConcreteValue, so scanning it forwards and
+      // keeping a strict improvement makes ties go to the smaller value.
+      size_t bestCount = 0;
+      UFConcreteValue chosen;
+      for (const std::pair<const UFConcreteValue, size_t>& entry : byResult)
+        if (entry.second > bestCount)
+        {
+          bestCount = entry.second;
+          chosen = entry.first;
+        }
+      if (bestCount > 1)
+      {
+        function.defaultValue = chosen;
+        std::vector<UFModelCase> kept;
+        kept.reserve(function.cases.size() - bestCount);
+        for (const UFModelCase& modelCase : function.cases)
+          if (modelCase.result != chosen)
+            kept.push_back(modelCase);
+        function.cases.swap(kept);
+      }
+    }
     out.modelSeed.functions.push_back(function);
   }
 

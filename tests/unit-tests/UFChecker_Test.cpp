@@ -339,7 +339,41 @@ TEST(UFChecker, PreservesNonInjectivity)
       fixture.context->activeDeclarations(), fixture.view, candidate);
   ASSERT_TRUE(result.consistent()) << result.diagnostic;
   ASSERT_EQ(1u, result.modelSeed.functions.size());
-  EXPECT_EQ(2u, result.modelSeed.functions[0].cases.size());
+  // Two distinct arguments observed at the same result: the interpretation
+  // is the constant 7, which is exactly the non-injective function the
+  // candidate exhibits. Condensing against the commonest value leaves the
+  // else branch to answer both points instead of an ite per point.
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 7),
+            result.modelSeed.functions[0].defaultValue);
+  EXPECT_TRUE(result.modelSeed.functions[0].cases.empty());
+}
+
+TEST(UFChecker, CondensesTheSeedAgainstItsCommonestValue)
+{
+  CollidingFixture fixture;
+  // Four distinct arguments, three of them observed at 5 and one at 9. The
+  // else branch takes 5 and only the odd point is published as a case.
+  Candidate candidate(11);
+  const uint64_t results[4] = {5, 5, 5, 9};
+  for (const LoweredApplicationRecord& record : fixture.view.applications)
+    for (size_t i = 0; i < fixture.applications.size(); ++i)
+      if (record.durableHandle == fixture.applications[i])
+      {
+        candidate.set(record.namedActuals[0],
+                      UFConcreteValue::fromUInt(8, 20 + i));
+        candidate.set(record.resultSymbol,
+                      UFConcreteValue::fromUInt(8, results[i]));
+      }
+
+  const UFCheckResult result = UFChecker::check(
+      fixture.context->activeDeclarations(), fixture.view, candidate);
+  ASSERT_TRUE(result.consistent()) << result.diagnostic;
+  ASSERT_EQ(1u, result.modelSeed.functions.size());
+  const UFFunctionModelSeed& seed = result.modelSeed.functions[0];
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 5), seed.defaultValue);
+  ASSERT_EQ(1u, seed.cases.size());
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 9), seed.cases[0].result);
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 23), seed.cases[0].arguments[0]);
 }
 
 TEST(UFChecker, KeepsTuplePositionsAndDeclarationsIndependent)
