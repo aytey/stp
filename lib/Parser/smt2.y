@@ -1905,9 +1905,16 @@ cmdi:
       // can name a fragment admitting both uninterpreted functions and the
       // floating-point keywords, and outside an FP logic "RoundingMode" is
       // not even a token (see SMT2SetFloatTokens below).
+      //
+      // SMT-LIB orders the theory letters A, UF, BV, FP, so the name a
+      // benchmark carries for arrays with uninterpreted functions and floats
+      // is QF_AUFBVFP -- the same order this file already uses for QF_AUFBV.
+      // QF_UFABVFP is accepted as an alias for it: it is the spelling this
+      // branch shipped first and several fixtures name it.
       const bool uf_fp_logic =
             (0 == strcmp($2->c_str(),"QF_UFFP") ||
              0 == strcmp($2->c_str(),"QF_UFBVFP") ||
+             0 == strcmp($2->c_str(),"QF_AUFBVFP") ||
              0 == strcmp($2->c_str(),"QF_UFABVFP")) &&
             stp::GlobalParserInterface->getUserFlags()
                 .enable_uninterpreted_functions;

@@ -8,9 +8,14 @@
 ; admits a UF declaration; and each of them is gated on the feature flag
 ; exactly as QF_UFBV already is.
 ;
+; QF_AUFBVFP is the SMT-LIB spelling -- the theory letters go A, UF, BV, FP,
+; which is the order QF_AUFBV already uses here. QF_UFABVFP is the spelling
+; this branch shipped first and stays accepted as an alias for it.
+;
 ; RUN: %solver --uninterpreted-functions --incremental=off %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --uninterpreted-functions --incremental=on %s 2>&1 | %OutputCheck %s
 ; CHECK-NOT: Wrong input logic
+; CHECK: ^unsat
 ; CHECK: ^unsat
 ; CHECK: ^unsat
 ; CHECK: ^unsat
@@ -30,5 +35,11 @@
 (declare-fun ka ((_ BitVec 4)) RoundingMode)
 (declare-const a (Array (_ BitVec 4) (_ BitVec 4)))
 (assert (distinct (ka (select a #x0)) (ka (select a #x0))))
+(check-sat)
+(reset)
+(set-logic QF_AUFBVFP)
+(declare-fun kc ((_ BitVec 4)) RoundingMode)
+(declare-const c (Array (_ BitVec 4) (_ BitVec 4)))
+(assert (distinct (kc (select c #x0)) (kc (select c #x0))))
 (check-sat)
 (echo "REACHED-END")
