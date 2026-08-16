@@ -498,7 +498,7 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
                       candidate, result, out.diagnostic))
         return out;
 
-      const ObservationTable::const_iterator found = table.find(tuple);
+      const ObservationTable::iterator found = table.find(tuple);
       if (found == table.end())
       {
         Observation observation;
@@ -511,16 +511,27 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
 
       out.stats.comparisons++;
       conflictOrder++;
-      if (found->second.result == result)
+      // Each record is compared against the one before it in the bucket, not
+      // against the bucket's first record. Both relate every member of a
+      // bucket after n-1 lemmas, but they differ in which pair a round that
+      // hits the lemma cap actually emits. Against the first record, a
+      // decisive pair of two adjacent late members is never stated directly:
+      // if each of them happens to agree with the first record it yields no
+      // conflict at all, and the pair only surfaces once every other member
+      // has been forced out of the bucket. Chaining states it in the round it
+      // appears.
+      //
+      // The property the encoder relies on is unchanged: a record is still
+      // the right-hand side of at most one conflict, so two conflicts from one
+      // candidate still cannot canonicalise to the same lemma and no duplicate
+      // filter is needed. The bucket entry is updated whether or not the two
+      // agreed, so the comparison is always against the immediate predecessor.
+      const LoweredApplicationRecord& representative = *found->second.record;
+      const UFConcreteValue previousResult = found->second.result;
+      found->second.record = record;
+      found->second.result = result;
+      if (previousResult == result)
         continue;
-
-      // Every later record in a bucket conflicts against that bucket's one
-      // representative, so a record yields at most one conflict and each
-      // conflict names its own result symbol. Two conflicts from a single
-      // candidate can therefore never canonicalise to the same lemma, and no
-      // duplicate filter is needed here or in the encoder.
-      const LoweredApplicationRecord& representative =
-          *found->second.record;
       out.status = UFCheckResult::Status::Conflict;
       UFCongruenceConflict conflict;
       conflict.declaration = declaration;
@@ -530,7 +541,7 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
       conflict.conflictingOrder = record->stableOrder;
       conflict.leftResult = representative.resultSymbol;
       conflict.rightResult = record->resultSymbol;
-      conflict.leftResultValue = found->second.result;
+      conflict.leftResultValue = previousResult;
       conflict.rightResultValue = result;
       conflict.candidateVersion = candidateVersion;
       conflict.stableConflictOrder = conflictOrder;

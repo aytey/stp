@@ -169,19 +169,70 @@ struct CollidingFixture
   // with record 0.
   Candidate collidingCandidate(uint64_t version) const
   {
-    Candidate result(version);
+    return candidateWithResults(version, {0, 1, 2, 3});
+  }
+
+  // Every argument reads 7; result i reads the caller's value, so the caller
+  // chooses which records in the one bucket disagree and which agree.
+  Candidate candidateWithResults(uint64_t version,
+                                 const std::vector<uint64_t>& results) const
+  {
+    Candidate candidate(version);
     for (const LoweredApplicationRecord& record : view.applications)
     {
-      result.set(record.namedActuals[0], UFConcreteValue::fromUInt(8, 7));
+      candidate.set(record.namedActuals[0], UFConcreteValue::fromUInt(8, 7));
       for (size_t i = 0; i < applications.size(); ++i)
         if (record.durableHandle == applications[i])
-          result.set(record.resultSymbol, UFConcreteValue::fromUInt(8, i));
+          candidate.set(record.resultSymbol,
+                        UFConcreteValue::fromUInt(8, results[i]));
     }
-    return result;
+    return candidate;
+  }
+
+  // The record whose durable handle is applications[index], as the view
+  // ordered it.
+  const LoweredApplicationRecord* recordFor(size_t index) const
+  {
+    for (const LoweredApplicationRecord& record : view.applications)
+      if (record.durableHandle == applications[index])
+        return &record;
+    return NULL;
   }
 };
 
 } // namespace
+
+TEST(UFChecker, ConflictsAgainstThePredecessorNotTheFirstRecord)
+{
+  CollidingFixture fixture;
+  // Three records agree and the last one differs. Comparing against the
+  // bucket's first record would state the pair (first, last); comparing
+  // against the predecessor states (third, last), which is the pair whose
+  // disagreement the candidate actually exhibits.
+  const UFCheckResult result = UFChecker::check(
+      fixture.context->activeDeclarations(), fixture.view,
+      fixture.candidateWithResults(3, {5, 5, 5, 9}));
+
+  ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
+  ASSERT_EQ(1u, result.conflicts.size());
+  EXPECT_EQ(fixture.recordFor(2)->durableHandle,
+            result.conflicts[0].representativeHandle);
+  EXPECT_EQ(fixture.recordFor(3)->durableHandle,
+            result.conflicts[0].conflictingHandle);
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 5),
+            result.conflicts[0].leftResultValue);
+  EXPECT_EQ(UFConcreteValue::fromUInt(8, 9),
+            result.conflicts[0].rightResultValue);
+
+  // The lemma is still one the candidate refutes.
+  UFAbstractLemma lemma;
+  std::string diagnostic;
+  ASSERT_TRUE(UFLemmaOracle::buildAndValidate(result.conflicts[0], lemma,
+                                              diagnostic))
+      << diagnostic;
+  EXPECT_FALSE(lemma.evaluate(false, std::vector<bool>(lemma.premise.size(),
+                                                       true)));
+}
 
 TEST(UFChecker, CollectsEveryConflictOneCandidateExposes)
 {
@@ -191,19 +242,25 @@ TEST(UFChecker, CollectsEveryConflictOneCandidateExposes)
                        fixture.collidingCandidate(7));
 
   ASSERT_TRUE(result.hasConflict()) << result.diagnostic;
-  // One bucket, one representative, three records disagreeing with it.
+  // One bucket, four records, three consecutive pairs disagreeing.
   ASSERT_EQ(3u, result.conflicts.size());
   EXPECT_EQ(1u, result.stats.insertions);
   EXPECT_EQ(3u, result.stats.comparisons);
 
-  // Every conflict is against that one representative, is stamped with the
-  // candidate it was read from, and reports a strictly increasing order.
+  // The bucket is chained, not starred: each conflict is against the record
+  // immediately before it, so conflict i's representative is conflict i-1's
+  // conflicting record. That is what lets a decisive pair of two adjacent
+  // records be stated in the round it appears.
+  for (size_t i = 1; i < result.conflicts.size(); ++i)
+    EXPECT_EQ(result.conflicts[i - 1].conflictingHandle,
+              result.conflicts[i].representativeHandle);
+
+  // Every conflict is stamped with the candidate it was read from and
+  // reports a strictly increasing order.
   size_t previousOrder = 0;
   for (const UFCongruenceConflict& conflict : result.conflicts)
   {
     EXPECT_EQ(fixture.f, conflict.declaration);
-    EXPECT_EQ(result.conflicts[0].representativeHandle,
-              conflict.representativeHandle);
     EXPECT_NE(conflict.representativeHandle, conflict.conflictingHandle);
     EXPECT_EQ(7u, conflict.candidateVersion);
     EXPECT_LT(previousOrder, conflict.stableConflictOrder);
