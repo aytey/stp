@@ -96,6 +96,44 @@ bool hasFloatingPointPosition(const UFSignature& signature)
   return false;
 }
 
+// What one argument position of a candidate pair contributes to the premise.
+enum class PositionVerdict
+{
+  Distinct,  // the two actuals can never be equal: the pair needs no constraint
+  Identical, // they always are: the premise atom is true and drops
+  Unknown    // the premise atom has to be built
+};
+
+// Ask the *lowered* actuals, not the named ones. A compound actual is named by
+// a fresh symbol, so asking the names can only ever catch two literal
+// constants -- which is why a function applied at a sliding offset, f(i),
+// f(i+1), ..., got a full C(n,2) set of constraints whose premises are all
+// unsatisfiable. The lowered terms hand the question to the node factory,
+// which already cancels a common addend out of two BVPLUSes and folds
+// (= (bvadd i 1) (bvadd i 2)) to false on its own.
+//
+// Whatever the factory cannot decide stays Unknown, so a factory without those
+// rewrites (the C API's default hashing factory) simply prunes nothing. The
+// premise is still stated over the named actuals: only the *test* moves.
+PositionVerdict comparePosition(NodeFactory* factory, const ASTNode& left,
+                                const ASTNode& right, const SourceSort& sort)
+{
+  // Interning makes equal constants one node, so the first two tests are
+  // exact and hold whatever factory is installed -- the C API leaves the
+  // plain hashing factory in place, and it folds nothing.
+  if (left == right)
+    return PositionVerdict::Identical;
+  if (left.isConstant() && right.isConstant())
+    return PositionVerdict::Distinct;
+  const ASTNode folded = factory->CreateNode(
+      sort.kind() == SourceSort::Kind::Bool ? IFF : EQ, left, right);
+  if (folded.GetKind() == TRUE)
+    return PositionVerdict::Identical;
+  if (folded.GetKind() == FALSE)
+    return PositionVerdict::Distinct;
+  return PositionVerdict::Unknown;
+}
+
 } // namespace
 
 // Eager congruence (UFSTP OPT-02/OPT-03). The constraints are built as AST and
@@ -229,20 +267,24 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
         bool impossible = false;
         for (size_t k = 0; k < signature.arity() && !impossible; ++k)
         {
-          const ASTNode& leftActual = left.namedActuals[k];
-          const ASTNode& rightActual = right.namedActuals[k];
-          if (leftActual == rightActual)
-            continue; // reflexive, and already true
-          if (leftActual.isConstant() && rightActual.isConstant())
+          const SourceSort solved =
+              UFSignature::loweringSort(signature.domain()[k]);
+          switch (comparePosition(factory, left.loweredActuals[k],
+                                  right.loweredActuals[k], solved))
           {
-            // Distinct constants in one position: these two can never be
-            // congruent, so the pair needs no constraint at all.
-            impossible = true;
-            continue;
+            case PositionVerdict::Identical:
+              continue; // the premise atom is true and drops
+            case PositionVerdict::Distinct:
+              // These two can never be congruent, so the pair needs no
+              // constraint at all.
+              impossible = true;
+              continue;
+            case PositionVerdict::Unknown:
+              break;
           }
           premise.push_back(factory->CreateNode(
-              signature.domain()[k].kind() == SourceSort::Kind::Bool ? IFF : EQ,
-              leftActual, rightActual));
+              solved.kind() == SourceSort::Kind::Bool ? IFF : EQ,
+              left.namedActuals[k], right.namedActuals[k]));
         }
         if (impossible)
         {
