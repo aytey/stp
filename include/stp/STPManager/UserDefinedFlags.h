@@ -223,7 +223,26 @@ public:
   // C(v, 2) + c*v, where c counts its applications whose actuals are all
   // constants: two such applications either are the same hash-consed handle
   // or differ in some position, so they never need a constraint between them.
-  unsigned uf_eager_budget = 4096;
+  //
+  // Swept over 363 QF_UFBV benchmarks (every seventh of the local corpus,
+  // 30s each, settings interleaved so none sits systematically early in the
+  // schedule). Solved, of 363:
+  //
+  //   off  253 | 128  268 | 256  281 | 512  271 | 1536  247 | 4096  250
+  //
+  // The curve is unimodal: a little eager congruence beats none by a wide
+  // margin, and a lot is worse than none, because the declarations a large
+  // budget buys are the expensive ones whose pairs mostly go unused. Rerun
+  // at 256 against 4096 it is 287 against 251 solved, 39 files gained
+  // against 3 lost, and 16% less wall clock, with no verdict disagreeing.
+  //
+  // The counterweight, recorded because it is the evidence the previous
+  // value was chosen on: a synthetic family of n applications that all
+  // collide wants every one of its C(n, 2) pairs, so 256 declines it and it
+  // slows down several-fold. Nothing in the tree pins that family, and the
+  // corpus is what the default should serve; --uf-ackermann-budget restores
+  // the old behaviour for a query known to be that shape.
+  unsigned uf_eager_budget = 256;
 
   // The carrier width given to a sort introduced by (declare-sort S 0).
   //

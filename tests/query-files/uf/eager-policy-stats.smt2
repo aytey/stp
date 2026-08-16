@@ -12,7 +12,7 @@
 ; RUN: %solver --uninterpreted-functions --incremental=on -s %s 2>&1 | %OutputCheck %s
 ; CHECK: UF: eager selected g \(2 applications, 1 pairs estimated, 1 enumerated, 0 impossible, 1 constraints\)
 ; CHECK: UF: eager selected h \(2 applications, 1 pairs estimated, 1 enumerated, 1 impossible, 0 constraints\)
-; CHECK: UF: eager total 2/2 declarations, 1 constraints, budget 2/4096 spent
+; CHECK: UF: eager total 2/2 declarations, 1 constraints, budget 2/256 spent
 ; CHECK: ^sat
 ;
 (set-logic QF_UFBV)
