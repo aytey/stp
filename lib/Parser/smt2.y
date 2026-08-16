@@ -2106,6 +2106,33 @@ function_def_name LPAREN_TOK function_params RPAREN_TOK LPAREN_TOK UNDERSCORE_TO
   stp::GlobalParserInterface->deleteNode($10);
 }
 |
+function_def_name LPAREN_TOK function_params RPAREN_TOK STRING_TOK an_term
+{
+  // A result sort written as a name the script introduced. The body has to
+  // carry that sort already -- nothing is coerced here, exactly as the
+  // floating-point arm below refuses a mismatched format.
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$5, resolved))
+  {
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
+  }
+  if ($6->GetSourceSort() != resolved)
+  {
+    fatal_yyerror("define-fun: the body's sort does not match the declared "
+                  "result sort");
+  }
+
+  stp::GlobalParserInterface->storeFunction(*$1, *$3, *$6);
+
+  for (size_t i = 0; i < $3->size(); i++)
+    stp::GlobalParserInterface->removeSymbol((*$3)[i]);
+
+  delete $1;
+  delete $3;
+  delete $5;
+  stp::GlobalParserInterface->deleteNode($6);
+}
+|
 function_def_name LPAREN_TOK function_params RPAREN_TOK BOOL_TOK an_formula
 {
   stp::GlobalParserInterface->storeFunction(*$1, *$3, *$6);

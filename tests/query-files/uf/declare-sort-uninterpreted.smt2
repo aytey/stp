@@ -23,10 +23,13 @@
 (declare-fun s0 () State)
 (declare-fun s1 () State)
 (define-fun tagged ((s State)) Bool (= (tag s) #x01))
+; A declared sort is usable as a define-fun result sort too, not only as a
+; parameter's.
+(define-fun same ((s State)) State s)
 
 ; Congruence over the uninterpreted sort: equal states have equal tags.
 (push 1)
-(assert (= s0 s1))
+(assert (= (same s0) s1))
 (assert (distinct (tag s0) (tag s1)))
 (check-sat)
 (pop 1)
