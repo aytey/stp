@@ -438,45 +438,148 @@ void addGuardedClause(SATSolver& solver,
   solver.addClause(clause);
 }
 
-// Fold constants and SAT aliases before allocating an XNOR helper. Every
-// clause for a helper that remains is scoped by guardLiteral.
-ClauseTerm bitEquality(SATSolver& solver, const BitOperand& left,
-                       const BitOperand& right, int guardLiteral)
+// How the equality literal is about to be used in the lemma clause. A premise
+// appears negated and a conclusion positive, and each direction of the
+// definition is needed by exactly one of them:
+//
+//   conclusion   ... v q      needs  q -> equality
+//   premise      ... v ~q     needs  equality -> q
+//
+// Emitting only the needed half is sound because the other direction only
+// ever constrains the helper in a polarity no clause mentions: the solver may
+// set the helper freely there, and every clause that names it stays
+// satisfied for the same reason it was before. The halves are tracked per
+// cached atom, so an atom later used in the opposite polarity is completed
+// then rather than being defined twice.
+enum class Polarity
 {
+  Positive, // the literal appears positively: define q -> equality
+  Negative  // the literal appears negated: define equality -> q
+};
+
+// One bit of an equality, as it was encoded. `allocated` distinguishes a
+// fresh XNOR helper, which has to be defined, from a literal that already is
+// the bit equality (a constant operand collapses to the other operand's
+// literal) and needs no clauses at all.
+struct BitHelper
+{
+  int literal = -1;
+  bool allocated = false;
+  BitOperand left;
+  BitOperand right;
+};
+
+// One cached equality atom: its literal, the per-bit helpers behind it, and
+// which halves of the definition have been emitted so far.
+struct CachedEquality
+{
+  int literal = -1;
+  std::vector<BitHelper> bits;
+  bool aggregateAllocated = false;
+  bool positiveDefined = false;
+  bool negativeDefined = false;
+};
+
+void defineBitHelper(SATSolver& solver, const BitHelper& helper,
+                     Polarity polarity, int guardLiteral)
+{
+  if (!helper.allocated)
+    return;
+  const unsigned q = static_cast<unsigned>(helper.literal >> 1);
+  // The clause set below blocks each assignment that would falsify the
+  // definition. Those with q true are exactly q -> (l = r); those with q
+  // false are exactly (l = r) -> q.
+  const bool wantQTrue = polarity == Polarity::Positive;
+  for (unsigned lv = 0; lv < 2; ++lv)
+    for (unsigned rv = 0; rv < 2; ++rv)
+    {
+      const unsigned qv = (lv == rv) ? 0u : 1u;
+      if ((qv != 0) != wantQTrue)
+        continue;
+      std::vector<ClauseTerm> clause;
+      clause.push_back(exclusionLiteral(helper.left, lv != 0));
+      clause.push_back(exclusionLiteral(helper.right, rv != 0));
+      clause.push_back(ClauseTerm::satLiteral(
+          static_cast<int>(2 * q + (qv != 0 ? 1 : 0))));
+      addGuardedClause(solver, clause, guardLiteral);
+    }
+}
+
+void defineEquality(SATSolver& solver, CachedEquality& cached,
+                    Polarity polarity, int guardLiteral)
+{
+  bool& done = polarity == Polarity::Positive ? cached.positiveDefined
+                                              : cached.negativeDefined;
+  if (done)
+    return;
+  done = true;
+  for (const BitHelper& helper : cached.bits)
+    defineBitHelper(solver, helper, polarity, guardLiteral);
+  if (!cached.aggregateAllocated)
+    return;
+  if (polarity == Polarity::Positive)
+  {
+    // q -> every bit equality
+    for (const BitHelper& helper : cached.bits)
+    {
+      std::vector<ClauseTerm> clause;
+      clause.push_back(ClauseTerm::satLiteral(cached.literal ^ 1));
+      clause.push_back(ClauseTerm::satLiteral(helper.literal));
+      addGuardedClause(solver, clause, guardLiteral);
+    }
+    return;
+  }
+  // every bit equality -> q
+  std::vector<ClauseTerm> reverse;
+  reverse.push_back(ClauseTerm::satLiteral(cached.literal));
+  for (const BitHelper& helper : cached.bits)
+    reverse.push_back(ClauseTerm::satLiteral(helper.literal ^ 1));
+  addGuardedClause(solver, reverse, guardLiteral);
+}
+
+// Fold constants and SAT aliases before allocating an XNOR helper; the helper
+// itself is left undefined here and is given whichever half the use needs.
+BitHelper bitEquality(SATSolver& solver, const BitOperand& left,
+                      const BitOperand& right, bool& constantResult,
+                      bool& constantValue)
+{
+  BitHelper helper;
+  helper.left = left;
+  helper.right = right;
+  constantResult = false;
   if (left.constant && right.constant)
-    return ClauseTerm::constantValue(left.value == right.value);
+  {
+    constantResult = true;
+    constantValue = left.value == right.value;
+    return helper;
+  }
   if (!left.constant && !right.constant && left.variable == right.variable)
-    return ClauseTerm::constantValue(true);
+  {
+    constantResult = true;
+    constantValue = true;
+    return helper;
+  }
   if (left.constant || right.constant)
   {
     const BitOperand& constant = left.constant ? left : right;
     const BitOperand& symbol = left.constant ? right : left;
-    return ClauseTerm::satLiteral(
-        static_cast<int>(2 * symbol.variable + (constant.value ? 0 : 1)));
+    helper.literal =
+        static_cast<int>(2 * symbol.variable + (constant.value ? 0 : 1));
+    return helper;
   }
 
   const unsigned q = solver.newVar();
   solver.setFrozen(q);
-  for (unsigned lv = 0; lv < 2; ++lv)
-    for (unsigned rv = 0; rv < 2; ++rv)
-      for (unsigned qv = 0; qv < 2; ++qv)
-      {
-        if ((qv != 0) == (lv == rv))
-          continue;
-        std::vector<ClauseTerm> clause;
-        clause.push_back(exclusionLiteral(left, lv != 0));
-        clause.push_back(exclusionLiteral(right, rv != 0));
-        clause.push_back(ClauseTerm::satLiteral(
-            static_cast<int>(2 * q + (qv != 0 ? 1 : 0))));
-        addGuardedClause(solver, clause, guardLiteral);
-      }
-  return ClauseTerm::satLiteral(static_cast<int>(2 * q));
+  helper.literal = static_cast<int>(2 * q);
+  helper.allocated = true;
+  return helper;
 }
 
 ClauseTerm equalityTerm(SATSolver& solver,
                         const ToSATBase::ASTNodeToSATVar& bindings,
-                        const UFEqualityAtom& atom, int guardLiteral,
-                        std::map<EqualityKey, int>& cache)
+                        const UFEqualityAtom& atom, Polarity polarity,
+                        int guardLiteral,
+                        std::map<EqualityKey, CachedEquality>& cache)
 {
   const EqualityKey key = equalityKey(atom.left, atom.right, atom.sort);
   if (key.left == key.right)
@@ -488,65 +591,67 @@ ClauseTerm equalityTerm(SATSolver& solver,
                            : constantsSameBits(key.left, key.right);
     return ClauseTerm::constantValue(equal);
   }
-  const std::map<EqualityKey, int>::const_iterator hit = cache.find(key);
+  const std::map<EqualityKey, CachedEquality>::iterator hit = cache.find(key);
   if (hit != cache.end())
-    return ClauseTerm::satLiteral(hit->second);
+  {
+    defineEquality(solver, hit->second, polarity, guardLiteral);
+    return ClauseTerm::satLiteral(hit->second.literal);
+  }
 
   const unsigned width = scalarWidth(atom.sort);
-  std::vector<int> bitEqualities;
-  bitEqualities.reserve(width);
+  CachedEquality cached;
+  cached.bits.reserve(width);
   for (unsigned bit = 0; bit < width; ++bit)
   {
     const BitOperand left = bitOperand(key.left, atom.sort, bit, bindings);
     const BitOperand right = bitOperand(key.right, atom.sort, bit, bindings);
-    const ClauseTerm equality =
-        bitEquality(solver, left, right, guardLiteral);
-    if (equality.constant)
+    bool constantResult = false;
+    bool constantValue = false;
+    const BitHelper helper =
+        bitEquality(solver, left, right, constantResult, constantValue);
+    if (constantResult)
     {
-      if (!equality.value)
-        return equality;
+      // A bit that can never agree makes the whole equality false; one that
+      // always agrees contributes nothing. Neither needs a helper, and a
+      // false one abandons the atom before anything is cached -- any helper
+      // already allocated for an earlier bit simply stays undefined and
+      // unused.
+      if (!constantValue)
+        return ClauseTerm::constantValue(false);
       continue;
     }
-    bitEqualities.push_back(equality.literal);
+    cached.bits.push_back(helper);
   }
 
-  if (bitEqualities.empty())
+  if (cached.bits.empty())
     return ClauseTerm::constantValue(true);
 
-  int result = bitEqualities[0];
-  if (bitEqualities.size() > 1)
+  cached.literal = cached.bits[0].literal;
+  if (cached.bits.size() > 1)
   {
     const unsigned q = solver.newVar();
     solver.setFrozen(q);
-    result = static_cast<int>(2 * q);
-    for (const int bitEquality : bitEqualities)
-    {
-      std::vector<ClauseTerm> clause;
-      clause.push_back(ClauseTerm::satLiteral(result ^ 1));
-      clause.push_back(ClauseTerm::satLiteral(bitEquality));
-      addGuardedClause(solver, clause, guardLiteral);
-    }
-    std::vector<ClauseTerm> reverse;
-    reverse.push_back(ClauseTerm::satLiteral(result));
-    for (const int bitEquality : bitEqualities)
-      reverse.push_back(ClauseTerm::satLiteral(bitEquality ^ 1));
-    addGuardedClause(solver, reverse, guardLiteral);
+    cached.literal = static_cast<int>(2 * q);
+    cached.aggregateAllocated = true;
   }
-  cache.insert(std::make_pair(key, result));
-  return ClauseTerm::satLiteral(result);
+  const std::map<EqualityKey, CachedEquality>::iterator inserted =
+      cache.insert(std::make_pair(key, cached)).first;
+  defineEquality(solver, inserted->second, polarity, guardLiteral);
+  return ClauseTerm::satLiteral(inserted->second.literal);
 }
 
 void encodeOneLemma(MutableAdapterState& state, const PendingLemma& entry,
                     SATSolver& solver,
                     ToSATBase::ASTNodeToSATVar& bindings, int guardLiteral,
-                    std::map<EqualityKey, int>& cache)
+                    std::map<EqualityKey, CachedEquality>& cache)
 {
   std::vector<ClauseTerm> body;
   body.reserve(entry.lemma.premise.size() + 1);
   for (const UFEqualityAtom& premise : entry.lemma.premise)
   {
     const ClauseTerm equality =
-        equalityTerm(solver, bindings, premise, guardLiteral, cache);
+        equalityTerm(solver, bindings, premise, Polarity::Negative,
+                     guardLiteral, cache);
     if (equality.constant)
     {
       if (!equality.value)
@@ -555,8 +660,9 @@ void encodeOneLemma(MutableAdapterState& state, const PendingLemma& entry,
     }
     body.push_back(negate(equality));
   }
-  const ClauseTerm conclusion = equalityTerm(
-      solver, bindings, entry.lemma.conclusion, guardLiteral, cache);
+  const ClauseTerm conclusion =
+      equalityTerm(solver, bindings, entry.lemma.conclusion,
+                   Polarity::Positive, guardLiteral, cache);
   if (conclusion.constant)
   {
     if (conclusion.value)
@@ -583,7 +689,7 @@ void encodeOneLemma(MutableAdapterState& state, const PendingLemma& entry,
 
 void encodeLemmas(MutableAdapterState& state, SATSolver& solver,
                   ToSATBase* tosat, int guardLiteral,
-                  std::map<EqualityKey, int>& cache)
+                  std::map<EqualityKey, CachedEquality>& cache)
 {
   if (state.pending.empty() || tosat == NULL)
     FatalError("UF lemma encoding began without a pending certificate");
@@ -631,7 +737,7 @@ class UFBatchAdapter::Impl
 public:
   explicit Impl(STPMgr* manager) : state(manager) {}
   MutableAdapterState state;
-  std::map<EqualityKey, int> equalityCache;
+  std::map<EqualityKey, CachedEquality> equalityCache;
 };
 
 UFBatchAdapter::UFBatchAdapter(STPMgr* manager) : impl_(new Impl(manager))
@@ -710,7 +816,8 @@ public:
   PersistentScopeKey activeScope;
   int positiveBlockLiteral = -1;
   uint64_t backendGeneration = 0;
-  std::map<PersistentScopeKey, std::map<EqualityKey, int>> equalityCaches;
+  std::map<PersistentScopeKey, std::map<EqualityKey, CachedEquality>>
+      equalityCaches;
 };
 
 UFPersistentAdapter::UFPersistentAdapter(STPMgr* manager)
@@ -782,7 +889,7 @@ void UFPersistentAdapter::encodePendingLemmas(SATSolver& solver,
 {
   if (!active())
     FatalError("persistent UF lemma has no active block scope");
-  std::map<EqualityKey, int>& cache =
+  std::map<EqualityKey, CachedEquality>& cache =
       impl_->equalityCaches[impl_->activeScope];
   encodeLemmas(impl_->state, solver, tosat,
                impl_->positiveBlockLiteral ^ 1, cache);

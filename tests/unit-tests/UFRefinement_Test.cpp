@@ -321,6 +321,62 @@ bool containsLiteral(const std::vector<int>& clause, int literal)
 
 } // namespace
 
+TEST(UFRefinement, CompletesACachedHelperUsedInBothPolarities)
+{
+  // The same equality can be a premise in one lemma and a conclusion in
+  // another. Each use needs the opposite half of the helper definition, so
+  // the second one has to complete what the first left out rather than
+  // reuse the literal as it stands.
+  //
+  // Both applications of f take the same Bool argument here, so the argument
+  // equality is the one the checker states as a premise, while the result
+  // equality is the conclusion; the fixture's second, identical candidate
+  // then reuses both from the cache. Whatever the order, the projection onto
+  // the original variables must still be exactly the congruence implication,
+  // which is what the exhaustive check below asserts.
+  RefinementFixture fixture;
+  UFBatchAdapter adapter(&fixture.manager);
+  adapter.beginQuery(&fixture.batchView);
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+
+  RecordingSolver solver(6);
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
+  const std::size_t afterFirst = solver.clauses().size();
+
+  ASSERT_EQ(UFCandidateOutcome::Conflict,
+            adapter.checkCandidate(fixture.counterexample));
+  adapter.encodePendingLemmas(solver, &fixture.tosat);
+  // A repeat in the same polarity completes nothing: one new implication.
+  EXPECT_EQ(afterFirst + 1, solver.clauses().size());
+
+  const unsigned helperCount = solver.nextVariable() - 6;
+  for (unsigned original = 0; original < (1u << 6); ++original)
+  {
+    const bool argumentEqual =
+        ((original >> 0) & 1u) == ((original >> 1) & 1u);
+    const bool resultEqual =
+        ((original >> 2) & 1u) == ((original >> 4) & 1u) &&
+        ((original >> 3) & 1u) == ((original >> 5) & 1u);
+    const bool expected = !argumentEqual || resultEqual;
+    bool encoded = false;
+    for (unsigned helpers = 0; helpers < (1u << helperCount); ++helpers)
+    {
+      std::vector<bool> assignment(solver.nextVariable(), false);
+      for (unsigned bit = 0; bit < 6; ++bit)
+        assignment[bit] = ((original >> bit) & 1u) != 0;
+      for (unsigned bit = 0; bit < helperCount; ++bit)
+        assignment[6 + bit] = ((helpers >> bit) & 1u) != 0;
+      if (satisfies(solver.clauses(), assignment))
+      {
+        encoded = true;
+        break;
+      }
+    }
+    EXPECT_EQ(expected, encoded) << "original assignment " << original;
+  }
+}
+
 TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
 {
   RefinementFixture fixture;
@@ -334,9 +390,13 @@ TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
   adapter.encodePendingLemmas(solver, &fixture.tosat);
   EXPECT_FALSE(adapter.hasPendingLemma());
   EXPECT_EQ(1u, adapter.lemmasEmitted());
-  // Bool XNOR: 4; two BV-bit XNORs plus their conjunction: 11;
-  // the semantic implication: 1.
-  ASSERT_EQ(16u, solver.clauses().size());
+  // Each helper is defined in the one polarity its use needs, which is half
+  // of each definition. The premise appears negated, so its Bool XNOR gets
+  // the two clauses for (l = r) -> q: 2. The conclusion appears positive, so
+  // its two BV-bit XNORs get the two clauses each for q -> (l = r), and the
+  // conjunction gets one clause per bit for q -> every bit: 4 + 2. The
+  // semantic implication: 1.
+  ASSERT_EQ(9u, solver.clauses().size());
 
   const unsigned helperCount = solver.nextVariable() - 6;
   for (unsigned original = 0; original < (1u << 6); ++original)
@@ -369,7 +429,7 @@ TEST(UFRefinement, BatchCNFExactlyImplementsCongruenceImplication)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  EXPECT_EQ(17u, solver.clauses().size());
+  EXPECT_EQ(10u, solver.clauses().size());
   EXPECT_EQ(2u, adapter.lemmasEmitted());
 }
 
@@ -385,10 +445,11 @@ TEST(UFRefinement, BatchCNFFoldsBoolAndBitVectorConstantOperands)
   adapter.encodePendingLemmas(solver, &fixture.tosat);
 
   // The two exact constant/constant premises disappear. p=true aliases p's
-  // existing literal, while x=1 needs only a three-clause conjunction of its
-  // two constant-adjusted bit literals. The BV result equality needs eleven
-  // clauses and the semantic implication one. Constants acquire no SAT vars.
-  ASSERT_EQ(15u, solver.clauses().size());
+  // existing literal, while x=1 needs only the one clause that its negated
+  // use requires of the conjunction of its two constant-adjusted bit
+  // literals. The BV result equality, used positively, needs six. The
+  // semantic implication one. Constants acquire no SAT vars.
+  ASSERT_EQ(8u, solver.clauses().size());
   ASSERT_EQ(11u, solver.nextVariable());
 
   const unsigned helperCount = solver.nextVariable() - 7;
@@ -430,7 +491,7 @@ TEST(UFRefinement, PersistentCNFGuardsEveryFoldedEqualityHelper)
 
   RecordingSolver solver(7);
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(15u, solver.clauses().size());
+  ASSERT_EQ(8u, solver.clauses().size());
   ASSERT_EQ(11u, solver.nextVariable());
   for (const std::vector<int>& clause : solver.clauses())
     EXPECT_TRUE(containsLiteral(clause, 301));
@@ -479,16 +540,19 @@ TEST(UFRefinement, BatchCNFEliminatesIdenticalPremiseAndReusesCache)
   RecordingSolver solver(10);
   adapter.encodePendingLemmas(solver, &fixture.tosat);
   // Only x=y and the result equality remain: two BV2 XNOR/conjunction
-  // bundles (11 clauses and three helpers each), plus the implication.
-  EXPECT_EQ(23u, solver.clauses().size());
+  // bundles of three helpers each, defined in the one polarity each use
+  // needs -- five clauses for the negated premise, six for the positive
+  // conclusion -- plus the implication.
+  EXPECT_EQ(12u, solver.clauses().size());
   EXPECT_EQ(16u, solver.nextVariable());
 
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  // Both surviving equality literals are cache hits.  The repeat contributes
-  // just another candidate-blocking implication and no new helper variable.
-  EXPECT_EQ(24u, solver.clauses().size());
+  // Both surviving equality literals are cache hits, and each is reused in
+  // the same polarity it was defined in.  The repeat contributes just another
+  // candidate-blocking implication and no new helper variable.
+  EXPECT_EQ(13u, solver.clauses().size());
   EXPECT_EQ(16u, solver.nextVariable());
 }
 
@@ -504,7 +568,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(16u, solver.clauses().size());
+  ASSERT_EQ(9u, solver.clauses().size());
   for (const std::vector<int>& clause : solver.clauses())
     EXPECT_TRUE(containsLiteral(clause, 201));
 
@@ -547,7 +611,7 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(17u, solver.clauses().size());
+  ASSERT_EQ(10u, solver.clauses().size());
   EXPECT_TRUE(containsLiteral(solver.clauses().back(), 201));
 
   // Replacing only the SAT backend invalidates every cached helper even when
@@ -558,8 +622,8 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(33u, solver.clauses().size());
-  for (std::size_t i = 17; i < 33; ++i)
+  ASSERT_EQ(19u, solver.clauses().size());
+  for (std::size_t i = 10; i < 19; ++i)
     EXPECT_TRUE(containsLiteral(solver.clauses()[i], 203));
 
   // A different block in the same backend cannot reuse guarded helpers.
@@ -567,8 +631,8 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(49u, solver.clauses().size());
-  for (std::size_t i = 33; i < 49; ++i)
+  ASSERT_EQ(28u, solver.clauses().size());
+  for (std::size_t i = 19; i < 28; ++i)
     EXPECT_TRUE(containsLiteral(solver.clauses()[i], 205));
 
   // Epoch identity is also part of the cache key, and explicit epoch clear
@@ -577,11 +641,11 @@ TEST(UFRefinement, PersistentCNFGuardsHelpersAndScopesItsCache)
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  ASSERT_EQ(65u, solver.clauses().size());
+  ASSERT_EQ(37u, solver.clauses().size());
   adapter.clearEncodingEpoch();
   adapter.beginBlock(&fixture.persistentView, 8, 4, 10, 208);
   ASSERT_EQ(UFCandidateOutcome::Conflict,
             adapter.checkCandidate(fixture.counterexample));
   adapter.encodePendingLemmas(solver, &fixture.tosat);
-  EXPECT_EQ(81u, solver.clauses().size());
+  EXPECT_EQ(46u, solver.clauses().size());
 }
