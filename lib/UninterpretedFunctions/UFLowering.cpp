@@ -3,6 +3,7 @@
 #include "stp/STPManager/STPManager.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/Util/DagWalk.h"
+#include <iostream>
 
 namespace stp
 {
@@ -107,8 +108,10 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
 {
   typedef UserDefinedFlags::UFEagerMode Mode;
   const Mode mode = manager_->UserFlags.uf_eager_mode;
+  view.eagerStats.budget = manager_->UserFlags.uf_eager_budget;
   if (mode == Mode::OFF || view.applications.empty())
     return;
+  view.eagerStats.policyRan = true;
 
   std::map<const UFDecl*, std::vector<const LoweredApplicationRecord*>>
       byDeclaration;
@@ -124,6 +127,7 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
   // whose actuals are all constants are either the same durable handle or
   // differ in some position, so they never need a constraint between them.
   std::vector<std::pair<uint64_t, const UFDecl*>> selection;
+  std::map<const UFDecl*, size_t> statIndex;
   for (const auto& entry : byDeclaration)
   {
     uint64_t constantArgued = 0;
@@ -132,6 +136,15 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
         constantArgued++;
     const uint64_t symbolic = entry.second.size() - constantArgued;
     const uint64_t cost = pairsAmong(symbolic) + constantArgued * symbolic;
+
+    UFEagerDeclarationStat stat;
+    stat.name = entry.first->name();
+    stat.applications = entry.second.size();
+    stat.estimatedPairs = cost;
+    stat.outcome = UFEagerDeclarationStat::Outcome::NoComparablePairs;
+    statIndex[entry.first] = view.eagerStats.declarations.size();
+    view.eagerStats.declarations.push_back(stat);
+
     if (cost != 0)
       selection.push_back(std::make_pair(cost, entry.first));
   }
@@ -147,6 +160,8 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
   uint64_t budget = manager_->UserFlags.uf_eager_budget;
   for (const std::pair<uint64_t, const UFDecl*>& candidate : selection)
   {
+    UFEagerDeclarationStat& stat =
+        view.eagerStats.declarations[statIndex[candidate.second]];
     if (mode == Mode::AUTO)
     {
       // A pair count is only a proxy for what a pair costs, and for a
@@ -174,11 +189,32 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
       // forces them: the encoding is correct, it is only a bad trade, and a
       // caller who knows their query benefits should be able to ask.
       if (hasFloatingPointPosition(candidate.second->signature()))
+      {
+        stat.outcome = UFEagerDeclarationStat::Outcome::DeclinedFloat;
         continue;
+      }
       if (candidate.first > budget)
-        break; // and every later declaration is at least as expensive
+      {
+        // Every later declaration is at least as expensive, so they are all
+        // declined for the same reason; record that rather than leaving them
+        // indistinguishable from having had no pairs.
+        stat.outcome = UFEagerDeclarationStat::Outcome::DeclinedBudget;
+        for (const std::pair<uint64_t, const UFDecl*>& later : selection)
+          if (later.first >= candidate.first && later.second != candidate.second)
+          {
+            UFEagerDeclarationStat& laterStat =
+                view.eagerStats.declarations[statIndex[later.second]];
+            if (laterStat.outcome ==
+                UFEagerDeclarationStat::Outcome::NoComparablePairs)
+              laterStat.outcome =
+                  UFEagerDeclarationStat::Outcome::DeclinedBudget;
+          }
+        break;
+      }
       budget -= candidate.first;
+      view.eagerStats.budgetSpent += candidate.first;
     }
+    stat.outcome = UFEagerDeclarationStat::Outcome::Selected;
 
     const std::vector<const LoweredApplicationRecord*>& records =
         byDeclaration[candidate.second];
@@ -188,6 +224,7 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
       {
         const LoweredApplicationRecord& left = *records[i];
         const LoweredApplicationRecord& right = *records[j];
+        stat.enumeratedPairs++;
         ASTVec premise;
         bool impossible = false;
         for (size_t k = 0; k < signature.arity() && !impossible; ++k)
@@ -208,7 +245,11 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
               leftActual, rightActual));
         }
         if (impossible)
+        {
+          stat.skippedImpossiblePairs++;
           continue;
+        }
+        stat.emittedConstraints++;
 
         const ASTNode conclusion = factory->CreateNode(
             signature.codomain().kind() == SourceSort::Kind::Bool ? IFF : EQ,
@@ -225,6 +266,44 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
                                       conclusion));
       }
   }
+}
+
+// Observability for the eager policy. Without this the only way to tell a
+// declined declaration from one that had nothing to install is to edit a flag
+// and compare wall clock, which is how every calibration of this policy has
+// had to be done. One line per declaration that had pairs to consider, plus a
+// total; nothing is printed when the policy did not run.
+void UFLowering::reportEagerCongruence(const LoweredApplicationView& view) const
+{
+  if (!manager_->UserFlags.stats_flag)
+    return;
+  const UFEagerStats& stats = view.eagerStats;
+  if (!stats.policyRan)
+  {
+    if (!view.applications.empty())
+      std::cerr << "UF: eager congruence policy off, "
+                << view.applications.size() << " application(s) left to the "
+                << "refinement loop" << std::endl;
+    return;
+  }
+  for (const UFEagerDeclarationStat& stat : stats.declarations)
+  {
+    if (stat.estimatedPairs == 0)
+      continue;
+    std::cerr << "UF: eager " << stat.outcomeName() << " " << stat.name << " ("
+              << stat.applications << " applications, " << stat.estimatedPairs
+              << " pairs estimated";
+    if (stat.outcome == UFEagerDeclarationStat::Outcome::Selected)
+      std::cerr << ", " << stat.enumeratedPairs << " enumerated, "
+                << stat.skippedImpossiblePairs << " impossible, "
+                << stat.emittedConstraints << " constraints";
+    std::cerr << ")" << std::endl;
+  }
+  std::cerr << "UF: eager total " << stats.selectedDeclarations() << "/"
+            << stats.declarations.size() << " declarations, "
+            << stats.emittedConstraints() << " constraints, budget "
+            << stats.budgetSpent << "/" << stats.budget << " spent"
+            << std::endl;
 }
 
 LoweredApplicationView
@@ -515,6 +594,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
       record.namedActuals.clear();
 
   installEagerCongruence(view);
+  reportEagerCongruence(view);
 
   // This checks the whole barrier once, including the naming definitions.
   // Scanning every progressively larger actual separately would turn a

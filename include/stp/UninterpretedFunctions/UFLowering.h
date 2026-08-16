@@ -8,6 +8,7 @@
 #include "stp/UninterpretedFunctions/UFDecl.h"
 #include <cstdint>
 #include <map>
+#include <string>
 #include <vector>
 
 namespace stp
@@ -69,6 +70,69 @@ struct DLL_PUBLIC LoweredApplicationRecord
   bool observableArguments = true;
 };
 
+// What the eager policy decided about one declaration, and what that decision
+// actually produced. The estimate and the emitted count are separate fields on
+// purpose: the policy spends its budget on the estimate, while the pair loop
+// then drops pairs the estimate could not see, and only a record of both makes
+// the difference visible.
+struct DLL_PUBLIC UFEagerDeclarationStat
+{
+  enum class Outcome
+  {
+    NoComparablePairs, // nothing to constrain; never charged
+    DeclinedFloat,     // automatic policy declines floating-point signatures
+    DeclinedBudget,    // estimate exceeded the remaining budget
+    Selected
+  };
+
+  std::string name;
+  uint64_t applications = 0;
+  uint64_t estimatedPairs = 0;
+  uint64_t enumeratedPairs = 0;
+  uint64_t skippedImpossiblePairs = 0;
+  uint64_t emittedConstraints = 0;
+  Outcome outcome = Outcome::NoComparablePairs;
+
+  const char* outcomeName() const
+  {
+    switch (outcome)
+    {
+      case Outcome::NoComparablePairs: return "no-pairs";
+      case Outcome::DeclinedFloat: return "declined-float";
+      case Outcome::DeclinedBudget: return "declined-budget";
+      case Outcome::Selected: return "selected";
+    }
+    return "unknown";
+  }
+};
+
+// The whole eager decision for one lowering, in the order the policy considered
+// declarations. Populated even when the policy is off, so that "installed
+// nothing because the mode is off" and "installed nothing because every
+// declaration was declined" are distinguishable in a trace.
+struct DLL_PUBLIC UFEagerStats
+{
+  std::vector<UFEagerDeclarationStat> declarations;
+  uint64_t budget = 0;
+  uint64_t budgetSpent = 0;
+  bool policyRan = false;
+
+  uint64_t emittedConstraints() const
+  {
+    uint64_t total = 0;
+    for (const UFEagerDeclarationStat& stat : declarations)
+      total += stat.emittedConstraints;
+    return total;
+  }
+  uint64_t selectedDeclarations() const
+  {
+    uint64_t total = 0;
+    for (const UFEagerDeclarationStat& stat : declarations)
+      total += stat.outcome == UFEagerDeclarationStat::Outcome::Selected ? 1 : 0;
+    return total;
+  }
+};
+
 // Value object owned by a solve-mode adapter. It deliberately contains no SAT
 // state: M3's checker consumes it as immutable semantic input, while the batch
 // and persistent adapters own their distinct clause/cache lifetimes.
@@ -93,6 +157,8 @@ public:
   // declarations the eager policy selected. Empty in the reference profile,
   // where every congruence clause is earned by a refuted candidate.
   ASTVec congruenceConstraints;
+  // What the policy decided, and what it cost. Reported under -s.
+  UFEagerStats eagerStats;
   ASTNodeSet protectedSymbols;
   // Every symbolic checker leaf has exactly one concrete candidate
   // authority: its complete Bool/BV mapping in the live SAT backend.  This
@@ -124,6 +190,10 @@ private:
   // Fills view.congruenceConstraints for the declarations the eager policy
   // selects. A no-op in the reference profile.
   void installEagerCongruence(LoweredApplicationView& view) const;
+
+  // Prints view.eagerStats under -s. Called once per lowering, so a persistent
+  // solve reports the decision it took for each block.
+  void reportEagerCongruence(const LoweredApplicationView& view) const;
 
   STPMgr* const manager_;
 };
