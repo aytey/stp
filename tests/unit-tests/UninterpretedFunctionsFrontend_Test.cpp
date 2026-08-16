@@ -111,8 +111,9 @@ TEST(UninterpretedFunctionsFrontend,
             context->declareFunction("array", {array}, bv8, &diagnostic));
   EXPECT_EQ("uninterpreted functions: declaration of array: unsupported "
             "domain sort (Array (_ BitVec 8) (_ BitVec 8)) at argument 0 "
-            "(only Bool, RoundingMode, FloatingPoint and nonzero-width "
-            "bit-vector sorts are supported)",
+            "(only Bool, RoundingMode, FloatingPoint, nonzero-width "
+            "bit-vector sorts and sorts introduced by declare-sort are "
+            "supported)",
             diagnostic);
   EXPECT_EQ(nullptr, context->declareFunction(
                          "unknown", {SourceSort::unknown()}, bv8,
@@ -121,8 +122,8 @@ TEST(UninterpretedFunctionsFrontend,
             context->declareFunction("result", {bv8}, array, &diagnostic));
   EXPECT_EQ("uninterpreted functions: declaration of result: unsupported "
             "result sort (Array (_ BitVec 8) (_ BitVec 8)) (only Bool, "
-            "RoundingMode, FloatingPoint and nonzero-width bit-vector sorts "
-            "are supported)",
+            "RoundingMode, FloatingPoint, nonzero-width bit-vector sorts "
+            "and sorts introduced by declare-sort are supported)",
             diagnostic);
   EXPECT_EQ(0u, context->declarationCount());
   EXPECT_EQ(0u, context->registeredApplicationCount());

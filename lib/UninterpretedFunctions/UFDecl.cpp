@@ -5,8 +5,12 @@ namespace stp
 
 const char* UFSignature::supportedSortsPhrase()
 {
-  return "only Bool, RoundingMode, FloatingPoint and nonzero-width "
-         "bit-vector sorts are supported";
+  // A sort introduced by declare-sort reaches the signature as the bit-vector
+  // carrier it was given, so it needs no case of its own in isSupportedSort --
+  // but it does need naming here, or the report tells a script that has just
+  // declared one that its sort is not among those supported.
+  return "only Bool, RoundingMode, FloatingPoint, nonzero-width bit-vector "
+         "sorts and sorts introduced by declare-sort are supported";
 }
 
 bool UFSignature::isSupportedSort(const SourceSort& sort)
