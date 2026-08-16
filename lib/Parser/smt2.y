@@ -1830,10 +1830,30 @@ cmdi:
        stp::GlobalParserInterface->getUnsatAssumptions();
     }
 |
-     /* STP's sorts are fixed: bitvectors, booleans and arrays of them. */
+     /* A nullary uninterpreted sort becomes a bit-vector carrier wide enough
+        that nothing the query can say distinguishes more elements than it
+        holds. The sort has no operation but equality, so a query mentioning
+        k terms of it is satisfiable exactly when it is satisfiable over k
+        elements: a wider carrier is always sound, and only a narrower one
+        would not be. The width has to be chosen here, before any term of the
+        sort exists, so it cannot be derived from k -- see uf_sort_width.
+
+        Parametric sorts (arity > 0) have no such reading and stay
+        unsupported, as does every sort declaration when the uninterpreted
+        function feature is off: the sort exists to be a function's domain. */
      DECLARE_SORT_TOK STRING_TOK NUMERAL_TOK
     {
-       stp::GlobalParserInterface->unsupported();
+       if ($3 != 0 || !stp::GlobalParserInterface->getUserFlags()
+                           .enable_uninterpreted_functions)
+         stp::GlobalParserInterface->unsupported();
+       else
+       {
+         stp::GlobalParserInterface->addSortAlias(
+             *$2, stp::SourceSort::bitVector(
+                      stp::GlobalParserInterface->getUserFlags()
+                          .uf_sort_width));
+         stp::GlobalParserInterface->success();
+       }
        delete $2;
     }
 |
@@ -2021,7 +2041,24 @@ function_param_open STRING_TOK ROUNDINGMODE_TOK RPAREN_TOK
       $2->c_str(), stp::SourceSort::roundingMode()));
   stp::GlobalParserInterface->addTemporarySymbol(*$$);
   delete $2;
-};
+}
+|
+function_param_open STRING_TOK STRING_TOK RPAREN_TOK
+{
+  // A formal whose sort is a name the script introduced. This is how the
+  // uninterpreted-sort benchmarks bind their state parameter:
+  //   (define-fun p ((state S)) Bool ...)
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$3, resolved))
+  {
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
+  }
+  $$ = new ASTNode(
+      stp::GlobalParserInterface->CreateSourceSymbol($2->c_str(), resolved));
+  stp::GlobalParserInterface->addTemporarySymbol(*$$);
+  delete $2;
+  delete $3;
+}
 ;
 
 /* Returns a vector of parameters.*/
@@ -2374,15 +2411,15 @@ STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TO
 | STRING_TOK LPAREN_TOK RPAREN_TOK STRING_TOK
 {
   ABANDON_IF_REDECLARED_ZERO_ARITY((delete $1, delete $4));
-  // The sort position holds a bare name: a define-sort alias. (This used to
-  // match any TERM symbol, so `(declare-fun y () x)` with x a variable
-  // "worked" as an alias use.)
-  unsigned eb, sb;
-  if (!stp::GlobalParserInterface->lookupSortAlias(*$4, eb, sb))
+  // The sort position holds a bare name: a sort the script introduced, by
+  // define-sort or declare-sort. (This used to match any TERM symbol, so
+  // `(declare-fun y () x)` with x a variable "worked" as an alias use.)
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$4, resolved))
   {
-    fatal_yyerror("unknown sort (not built in, and not a define-sort alias)");
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
   }
-  declareScalarSymbol($1, stp::SourceSort::floatingPoint(eb, sb));
+  declareScalarSymbol($1, resolved);
   delete $4;
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK BOOL_TOK
@@ -2544,8 +2581,15 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 }
 | STRING_TOK
 {
-  $$ = new stp::parsed_uf_sort(
-      stp::SourceSort::unknown(), *$1, false, false);
+  // A bare name in a signature: a sort the script introduced, by declare-sort
+  // or by define-sort. Anything else is genuinely unknown and is reported
+  // with its spelling by the caller.
+  stp::SourceSort resolved;
+  if (stp::GlobalParserInterface->lookupSortAlias(*$1, resolved))
+    $$ = new stp::parsed_uf_sort(resolved, *$1, true);
+  else
+    $$ = new stp::parsed_uf_sort(
+        stp::SourceSort::unknown(), *$1, false, false);
   delete $1;
 }
 ;
@@ -2589,8 +2633,12 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 }
 | STRING_TOK
 {
-  $$ = new stp::parsed_uf_sort(
-      stp::SourceSort::unknown(), *$1, false, false);
+  stp::SourceSort resolved;
+  if (stp::GlobalParserInterface->lookupSortAlias(*$1, resolved))
+    $$ = new stp::parsed_uf_sort(resolved, *$1, true);
+  else
+    $$ = new stp::parsed_uf_sort(
+        stp::SourceSort::unknown(), *$1, false, false);
   delete $1;
 }
 ;
@@ -2622,13 +2670,13 @@ STRING_TOK  LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 }
 | STRING_TOK STRING_TOK
 {
-  // declare-const with a define-sort alias in sort position.
-  unsigned eb, sb;
-  if (!stp::GlobalParserInterface->lookupSortAlias(*$2, eb, sb))
+  // declare-const with a script-introduced sort name in sort position.
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$2, resolved))
   {
-    fatal_yyerror("unknown sort (not built in, and not a define-sort alias)");
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
   }
-  declareScalarSymbol($1, stp::SourceSort::floatingPoint(eb, sb));
+  declareScalarSymbol($1, resolved);
   delete $2;
 }
 | STRING_TOK ROUNDINGMODE_TOK

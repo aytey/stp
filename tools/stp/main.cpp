@@ -336,6 +336,13 @@ void ExtraMain::create_options()
                  "install up front")
       ->group(refinement_group)
       ->capture_default_str();
+  app.add_option("--uf-sort-width", bm->UserFlags.uf_sort_width,
+                 "bit-vector width given to a sort introduced by "
+                 "(declare-sort S 0); it bounds how many elements of that "
+                 "sort a query can tell apart, so a larger value is always "
+                 "sound and only a smaller one is not")
+      ->group(refinement_group)
+      ->capture_default_str();
 
   const char* const bb_group = "Bit-blasting options";
   bool_arg("--bb.div-v1", bm->UserFlags.division_variant_1,
