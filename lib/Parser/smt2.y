@@ -855,6 +855,17 @@ namespace stp
     return n;
   }
 
+  // (_ BitVec 0) is not a sort. SourceSort::bitVector asserts a positive
+  // width, so without this the asserting build aborts inside a header and the
+  // NDEBUG build carries a zero-width symbol through the pipeline as a
+  // Boolean. The array-component rule already refuses it with this wording;
+  // the scalar rules did not.
+  void checkBitVectorWidth(unsigned int width)
+  {
+    if (width == 0)
+      fatal_yyerror("bit-vectors must be of positive length");
+  }
+
   // The indexed to_fp forms and the special values carry the format as
   // numerals; apply the floor the sort rule enforces.
   void checkFpFormatWidths(unsigned int exp_width, unsigned int sig_width)
@@ -2058,6 +2069,7 @@ LPAREN_TOK
 function_param:
 function_param_open STRING_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK RPAREN_TOK
 {
+  checkBitVectorWidth($6);
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(), stp::SourceSort::bitVector($6)));
   stp::GlobalParserInterface->addTemporarySymbol(*$$);
@@ -2480,6 +2492,7 @@ var_decl:
 STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
   ABANDON_IF_REDECLARED_ZERO_ARITY(delete $1);
+  checkBitVectorWidth($7);
   declareScalarSymbol($1, stp::SourceSort::bitVector($7));
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK STRING_TOK
@@ -2720,6 +2733,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 const_decl:
 STRING_TOK  LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
+  checkBitVectorWidth($5);
   declareScalarSymbol($1, stp::SourceSort::bitVector($5));
 }
 | STRING_TOK BOOL_TOK
