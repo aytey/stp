@@ -690,23 +690,43 @@ static bool computeBVLE(const std::vector<bool>& left,
   return true;
 }
 
-static bool computeBVCompare(Kind k, const std::vector<bool>& aBits,
-                             const std::vector<bool>& bBits)
+// Every comparison is `<=` under some combination of swapping the operands,
+// negating the answer, and reading the top bit as a sign. Named once, because
+// the model check below and the clauses that pin the abstraction both need it
+// and must not disagree: they did, over BVLT, and a lemma that pins an
+// abstraction to a > b for a query that asked a < b is not a weaker claim than
+// the right one but the opposite of it.
+struct CompareForm
+{
+  bool swapOps;
+  bool negateResult;
+  bool isSigned;
+};
+
+static CompareForm comparisonForm(Kind k)
 {
   switch (k)
   {
-    case BVLE:  return computeBVLE(aBits, bBits, false);
-    case BVGE:  return computeBVLE(bBits, aBits, false);
-    case BVGT:  return !computeBVLE(aBits, bBits, false);
-    case BVLT:  return !computeBVLE(bBits, aBits, false);
-    case BVSLE: return computeBVLE(aBits, bBits, true);
-    case BVSGE: return computeBVLE(bBits, aBits, true);
-    case BVSGT: return !computeBVLE(aBits, bBits, true);
-    case BVSLT: return !computeBVLE(bBits, aBits, true);
-    default:    return false;
+    case BVLE:  return {false, false, false};
+    case BVGE:  return {true,  false, false};
+    case BVGT:  return {false, true,  false};
+    case BVLT:  return {true,  true,  false};
+    case BVSLE: return {false, false, true};
+    case BVSGE: return {true,  false, true};
+    case BVSGT: return {false, true,  true};
+    case BVSLT: return {true,  true,  true};
+    default:    return {false, false, false};
   }
 }
 
+static bool computeBVCompare(Kind k, const std::vector<bool>& aBits,
+                             const std::vector<bool>& bBits)
+{
+  const CompareForm form = comparisonForm(k);
+  const bool le = form.swapOps ? computeBVLE(bBits, aBits, form.isSigned)
+                               : computeBVLE(aBits, bBits, form.isSigned);
+  return form.negateResult ? !le : le;
+}
 
 unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
 {
@@ -753,13 +773,11 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
       if (expected == actual)
         continue;
 
-      bool swapOps = (abs.opKind == BVGE || abs.opKind == BVSGE || abs.opKind == BVSLT);
-      bool negateResult = (abs.opKind == BVGT || abs.opKind == BVLT ||
-                           abs.opKind == BVSGT || abs.opKind == BVSLT);
-      bool isSigned = (abs.opKind == BVSLE || abs.opKind == BVSGE ||
-                       abs.opKind == BVSGT || abs.opKind == BVSLT);
+      // The same three answers computeBVCompare just used, taken from the
+      // same place rather than restated here.
+      const CompareForm form = comparisonForm(abs.opKind);
 
-      incCmps.push_back({idx, swapOps, negateResult, isSigned});
+      incCmps.push_back({idx, form.swapOps, form.negateResult, form.isSigned});
       continue;
     }
 
@@ -859,8 +877,19 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
 
         if (divisorZero)
         {
+          // Both are totalised, and not to the same thing: division by zero
+          // is all ones, while the remainder is the dividend. That is what
+          // SMT-LIB says and what the unabstracted BBDivMod answers -- its
+          // restoring loop finds every shifted remainder at or above a zero
+          // divisor, subtracts nothing each time, and hands the dividend
+          // back. Left at zero, this reference agreed with an abstraction
+          // holding a value the query does not give it, so a bogus candidate
+          // was called consistent: no lemma, and the refinement loop ran out
+          // of things to say about a model it had already rejected.
           if (abs.opKind == BVDIV)
             for (unsigned i = 0; i < W; ++i) expected[i] = true;
+          else
+            expected = aBits;
         }
         else
         {
@@ -932,7 +961,21 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
       solver.addClause(cl);
     }
 
-    for (int bit = (int)abs.width - 1; bit >= 0; --bit)
+    // From the least significant bit up, so that the most significant
+    // *differing* bit is the one that decides. Each step keeps the accumulator
+    // when the two bits agree and overrides it when they differ, so whichever
+    // bit is visited last among the differing ones settles the answer -- which
+    // is the top one only in this direction. Run downwards, as this was, the
+    // bottom differing bit won instead, and the chain answered something that
+    // is not a comparison at all: it disagreed with `a <= b` on 31616 of the
+    // 65536 pairs of eight-bit values. The lemma then pinned the abstraction
+    // to that, and a query whose comparison the pinned value contradicted came
+    // back unsat.
+    //
+    // The sign bit is therefore also the last step, which is where flipping
+    // its sense belongs: for a signed comparison a leading 1 is the smaller
+    // side, so the roles of the two operands invert at that bit alone.
+    for (int bit = 0; bit < (int)abs.width; ++bit)
     {
       unsigned a = lv[bit];
       unsigned b = rv[bit];
@@ -999,14 +1042,32 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
       unsigned c = carryVar;
       SATSolver::vec_literals cl;
 
-      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+      // s <-> l ^ r ^ c, one clause per row of the three inputs, each falsified
+      // only by that row paired with the wrong sum bit. Written out of the row
+      // rather than transcribed, because the transcription carried every s
+      // literal inverted: the lemma forced s = !(l ^ r ^ c), which is not a
+      // weaker constraint on the abstraction but the negation of the one the
+      // scan above had just checked. A refined addition was therefore still
+      // inconsistent on the next round, and `defined` below meant it was never
+      // looked at again.
+      //
+      // mkLit(v, sign) is false exactly when v equals sign, so a literal taken
+      // at `bit != negated` is false exactly when that operand's effective bit
+      // -- the variable read through the BVUMINUS that operandNegated records,
+      // whose +1 the carry above seeds -- is `bit`.
+      for (unsigned row = 0; row < 8; ++row)
+      {
+        const bool lBit = (row & 1) != 0;
+        const bool rBit = (row & 2) != 0;
+        const bool cBit = (row & 4) != 0;
+        const bool sum = lBit ^ rBit ^ cBit;
+        cl.clear();
+        cl.push(SATSolver::mkLit(l, lBit != lNeg));
+        cl.push(SATSolver::mkLit(r, rBit != rNeg));
+        cl.push(SATSolver::mkLit(c, cBit));
+        cl.push(SATSolver::mkLit(s, !sum));
+        solver.addClause(cl);
+      }
 
       if (bit < abs.width - 1)
       {
