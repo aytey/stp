@@ -33,6 +33,7 @@ THE SOFTWARE.
 #include "stp/AST/ASTSymbol.h"
 
 #include "stp/AST/AST.h"
+#include "stp/Simplifier/DistinctOrdering.h"
 #include "stp/NodeFactory/HashingNodeFactory.h"
 #include "stp/STPManager/UserDefinedFlags.h"
 #include "stp/Sat/SATSolver.h"
@@ -113,6 +114,12 @@ private:
 public:
   HashingNodeFactory* hashingNodeFactory;
   NodeFactory* defaultNodeFactory;
+
+  // (distinct ...) groups as the parser saw them, before it dissolved each
+  // into pairwise disequalities. Kept so a later pass can ask whether the
+  // operands are symmetric and, if they are, state an order instead. Cleared
+  // whenever the assertion stack is.
+  std::vector<DistinctGroup> distinctGroups;
 
   // State of the array-equality (extensional arrays) decision procedure:
   // solve-local equality records, the complete per-solve array graph, and

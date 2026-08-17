@@ -340,6 +340,10 @@ void ExtraMain::create_options()
            "bias the first candidate so the congruence checker's scalars "
            "start out pairwise different (advisory; affects search order "
            "only)", refinement_group);
+  bool_arg("--distinct-ordering", bm->UserFlags.distinct_ordering,
+           "replace a (distinct ...) over variables that occur nowhere else "
+           "with a strict chain, which fixes one of the n! equivalent "
+           "orderings the bit-blaster would otherwise search", refinement_group);
   app.add_option("--uf-sort-width", bm->UserFlags.uf_sort_width,
                  "bit-vector width given to a sort introduced by "
                  "(declare-sort S 0); it bounds how many elements of that "

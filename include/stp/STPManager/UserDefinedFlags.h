@@ -271,6 +271,16 @@ public:
   // uninterpreted sort in practice; raise it if a query ever needs more.
   unsigned uf_sort_width = 16;
 
+  // Replace a (distinct x1 ... xn) whose operands are variables occurring
+  // nowhere else with the strict chain x1 < x2 < ... < xn. Every permutation
+  // of such operands maps the formula to itself, so fixing one of the n!
+  // orderings loses no answer, and n-1 comparisons replace n(n-1)/2
+  // disequalities that a bit-blaster would otherwise have to order for
+  // itself. Batch pipeline only: the guard is re-checked against each
+  // solve's own formula, so a later assert that mentions an operand simply
+  // stops the rewrite from applying on the next solve.
+  bool distinct_ordering = true;
+
   // construct the counterexample in terms of original variable based
   // on the counterexample returned by SAT solver
   bool print_counterexample_flag = false;
