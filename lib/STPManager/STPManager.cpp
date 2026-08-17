@@ -520,6 +520,17 @@ ASTNode STPMgr::LiftSourceValue(const ASTNode& carrier,
           carrier.GetValueWidth() != source_sort.bitVectorWidth())
         FatalError("LiftSourceValue: invalid bitvector carrier: ", carrier);
       return carrier;
+    case SourceSort::Kind::Uninterpreted:
+      // Returned unchanged, like a bit-vector and unlike a float or a rounding
+      // mode: bit equality on the carrier *is* this sort's equality, so the
+      // carrier pattern is the element and there is nothing to lift it into.
+      // Which element of the sort a given pattern denotes is a question for the
+      // printer, not for this function.
+      if (carrier.GetKind() != BVCONST ||
+          carrier.GetValueWidth() != source_sort.packedWidth())
+        FatalError("LiftSourceValue: invalid uninterpreted-sort carrier: ",
+                   carrier);
+      return carrier;
     default:
       FatalError("LiftSourceValue: cannot lift this source sort");
   }

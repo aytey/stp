@@ -33,9 +33,24 @@ using std::endl;
 // This function prints the output of the STP solver
 void ToSATBase::PrintOutput(STPMgr* bm, SOLVER_RETURN_TYPE ret)
 {
-  if (ret == SOLVER_TIMEOUT || ret == SOLVER_UNDECIDED)
+  if (ret == SOLVER_TIMEOUT || ret == SOLVER_UNDECIDED ||
+      ret == SOLVER_UNKNOWN)
   {
-    cout << "Timed Out." << endl;
+    // SMT-LIB has a word for this and it is not "Timed Out.": a caller cannot
+    // act on prose, and the clock is only one of the reasons there may be no
+    // answer. Which reason it was is (get-info :reason-unknown)'s job. The
+    // legacy CVC output keeps its own wording, where no such command exists.
+    if (bm->UserFlags.smtlib1_parser_flag || bm->UserFlags.smtlib2_parser_flag)
+    {
+      if (bm->UserFlags.print_output_flag)
+        cout << "unknown" << endl;
+    }
+    else
+      cout << "Timed Out." << endl;
+    // A timeout that reached here without saying why is the clock; anything
+    // else records its own reason before returning.
+    if (bm->unknown_reason == UnknownReason::None)
+      bm->noteUnknown(UnknownReason::Timeout);
     return;
   }
 

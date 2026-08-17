@@ -236,20 +236,6 @@ bool Cpp_interface::lookupSortAlias(const std::string& name,
   return true;
 }
 
-void Cpp_interface::noteDeclaredSortCarrier(const SourceSort& sort)
-{
-  if (!isDeclaredSortCarrier(sort))
-    declared_sort_carriers.push_back(sort);
-}
-
-bool Cpp_interface::isDeclaredSortCarrier(const SourceSort& sort) const
-{
-  for (const SourceSort& carrier : declared_sort_carriers)
-    if (carrier == sort)
-      return true;
-  return false;
-}
-
 void Cpp_interface::addSortAlias(const std::string& name, unsigned exp_width,
                                  unsigned sig_width)
 {
@@ -979,6 +965,7 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   session_touched = true;
 
   bm.GetRunTimes()->stop(RunTimes::Parsing);
+  bm.clearUnknown();
 
   // Bracket the solve so (get-info :all-statistics) can report on this check
   // alone. Taken here rather than at entry so the parse that preceded the
@@ -987,6 +974,39 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
 
   checkInvariant();
   assert(assertionsSMT2.size() == cache.size());
+
+  // A sort declared by declare-sort is unbounded and its carrier is not, so a
+  // query naming more terms of one sort than the carrier can tell apart may be
+  // unsatisfiable in the encoding while being satisfiable in the theory. Only
+  // unsat can be wrong that way: every carrier pattern denotes an element and
+  // bit equality on the carrier is the sort's equality, so any satisfying
+  // carrier assignment is a genuine model. An unsound unsat is also the one
+  // answer a caller cannot tell from a real refutation, so neither verdict may
+  // be reported and the answer is `unknown` with a reason that says which sort
+  // ran out and what to raise.
+  //
+  // Checked here rather than in either engine because both are reachable from
+  // this one funnel and the question is about the input, not about how it would
+  // have been solved. Conservative by construction: it counts terms, not terms
+  // forced apart, so a query with more terms than capacity that is
+  // unsatisfiable for unrelated reasons is refused too. At the default width it
+  // cannot fire on anything writable -- it takes 65537 terms of one sort.
+  {
+    std::string exhausted;
+    if (sortCarrierExhausted(assertionsSMT2, exhausted))
+    {
+      bm.noteUnknown(UnknownReason::Incomplete, exhausted);
+      cache.back() = Entry(SOLVER_UNKNOWN);
+      cache.back().node_number = assertionsSMT2.back().GetNodeNum();
+      model_valid = false;
+      ToSATBase::PrintOutput(&bm, SOLVER_UNKNOWN);
+      // Every path out of this function owes the parse timer its restart: the
+      // caller stops it once more when the file ends, and an unbalanced stack
+      // is a crash rather than a bad number.
+      bm.GetRunTimes()->start(RunTimes::Parsing);
+      return;
+    }
+  }
 
   Entry& last_run = cache.back();
   if ((last_run.node_number != assertionsSMT2.back().GetNodeNum()) &&
@@ -1436,16 +1456,89 @@ void Cpp_interface::getInfo(std::string flag)
     cout << "(:assertion-stack-levels "
          << (frames.size() > 0 ? frames.size() - 1 : 0) << ")" << endl;
   }
+  else if (flag == "reason-unknown")
+  {
+    // Only meaningful after an answer of `unknown`, which is the one case
+    // SMT-LIB defines it for. Asked at any other time the honest answer is
+    // that there is no unknown to explain, and saying so beats inventing a
+    // reason or reporting the flag as unsupported when it is implemented.
+    switch (bm.unknown_reason)
+    {
+      case UnknownReason::Timeout:
+        cout << "(:reason-unknown timeout)" << endl;
+        break;
+      case UnknownReason::Incomplete:
+        // The predefined SMT-LIB spelling, followed by what was incomplete:
+        // the flag admits an s-expression, and a bare "incomplete" tells a
+        // caller nothing they can act on.
+        cout << "(:reason-unknown (incomplete \"" << bm.unknown_detail
+             << "\"))" << endl;
+        break;
+      case UnknownReason::None:
+        cout << "(:reason-unknown (error \"the last answer was not "
+                "unknown\"))" << endl;
+        break;
+    }
+  }
   else
   {
-    // :reason-unknown, the one standard flag left, is optional and not
-    // reported: STP does not answer unknown, so there is never a reason to
-    // give for one.
     unsupported();
     return;
   }
 
   flush(cout);
+}
+
+// Terms of one declared sort, counted per sort, against what its carrier can
+// hold. See the caller for why the answer is no answer.
+bool Cpp_interface::sortCarrierExhausted(const ASTVec& assertions,
+                                         std::string& detail) const
+{
+  if (!bm.UserFlags.enable_uninterpreted_functions)
+    return false;
+
+  // Only the nodes carrying a sort of their own are counted. Everything else
+  // derives its sort from its width, so it is a bit-vector by the time it is
+  // asked and could not be attributed to a declared sort anyway.
+  std::map<unsigned, uint64_t> named;
+  std::map<unsigned, unsigned> widths;
+  ASTNodeSet visited;
+  std::vector<ASTNode> pending(assertions.begin(), assertions.end());
+  while (!pending.empty())
+  {
+    const ASTNode current = pending.back();
+    pending.pop_back();
+    if (current.IsNull() || !visited.insert(current).second)
+      continue;
+    const SourceSort sort = current.GetSourceSort();
+    if (sort.kind() == SourceSort::Kind::Uninterpreted)
+    {
+      named[sort.uninterpretedId()] += 1;
+      widths[sort.uninterpretedId()] = sort.packedWidth();
+    }
+    for (size_t i = 0; i < current.Degree(); ++i)
+      pending.push_back(current[i]);
+  }
+
+  for (const std::pair<const unsigned, uint64_t>& entry : named)
+  {
+    const unsigned width = widths[entry.first];
+    if (width >= 64)
+      continue; // a carrier that wide holds more elements than can be named
+    const uint64_t capacity = (uint64_t)1 << width;
+    if (entry.second <= capacity)
+      continue;
+    std::ostringstream message;
+    message << "the query names " << entry.second << " terms of sort "
+            << uninterpretedSortName(entry.first)
+            << ", and --uf-sort-width=" << width
+            << " tells only " << capacity
+            << " elements of it apart; raise --uf-sort-width to at least "
+            << entry.second;
+    detail = message.str();
+    return true;
+  }
+  return false;
 }
 
 void Cpp_interface::getAssertions()

@@ -5,10 +5,6 @@ namespace stp
 
 const char* UFSignature::supportedSortsPhrase()
 {
-  // A sort introduced by declare-sort reaches the signature as the bit-vector
-  // carrier it was given, so it needs no case of its own in isSupportedSort --
-  // but it does need naming here, or the report tells a script that has just
-  // declared one that its sort is not among those supported.
   return "only Bool, RoundingMode, FloatingPoint, nonzero-width bit-vector "
          "sorts and sorts introduced by declare-sort are supported";
 }
@@ -25,9 +21,19 @@ bool UFSignature::isSupportedSort(const SourceSort& sort)
   // FloatingPoint is admitted on the opposite basis: its carrier's
   // bit-equality is *not* its equality, so it is never solved at its own
   // sort. See loweringSort.
+  //
+  // A sort declared by declare-sort is in RoundingMode's camp, not
+  // FloatingPoint's: equality is its only operation and bit equality on its
+  // carrier is exactly that, so it too is solved at its own sort. It differs
+  // from RoundingMode in the direction of the inequality between sort and
+  // carrier -- RoundingMode has more carrier patterns than elements and is
+  // pinned to the legal ones, while a declared sort is unbounded and has more
+  // elements than any carrier -- which is why there is no pin to write here
+  // and why the carrier's capacity is a separate problem.
   if (sort.kind() == SourceSort::Kind::Bool ||
       sort.kind() == SourceSort::Kind::RoundingMode ||
-      sort.kind() == SourceSort::Kind::FloatingPoint)
+      sort.kind() == SourceSort::Kind::FloatingPoint ||
+      sort.kind() == SourceSort::Kind::Uninterpreted)
     return true;
   return sort.kind() == SourceSort::Kind::BitVector &&
          sort.bitVectorWidth() > 0;
@@ -35,6 +41,12 @@ bool UFSignature::isSupportedSort(const SourceSort& sort)
 
 SourceSort UFSignature::loweringSort(const SourceSort& sort)
 {
+  // Only FloatingPoint is quotiented onto its carrier, and only because its
+  // carrier's bit-equality is not its equality. Everything else is solved at
+  // its own sort -- a declared sort included, deliberately: erasing it here
+  // would put a sort-losing step in the middle of the pipeline, after which
+  // the sort is re-derived from the value width as a bit-vector and the model
+  // can no longer be printed at the sort the query asked about.
   if (sort.kind() == SourceSort::Kind::FloatingPoint)
     return SourceSort::bitVector(sort.packedWidth());
   return sort;

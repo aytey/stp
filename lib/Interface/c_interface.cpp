@@ -3496,6 +3496,13 @@ Type vc_getType(VC vc, Expr ex)
                          scalar.significandWidth());
       case stp::SourceSort::Kind::RoundingMode:
         return vc_fpRoundingModeType(vc);
+      case stp::SourceSort::Kind::Uninterpreted:
+        // No Type stands for a declared sort, and the C API cannot declare
+        // one, so this is unreachable rather than unimplemented. Named so it
+        // stays unreachable: reporting the carrier here would hand a caller a
+        // bit-vector type for a sort that deliberately is not one.
+        stp::FatalError("c_interface: vc_getType: a sort declared by "
+                        "declare-sort has no C API type");
       default:
         stp::FatalError("c_interface: vc_GetType: expected scalar sort");
     }
@@ -3670,6 +3677,12 @@ type_t getType(Expr ex)
       return FLOATINGPOINT_TYPE;
     case stp::SourceSort::Kind::RoundingMode:
       return ROUNDINGMODE_TYPE;
+    case stp::SourceSort::Kind::Uninterpreted:
+      // type_t has no enumerator for a sort declared by declare-sort, and
+      // adding one changes a public enum. Unknown is the honest answer and is
+      // also unreachable today, since the C API cannot declare such a sort;
+      // stated as its own arm so it is a decision rather than a fall-through.
+      return UNKNOWN_TYPE;
     default:
       return UNKNOWN_TYPE;
   }

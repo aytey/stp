@@ -142,6 +142,26 @@ public:
 
   bool soft_timeout_expired;
 
+  // Why the last solve had no answer, and the sentence to give a caller who
+  // asks. Recorded rather than derived because the two reasons are produced in
+  // different places -- the clock anywhere in the pipeline, incompleteness
+  // before it starts -- and only one of them has anything to say beyond its
+  // name. Cleared at the top of every solve.
+  UnknownReason unknown_reason = UnknownReason::None;
+  std::string unknown_detail;
+
+  void noteUnknown(UnknownReason reason, const std::string& detail = "")
+  {
+    unknown_reason = reason;
+    unknown_detail = detail;
+  }
+
+  void clearUnknown()
+  {
+    unknown_reason = UnknownReason::None;
+    unknown_detail.clear();
+  }
+
   // No nodes should already have the iteration number that is returned from
   // here. This never returns zero.
   uint8_t getNextIteration()
