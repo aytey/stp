@@ -287,7 +287,9 @@ PositionVerdict comparePosition(NodeFactory* factory, const ASTNode& left,
 // that already attaches naming definitions, a persistent block inherits its
 // guard with no new guard logic, and ordinary preprocessing gets to simplify
 // or delete constraints whose results nothing constrains.
-void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
+void UFLowering::installEagerCongruence(
+    LoweredApplicationView& view,
+    const std::set<const UFDecl*>& injectable) const
 {
   typedef UserDefinedFlags::UFEagerMode Mode;
   const Mode mode = manager_->UserFlags.uf_eager_mode;
@@ -454,16 +456,21 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
         const ASTNode conclusion = factory->CreateNode(
             signature.codomain().kind() == SourceSort::Kind::Bool ? IFF : EQ,
             left.resultSymbol, right.resultSymbol);
-        // Two distinct handles whose actuals all lowered to the same scalars
-        // are unconditionally congruent, so the implication collapses.
+        const ASTNode premiseConj =
+            premise.empty()
+                ? ASTNode()
+                : premise.size() == 1
+                      ? premise[0]
+                      : factory->CreateNode(AND, premise);
         view.congruenceConstraints.push_back(
             premise.empty()
                 ? conclusion
-                : factory->CreateNode(IMPLIES,
-                                      premise.size() == 1
-                                          ? premise[0]
-                                          : factory->CreateNode(AND, premise),
-                                      conclusion));
+                : factory->CreateNode(IMPLIES, premiseConj, conclusion));
+
+        if (!premise.empty() &&
+            injectable.count(candidate.second) != 0)
+          view.congruenceConstraints.push_back(
+              factory->CreateNode(IMPLIES, conclusion, premiseConj));
       }
   }
 }
@@ -541,7 +548,8 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
   // cutting the AIG cost of every congruence constraint from O(width) to
   // O(log N).
   NarrowAnalysis narrowing;
-  if (manager_->UserFlags.uf_narrow_results)
+  if (manager_->UserFlags.uf_narrow_results ||
+      manager_->UserFlags.uf_inject_args)
     narrowing = analyzeNarrowability(publicRoot, context);
 
   // A name is canonical per lowered expression, matching the reference
@@ -826,7 +834,15 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
     if (!record.observableArguments)
       record.namedActuals.clear();
 
-  installEagerCongruence(view);
+  std::set<const UFDecl*> injectable;
+  if (manager_->UserFlags.uf_inject_args)
+  {
+    for (const auto& entry : narrowing.applicationCount)
+      if (narrowing.nonNarrowable.count(entry.first) == 0)
+        injectable.insert(entry.first);
+  }
+
+  installEagerCongruence(view, injectable);
   reportEagerCongruence(view);
 
   // This checks the whole barrier once, including the naming definitions.

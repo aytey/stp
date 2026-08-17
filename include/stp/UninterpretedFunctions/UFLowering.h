@@ -8,6 +8,7 @@
 #include "stp/UninterpretedFunctions/UFDecl.h"
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -187,7 +188,9 @@ public:
 private:
   // Fills view.congruenceConstraints for the declarations the eager policy
   // selects. A no-op in the reference profile.
-  void installEagerCongruence(LoweredApplicationView& view) const;
+  void installEagerCongruence(
+      LoweredApplicationView& view,
+      const std::set<const UFDecl*>& injectable) const;
 
   // Prints view.eagerStats under -s. Called once per lowering, so a persistent
   // solve reports the decision it took for each block.

@@ -356,6 +356,11 @@ void ExtraMain::create_options()
            "equality to ceil(log2(N+1)) bits, cutting the AIG cost of each "
            "congruence constraint from O(width) to O(log N)",
            refinement_group);
+  bool_arg("--uf-inject-args", bm->UserFlags.uf_inject_args,
+           "assert injectivity for equality-only UF declarations in the "
+           "eager congruence encoding, giving the SAT solver bidirectional "
+           "propagation between argument and result equalities",
+           refinement_group);
 
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,

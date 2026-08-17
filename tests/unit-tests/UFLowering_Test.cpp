@@ -231,3 +231,43 @@ TEST(UFLowering, NonEqualityUseBlocksNarrowing)
         << "result of " << record.durableHandle
         << " should NOT have been narrowed";
 }
+
+TEST(UFLowering, InjectArgsAddsReverseImplications)
+{
+  STPMgr manager;
+  manager.UserFlags.enable_uninterpreted_functions = true;
+  manager.UserFlags.uf_narrow_results = false;
+  manager.UserFlags.uf_inject_args = true;
+  UFContext* const context = manager.getUFContext();
+  const SourceSort bv8 = SourceSort::bitVector(8);
+  std::string diagnostic;
+  const UFDecl* const f =
+      context->declareFunction("f", {bv8}, bv8, &diagnostic);
+  ASSERT_NE(nullptr, f) << diagnostic;
+
+  NodeFactory* const factory = manager.defaultNodeFactory;
+  const ASTNode a = manager.CreateSourceSymbol("a", bv8);
+  const ASTNode b = manager.CreateSourceSymbol("b", bv8);
+  const ASTNode fa = context->apply(f, {a}, &diagnostic);
+  const ASTNode fb = context->apply(f, {b}, &diagnostic);
+  ASSERT_FALSE(fa.IsNull()) << diagnostic;
+  ASSERT_FALSE(fb.IsNull()) << diagnostic;
+
+  const ASTNode root = factory->CreateNode(EQ, fa, fb);
+
+  UFLowering lowerer(&manager);
+  const LoweredApplicationView viewWith =
+      lowerer.lowerCompletedRoot(root, UFSolveScope::batch(60));
+
+  manager.UserFlags.uf_inject_args = false;
+  const ASTNode fa2 = context->apply(f, {a}, &diagnostic);
+  const ASTNode fb2 = context->apply(f, {b}, &diagnostic);
+  const ASTNode root2 = factory->CreateNode(EQ, fa2, fb2);
+  UFLowering lowerer2(&manager);
+  const LoweredApplicationView viewWithout =
+      lowerer2.lowerCompletedRoot(root2, UFSolveScope::batch(61));
+
+  EXPECT_GT(viewWith.congruenceConstraints.size(),
+            viewWithout.congruenceConstraints.size())
+      << "inject-args should add reverse implications";
+}

@@ -279,6 +279,14 @@ public:
   // declaration. Enabled by default; set to false if it causes trouble.
   bool uf_narrow_results = true;
 
+  // For declarations whose results appear only in equality contexts, add
+  // the reverse implication (= result_i result_j) => (= arg_i arg_j) in
+  // the eager congruence encoding. This asserts injectivity, giving the
+  // SAT solver bidirectional propagation between argument and result
+  // equalities. Sound when the function is injective in every satisfying
+  // assignment; may produce spurious UNSAT otherwise.
+  bool uf_inject_args = false;
+
   // Replace a (distinct x1 ... xn) whose operands are variables occurring
   // nowhere else with the strict chain x1 < x2 < ... < xn. Every permutation
   // of such operands maps the formula to itself, so fixing one of the n!
