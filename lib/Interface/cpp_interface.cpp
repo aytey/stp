@@ -1496,7 +1496,18 @@ void Cpp_interface::getInfo(std::string flag)
         // Two shapes reach here: no unknown to explain, and an unknown whose
         // producer recorded no reason. Told apart by the verdict, because
         // answering "not unknown" after an unknown would be a plain lie.
-        if (cache.size() > 0 && cache.back().result == SOLVER_UNKNOWN)
+        //
+        // Every verdict that prints `unknown` counts, and SOLVER_UNKNOWN is
+        // not the only one: PrintOutput prints it for SOLVER_TIMEOUT too, and
+        // a no-answer that gave up somewhere with no budget of its own to
+        // name -- the simplifier abandoning a round on the clock, or the
+        // incremental driver, which does not record a reason -- lands here
+        // holding exactly that. SOLVER_UNDECIDED is deliberately not here: it
+        // is what the cache holds before a level has been solved and what a
+        // stale entry is reset to, so admitting it would answer for a
+        // check-sat that never ran.
+        if (cache.size() > 0 && (cache.back().result == SOLVER_UNKNOWN ||
+                                 cache.back().result == SOLVER_TIMEOUT))
           cout << "(:reason-unknown unknown)" << endl;
         else
           cout << "(:reason-unknown (error \"the last answer was not "
