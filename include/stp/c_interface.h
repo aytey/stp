@@ -238,7 +238,82 @@ enum ifaceflag_t
   //!
   //! Note: appended so the values of the flags above are unchanged.
   //!
-  INCREMENTAL_AUTO_ENGAGE_AT
+  INCREMENTAL_AUTO_ENGAGE_AT,
+
+  //! Narrow the result sort of a UF declaration whose applications are only
+  //! ever compared for equality, to ceil(log2(N)) bits, where N is how many
+  //! applications the query has.
+  //!
+  //! `param_value` nonzero enables (the default), zero disables. This is the
+  //! C API's way to reach --uf-narrow-results. The analysis is conservative:
+  //! any non-equality use of an application leaves that declaration at its
+  //! declared width, so the narrowing is invisible to a caller -- a model
+  //! value still reads back at the declared sort.
+  //!
+  //! Set this before the query it should apply to; it is read while the
+  //! query's applications are lowered, not when a declaration is registered.
+  //!
+  //! Note: appended so the values of the flags above are unchanged.
+  //!
+  UF_NARROW_RESULTS,
+
+  //! Assert injectivity for equality-only UF declarations in the eager
+  //! congruence encoding, so that equal results force equal arguments.
+  //!
+  //! `param_value` nonzero enables, zero disables (the default). This is the
+  //! C API's way to reach --uf-inject-args.
+  //!
+  //! This is an under-approximation, not a sound default: it is faithful only
+  //! when the function is injective in every satisfying assignment, and can
+  //! report unsat for a satisfiable query otherwise. Enable it for a query
+  //! known to be that shape, or to exercise the encoding.
+  //!
+  //! Set this before the query it should apply to, as for UF_NARROW_RESULTS.
+  //!
+  UF_EQUALITY_INJECTIVITY,
+
+  //! Replace a bit-vector equality between two symbols with a fresh Boolean
+  //! during bit-blasting, refining it lazily via CEGAR.
+  //!
+  //! `param_value` nonzero enables, zero disables (the default). This is the
+  //! C API's way to reach --bv-eq-abstraction. Only equalities at least
+  //! BV_EQ_ABSTRACTION_WIDTH bits wide are abstracted.
+  //!
+  //! Set this before the query it should apply to; it is read while the query
+  //! is bit-blasted.
+  //!
+  BV_EQ_ABSTRACTION,
+
+  //! The narrowest bit-vector width at which BV_EQ_ABSTRACTION and
+  //! BV_TERM_ABSTRACTION engage (default 64).
+  //!
+  //! `param_value` is that width. One abstracts every candidate; a width
+  //! wider than any term in the query leaves the query unabstracted. A
+  //! negative value is refused with a nonfatal diagnostic and leaves the
+  //! width unchanged, because the flag it sets is unsigned and would
+  //! otherwise wrap to a width nothing can reach.
+  //!
+  BV_EQ_ABSTRACTION_WIDTH,
+
+  //! The initial prefix width refined when an abstracted equality is found
+  //! inconsistent with the candidate model (default 0: refine the whole
+  //! width at once).
+  //!
+  //! `param_value` is that width; each further refinement of the same
+  //! equality doubles it, up to the equality's width. A negative value is
+  //! refused with a nonfatal diagnostic, as for BV_EQ_ABSTRACTION_WIDTH.
+  //!
+  BV_EQ_REFINE_WIDTH,
+
+  //! Abstract wide bit-vector arithmetic and comparisons (BVPLUS, BVMULT,
+  //! BVDIV, BVMOD, the inequalities and ITE) during bit-blasting, refining
+  //! lazily via CEGAR.
+  //!
+  //! `param_value` nonzero enables, zero disables (the default). This is the
+  //! C API's way to reach --bv-term-abstraction. It shares the width floor
+  //! set by BV_EQ_ABSTRACTION_WIDTH.
+  //!
+  BV_TERM_ABSTRACTION
 
 };
 
