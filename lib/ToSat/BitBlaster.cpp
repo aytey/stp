@@ -1049,7 +1049,32 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         const BBNodeVec& left = BBTerm(term[0], support);
         const BBNodeVec& right = BBTerm(term[1], support);
 
-        if (allBBNodesAreCIs(left) && allBBNodesAreCIs(right))
+        ASTNode realOp[2] = {term[0], term[1]};
+        bool negated[2] = {false, false};
+        const BBNodeVec* opVecs[2] = {&left, &right};
+
+        for (int i = 0; i < 2; i++)
+        {
+          if (realOp[i].GetKind() == BVUMINUS &&
+              realOp[i].Degree() == 1)
+          {
+            ASTNode inner = realOp[i][0];
+            auto memo = BBTermMemo.find(inner);
+            if (memo != BBTermMemo.end() && allBBNodesAreCIs(memo->second))
+            {
+              realOp[i] = inner;
+              negated[i] = true;
+              opVecs[i] = &memo->second;
+            }
+          }
+        }
+
+        bool eligible[2];
+        for (int i = 0; i < 2; i++)
+          eligible[i] = allBBNodesAreCIs(*opVecs[i]) ||
+                        realOp[i].GetKind() == BVCONST;
+
+        if (eligible[0] && eligible[1] && !(negated[0] && negated[1]))
         {
           BBNodeVec abstracted(num_bits);
           for (unsigned i = 0; i < num_bits; i++)
@@ -1058,12 +1083,21 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
             abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
           }
           nf->symbolToBBNode[term] = abstracted;
-          if (nf->symbolToBBNode.find(term[0]) == nf->symbolToBBNode.end())
-            nf->symbolToBBNode[term[0]] = left;
-          if (nf->symbolToBBNode.find(term[1]) == nf->symbolToBBNode.end())
-            nf->symbolToBBNode[term[1]] = right;
-          abstractedTerms_.push_back(
-              {term, BVPLUS, {term[0], term[1], ASTNode()}, 2, num_bits});
+          for (int i = 0; i < 2; i++)
+            if (realOp[i].GetKind() != BVCONST &&
+                nf->symbolToBBNode.find(realOp[i]) == nf->symbolToBBNode.end())
+              nf->symbolToBBNode[realOp[i]] = *opVecs[i];
+          RawBVTermAbstraction raw;
+          raw.termNode = term;
+          raw.opKind = BVPLUS;
+          raw.operands[0] = realOp[0];
+          raw.operands[1] = realOp[1];
+          raw.operands[2] = ASTNode();
+          raw.numOperands = 2;
+          raw.width = num_bits;
+          raw.operandNegated[0] = negated[0];
+          raw.operandNegated[1] = negated[1];
+          abstractedTerms_.push_back(raw);
           result = abstracted;
           break;
         }

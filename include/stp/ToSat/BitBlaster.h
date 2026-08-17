@@ -345,6 +345,7 @@ public:
     ASTNode operands[3];
     unsigned numOperands;
     unsigned width;
+    bool operandNegated[3] = {false, false, false};
   };
 
 private:

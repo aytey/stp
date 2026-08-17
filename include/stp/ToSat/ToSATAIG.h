@@ -88,6 +88,7 @@ private:
     ASTNode operands[3];
     unsigned numOperands;
     unsigned width;
+    bool operandNegated[3] = {false, false, false};
     bool defined = false;
   };
   std::vector<BVTermAbstraction> bvTermAbstractions_;

@@ -303,4 +303,65 @@ TEST_F(BVEQAbstractionTest, BVPLUSAbstractionUnsatResult)
   EXPECT_EQ(SOLVER_VALID, result);
 }
 
+TEST_F(BVEQAbstractionTest, BVPLUSSubtractionAbstraction)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  // x - y = z (encoded as x + (-y) = z) is SAT
+  ASTNode x = makeSymbol("sub_x", 256);
+  ASTNode y = makeSymbol("sub_y", 256);
+  ASTNode z = makeSymbol("sub_z", 256);
+  ASTNode negY = factory->CreateTerm(BVUMINUS, 256, y);
+  ASTNode diff = factory->CreateTerm(BVPLUS, 256, x, negY);
+  ASTNode eq = factory->CreateNode(EQ, diff, z);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, BVPLUSSubtractionUnsatResult)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  // x - y = z AND x = z AND y != 0 → UNSAT (forces y = 0 but y ≠ 0)
+  ASTNode x = makeSymbol("subu_x", 256);
+  ASTNode y = makeSymbol("subu_y", 256);
+  ASTNode z = makeSymbol("subu_z", 256);
+  ASTNode negY = factory->CreateTerm(BVUMINUS, 256, y);
+  ASTNode diff = factory->CreateTerm(BVPLUS, 256, x, negY);
+  ASTNode eqDiffZ = factory->CreateNode(EQ, diff, z);
+  ASTNode eqXZ = factory->CreateNode(EQ, x, z);
+  ASTNode yNeq0 = factory->CreateNode(NOT,
+      factory->CreateNode(EQ, y, mgr.CreateBVConst(256, 0)));
+  ASTNode formula = factory->CreateNode(AND,
+      factory->CreateNode(AND, eqDiffZ, eqXZ), yNeq0);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_VALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, BVPLUSConstantOperandAbstraction)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  // x + 1 = y is SAT
+  ASTNode x = makeSymbol("ca_x", 256);
+  ASTNode y = makeSymbol("ca_y", 256);
+  ASTNode one = mgr.CreateBVConst(256, 1);
+  ASTNode sum = factory->CreateTerm(BVPLUS, 256, x, one);
+  ASTNode eq = factory->CreateNode(EQ, sum, y);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
+
 } // namespace

@@ -176,7 +176,10 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
       a.termNode = raw.termNode;
       a.opKind = raw.opKind;
       for (unsigned i = 0; i < raw.numOperands; i++)
+      {
         a.operands[i] = raw.operands[i];
+        a.operandNegated[i] = raw.operandNegated[i];
+      }
       a.numOperands = raw.numOperands;
       a.width = raw.width;
       bvTermAbstractions_.push_back(std::move(a));
@@ -574,6 +577,53 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
   return refined;
 }
 
+static bool getOperandBits(
+    const ASTNode& operand, unsigned width,
+    const ToSATBase::ASTNodeToSATVar& nodeToSATVar, SATSolver& solver,
+    std::vector<bool>& bits)
+{
+  bits.resize(width);
+  if (operand.GetKind() == BVCONST)
+  {
+    CBV val = operand.GetBVConst();
+    for (unsigned i = 0; i < width; ++i)
+      bits[i] = CONSTANTBV::BitVector_bit_test(val, i);
+    return true;
+  }
+  auto it = nodeToSATVar.find(operand);
+  if (it == nodeToSATVar.end()) return false;
+  const std::vector<unsigned>& satVars = it->second;
+  for (unsigned i = 0; i < width; ++i)
+    bits[i] = (solver.modelValue(satVars[i]) == solver.true_literal());
+  return true;
+}
+
+static bool getOperandVars(
+    const ASTNode& operand, unsigned width,
+    const ToSATBase::ASTNodeToSATVar& nodeToSATVar, SATSolver& solver,
+    std::vector<unsigned>& vars)
+{
+  vars.resize(width);
+  if (operand.GetKind() == BVCONST)
+  {
+    CBV val = operand.GetBVConst();
+    for (unsigned i = 0; i < width; ++i)
+    {
+      vars[i] = solver.newVar();
+      solver.setFrozen(vars[i]);
+      SATSolver::vec_literals cl;
+      cl.push(SATSolver::mkLit(vars[i],
+              !CONSTANTBV::BitVector_bit_test(val, i)));
+      solver.addClause(cl);
+    }
+    return true;
+  }
+  auto it = nodeToSATVar.find(operand);
+  if (it == nodeToSATVar.end()) return false;
+  vars = it->second;
+  return true;
+}
+
 unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
 {
   unsigned refined = 0;
@@ -589,19 +639,24 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
 
     if (abs.opKind == BVPLUS)
     {
-      auto leftIt = nodeToSATVar.find(abs.operands[0]);
-      auto rightIt = nodeToSATVar.find(abs.operands[1]);
-      if (leftIt == nodeToSATVar.end() || rightIt == nodeToSATVar.end())
+      std::vector<bool> leftBits, rightBits;
+      if (!getOperandBits(abs.operands[0], abs.width, nodeToSATVar,
+                          solver, leftBits))
         continue;
-      const std::vector<unsigned>& leftVars = leftIt->second;
-      const std::vector<unsigned>& rightVars = rightIt->second;
+      if (!getOperandBits(abs.operands[1], abs.width, nodeToSATVar,
+                          solver, rightBits))
+        continue;
 
-      bool carry = false;
+      const bool lNeg = abs.operandNegated[0];
+      const bool rNeg = abs.operandNegated[1];
+      const bool carryInit = (lNeg != rNeg);
+
+      bool carry = carryInit;
       bool consistent = true;
       for (unsigned bit = 0; bit < abs.width; ++bit)
       {
-        bool l = (solver.modelValue(leftVars[bit]) == solver.true_literal());
-        bool r = (solver.modelValue(rightVars[bit]) == solver.true_literal());
+        bool l = leftBits[bit] ^ lNeg;
+        bool r = rightBits[bit] ^ rNeg;
         bool s = (solver.modelValue(resultVars[bit]) == solver.true_literal());
         bool expectedSum = l ^ r ^ carry;
         carry = (l && r) || (l && carry) || (r && carry);
@@ -614,12 +669,19 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
       if (consistent)
         continue;
 
-      // Encode ripple-carry adder: carry_0 = false
+      std::vector<unsigned> leftVars, rightVars;
+      if (!getOperandVars(abs.operands[0], abs.width, nodeToSATVar,
+                          solver, leftVars))
+        continue;
+      if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar,
+                          solver, rightVars))
+        continue;
+
       unsigned carryVar = solver.newVar();
       solver.setFrozen(carryVar);
       {
         SATSolver::vec_literals cl;
-        cl.push(SATSolver::mkLit(carryVar, true));
+        cl.push(SATSolver::mkLit(carryVar, !carryInit));
         solver.addClause(cl);
       }
 
@@ -631,28 +693,28 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
         unsigned c = carryVar;
         SATSolver::vec_literals cl;
 
-        // sum ⟺ l ⊕ r ⊕ c  (8 clauses)
-        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        // s ⟺ l' ⊕ r' ⊕ c where l' = l^lNeg, r' = r^rNeg
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
 
-        // carry out: newCarry ⟺ MAJ(l, r, c)  (6 clauses, skip last bit)
         if (bit < abs.width - 1)
         {
           unsigned nc = solver.newVar();
           solver.setFrozen(nc);
 
-          cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+          // nc ⟺ MAJ(l', r', c)
+          cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
 
           carryVar = nc;
         }
