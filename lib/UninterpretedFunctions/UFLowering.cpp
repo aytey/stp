@@ -3,6 +3,7 @@
 #include "stp/STPManager/STPManager.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/Util/DagWalk.h"
+#include <algorithm>
 #include <iostream>
 
 namespace stp
@@ -116,9 +117,23 @@ bool hasFloatingPointPosition(const UFSignature& signature)
 // Two all-constant applications are never charged, in a part or out of one,
 // because they are either the same hash-consed handle or differ somewhere and
 // are dropped.
+//
+// That last sentence is why a part carries its symbolic records first and says
+// where they end. Being charged nothing is only half of it -- such a pair must
+// not be *walked* either, and skipping it has to mean not iterating it, since a
+// test still costs a loop step and these counts reach billions. Ordering the
+// part is what lets the emit loop take the symbolic prefix as its outer range
+// and get C(symbolic, 2) + constant * symbolic exactly, the estimate term for
+// term.
+struct CongruencePart
+{
+  std::vector<const LoweredApplicationRecord*> records;
+  size_t symbolic = 0;
+};
+
 struct CongruenceGroups
 {
-  std::vector<std::vector<const LoweredApplicationRecord*>> parts;
+  std::vector<CongruencePart> parts;
   uint64_t estimate = 0;
 };
 
@@ -154,20 +169,28 @@ groupForCongruence(const std::vector<const LoweredApplicationRecord*>& records)
     if (found == partIndex.end())
     {
       partIndex.emplace(key, grouped.parts.size());
-      grouped.parts.push_back({record});
+      grouped.parts.push_back(CongruencePart());
+      grouped.parts.back().records.push_back(record);
     }
     else
-      grouped.parts[found->second].push_back(record);
+      grouped.parts[found->second].records.push_back(record);
   }
 
-  for (const std::vector<const LoweredApplicationRecord*>& part : grouped.parts)
+  for (CongruencePart& part : grouped.parts)
   {
-    uint64_t constantArgued = 0;
-    for (const LoweredApplicationRecord* record : part)
-      if (allActualsConstant(*record))
-        constantArgued++;
-    const uint64_t symbolic = part.size() - constantArgued;
-    grouped.estimate += pairsAmong(symbolic) + constantArgued * symbolic;
+    // Symbolic first, all-constant after, and the charge read off the same
+    // split the walk will use. Written as one stable partition rather than
+    // two counts so the two cannot drift: whatever ends up before `symbolic`
+    // is exactly what the emit loop takes as its outer range.
+    const auto boundary = std::stable_partition(
+        part.records.begin(), part.records.end(),
+        [](const LoweredApplicationRecord* record) {
+          return !allActualsConstant(*record);
+        });
+    part.symbolic = (size_t)(boundary - part.records.begin());
+    const uint64_t constantArgued = part.records.size() - part.symbolic;
+    grouped.estimate +=
+        pairsAmong(part.symbolic) + constantArgued * part.symbolic;
   }
   return grouped;
 }
@@ -338,15 +361,27 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
     }
     stat.outcome = UFEagerDeclarationStat::Outcome::Selected;
 
-    // Enumerate within a part only. Pairs drawn from different parts differ at
-    // a position where the loop would see two unequal constants and drop them,
-    // so walking them costs time and can produce nothing -- and since they are
-    // not charged either, walking them would leave the scan unbounded by the
-    // budget for a declaration made of many singleton parts.
+    // Walk exactly what was charged for, and nothing else. Two kinds of pair
+    // are charged nothing because they can produce nothing, and each has to be
+    // skipped by not being iterated rather than by being tested and dropped --
+    // a test still costs a loop step, and the counts here reach billions.
+    //
+    // Across parts: the pair differs at a position where both hold constants.
+    // Within a part, between two all-constant applications: they are either
+    // the same durable handle or they differ somewhere, and where they differ
+    // both hold constants again. The outer range is therefore the part's
+    // symbolic prefix, which makes the walk C(symbolic, 2) + constant *
+    // symbolic -- the estimate, term for term.
+    //
+    // Counting them instead is not a small waste. One part of 60 000
+    // all-constant applications is charged one pair and was enumerated
+    // 1 799 970 001 times, 20.5 s against 1.5 s with the policy off, and it
+    // grew quadratically from there.
     const UFSignature& signature = candidate.second->signature();
-    for (const std::vector<const LoweredApplicationRecord*>& records :
-         groupsByDeclaration[candidate.second].parts)
-    for (size_t i = 0; i < records.size(); ++i)
+    for (const CongruencePart& part : groupsByDeclaration[candidate.second].parts)
+    {
+    const std::vector<const LoweredApplicationRecord*>& records = part.records;
+    for (size_t i = 0; i < part.symbolic; ++i)
       for (size_t j = i + 1; j < records.size(); ++j)
       {
         const LoweredApplicationRecord& left = *records[i];
@@ -396,6 +431,7 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
                                           : factory->CreateNode(AND, premise),
                                       conclusion));
       }
+    }
   }
 }
 
