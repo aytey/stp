@@ -2213,6 +2213,30 @@ function_def_name LPAREN_TOK function_params RPAREN_TOK STRING_TOK an_term
   stp::GlobalParserInterface->deleteNode($6);
 }
 |
+function_def_name LPAREN_TOK RPAREN_TOK STRING_TOK an_term
+{
+  // The zero-arity form of the arm above. It was missing, which is what stopped
+  // a printed model from being read back: the model of a symbol of a declared
+  // sort is exactly a nullary define-fun at that sort.
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$4, resolved))
+  {
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
+  }
+  if ($5->GetSourceSort() != resolved)
+  {
+    fatal_yyerror("define-fun: the body's sort does not match the declared "
+                  "result sort");
+  }
+
+  ASTVec empty;
+  stp::GlobalParserInterface->storeFunction(*$1, empty, *$5);
+
+  delete $1;
+  delete $4;
+  stp::GlobalParserInterface->deleteNode($5);
+}
+|
 function_def_name LPAREN_TOK function_params RPAREN_TOK BOOL_TOK an_formula
 {
   stp::GlobalParserInterface->storeFunction(*$1, *$3, *$6);

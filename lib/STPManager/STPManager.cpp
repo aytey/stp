@@ -555,6 +555,36 @@ bool STPMgr::isRoundingModeSortedTerm(const ASTNode& n) const
   return n.GetSourceSort().kind() == SourceSort::Kind::RoundingMode;
 }
 
+bool STPMgr::isUninterpretedSortedTerm(const ASTNode& n) const
+{
+  return n.GetSourceSort().kind() == SourceSort::Kind::Uninterpreted;
+}
+
+std::string STPMgr::uninterpretedElementName(const SourceSort& sort,
+                                            const ASTNode& carrier)
+{
+  assert(sort.kind() == SourceSort::Kind::Uninterpreted);
+  for (const UninterpretedElement& element : uninterpreted_elements)
+    if (element.sort == sort && element.carrier == carrier)
+      return element.name;
+
+  // Numbered per sort rather than globally, so a model reads as one sort's
+  // elements enumerated from zero and does not change when an unrelated sort
+  // gains an element.
+  size_t ordinal = 0;
+  for (const UninterpretedElement& element : uninterpreted_elements)
+    if (element.sort == sort)
+      ordinal++;
+
+  UninterpretedElement fresh;
+  fresh.sort = sort;
+  fresh.name = uninterpretedSortName(sort.uninterpretedId()) + "!" +
+               std::to_string(ordinal);
+  fresh.carrier = carrier;
+  uninterpreted_elements.push_back(fresh);
+  return fresh.name;
+}
+
 ASTNode STPMgr::arrayBaseSymbol(const ASTNode& arr) const
 {
   ASTNode n = arr;

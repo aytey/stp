@@ -966,6 +966,9 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
 
   bm.GetRunTimes()->stop(RunTimes::Parsing);
   bm.clearUnknown();
+  // Element names belong to one model. Cleared here rather than in getModel so
+  // that get-value and get-model agree within a solve whichever is asked first.
+  bm.clearUninterpretedElements();
 
   // Bracket the solve so (get-info :all-statistics) can report on this check
   // alone. Taken here rather than at entry so the parse that preceded the
@@ -1619,7 +1622,16 @@ void Cpp_interface::getValue(const ASTVec& v)
       os << "( ";
       printer::SMTLIB2_Print1(os, n, 0, false);
       os << " ";
-      printer::SMTLIB2_Print1(os, value, 0, false);
+      // The value is printed at the application's own sort, not by handing the
+      // node to the term printer -- which prints a node and would print an
+      // element of a declared sort as the carrier pattern it is represented
+      // by. The sort is recoverable here: a UF_APPLY's source sort is its
+      // declaration's codomain.
+      if (bm.isUninterpretedSortedTerm(n))
+        os << "|"
+           << bm.uninterpretedElementName(n.GetSourceSort(), value) << "|";
+      else
+        printer::SMTLIB2_Print1(os, value, 0, false);
       os << " )" << std::endl;
       continue;
     }
@@ -1739,9 +1751,36 @@ void Cpp_interface::getModel()
   if (GlobalSTP != NULL && GlobalSTP->hasIncrementalSolver())
     GlobalSTP->getIncrementalSolver()->materializePendingModel();
 
-  cout << "(" << std::endl;
+  // The body is rendered first because rendering it is what names the
+  // elements of any declared sort, and the preamble that declares them has to
+  // come before the definitions that use them.
   std::ostringstream os;
   GlobalSTP->Ctr_Example->PrintFullCounterExampleSMTLIB2(os);
+
+  cout << "(" << std::endl;
+
+  // A model that mentions a sort declared by declare-sort has to say so, or it
+  // cannot be read back: the sort has no elements anyone else knows about. So
+  // it declares the sort, then one constant per element the model mentions,
+  // and the definitions refer to those. Distinct names denote distinct
+  // elements -- the convention every solver's models rest on, and the only
+  // thing this format cannot state outright.
+  std::vector<SourceSort> declared;
+  for (const STPMgr::UninterpretedElement& element : bm.uninterpretedElements())
+  {
+    bool seen = false;
+    for (const SourceSort& already : declared)
+      seen = seen || already == element.sort;
+    if (seen)
+      continue;
+    declared.push_back(element.sort);
+    cout << "(declare-sort " << sourceSortToSMTLib(element.sort) << " 0)"
+         << std::endl;
+  }
+  for (const STPMgr::UninterpretedElement& element : bm.uninterpretedElements())
+    cout << "(declare-fun |" << element.name << "| () "
+         << sourceSortToSMTLib(element.sort) << ")" << std::endl;
+
   cout << os.str();
   cout << ")" << std::endl;
 }
