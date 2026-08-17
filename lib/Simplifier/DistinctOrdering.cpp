@@ -307,6 +307,11 @@ ASTNode applyDistinctOrdering(STPMgr* manager, const ASTNode& root,
         if (node.GetType() == BOOLEAN_TYPE)
           return manager->defaultNodeFactory->CreateNode(node.GetKind(),
                                                          children);
+        // A replacement is a formula, and the one place a formula sits under
+        // a term is an if-then-else condition -- which this pass reads as
+        // both polarities and therefore never rewrites. So no term should
+        // reach here; rebuilding it correctly costs a line and means the
+        // rebuild does not quietly depend on that argument staying true.
         return manager->defaultNodeFactory->CreateArrayTerm(
             node.GetKind(), node.GetIndexWidth(), node.GetValueWidth(),
             children);
