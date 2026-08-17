@@ -169,8 +169,26 @@ void AbsRefine_CounterExample::ConstructCounterExample(
     const ASTNode& symbol = it->first;
     const vector<unsigned>& v = it->second;
 
+    // Not everything the bit-blaster registers here is a symbol. A BV
+    // abstraction replaces a term -- a BVPLUS, BVMULT, BVDIV, BVMOD, ITE or
+    // comparison -- with fresh combinational inputs and keys them by the term
+    // itself, so that refinement can read back the bits the solver chose for
+    // it. Those bits are the abstraction's value; until refinement has ruled
+    // the abstraction out they are not the term's value.
+    //
+    // A model must not carry them, and not merely because the loop below
+    // would take GetValueWidth() off a term. TermToConstTermUsingModel
+    // answers from CounterExampleMap for any term it finds there, so an
+    // abstracted term in the model is handed straight back to the check meant
+    // to test it: ComputeFormulaUsingModel would confirm the candidate from
+    // the abstraction instead of from the symbols underneath it, which is the
+    // one thing that check exists to rule out. Skipping keeps it honest --
+    // the term is recomputed from its operands, and the disagreement that
+    // recomputation finds is what the next refinement round acts on.
+    if (symbol.GetKind() != SYMBOL)
+      continue;
+
     const unsigned int symbolWidth = symbol.GetValueWidth();
-    assert(symbol.GetKind() == SYMBOL);
     vector<bool> bitVector_array(symbolWidth, false);
 
     for (size_t index = 0; index < v.size(); index++)
