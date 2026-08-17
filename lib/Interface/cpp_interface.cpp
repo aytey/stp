@@ -1000,7 +1000,10 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   // this one funnel and the question is about the input, not about how it was
   // solved. Conservative: it counts terms that could need an element of their
   // own, not elements actually forced apart, so an over-capacity query that is
-  // unsatisfiable for unrelated reasons is withheld too.
+  // unsatisfiable for unrelated reasons is withheld too. At the default width
+  // that takes 65537 terms of one sort -- reachable by a generated query, and
+  // measured at 0.27 s, so it is no hand-written query that gets there rather
+  // than none at all.
   std::string carrierExhausted;
   const bool carrierMayBeShort =
       sortCarrierExhausted(assertionsSMT2, carrierExhausted);

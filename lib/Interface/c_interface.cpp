@@ -1329,6 +1329,19 @@ Expr vc_varExpr1(VC vc, const char* name, int indexwidth, int valuewidth)
     return NULL;
   }
 
+  // An array of zero-width elements is not a sort, and SourceSort::bitVector
+  // asserts as much -- which is an abort inside a header on an asserting build
+  // and a zero-width element carried onward without one. vc_bvType already
+  // refuses a zero width by this route; this entrance did not, so the same
+  // precondition was reachable from the C API after the parser and the CLI had
+  // both been closed.
+  if (indexwidth > 0 && valuewidth <= 0)
+  {
+    reportUFAPIError("number of bits in an array's elements must be a "
+                     "positive integer");
+    return NULL;
+  }
+
   stp::SourceSort source_sort;
   if (indexwidth > 0)
     source_sort = stp::SourceSort::array(
