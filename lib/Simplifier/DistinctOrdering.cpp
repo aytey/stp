@@ -89,14 +89,25 @@ bool orderableSymbols(const ASTVec& symbols)
   }
   if (!sort.isKnown())
     return false;
-  // More symbols than the carrier can tell apart. For a bit-vector the parser
-  // has already folded that group to false, so there is nothing here to order
-  // and this arm is unreachable. For a declared sort it is reachable and is the
-  // one case where being fast is the wrong thing to be: the sort is unbounded,
-  // so the capacity is an artefact of the encoding rather than a fact about
-  // the query, and a chain would state an encoding artefact at once where the
-  // clique at least has to be searched for. Neither is right -- see the
-  // carrier-capacity check, which is what actually refuses to answer.
+  // More symbols than the sort can tell apart, which cannot be ordered because
+  // no strictly increasing assignment of them exists.
+  //
+  // The bit-vector arm is the reachable one, which is worth stating because
+  // the obvious reading is the opposite. The parser's cardinality fold tests
+  // the *distinct's operand* sort; this tests the sort of the symbols being
+  // ordered, and on the application form those are the operands' ARGUMENTS.
+  // The two differ, so the fold cannot have already handled it: seventeen
+  // applications of (_ BitVec 4) -> (_ BitVec 16) have seventeen operands in
+  // a sort of 65536, which the fold passes, and seventeen arguments in a sort
+  // of 16, which this refuses. Measured, with no declared sort in the file:
+  // argument width 4 does not answer in 45 s, width 5 is ordered and sat in
+  // 0.08 s. Deleting this arm changes pure bit-vector behaviour.
+  //
+  // The declared-sort arm is now the unreachable one: an over-capacity query
+  // of that shape is refused before any simplifier runs -- see
+  // Cpp_interface::sortCarrierExhausted -- so this never sees one. It stays
+  // because the two tests answer different questions and nothing makes that
+  // ordering permanent.
   const unsigned width = sort.packedWidth();
   if (width < 64 &&
       (uint64_t)symbols.size() > ((uint64_t)1 << width))
