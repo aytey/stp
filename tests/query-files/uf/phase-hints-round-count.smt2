@@ -15,8 +15,14 @@
 ; It is advisory -- a phase moves the search order and nothing else -- so the
 ; verdict is the same either way, which is what the two runs check.
 ;
-; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-phase-hints=1 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=HINTED %s
-; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-phase-hints=0 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=PLAIN %s
+; Distinct ordering is off in both, and not because the two interact badly:
+; this is precisely the shape it recognises, and left on it chains the
+; arguments and removes the collisions the test is measuring, so the
+; unhinted run would find nothing to install either. Turning it off is what
+; leaves the hint as the only thing separating the two runs.
+;
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-phase-hints=1 --distinct-ordering=0 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=HINTED %s
+; RUN: %solver -s --uninterpreted-functions --uf-ackermann=off --uf-phase-hints=0 --distinct-ordering=0 --incremental=off %s 2>&1 | %OutputCheck --check-prefix=PLAIN %s
 ;
 ; HINTED-NOT: installed congruence lemma
 ; HINTED: ^sat$
