@@ -170,6 +170,26 @@ public:
     unknown_detail = detail;
   }
 
+  // Called by whoever just watched this solver give up. Two budgets share the
+  // no-answer exit and they are not the same claim to a caller: the wall
+  // clock may succeed with more time on the same machine, while the conflict
+  // budget is deterministic and will not. The solver is asked which it was
+  // rather than guessed at from the flags -- a zero-second limit and no limit
+  // at all look identical from there, and the first is a clock expiry.
+  //
+  // Lives here rather than in one driver so that every driver answers the
+  // question the same way, and so that the rule below is stated once. An
+  // earlier reason wins: a solve is free to call this on each refinement
+  // round, and a round that gave up for a reason of its own has already said
+  // what that was.
+  void noteBudgetExhausted(const SATSolver& solver)
+  {
+    if (unknown_reason != UnknownReason::None)
+      return;
+    noteUnknown(solver.timeLimitExpired() ? UnknownReason::Timeout
+                                          : UnknownReason::ConflictBudget);
+  }
+
   void clearUnknown()
   {
     unknown_reason = UnknownReason::None;
