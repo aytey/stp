@@ -34,10 +34,14 @@ void printQuotedSymbol(std::ostream& os, const std::string& name)
   os << '|' << name << '|';
 }
 
-void printSort(std::ostream& os, const SourceSort& sort)
+void printSort(std::ostream& os, STPMgr* manager, const SourceSort& sort)
 {
   if (!UFSignature::isSupportedSort(sort))
     FatalError("UF model tried to print an unsupported SourceSort");
+  // A signature is the one way a declared sort reaches a model without any
+  // element of it being named -- a predicate over an opaque sort -- and the
+  // model still has to declare it.
+  manager->noteUninterpretedSortPrinted(sort);
   os << sourceSortToSMTLib(sort);
 }
 
@@ -83,6 +87,15 @@ void printValue(std::ostream& os, STPMgr* manager,
   if (declared.kind() == SourceSort::Kind::FloatingPoint)
   {
     printer::outputFloatingPointSMTLIB2(constant, os, constant);
+    return;
+  }
+  // An element of a declared sort has no literal at all. It gets a name, and
+  // the model's preamble declares it; a carrier pattern here would be a
+  // bit-vector literal where a term of the sort belongs, which is the same
+  // mistake as printing a rounding mode's five bits.
+  if (declared.kind() == SourceSort::Kind::Uninterpreted)
+  {
+    os << '|' << manager->uninterpretedElementName(declared, constant) << '|';
     return;
   }
   printer::outputBitVecSMTLIB2(constant, os);
@@ -485,11 +498,11 @@ void UFModel::printSMTLIB2(std::ostream& os,
       if (i != 0)
         os << ' ';
       os << "(x" << i << ' ';
-      printSort(os, signature.domain()[i]);
+      printSort(os, manager, signature.domain()[i]);
       os << ')';
     }
     os << ") ";
-    printSort(os, signature.codomain());
+    printSort(os, manager, signature.codomain());
     os << '\n' << "  ";
 
     // The checker already stores cases in typed tuple order. Emitting them in

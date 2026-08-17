@@ -136,6 +136,12 @@ const UFDecl* UFContext::lookup(const std::string& name) const
   return found == activeByName_.end() ? NULL : found->second;
 }
 
+void UFContext::collectIdentitySymbols(ASTNodeSet& out) const
+{
+  for (const std::pair<const ASTNode, const UFDecl*>& entry : byIdentity_)
+    out.insert(entry.first);
+}
+
 const UFDecl* UFContext::lookupIdentity(const ASTNode& identity) const
 {
   if (identity.IsNull() || !identity.IsOwnedBy(manager_))

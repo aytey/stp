@@ -87,6 +87,15 @@ TEST(UninterpretedFunctionsFrontend, SignatureUsesRestrictedSourceSorts)
             UFSignature::loweringSort(SourceSort::roundingMode()));
   EXPECT_EQ(SourceSort::bitVector(17),
             UFSignature::loweringSort(SourceSort::bitVector(17)));
+
+  // A sort declared by declare-sort is solved at its own sort, like a rounding
+  // mode and unlike a float: equality is its only operation and bit equality on
+  // its carrier is exactly that. Mapping it to its carrier here would compile,
+  // pass everything else, and make models print at the carrier again.
+  const SourceSort declared = registerUninterpretedSort("Loose", 16);
+  EXPECT_TRUE(UFSignature::isSupportedSort(declared));
+  EXPECT_EQ(declared, UFSignature::loweringSort(declared));
+  EXPECT_NE(SourceSort::bitVector(16), UFSignature::loweringSort(declared));
 }
 
 TEST(UninterpretedFunctionsFrontend,

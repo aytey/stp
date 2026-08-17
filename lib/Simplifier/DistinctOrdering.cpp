@@ -60,35 +60,55 @@ struct Candidate
 bool orderableSymbols(const ASTVec& symbols)
 {
   std::set<ASTNode> seen;
-  unsigned width = 0;
+  SourceSort sort;
   for (const ASTNode& symbol : symbols)
   {
     if (symbol.GetKind() != SYMBOL || symbol.GetType() != BITVECTOR_TYPE ||
         symbol.GetIndexWidth() != 0)
       return false;
-    // A sort whose equality is not bit equality would make the order mean
-    // something else; only plain bit-vectors are ordered here.
-    if (symbol.GetSourceSort().kind() != SourceSort::Kind::BitVector)
+    // Bit-vectors and sorts declared by declare-sort, because for both of them
+    // bit equality on the carrier is the sort's own equality and an unsigned
+    // order over the carrier is therefore a total order on the elements. A
+    // float would make the order mean something else -- FP_SMT_EQ is not bit
+    // equality -- and a rounding mode has five elements and no reason to be
+    // ordered.
+    const SourceSort::Kind kind = symbol.GetSourceSort().kind();
+    if (kind != SourceSort::Kind::BitVector &&
+        kind != SourceSort::Kind::Uninterpreted)
       return false;
-    if (width == 0)
-      width = symbol.GetValueWidth();
-    else if (symbol.GetValueWidth() != width)
+    // The whole sort, not the carrier width. Two sorts declared by
+    // declare-sort share a carrier width by default, and ordering their union
+    // as one group would be a claim about a permutation that maps neither sort
+    // to itself.
+    if (!sort.isKnown())
+      sort = symbol.GetSourceSort();
+    else if (symbol.GetSourceSort() != sort)
       return false;
     if (!seen.insert(symbol).second)
       return false; // a repeat makes the distinct false, not symmetric
   }
-  if (width == 0)
+  if (!sort.isKnown())
     return false;
-  // More symbols than the width can tell apart, and the chain says so
-  // immediately where the clique takes minutes to. That sounds like a win and
-  // is the one case where it must not be taken: a sort introduced by
-  // declare-sort is carried by a bit-vector of --uf-sort-width bits, and the
-  // sort itself is unbounded, so the carrier's capacity is an artefact of the
-  // encoding rather than a fact about the query. Answering unsat from it fast
-  // is worse than answering slowly, which is the same call the parser's
-  // cardinality fold already makes for the same reason -- and where the width
-  // really is the sort's own, that fold has already replaced the group with
-  // false and there is nothing here to order.
+  // More symbols than the sort can tell apart, which cannot be ordered because
+  // no strictly increasing assignment of them exists.
+  //
+  // The bit-vector arm is the reachable one, which is worth stating because
+  // the obvious reading is the opposite. The parser's cardinality fold tests
+  // the *distinct's operand* sort; this tests the sort of the symbols being
+  // ordered, and on the application form those are the operands' ARGUMENTS.
+  // The two differ, so the fold cannot have already handled it: seventeen
+  // applications of (_ BitVec 4) -> (_ BitVec 16) have seventeen operands in
+  // a sort of 65536, which the fold passes, and seventeen arguments in a sort
+  // of 16, which this refuses. Measured, with no declared sort in the file:
+  // argument width 4 does not answer in 45 s, width 5 is ordered and sat in
+  // 0.08 s. Deleting this arm changes pure bit-vector behaviour.
+  //
+  // The declared-sort arm is now the unreachable one: an over-capacity query
+  // of that shape is refused before any simplifier runs -- see
+  // Cpp_interface::sortCarrierExhausted -- so this never sees one. It stays
+  // because the two tests answer different questions and nothing makes that
+  // ordering permanent.
+  const unsigned width = sort.packedWidth();
   if (width < 64 &&
       (uint64_t)symbols.size() > ((uint64_t)1 << width))
     return false;
