@@ -377,6 +377,11 @@ void ExtraMain::create_options()
       ->group(refinement_group)
       ->capture_default_str();
 
+  bool_arg("--bv-term-abstraction", bm->UserFlags.bv_term_abstraction,
+           "abstract wide BV arithmetic (BVPLUS) during bit-blasting, "
+           "refining lazily via CEGAR",
+           refinement_group);
+
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,
                  "hard limit on AIG AND-gate nodes during bit-blasting; "

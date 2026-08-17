@@ -170,6 +170,18 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
       bvEQAbstractions_.push_back(std::move(a));
     }
 
+    for (const auto& raw : bb.abstractedTerms())
+    {
+      BVTermAbstraction a;
+      a.termNode = raw.termNode;
+      a.opKind = raw.opKind;
+      for (unsigned i = 0; i < raw.numOperands; i++)
+        a.operands[i] = raw.operands[i];
+      a.numOperands = raw.numOperands;
+      a.width = raw.width;
+      bvTermAbstractions_.push_back(std::move(a));
+    }
+
     BBFormula = BBNodeAIG(); // null node
     mgr.stop();
 
@@ -336,6 +348,23 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
 
   for (const auto& a : bvEQAbstractions_)
     satSolver.setFrozen(a.abstractionSATVar);
+
+  for (const auto& a : bvTermAbstractions_)
+  {
+    auto resultIt = nodeToSATVar.find(a.termNode);
+    if (resultIt != nodeToSATVar.end())
+      for (unsigned v : resultIt->second)
+        if (v != ~((unsigned)0))
+          satSolver.setFrozen(v);
+    for (unsigned i = 0; i < a.numOperands; i++)
+    {
+      auto opIt = nodeToSATVar.find(a.operands[i]);
+      if (opIt != nodeToSATVar.end())
+        for (unsigned v : opIt->second)
+          if (v != ~((unsigned)0))
+            satSolver.setFrozen(v);
+    }
+  }
 }
 
 // Bias the first candidate so the checker's scalars start out pairwise
@@ -541,6 +570,97 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
     }
 
     refined++;
+  }
+  return refined;
+}
+
+unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
+{
+  unsigned refined = 0;
+  for (auto& abs : bvTermAbstractions_)
+  {
+    if (abs.defined)
+      continue;
+
+    auto resultIt = nodeToSATVar.find(abs.termNode);
+    if (resultIt == nodeToSATVar.end())
+      continue;
+    const std::vector<unsigned>& resultVars = resultIt->second;
+
+    if (abs.opKind == BVPLUS)
+    {
+      auto leftIt = nodeToSATVar.find(abs.operands[0]);
+      auto rightIt = nodeToSATVar.find(abs.operands[1]);
+      if (leftIt == nodeToSATVar.end() || rightIt == nodeToSATVar.end())
+        continue;
+      const std::vector<unsigned>& leftVars = leftIt->second;
+      const std::vector<unsigned>& rightVars = rightIt->second;
+
+      bool carry = false;
+      bool consistent = true;
+      for (unsigned bit = 0; bit < abs.width; ++bit)
+      {
+        bool l = (solver.modelValue(leftVars[bit]) == solver.true_literal());
+        bool r = (solver.modelValue(rightVars[bit]) == solver.true_literal());
+        bool s = (solver.modelValue(resultVars[bit]) == solver.true_literal());
+        bool expectedSum = l ^ r ^ carry;
+        carry = (l && r) || (l && carry) || (r && carry);
+        if (s != expectedSum)
+        {
+          consistent = false;
+          break;
+        }
+      }
+      if (consistent)
+        continue;
+
+      // Encode ripple-carry adder: carry_0 = false
+      unsigned carryVar = solver.newVar();
+      solver.setFrozen(carryVar);
+      {
+        SATSolver::vec_literals cl;
+        cl.push(SATSolver::mkLit(carryVar, true));
+        solver.addClause(cl);
+      }
+
+      for (unsigned bit = 0; bit < abs.width; ++bit)
+      {
+        unsigned l = leftVars[bit];
+        unsigned r = rightVars[bit];
+        unsigned s = resultVars[bit];
+        unsigned c = carryVar;
+        SATSolver::vec_literals cl;
+
+        // sum ⟺ l ⊕ r ⊕ c  (8 clauses)
+        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+
+        // carry out: newCarry ⟺ MAJ(l, r, c)  (6 clauses, skip last bit)
+        if (bit < abs.width - 1)
+        {
+          unsigned nc = solver.newVar();
+          solver.setFrozen(nc);
+
+          cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(l,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+          cl.clear(); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+
+          carryVar = nc;
+        }
+      }
+
+      abs.defined = true;
+      refined++;
+    }
   }
   return refined;
 }

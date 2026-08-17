@@ -242,4 +242,65 @@ TEST_F(BVEQAbstractionTest, PrefixRefinementSmallWidth)
   EXPECT_EQ(SOLVER_INVALID, result);
 }
 
+TEST_F(BVEQAbstractionTest, BVPLUSAbstractionCreatesAbstraction)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  ASTNode x = makeSymbol("ta_x", 256);
+  ASTNode y = makeSymbol("ta_y", 256);
+  ASTNode sum = factory->CreateTerm(BVPLUS, 256, x, y);
+  ASTNode z = makeSymbol("ta_z", 256);
+  ASTNode eq = factory->CreateNode(EQ, sum, z);
+
+  BBNodeManagerAIG aigMgr;
+  stp::SubstitutionMap sm(&mgr);
+  Simplifier simp(&mgr, &sm);
+  BitBlaster bb(&aigMgr, &simp, factory, &mgr.UserFlags);
+
+  bb.BBForm(eq);
+
+  EXPECT_GE(bb.abstractedTerms().size(), 1u);
+  EXPECT_EQ(BVPLUS, bb.abstractedTerms()[0].opKind);
+}
+
+TEST_F(BVEQAbstractionTest, BVPLUSAbstractionSatResult)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  ASTNode x = makeSymbol("tas_x", 256);
+  ASTNode y = makeSymbol("tas_y", 256);
+  ASTNode sum = factory->CreateTerm(BVPLUS, 256, x, y);
+  ASTNode z = makeSymbol("tas_z", 256);
+  ASTNode eq = factory->CreateNode(EQ, sum, z);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, BVPLUSAbstractionUnsatResult)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  ASTNode x = makeSymbol("tau_x", 256);
+  ASTNode y = makeSymbol("tau_y", 256);
+  ASTNode z = makeSymbol("tau_z", 256);
+  ASTNode sum = factory->CreateTerm(BVPLUS, 256, x, y);
+  ASTNode eqSumZ = factory->CreateNode(EQ, sum, z);
+  ASTNode eqXZ = factory->CreateNode(EQ, x, z);
+  ASTNode yNeq0 = factory->CreateNode(NOT,
+      factory->CreateNode(EQ, y, mgr.CreateBVConst(256, 0)));
+  ASTNode formula = factory->CreateNode(AND,
+      factory->CreateNode(AND, eqSumZ, eqXZ), yNeq0);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_VALID, result);
+}
+
 } // namespace

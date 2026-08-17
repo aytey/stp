@@ -81,6 +81,17 @@ private:
   };
   std::vector<BVEQAbstraction> bvEQAbstractions_;
 
+  struct BVTermAbstraction
+  {
+    ASTNode termNode;
+    Kind opKind;
+    ASTNode operands[3];
+    unsigned numOperands;
+    unsigned width;
+    bool defined = false;
+  };
+  std::vector<BVTermAbstraction> bvTermAbstractions_;
+
   void init()
   {
     count = 0;
@@ -124,6 +135,9 @@ public:
 
   bool hasBVEQAbstractions() const { return !bvEQAbstractions_.empty(); }
   unsigned refineBVEQInconsistencies(SATSolver& solver);
+
+  bool hasBVTermAbstractions() const { return !bvTermAbstractions_.empty(); }
+  unsigned refineBVTermInconsistencies(SATSolver& solver);
 };
 }
 

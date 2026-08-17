@@ -35,6 +35,14 @@ THE SOFTWARE.
 namespace stp
 {
 
+static bool allBBNodesAreCIs(const BBNodeVec& vec)
+{
+  for (const auto& node : vec)
+    if (node.IsNull() || node.symbol_index < 0)
+      return false;
+  return !vec.empty();
+}
+
 /********************************************************************
  * BitBlast
  *
@@ -1032,6 +1040,35 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
     case BVPLUS:
     {
       assert(term.Degree() >= 1);
+
+      if (uf->bv_term_abstraction &&
+          uf->bvplus_variant &&
+          term.Degree() == 2 &&
+          num_bits >= uf->bv_eq_abstraction_width)
+      {
+        const BBNodeVec& left = BBTerm(term[0], support);
+        const BBNodeVec& right = BBTerm(term[1], support);
+
+        if (allBBNodesAreCIs(left) && allBBNodesAreCIs(right))
+        {
+          BBNodeVec abstracted(num_bits);
+          for (unsigned i = 0; i < num_bits; i++)
+          {
+            abstracted[i] = BBNodeAIG(Aig_ObjCreateCi(nf->aigMgr));
+            abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
+          }
+          nf->symbolToBBNode[term] = abstracted;
+          if (nf->symbolToBBNode.find(term[0]) == nf->symbolToBBNode.end())
+            nf->symbolToBBNode[term[0]] = left;
+          if (nf->symbolToBBNode.find(term[1]) == nf->symbolToBBNode.end())
+            nf->symbolToBBNode[term[1]] = right;
+          abstractedTerms_.push_back(
+              {term, BVPLUS, {term[0], term[1], ASTNode()}, 2, num_bits});
+          result = abstracted;
+          break;
+        }
+      }
+
       if (uf->bvplus_variant)
       {
         // Add children pairwise and accumulate in BBsum

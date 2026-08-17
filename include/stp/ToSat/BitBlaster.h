@@ -337,6 +337,24 @@ public:
   {
     return abstractedEQs_;
   }
+
+  struct RawBVTermAbstraction
+  {
+    ASTNode termNode;
+    Kind opKind;
+    ASTNode operands[3];
+    unsigned numOperands;
+    unsigned width;
+  };
+
+private:
+  std::vector<RawBVTermAbstraction> abstractedTerms_;
+
+public:
+  const std::vector<RawBVTermAbstraction>& abstractedTerms() const
+  {
+    return abstractedTerms_;
+  }
   BitBlaster& operator=(const BitBlaster& other) = delete;
   BitBlaster(const BitBlaster& other) = delete;
   ~BitBlaster() { ClearAllTables(); }

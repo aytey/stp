@@ -943,7 +943,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
 
   const bool maybeRefinement =
       (arrayops && !bm->UserFlags.ackermannisation) || batchUFView->active() ||
-      bm->UserFlags.bv_eq_abstraction;
+      bm->UserFlags.bv_eq_abstraction || bm->UserFlags.bv_term_abstraction;
 
   // Must run before the ConstantBitPropagation object below is built: cb's
   // fixed-point map has to describe the exact tree handed to ToSATAIG, and a
@@ -1015,10 +1015,11 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     return res;
   }
 
-  // An undecided result belongs to an active array, UF, or BV EQ refinement owner.
-  assert(arrayops || batchUFView->active() || toSATAIG.hasBVEQAbstractions());
+  // An undecided result belongs to an active array, UF, or BV abstraction refinement owner.
+  assert(arrayops || batchUFView->active() || toSATAIG.hasBVEQAbstractions() ||
+         toSATAIG.hasBVTermAbstractions());
   assert(batchUFView->active() || toSATAIG.hasBVEQAbstractions() ||
-         !bm->UserFlags.ackermannisation);
+         toSATAIG.hasBVTermAbstractions() || !bm->UserFlags.ackermannisation);
 
   // Refinement driver. In an active equality solve the extensionality
   // checker owns the complete array graph, so each undecided candidate
@@ -1027,14 +1028,18 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // read-refinement path unchanged.
   while (true)
   {
-    if (toSATAIG.hasBVEQAbstractions())
+    if (toSATAIG.hasBVEQAbstractions() || toSATAIG.hasBVTermAbstractions())
     {
-      unsigned refined = toSATAIG.refineBVEQInconsistencies(NewSolver);
+      unsigned refined = 0;
+      if (toSATAIG.hasBVEQAbstractions())
+        refined = toSATAIG.refineBVEQInconsistencies(NewSolver);
+      if (refined == 0 && toSATAIG.hasBVTermAbstractions())
+        refined += toSATAIG.refineBVTermInconsistencies(NewSolver);
       if (refined > 0)
       {
         if (bm->UserFlags.stats_flag)
-          std::cerr << "BV EQ abstraction: refined " << refined
-                    << " equalities" << std::endl;
+          std::cerr << "BV abstraction: refined " << refined
+                    << " operations" << std::endl;
         res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
                                                semantic_input, original_input,
                                                satBase, true);
@@ -1056,8 +1061,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       else
       {
         if (!arrayops)
-          FatalError("BV EQ refinement reached undecided without a pending "
-                     "candidate-blocking lemma");
+          FatalError("BV abstraction refinement reached undecided without a "
+                     "pending candidate-blocking lemma");
         res = Ctr_Example->SATBased_ArrayReadRefinement(NewSolver,
                                                         semantic_input, satBase);
       }
@@ -1102,7 +1107,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       return SOLVER_TIMEOUT;
     }
 
-    if (!toSATAIG.hasBVEQAbstractions() && !extActive && !batchUFView->active())
+    if (!toSATAIG.hasBVEQAbstractions() && !toSATAIG.hasBVTermAbstractions() &&
+        !extActive && !batchUFView->active())
       break;
   }
 
