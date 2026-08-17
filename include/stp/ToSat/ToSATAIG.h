@@ -76,6 +76,8 @@ private:
     ASTNode rightSymbol;
     unsigned width;
     bool defined = false;
+    unsigned refinedBits = 0;
+    std::vector<unsigned> xnorHelpers;
   };
   std::vector<BVEQAbstraction> bvEQAbstractions_;
 

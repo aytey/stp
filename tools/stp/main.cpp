@@ -371,6 +371,11 @@ void ExtraMain::create_options()
                  "minimum bit-vector width for BV equality abstraction")
       ->group(refinement_group)
       ->capture_default_str();
+  app.add_option("--bv-eq-refine-width",
+                 bm->UserFlags.bv_eq_refine_width,
+                 "initial prefix width for lazy BV equality refinement (0 = full)")
+      ->group(refinement_group)
+      ->capture_default_str();
 
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,

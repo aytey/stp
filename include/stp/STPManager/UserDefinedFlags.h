@@ -329,6 +329,7 @@ public:
 
   bool bv_eq_abstraction = false;
   unsigned bv_eq_abstraction_width = 64;
+  unsigned bv_eq_refine_width = 0;
 
   /* Bitblasting options */
 
