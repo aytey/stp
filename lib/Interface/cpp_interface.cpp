@@ -769,6 +769,9 @@ void Cpp_interface::reset()
   discardExtensionalitySolveState();
   resetIncrementalSolver();
 
+  // A reason-unknown belongs to the session that produced it.
+  bm.clearUnknown();
+
   // Recorded distinct groups name nodes from assertions that no longer
   // exist. The ordering pass ignores a group its walk cannot reach, so
   // keeping them would be harmless; dropping them keeps a long session's
@@ -821,6 +824,7 @@ void Cpp_interface::resetAssertions()
     removeFrame();
   cache.clear();
   bm.distinctGroups.clear();
+  bm.clearUnknown();
 
   // These tables may retain the discarded assertions or declarations.
   resetSolver();
@@ -1470,6 +1474,13 @@ void Cpp_interface::getInfo(std::string flag)
       case UnknownReason::Timeout:
         cout << "(:reason-unknown timeout)" << endl;
         break;
+      case UnknownReason::ConflictBudget:
+        // Not `timeout`: this one is deterministic and re-running with more
+        // time will reproduce it exactly. SMT-LIB admits an s-expression here,
+        // and naming the flag is what a caller can act on.
+        cout << "(:reason-unknown (incomplete \"the conflict budget set by "
+                "--max-num-confl ran out\"))" << endl;
+        break;
       case UnknownReason::Incomplete:
         // The predefined SMT-LIB spelling, followed by what was incomplete:
         // the flag admits an s-expression, and a bare "incomplete" tells a
@@ -1478,8 +1489,14 @@ void Cpp_interface::getInfo(std::string flag)
              << "\"))" << endl;
         break;
       case UnknownReason::None:
-        cout << "(:reason-unknown (error \"the last answer was not "
-                "unknown\"))" << endl;
+        // Two shapes reach here: no unknown to explain, and an unknown whose
+        // producer recorded no reason. Told apart by the verdict, because
+        // answering "not unknown" after an unknown would be a plain lie.
+        if (cache.size() > 0 && cache.back().result == SOLVER_UNKNOWN)
+          cout << "(:reason-unknown unknown)" << endl;
+        else
+          cout << "(:reason-unknown (error \"the last answer was not "
+                  "unknown\"))" << endl;
         break;
     }
   }

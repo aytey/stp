@@ -47,10 +47,12 @@ void ToSATBase::PrintOutput(STPMgr* bm, SOLVER_RETURN_TYPE ret)
     }
     else
       cout << "Timed Out." << endl;
-    // A timeout that reached here without saying why is the clock; anything
-    // else records its own reason before returning.
+    // Whoever produced the no-answer says why -- the solving path asks the SAT
+    // solver whether its clock expired, which is the only place that can tell a
+    // zero-second limit from no limit. A path that recorded nothing has no
+    // budget in play at all, so the honest answer is that it is not known.
     if (bm->unknown_reason == UnknownReason::None)
-      bm->noteUnknown(UnknownReason::Timeout);
+      bm->noteUnknown(UnknownReason::None);
     return;
   }
 

@@ -360,6 +360,17 @@ bool ToSATAIG::runSolver(SATSolver& satSolver)
   bool result = satSolver.solve(bm->soft_timeout_expired);
   bm->GetRunTimes()->stop(RunTimes::Solving);
 
+  // Two budgets share the no-answer exit and they are not the same claim to a
+  // caller: the wall clock may succeed with more time on the same machine,
+  // while the conflict budget is deterministic and will not. Ask the solver
+  // which one it was rather than guessing from the flags -- a zero-second
+  // limit and no limit at all look identical from there, and the first is a
+  // clock expiry.
+  if (bm->soft_timeout_expired && bm->unknown_reason == UnknownReason::None)
+    bm->noteUnknown(satSolver.timeLimitExpired()
+                        ? UnknownReason::Timeout
+                        : UnknownReason::ConflictBudget);
+
   if (bm->UserFlags.stats_flag)
     satSolver.printStats();
 

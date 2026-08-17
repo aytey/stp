@@ -101,6 +101,11 @@ enum class UnknownReason
 {
   None,
   Timeout,
+  // The conflict budget (--max-num-confl) ran out. Told apart from the clock
+  // because a caller acts differently on the two: a wall-clock timeout may
+  // succeed with more time on the same machine, while a conflict budget is
+  // deterministic and will not.
+  ConflictBudget,
   Incomplete
 };
 
