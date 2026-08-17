@@ -294,35 +294,27 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
         view.eagerStats.declarations[statIndex[candidate.second]];
     if (mode == Mode::AUTO)
     {
-      // A pair count is only a proxy for what a pair costs, and for a
-      // floating-point position the proxy is wrong in the expensive
-      // direction. Measured on the collision family at
-      // --uf-ackermann=on against off (Release, CaDiCaL): a bit-vector
-      // signature gets faster the more pairs there are -- 0.33x the lazy
-      // time at 20 applications, 0.11x at 60 -- while a float signature gets
-      // steadily worse, 1.5x at 10 and 5.4x at 60, with no crossover in
-      // sight. A float codomain alone does it too, at 5.4x by 60.
+      // A float pair is worth less than a bit-vector pair of the same
+      // count, which is why the ordering above puts every float signature
+      // after every bit-vector one: they take what is left rather than
+      // competing for it. Where the actuals are bit-vectors the query's own
+      // (= a b) is a substitutable equality, so equality propagation
+      // collapses them and the constraints dissolve before SAT; where they
+      // are floats it is FP_SMT_EQ, a predicate, and every constraint is paid
+      // in full.
       //
-      // The reason is visible in the node counts. Where the actuals are
-      // bit-vectors, the query's own (= a b) is a substitutable equality:
-      // equality propagation collapses the actuals onto one node, every
-      // eagerly installed premise becomes reflexive, and the whole encoding
-      // dissolves before SAT -- the formula reaches constant-bit propagation
-      // at a node size of 1. Where they are floats, (= a b) is FP_SMT_EQ, a
-      // predicate rather than a substitution, and the link from an actual to
-      // its canonical name runs through a pack/unpack circuit. Nothing
-      // collapses (node size 3394, 131076 nodes before AIG rewrite at 40
-      // applications), so every one of the C(n,2) constraints is paid in
-      // full while the dynamic loop would have earned two or three lemmas.
-      //
-      // So the automatic policy declines these. --uf-ackermann=on still
-      // forces them: the encoding is correct, it is only a bad trade, and a
-      // caller who knows their query benefits should be able to ask.
-      if (hasFloatingPointPosition(candidate.second->signature()))
-      {
-        stat.outcome = UFEagerDeclarationStat::Outcome::DeclinedFloat;
-        continue;
-      }
+      // They used to be refused outright, which was right while the budget
+      // was 4096: that admitted a float declaration of up to 91 applications,
+      // and the shape the refusal was reasoned from -- actuals asserted
+      // equal, results distinct -- costs eager 1.6s and climbing at that
+      // size. At 256 the budget admits at most 23 float applications, and
+      // measured across that whole band the refusal costs more than it saves:
+      // the shape it protected loses 0.04s at the top of the band, while free
+      // float arguments with distinct results gain 0.52s, and a float
+      // codomain over a bit-vector domain, a NaN-heavy query and compound
+      // float actuals are each within 0.1s or favour selecting. The budget,
+      // not a veto, is what keeps the bad shape cheap now, and it truncates
+      // that shape before its superlinear part begins.
       if (candidate.first > budget)
       {
         // Every later declaration is at least as expensive, so they are all

@@ -80,7 +80,6 @@ struct DLL_PUBLIC UFEagerDeclarationStat
   enum class Outcome
   {
     NoComparablePairs, // nothing to constrain; never charged
-    DeclinedFloat,     // automatic policy declines floating-point signatures
     DeclinedBudget,    // estimate exceeded the remaining budget
     Selected
   };
@@ -98,7 +97,6 @@ struct DLL_PUBLIC UFEagerDeclarationStat
     switch (outcome)
     {
       case Outcome::NoComparablePairs: return "no-pairs";
-      case Outcome::DeclinedFloat: return "declined-float";
       case Outcome::DeclinedBudget: return "declined-budget";
       case Outcome::Selected: return "selected";
     }
