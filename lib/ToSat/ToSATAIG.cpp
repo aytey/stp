@@ -23,6 +23,7 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "stp/ToSat/ToSATAIG.h"
+#include "stp/ToSat/BVEQCongruenceClosure.h"
 #include "stp/Extensionality/ExtensionalityContext.h"
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/Simplifier/Simplifier.h"
@@ -406,7 +407,45 @@ bool ToSATAIG::runSolver(SATSolver& satSolver)
 
 unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
 {
+  // Phase 1: Congruence closure — detect transitivity conflicts at word level.
+  {
+    std::unordered_map<ASTNode, unsigned, ASTNode::ASTNodeHasher,
+                       ASTNode::ASTNodeEqual> symbolToIdx;
+    unsigned nextIdx = 0;
+    for (const auto& abs : bvEQAbstractions_)
+    {
+      if (abs.defined) continue;
+      if (symbolToIdx.find(abs.leftSymbol) == symbolToIdx.end())
+        symbolToIdx[abs.leftSymbol] = nextIdx++;
+      if (symbolToIdx.find(abs.rightSymbol) == symbolToIdx.end())
+        symbolToIdx[abs.rightSymbol] = nextIdx++;
+    }
+
+    std::vector<BVEQCongruenceClosure::EqInfo> eqInfos;
+    for (const auto& abs : bvEQAbstractions_)
+    {
+      if (abs.defined) continue;
+      bool modelTrue =
+          (solver.modelValue(abs.abstractionSATVar) == solver.true_literal());
+      eqInfos.push_back({symbolToIdx[abs.leftSymbol],
+                          symbolToIdx[abs.rightSymbol],
+                          abs.abstractionSATVar,
+                          modelTrue});
+    }
+
+    BVEQCongruenceClosure cc;
+    unsigned ccConflicts = cc.check(eqInfos, solver);
+    if (ccConflicts > 0)
+      return ccConflicts;
+  }
+
+  // Phase 2: Bit-level Tseitin encoding for remaining inconsistencies.
+  // When bv_eq_refine_width > 0, encode only a prefix of bits per round,
+  // doubling each time. The backward clause is deferred until all bits
+  // are covered.
   unsigned refined = 0;
+  const unsigned refineWidth = bm->UserFlags.bv_eq_refine_width;
+
   for (auto& abs : bvEQAbstractions_)
   {
     if (abs.defined)
@@ -434,16 +473,27 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
     if (absTrue == actualEqual)
       continue;
 
-    std::vector<unsigned> xnorHelpers;
-    xnorHelpers.reserve(abs.width);
+    unsigned newEnd;
+    if (refineWidth == 0 || refineWidth >= abs.width)
+    {
+      newEnd = abs.width;
+    }
+    else if (abs.refinedBits == 0)
+    {
+      newEnd = std::min(refineWidth, abs.width);
+    }
+    else
+    {
+      newEnd = std::min(abs.refinedBits * 2, abs.width);
+    }
 
-    for (unsigned bit = 0; bit < abs.width; ++bit)
+    for (unsigned bit = abs.refinedBits; bit < newEnd; ++bit)
     {
       unsigned lv = leftIt->second[bit];
       unsigned rv = rightIt->second[bit];
       unsigned h = solver.newVar();
       solver.setFrozen(h);
-      xnorHelpers.push_back(h);
+      abs.xnorHelpers.push_back(h);
 
       SATSolver::vec_literals cl;
 
@@ -470,23 +520,26 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
       cl.push(SATSolver::mkLit(rv, false));
       cl.push(SATSolver::mkLit(h, true));
       solver.addClause(cl);
-    }
 
-    for (unsigned h : xnorHelpers)
-    {
-      SATSolver::vec_literals cl;
+      cl.clear();
       cl.push(SATSolver::mkLit(abs.abstractionSATVar, true));
       cl.push(SATSolver::mkLit(h, false));
       solver.addClause(cl);
     }
 
-    SATSolver::vec_literals cl;
-    for (unsigned h : xnorHelpers)
-      cl.push(SATSolver::mkLit(h, true));
-    cl.push(SATSolver::mkLit(abs.abstractionSATVar, false));
-    solver.addClause(cl);
+    abs.refinedBits = newEnd;
 
-    abs.defined = true;
+    if (abs.refinedBits >= abs.width)
+    {
+      SATSolver::vec_literals cl;
+      for (unsigned h : abs.xnorHelpers)
+        cl.push(SATSolver::mkLit(h, true));
+      cl.push(SATSolver::mkLit(abs.abstractionSATVar, false));
+      solver.addClause(cl);
+
+      abs.defined = true;
+    }
+
     refined++;
   }
   return refined;
