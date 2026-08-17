@@ -181,7 +181,8 @@ ASTNode recoverAnchoredOperand(const ASTNode& rhs, const ASTNode& lambda,
 } // namespace
 
 ExtensionalityContext::ExtensionalityContext(STPMgr* bm_)
-    : lemmasEmitted(0), lemmaAtomsFolded(0), bm(bm_), solveInProgress(false),
+    : lemmasEmitted(0), lemmaAtomsFolded(0), lemmaRounds(0),
+      lemmasInLargestRound(0), bm(bm_), solveInProgress(false),
       registrySealed(false),
       arrayGraphIsFrozen(false), graphBound(false),
       readTransformInProgress(false), readTransformComplete(false),
@@ -1871,6 +1872,9 @@ void ExtensionalityContext::encodePendingLemmas(SATSolver& solver,
   if (!pendingLemmaValid || pendingLemmas.empty())
     FatalError("array-equality: lemma encoding began without a pending "
                "certificate");
+  lemmaRounds++;
+  if ((int)pendingLemmas.size() > lemmasInLargestRound)
+    lemmasInLargestRound = (int)pendingLemmas.size();
   for (size_t i = 0; i < pendingLemmas.size(); i++)
     encodeOneLemma(pendingLemmas[i], solver, tosat, guardLit);
   pendingLemmas.clear();

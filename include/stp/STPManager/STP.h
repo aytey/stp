@@ -157,6 +157,9 @@ public:
 
   // The absolute TopLevel function that invokes STP on the input
   // formula
+  // Print the extensionality checker's lemma accounting under --stats.
+  void reportExtensionalityLemmas() const;
+
   DLL_PUBLIC SOLVER_RETURN_TYPE TopLevelSTP(const ASTNode& inputasserts,
                                             const ASTNode& query);
 

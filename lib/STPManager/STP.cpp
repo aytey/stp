@@ -144,6 +144,27 @@ void STP::resetIncrementalSolver()
   incrementalSolver = nullptr;
 }
 
+// The extensionality checker's own accounting. It is reported per solve
+// because the interesting quantity is not the total but the shape: the
+// checker collects every independent conflict one fixed point finds instead
+// of stopping at the first, so a round has no upper bound, and a run whose
+// rounds are front-loaded -- a hundred lemmas, then ones -- is being served
+// well by that, while a run of uniformly large rounds is not. A mean cannot
+// tell those apart, and nothing printed this before, which is why capping a
+// round has never been decidable on evidence.
+void STP::reportExtensionalityLemmas() const
+{
+  if (!bm->UserFlags.stats_flag)
+    return;
+  ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+  if (ext == NULL || ext->lemmaRounds == 0)
+    return;
+  std::cerr << "Array equality: " << ext->lemmasEmitted << " lemmas, "
+            << ext->lemmaRounds << " rounds, largest "
+            << ext->lemmasInLargestRound << ", " << ext->lemmaAtomsFolded
+            << " atoms folded (cumulative)." << std::endl;
+}
+
 SATSolver* STP::get_new_sat_solver()
 {
   SATSolver* newS = createSATSolver(bm->UserFlags);
@@ -1032,6 +1053,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       if (toSATAIG.cbIsDestructed())
         cleaner.release();
 
+      reportExtensionalityLemmas();
       CountersAndStats("print_func_stats", bm);
       return res;
     }

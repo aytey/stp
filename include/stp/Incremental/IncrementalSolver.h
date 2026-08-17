@@ -168,6 +168,11 @@ public:
   std::vector<ASTNode> lastUnsatAssumptionConjuncts() const;
   std::vector<size_t> lastUnsatCoreLevels() const;
 
+  // Print the extensionality checker's lemma accounting under --stats. The
+  // batch pipeline reports at the end of its refinement loop; the driver
+  // does not go through that loop, so it reports here.
+  void reportExtensionalityLemmas() const;
+
   // A sat answer defers counterexample construction unless something
   // reads the model at solve time: the SAT model stays live until the
   // next solve or clause addition, and the driver touches neither

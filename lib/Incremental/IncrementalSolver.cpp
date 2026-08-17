@@ -210,7 +210,25 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
   const SOLVER_RETURN_TYPE result = checkSatBody(
       assertionsSMT2, assumeLastLevelPerConjunct, firstForcedIncrementalSolve);
   impl->finishProfile();
+  // The driver has its own encoding path, so the batch pipeline's report
+  // never runs here; without this the checker's rounds are invisible in
+  // exactly the mode that accumulates the most of them.
+  reportExtensionalityLemmas();
   return result;
+}
+
+void IncrementalSolver::reportExtensionalityLemmas() const
+{
+  STPMgr* bm = impl->bm;
+  if (!bm->UserFlags.stats_flag)
+    return;
+  ExtensionalityContext* ext = bm->getExtensionalityIfAny();
+  if (ext == NULL || ext->lemmaRounds == 0)
+    return;
+  std::cerr << "Array equality: " << ext->lemmasEmitted << " lemmas, "
+            << ext->lemmaRounds << " rounds, largest "
+            << ext->lemmasInLargestRound << ", " << ext->lemmaAtomsFolded
+            << " atoms folded (cumulative)." << std::endl;
 }
 
 void IncrementalSolver::materializePendingModel()

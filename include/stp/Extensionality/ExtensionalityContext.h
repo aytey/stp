@@ -508,6 +508,15 @@ public:
   // entered the clause). Cumulative over the context lifetime.
   int lemmaAtomsFolded;
 
+  // Encoding rounds, and the largest single round. The checker
+  // deliberately collects every independent conflict a fixed point finds
+  // rather than stopping at the first, so a round is not bounded above;
+  // the mean hides that, and a pigeonhole over seventeen arrays opens
+  // with a hundred and twenty lemmas before settling to one. These are
+  // what a decision about capping a round would have to be made on.
+  int lemmaRounds;
+  int lemmasInLargestRound;
+
 private:
   STPMgr* bm;
 
