@@ -362,6 +362,16 @@ void ExtraMain::create_options()
            "propagation between argument and result equalities",
            refinement_group);
 
+  bool_arg("--bv-eq-abstraction", bm->UserFlags.bv_eq_abstraction,
+           "replace wide symbol-symbol BV equalities with fresh Boolean "
+           "variables during bit-blasting, refining lazily via CEGAR",
+           refinement_group);
+  app.add_option("--bv-eq-abstraction-width",
+                 bm->UserFlags.bv_eq_abstraction_width,
+                 "minimum bit-vector width for BV equality abstraction")
+      ->group(refinement_group)
+      ->capture_default_str();
+
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,
                  "hard limit on AIG AND-gate nodes during bit-blasting; "

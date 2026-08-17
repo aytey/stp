@@ -942,7 +942,8 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     simp->printCacheStatus();
 
   const bool maybeRefinement =
-      (arrayops && !bm->UserFlags.ackermannisation) || batchUFView->active();
+      (arrayops && !bm->UserFlags.ackermannisation) || batchUFView->active() ||
+      bm->UserFlags.bv_eq_abstraction;
 
   // Must run before the ConstantBitPropagation object below is built: cb's
   // fixed-point map has to describe the exact tree handed to ToSATAIG, and a
@@ -1014,9 +1015,10 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     return res;
   }
 
-  // An undecided result belongs to an active array or UF refinement owner.
-  assert(arrayops || batchUFView->active());
-  assert(batchUFView->active() || !bm->UserFlags.ackermannisation);
+  // An undecided result belongs to an active array, UF, or BV EQ refinement owner.
+  assert(arrayops || batchUFView->active() || toSATAIG.hasBVEQAbstractions());
+  assert(batchUFView->active() || toSATAIG.hasBVEQAbstractions() ||
+         !bm->UserFlags.ackermannisation);
 
   // Refinement driver. In an active equality solve the extensionality
   // checker owns the complete array graph, so each undecided candidate
@@ -1025,7 +1027,42 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // read-refinement path unchanged.
   while (true)
   {
-    if (extActive && ext->hasPendingLemma())
+    if (toSATAIG.hasBVEQAbstractions())
+    {
+      unsigned refined = toSATAIG.refineBVEQInconsistencies(NewSolver);
+      if (refined > 0)
+      {
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "BV EQ abstraction: refined " << refined
+                    << " equalities" << std::endl;
+        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
+                                               semantic_input, original_input,
+                                               satBase, true);
+      }
+      else if (extActive && ext->hasPendingLemma())
+      {
+        ext->encodePendingLemmas(NewSolver, satBase);
+        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
+                                               semantic_input, original_input,
+                                               satBase, true);
+      }
+      else if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
+      {
+        batchUFAdapter->encodePendingLemmas(NewSolver, satBase);
+        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
+                                               semantic_input, original_input,
+                                               satBase, true);
+      }
+      else
+      {
+        if (!arrayops)
+          FatalError("BV EQ refinement reached undecided without a pending "
+                     "candidate-blocking lemma");
+        res = Ctr_Example->SATBased_ArrayReadRefinement(NewSolver,
+                                                        semantic_input, satBase);
+      }
+    }
+    else if (extActive && ext->hasPendingLemma())
     {
       ext->encodePendingLemmas(NewSolver, satBase);
       res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
@@ -1058,9 +1095,6 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       return res;
     }
 
-    // Refinement reached no decision but the soft timeout has expired:
-    // report the timeout instead of iterating further (or falling into
-    // the fatal error below when nothing more is pending).
     if (bm->soft_timeout_expired)
     {
       if (toSATAIG.cbIsDestructed())
@@ -1068,7 +1102,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
       return SOLVER_TIMEOUT;
     }
 
-    if (!extActive && !batchUFView->active())
+    if (!toSATAIG.hasBVEQAbstractions() && !extActive && !batchUFView->active())
       break;
   }
 

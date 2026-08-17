@@ -327,6 +327,9 @@ public:
   // unknown.  0 means unlimited (the default).
   unsigned aig_node_budget = 0;
 
+  bool bv_eq_abstraction = false;
+  unsigned bv_eq_abstraction_width = 64;
+
   /* Bitblasting options */
 
   // You can select these with any combination you want of true & false.

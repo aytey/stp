@@ -1504,7 +1504,19 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
       const BBNodeVec right = BBTerm(form[1], support);
       assert(left.size() == right.size());
 
-      result = BBEQ(left, right);
+      if (uf->bv_eq_abstraction &&
+          form[0].GetKind() == SYMBOL && form[1].GetKind() == SYMBOL &&
+          left.size() >= uf->bv_eq_abstraction_width)
+      {
+        BBNodeAIG abstractCI(Aig_ObjCreateCi(nf->aigMgr));
+        abstractCI.symbol_index = nf->aigMgr->vCis->nSize - 1;
+        abstractedEQs_.push_back({form, abstractCI, form[0], form[1]});
+        result = abstractCI;
+      }
+      else
+      {
+        result = BBEQ(left, right);
+      }
       break;
     }
 

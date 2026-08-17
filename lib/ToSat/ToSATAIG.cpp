@@ -156,6 +156,19 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
     toCNF.toCNF(BBFormula, cnfData, nodeToSATVar, needAbsRef, mgr);
     bm->GetRunTimes()->stop(RunTimes::CNFConversion);
 
+    for (const auto& raw : bb.abstractedEQs())
+    {
+      BVEQAbstraction a;
+      a.eqNode = raw.eqNode;
+      Aig_Obj_t* pObj = (Aig_Obj_t*)Vec_PtrEntry(
+          mgr.aigMgr->vCis, raw.abstractionCI.symbol_index);
+      a.abstractionSATVar = cnfData->pVarNums[pObj->Id];
+      a.leftSymbol = raw.leftSymbol;
+      a.rightSymbol = raw.rightSymbol;
+      a.width = std::max(1u, raw.leftSymbol.GetValueWidth());
+      bvEQAbstractions_.push_back(std::move(a));
+    }
+
     BBFormula = BBNodeAIG(); // null node
     mgr.stop();
 
@@ -319,6 +332,9 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
     }
     suggest_uf_scalar_phases(satSolver);
   }
+
+  for (const auto& a : bvEQAbstractions_)
+    satSolver.setFrozen(a.abstractionSATVar);
 }
 
 // Bias the first candidate so the checker's scalars start out pairwise
@@ -386,6 +402,94 @@ bool ToSATAIG::runSolver(SATSolver& satSolver)
     satSolver.printStats();
 
   return result;
+}
+
+unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
+{
+  unsigned refined = 0;
+  for (auto& abs : bvEQAbstractions_)
+  {
+    if (abs.defined)
+      continue;
+
+    bool absTrue =
+        (solver.modelValue(abs.abstractionSATVar) == solver.true_literal());
+
+    auto leftIt = nodeToSATVar.find(abs.leftSymbol);
+    auto rightIt = nodeToSATVar.find(abs.rightSymbol);
+    if (leftIt == nodeToSATVar.end() || rightIt == nodeToSATVar.end())
+      continue;
+
+    bool actualEqual = true;
+    for (unsigned bit = 0; bit < abs.width; ++bit)
+    {
+      if (solver.modelValue(leftIt->second[bit]) !=
+          solver.modelValue(rightIt->second[bit]))
+      {
+        actualEqual = false;
+        break;
+      }
+    }
+
+    if (absTrue == actualEqual)
+      continue;
+
+    std::vector<unsigned> xnorHelpers;
+    xnorHelpers.reserve(abs.width);
+
+    for (unsigned bit = 0; bit < abs.width; ++bit)
+    {
+      unsigned lv = leftIt->second[bit];
+      unsigned rv = rightIt->second[bit];
+      unsigned h = solver.newVar();
+      solver.setFrozen(h);
+      xnorHelpers.push_back(h);
+
+      SATSolver::vec_literals cl;
+
+      cl.clear();
+      cl.push(SATSolver::mkLit(lv, true));
+      cl.push(SATSolver::mkLit(rv, true));
+      cl.push(SATSolver::mkLit(h, false));
+      solver.addClause(cl);
+
+      cl.clear();
+      cl.push(SATSolver::mkLit(lv, false));
+      cl.push(SATSolver::mkLit(rv, false));
+      cl.push(SATSolver::mkLit(h, false));
+      solver.addClause(cl);
+
+      cl.clear();
+      cl.push(SATSolver::mkLit(lv, false));
+      cl.push(SATSolver::mkLit(rv, true));
+      cl.push(SATSolver::mkLit(h, true));
+      solver.addClause(cl);
+
+      cl.clear();
+      cl.push(SATSolver::mkLit(lv, true));
+      cl.push(SATSolver::mkLit(rv, false));
+      cl.push(SATSolver::mkLit(h, true));
+      solver.addClause(cl);
+    }
+
+    for (unsigned h : xnorHelpers)
+    {
+      SATSolver::vec_literals cl;
+      cl.push(SATSolver::mkLit(abs.abstractionSATVar, true));
+      cl.push(SATSolver::mkLit(h, false));
+      solver.addClause(cl);
+    }
+
+    SATSolver::vec_literals cl;
+    for (unsigned h : xnorHelpers)
+      cl.push(SATSolver::mkLit(h, true));
+    cl.push(SATSolver::mkLit(abs.abstractionSATVar, false));
+    solver.addClause(cl);
+
+    abs.defined = true;
+    refined++;
+  }
+  return refined;
 }
 
 ToSATAIG::~ToSATAIG()

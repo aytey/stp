@@ -321,6 +321,22 @@ class BitBlaster
   ASTNodeSet booth_recoded; // Nodes that have been recoded.
 
 public:
+  struct RawBVEQAbstraction
+  {
+    ASTNode eqNode;
+    BBNodeAIG abstractionCI;
+    ASTNode leftSymbol;
+    ASTNode rightSymbol;
+  };
+
+private:
+  std::vector<RawBVEQAbstraction> abstractedEQs_;
+
+public:
+  const std::vector<RawBVEQAbstraction>& abstractedEQs() const
+  {
+    return abstractedEQs_;
+  }
   BitBlaster& operator=(const BitBlaster& other) = delete;
   BitBlaster(const BitBlaster& other) = delete;
   ~BitBlaster() { ClearAllTables(); }

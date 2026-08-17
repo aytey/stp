@@ -68,6 +68,17 @@ private:
 
   ToCNFAIG toCNF;
 
+  struct BVEQAbstraction
+  {
+    ASTNode eqNode;
+    unsigned abstractionSATVar;
+    ASTNode leftSymbol;
+    ASTNode rightSymbol;
+    unsigned width;
+    bool defined = false;
+  };
+  std::vector<BVEQAbstraction> bvEQAbstractions_;
+
   void init()
   {
     count = 0;
@@ -108,6 +119,9 @@ public:
   ASTNodeToSATVar& SATVar_to_SymbolIndexMap() { return nodeToSATVar; }
 
   bool CallSAT(SATSolver& satSolver, const ASTNode& input, bool needAbsRef);
+
+  bool hasBVEQAbstractions() const { return !bvEQAbstractions_.empty(); }
+  unsigned refineBVEQInconsistencies(SATSolver& solver);
 };
 }
 
