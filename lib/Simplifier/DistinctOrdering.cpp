@@ -77,7 +77,22 @@ bool orderableSymbols(const ASTVec& symbols)
     if (!seen.insert(symbol).second)
       return false; // a repeat makes the distinct false, not symmetric
   }
-  return width != 0;
+  if (width == 0)
+    return false;
+  // More symbols than the width can tell apart, and the chain says so
+  // immediately where the clique takes minutes to. That sounds like a win and
+  // is the one case where it must not be taken: a sort introduced by
+  // declare-sort is carried by a bit-vector of --uf-sort-width bits, and the
+  // sort itself is unbounded, so the carrier's capacity is an artefact of the
+  // encoding rather than a fact about the query. Answering unsat from it fast
+  // is worse than answering slowly, which is the same call the parser's
+  // cardinality fold already makes for the same reason -- and where the width
+  // really is the sort's own, that fold has already replaced the group with
+  // false and there is nothing here to order.
+  if (width < 64 &&
+      (uint64_t)symbols.size() > ((uint64_t)1 << width))
+    return false;
+  return true;
 }
 
 // Which form a group has, if any. Fewer than three operands is left alone:
