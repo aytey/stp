@@ -141,6 +141,7 @@ class Cpp_interface
   // SourceSort, so a name in sort position needs one lookup whichever
   // command introduced it.
   std::map<std::string, SourceSort> sort_aliases;
+  std::vector<SourceSort> declared_sort_carriers;
   bool print_success;
   bool ignoreCheckSatRequest;
 
@@ -395,6 +396,16 @@ public:
   DLL_PUBLIC void addSortAlias(const std::string& name, const SourceSort& sort);
   DLL_PUBLIC bool lookupSortAlias(const std::string& name,
                                   SourceSort& sort) const;
+
+  // Carriers standing in for a sort introduced by declare-sort. Such a sort is
+  // unbounded, but reaches the rest of STP as a bit-vector indistinguishable
+  // from a declared one of the same width, so anything reasoning about how
+  // many values a sort HAS -- rather than how many the encoding can tell
+  // apart -- has to ask this first. Entries are never removed: a carrier that
+  // has been used for an uninterpreted sort at any point in the session stays
+  // ineligible, which errs towards reasoning less rather than wrongly.
+  DLL_PUBLIC void noteDeclaredSortCarrier(const SourceSort& sort);
+  DLL_PUBLIC bool isDeclaredSortCarrier(const SourceSort& sort) const;
   // The floating-point spelling of the same pair, kept because define-sort's
   // callers speak in exponent/significand widths.
   DLL_PUBLIC void addSortAlias(const std::string& name, unsigned exp_width,

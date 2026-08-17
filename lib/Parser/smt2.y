@@ -397,6 +397,16 @@ namespace stp
       return operands > 2;
     if (sort.kind() != Kind::BitVector)
       return false;
+    // A sort introduced by declare-sort arrives here as a bit-vector carrier
+    // that is indistinguishable from a declared one of the same width, and an
+    // uninterpreted sort is UNBOUNDED: (distinct s0 .. s16) over it is
+    // satisfiable in a seventeen-element domain however narrow the carrier
+    // is. Reading the width as a cardinality would answer that unsat, which
+    // is worse than the blow-up this guard exists to avoid -- a wrong answer
+    // rather than a slow one -- so a width any declared sort has claimed is
+    // never guarded.
+    if (stp::GlobalParserInterface->isDeclaredSortCarrier(sort))
+      return false;
     const unsigned width = sort.bitVectorWidth();
     // 2^64 operands cannot be written down, so a wide sort is never exceeded
     // and the shift that would overflow is never taken.
@@ -1883,10 +1893,12 @@ cmdi:
          stp::GlobalParserInterface->unsupported();
        else
        {
-         stp::GlobalParserInterface->addSortAlias(
-             *$2, stp::SourceSort::bitVector(
-                      stp::GlobalParserInterface->getUserFlags()
-                          .uf_sort_width));
+         const stp::SourceSort carrier = stp::SourceSort::bitVector(
+             stp::GlobalParserInterface->getUserFlags().uf_sort_width);
+         stp::GlobalParserInterface->addSortAlias(*$2, carrier);
+         // The carrier now stands for an unbounded sort, so nothing may
+         // reason from its width to how many values the sort has.
+         stp::GlobalParserInterface->noteDeclaredSortCarrier(carrier);
          stp::GlobalParserInterface->success();
        }
        delete $2;

@@ -260,9 +260,27 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
     if (cost != 0)
       selection.push_back(std::make_pair(cost, entry.first));
   }
+  // Cheapest first, but every floating-point signature after every
+  // bit-vector one whatever they cost.
+  //
+  // A float pair is worth less than a bit-vector pair of the same count: the
+  // query's own (= a b) over bit-vectors is a substitutable equality, so
+  // equality propagation collapses the actuals and the constraints dissolve
+  // before SAT, while over floats it is FP_SMT_EQ, a predicate, and every
+  // constraint is paid in full. Sorting floats last is what that difference
+  // buys them -- they take whatever budget is left rather than competing for
+  // it, so the declarations a pure bit-vector query selects are exactly the
+  // ones it selected when floats were refused outright, and a cheap float
+  // declaration can no longer push an expensive bit-vector one over the line.
   std::sort(selection.begin(), selection.end(),
             [](const std::pair<uint64_t, const UFDecl*>& left,
                const std::pair<uint64_t, const UFDecl*>& right) {
+              const bool leftFloat =
+                  hasFloatingPointPosition(left.second->signature());
+              const bool rightFloat =
+                  hasFloatingPointPosition(right.second->signature());
+              if (leftFloat != rightFloat)
+                return rightFloat;
               if (left.first != right.first)
                 return left.first < right.first;
               return left.second->id() < right.second->id();

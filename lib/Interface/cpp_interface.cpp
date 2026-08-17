@@ -236,6 +236,20 @@ bool Cpp_interface::lookupSortAlias(const std::string& name,
   return true;
 }
 
+void Cpp_interface::noteDeclaredSortCarrier(const SourceSort& sort)
+{
+  if (!isDeclaredSortCarrier(sort))
+    declared_sort_carriers.push_back(sort);
+}
+
+bool Cpp_interface::isDeclaredSortCarrier(const SourceSort& sort) const
+{
+  for (const SourceSort& carrier : declared_sort_carriers)
+    if (carrier == sort)
+      return true;
+  return false;
+}
+
 void Cpp_interface::addSortAlias(const std::string& name, unsigned exp_width,
                                  unsigned sig_width)
 {
