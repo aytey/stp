@@ -576,12 +576,30 @@ std::string STPMgr::uninterpretedElementName(const SourceSort& sort,
     if (element.sort == sort)
       ordinal++;
 
+  // The name has to be one nothing else in this query answers to, because the
+  // model declares it as a fresh constant: an input free to declare |S!0|
+  // itself would get a model that both invents S!0 and defines the input's own
+  // S!0 as something else, and reading it back is then a redeclaration. Step
+  // past any name already taken rather than assume the shape is private.
+  const std::string base = uninterpretedSortName(sort.uninterpretedId()) + "!";
+  std::string name;
+  while (true)
+  {
+    name = base + std::to_string(ordinal);
+    bool taken = LookupSymbol(name.c_str());
+    for (const UninterpretedElement& element : uninterpreted_elements)
+      taken = taken || element.name == name;
+    if (!taken)
+      break;
+    ordinal++;
+  }
+
   UninterpretedElement fresh;
   fresh.sort = sort;
-  fresh.name = uninterpretedSortName(sort.uninterpretedId()) + "!" +
-               std::to_string(ordinal);
+  fresh.name = name;
   fresh.carrier = carrier;
   uninterpreted_elements.push_back(fresh);
+  noteUninterpretedSortPrinted(sort);
   return fresh.name;
 }
 

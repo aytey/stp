@@ -162,6 +162,7 @@ public:
   // See uninterpretedElementName. Public because it is model state, not
   // solver state, and the printers are its only readers.
   std::vector<UninterpretedElement> uninterpreted_elements;
+  std::vector<SourceSort> uninterpreted_sorts_printed;
 
   void noteUnknown(UnknownReason reason, const std::string& detail = "")
   {
@@ -464,7 +465,30 @@ public:
   {
     return uninterpreted_elements;
   }
-  void clearUninterpretedElements() { uninterpreted_elements.clear(); }
+
+  // Declared sorts the model has printed anywhere, element or not. A sort can
+  // reach the text through a function signature alone -- a predicate over an
+  // opaque sort is the commonest such shape -- and a model that used the sort
+  // without declaring it cannot be read back.
+  void noteUninterpretedSortPrinted(const SourceSort& sort)
+  {
+    if (sort.kind() != SourceSort::Kind::Uninterpreted)
+      return;
+    for (const SourceSort& seen : uninterpreted_sorts_printed)
+      if (seen == sort)
+        return;
+    uninterpreted_sorts_printed.push_back(sort);
+  }
+  const std::vector<SourceSort>& uninterpretedSortsPrinted() const
+  {
+    return uninterpreted_sorts_printed;
+  }
+
+  void clearUninterpretedElements()
+  {
+    uninterpreted_elements.clear();
+    uninterpreted_sorts_printed.clear();
+  }
 
   DLL_PUBLIC ASTNode CreateFPSpecialConst(FPSpecial which, unsigned exp_width,
                                           unsigned sig_width);

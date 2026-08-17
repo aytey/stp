@@ -1813,18 +1813,12 @@ void Cpp_interface::getModel()
   // and the definitions refer to those. Distinct names denote distinct
   // elements -- the convention every solver's models rest on, and the only
   // thing this format cannot state outright.
-  std::vector<SourceSort> declared;
-  for (const STPMgr::UninterpretedElement& element : bm.uninterpretedElements())
-  {
-    bool seen = false;
-    for (const SourceSort& already : declared)
-      seen = seen || already == element.sort;
-    if (seen)
-      continue;
-    declared.push_back(element.sort);
-    cout << "(declare-sort " << sourceSortToSMTLib(element.sort) << " 0)"
-         << std::endl;
-  }
+  // Every sort the body mentioned, not only those that named an element. A
+  // sort can reach the text through a function signature alone -- a predicate
+  // over an opaque sort, which is the commonest shape of all -- and a model
+  // that used a sort it never declared cannot be read back at all.
+  for (const SourceSort& sort : bm.uninterpretedSortsPrinted())
+    cout << "(declare-sort " << sourceSortToSMTLib(sort) << " 0)" << std::endl;
   for (const STPMgr::UninterpretedElement& element : bm.uninterpretedElements())
     cout << "(declare-fun |" << element.name << "| () "
          << sourceSortToSMTLib(element.sort) << ")" << std::endl;

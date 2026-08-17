@@ -27,6 +27,29 @@ UninterpretedSortNames& sortNames()
 
 } // namespace
 
+namespace
+{
+
+// SMT-LIB 2's simple symbols: these characters, and not starting with a digit.
+// Anything else has to be written between vertical bars.
+bool needsQuoting(const std::string& name)
+{
+  static const std::string extra = "~!@$%^&*_-+=<>.?/";
+  if (name.empty() || (name[0] >= '0' && name[0] <= '9'))
+    return true;
+  for (const char c : name)
+  {
+    const bool simple = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') ||
+                        extra.find(c) != std::string::npos;
+    if (!simple)
+      return true;
+  }
+  return false;
+}
+
+} // namespace
+
 SourceSort registerUninterpretedSort(const std::string& name, unsigned width)
 {
   UninterpretedSortNames& names = sortNames();
@@ -68,7 +91,14 @@ std::string sourceSortToSMTLib(const SourceSort& sort)
       // cannot be spelled, and saying so is better than printing a carrier
       // width that the sort deliberately is not.
       const std::string name = uninterpretedSortName(sort.uninterpretedId());
-      return name.empty() ? "Unknown" : name;
+      if (name.empty())
+        return "Unknown";
+      // A sort name is an SMT-LIB symbol and does not have to be a simple one:
+      // (declare-sort |my sort| 0) is legal, and printing it bare produced a
+      // model and diagnostics that could not be read back. Quoted here rather
+      // than at each printer, because every printer reaches the name through
+      // this function.
+      return needsQuoting(name) ? "|" + name + "|" : name;
     }
     case SourceSort::Kind::Unknown:
       return "Unknown";

@@ -2288,6 +2288,7 @@ void AbsRefine_CounterExample::outputLine(std::ostream& os, const ASTNode &f, AS
         // pattern is not a literal of this sort, and printing one would name a
         // bit-vector -- the one thing the sort exists to say it is not. The
         // element names are declared in the model's preamble.
+        bm->noteUninterpretedSortPrinted(f.GetSourceSort());
         os << " () " << sourceSortToSMTLib(f.GetSourceSort()) << " |"
            << bm->uninterpretedElementName(
                   f.GetSourceSort(),
