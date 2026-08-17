@@ -16,8 +16,13 @@
 ;
 ; The reason is where the actionable part lives: `incomplete` is SMT-LIB's own
 ; word for it, and the sentence beside it names the sort, the count, the width
-; and what to raise. Asked after an answer that was not unknown, the same
-; command says so rather than inventing a reason.
+; and what to raise -- a WIDTH, which is the correction this row records. It
+; first said "raise to at least 5" for five elements, four times larger than
+; needed, and above 1024 named a value the flag's own range check refuses.
+;
+; The query is solved rather than refused, and only an unsat is withheld: every
+; carrier assignment denotes a real assignment of elements, so a sat found over
+; a narrow carrier is a genuine answer and is kept.
 ;
 ; RUN: %solver --uninterpreted-functions --incremental=off --uf-sort-width=2 %s 2>&1 | %OutputCheck --check-prefix=TIGHT %s
 ; RUN: %solver --uninterpreted-functions --incremental=on  --uf-sort-width=2 %s 2>&1 | %OutputCheck --check-prefix=TIGHT %s
@@ -26,10 +31,15 @@
 ;
 ; TIGHT-NOT: ^unsat
 ; TIGHT: ^unknown
-; TIGHT: :reason-unknown \(incomplete "the query names 5 terms of sort S, and --uf-sort-width=2 tells only 4 elements of it apart; raise --uf-sort-width to at least 5"\)
+; TIGHT: :reason-unknown \(incomplete "the query needs up to 5 elements of sort S, and --uf-sort-width=2 tells only 4 apart; raise --uf-sort-width to at least 3"\)
 ;
 ; ROOMY: ^sat
 ; ROOMY: :reason-unknown \(error "the last answer was not unknown"\)
+;
+; TIGHT: WITHHELD-DONE
+; TIGHT: ^sat
+; ROOMY: WITHHELD-DONE
+; ROOMY: ^sat
 ;
 (set-logic QF_UFBV)
 (declare-sort S 0)
@@ -41,3 +51,18 @@
 (assert (distinct e0 e1 e2 e3 e4))
 (check-sat)
 (get-info :reason-unknown)
+(echo "WITHHELD-DONE")
+; A satisfiable query over the same narrow carrier keeps its answer: it is
+; sound whatever the carrier's width, and refusing it was a plain loss.
+(reset)
+(set-logic QF_UFBV)
+(declare-sort S 0)
+(declare-fun e0 () S)
+(declare-fun e1 () S)
+(declare-fun e2 () S)
+(declare-fun e3 () S)
+(declare-fun e4 () S)
+(assert (= e0 e1))
+(assert (= e2 e3))
+(assert (= e3 e4))
+(check-sat)

@@ -983,37 +983,27 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   assert(assertionsSMT2.size() == cache.size());
 
   // A sort declared by declare-sort is unbounded and its carrier is not, so a
-  // query naming more terms of one sort than the carrier can tell apart may be
-  // unsatisfiable in the encoding while being satisfiable in the theory. Only
-  // unsat can be wrong that way: every carrier pattern denotes an element and
-  // bit equality on the carrier is the sort's equality, so any satisfying
-  // carrier assignment is a genuine model. An unsound unsat is also the one
-  // answer a caller cannot tell from a real refutation, so neither verdict may
-  // be reported and the answer is `unknown` with a reason that says which sort
-  // ran out and what to raise.
+  // query needing more elements of one sort than the carrier can tell apart may
+  // be unsatisfiable in the encoding while being satisfiable in the theory.
+  // Which way that can go wrong is not symmetric: every carrier pattern denotes
+  // an element and bit equality on the carrier is the sort's equality, so any
+  // satisfying carrier assignment is a genuine model and `sat` is always sound.
+  // Only `unsat` can be an artefact, and it is also the one answer a caller
+  // cannot tell from a real refutation.
   //
-  // Checked here rather than in either engine because both are reachable from
-  // this one funnel and the question is about the input, not about how it would
-  // have been solved. Conservative by construction: it counts terms, not terms
-  // forced apart, so a query with more terms than capacity that is
-  // unsatisfiable for unrelated reasons is refused too. At the default width it
-  // cannot fire on anything writable -- it takes 65537 terms of one sort.
-  {
-    std::string exhausted;
-    if (sortCarrierExhausted(assertionsSMT2, exhausted))
-    {
-      bm.noteUnknown(UnknownReason::Incomplete, exhausted);
-      cache.back() = Entry(SOLVER_UNKNOWN);
-      cache.back().node_number = assertionsSMT2.back().GetNodeNum();
-      model_valid = false;
-      ToSATBase::PrintOutput(&bm, SOLVER_UNKNOWN);
-      // Every path out of this function owes the parse timer its restart: the
-      // caller stops it once more when the file ends, and an unbalanced stack
-      // is a crash rather than a bad number.
-      bm.GetRunTimes()->start(RunTimes::Parsing);
-      return;
-    }
-  }
+  // So the query is SOLVED and only an `unsat` is withheld -- see the
+  // conversion after the solve below. Refusing before solving would have
+  // thrown away sound `sat` answers too, which is a plain loss for the users
+  // who narrowed the carrier deliberately.
+  //
+  // Decided here rather than in either engine because both are reachable from
+  // this one funnel and the question is about the input, not about how it was
+  // solved. Conservative: it counts terms that could need an element of their
+  // own, not elements actually forced apart, so an over-capacity query that is
+  // unsatisfiable for unrelated reasons is withheld too.
+  std::string carrierExhausted;
+  const bool carrierMayBeShort =
+      sortCarrierExhausted(assertionsSMT2, carrierExhausted);
 
   Entry& last_run = cache.back();
   if ((last_run.node_number != assertionsSMT2.back().GetNodeNum()) &&
@@ -1111,6 +1101,17 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   {
     std::cerr << "Incremental: unsat answered from a cached core, no solve"
               << std::endl;
+  }
+
+  // An `unsat` reached over a carrier too narrow for the query may be an
+  // artefact of the encoding rather than a refutation, and nothing in the
+  // output would distinguish the two. Withhold it. `sat` is kept: every
+  // carrier assignment denotes a real assignment of elements, so a model found
+  // this way is a genuine one whatever the carrier's width.
+  if (carrierMayBeShort && last_run.result == SOLVER_UNSATISFIABLE)
+  {
+    last_run.result = SOLVER_UNKNOWN;
+    bm.noteUnknown(UnknownReason::Incomplete, carrierExhausted);
   }
 
   // A model exists exactly when this check concluded SAT and the solve
@@ -1509,20 +1510,44 @@ void Cpp_interface::getInfo(std::string flag)
   flush(cout);
 }
 
-// Terms of one declared sort, counted per sort, against what its carrier can
-// hold. See the caller for why the answer is no answer.
+// How many elements of one declared sort the query could need at once, counted
+// per sort, against what its carrier can hold. See the caller for what is done
+// with the answer.
 bool Cpp_interface::sortCarrierExhausted(const ASTVec& assertions,
                                          std::string& detail) const
 {
-  if (!bm.UserFlags.enable_uninterpreted_functions)
+  // Nothing to count when no sort was ever declared, which is almost every
+  // query. Checked before the walk rather than inside it: this runs on every
+  // check-sat ahead of the result cache, and an O(DAG) sweep that always
+  // answers no cost 6.7x on a session of repeated check-sats over a 60k-node
+  // formula with no declare-sort in it at all.
+  if (!bm.UserFlags.enable_uninterpreted_functions || sort_aliases.empty())
+    return false;
+  bool anyDeclared = false;
+  for (const std::pair<const std::string, SourceSort>& alias : sort_aliases)
+    anyDeclared = anyDeclared ||
+                  alias.second.kind() == SourceSort::Kind::Uninterpreted;
+  if (!anyDeclared)
     return false;
 
-  // Only the nodes carrying a sort of their own are counted. Everything else
-  // derives its sort from its width, so it is a bit-vector by the time it is
-  // asked and could not be attributed to a declared sort anyway.
+  // What counts is a term that could need an element of its own, so two node
+  // shapes carrying the sort are excluded and neither is an edge case:
+  //
+  //  - a declaration's identity symbol. It carries the codomain sort so that an
+  //    application can derive its own, but it denotes the function, not an
+  //    element, and counting it refused a query with one constant and one
+  //    application at width 1 -- where one element suffices.
+  //  - an if-then-else. Its value is always one of its branches, which are
+  //    counted already, so it can never require a fresh element. Four
+  //    constants and one ite over them read as five terms against a capacity
+  //    of four.
   std::map<unsigned, uint64_t> named;
   std::map<unsigned, unsigned> widths;
   ASTNodeSet visited;
+  ASTNodeSet identities;
+  const UFContext* const context = bm.getUFContextIfAny();
+  if (context != NULL)
+    context->collectIdentitySymbols(identities);
   std::vector<ASTNode> pending(assertions.begin(), assertions.end());
   while (!pending.empty())
   {
@@ -1531,7 +1556,8 @@ bool Cpp_interface::sortCarrierExhausted(const ASTVec& assertions,
     if (current.IsNull() || !visited.insert(current).second)
       continue;
     const SourceSort sort = current.GetSourceSort();
-    if (sort.kind() == SourceSort::Kind::Uninterpreted)
+    if (sort.kind() == SourceSort::Kind::Uninterpreted &&
+        current.GetKind() != ITE && identities.count(current) == 0)
     {
       named[sort.uninterpretedId()] += 1;
       widths[sort.uninterpretedId()] = sort.packedWidth();
@@ -1548,13 +1574,18 @@ bool Cpp_interface::sortCarrierExhausted(const ASTVec& assertions,
     const uint64_t capacity = (uint64_t)1 << width;
     if (entry.second <= capacity)
       continue;
+    // The remedy is a WIDTH, not a term count. Saying "raise it to at least 5"
+    // for five terms named a value four times larger than needed, and above
+    // 1024 named one the flag's own range check refuses -- so the advice was
+    // unfollowable exactly where it was most needed.
+    unsigned needed = width;
+    while (needed < 64 && ((uint64_t)1 << needed) < entry.second)
+      needed++;
     std::ostringstream message;
-    message << "the query names " << entry.second << " terms of sort "
-            << uninterpretedSortName(entry.first)
-            << ", and --uf-sort-width=" << width
-            << " tells only " << capacity
-            << " elements of it apart; raise --uf-sort-width to at least "
-            << entry.second;
+    message << "the query needs up to " << entry.second
+            << " elements of sort " << uninterpretedSortName(entry.first)
+            << ", and --uf-sort-width=" << width << " tells only " << capacity
+            << " apart; raise --uf-sort-width to at least " << needed;
     detail = message.str();
     return true;
   }
