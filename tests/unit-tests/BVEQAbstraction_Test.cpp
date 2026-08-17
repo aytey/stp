@@ -19,6 +19,7 @@ THE SOFTWARE.
 **********************/
 
 #include "stp/STPManager/STPManager.h"
+#include "stp/STPManager/STP.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BitBlaster.h"
@@ -188,33 +189,57 @@ TEST_F(BVEQAbstractionTest, DagSharingReusesAbstraction)
   EXPECT_EQ(1u, bb.abstractedEQs().size());
 }
 
-TEST_F(BVEQAbstractionTest, PrefixRefineWidthFlagIsStored)
-{
-  mgr.UserFlags.bv_eq_refine_width = 32;
-  EXPECT_EQ(32u, mgr.UserFlags.bv_eq_refine_width);
-
-  mgr.UserFlags.bv_eq_refine_width = 0;
-  EXPECT_EQ(0u, mgr.UserFlags.bv_eq_refine_width);
-}
-
-TEST_F(BVEQAbstractionTest, BVEQAbstractionStructHasPrefixFields)
+TEST_F(BVEQAbstractionTest, PrefixRefinementSatResult)
 {
   mgr.UserFlags.bv_eq_abstraction = true;
   mgr.UserFlags.bv_eq_abstraction_width = 64;
+  mgr.UserFlags.bv_eq_refine_width = 32;
 
-  ASTNode x = makeSymbol("pf_x", 256);
-  ASTNode y = makeSymbol("pf_y", 256);
-  ASTNode eq = factory->CreateNode(EQ, x, y);
+  ASTNode a = makeSymbol("pr_a", 256);
+  ASTNode b = makeSymbol("pr_b", 256);
+  ASTNode eq = factory->CreateNode(EQ, a, b);
 
-  BBNodeManagerAIG aigMgr;
-  stp::SubstitutionMap sm(&mgr);
-  Simplifier simp(&mgr, &sm);
-  BitBlaster bb(&aigMgr, &simp, factory, &mgr.UserFlags);
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
 
-  bb.BBForm(eq);
+TEST_F(BVEQAbstractionTest, PrefixRefinementUnsatTransitivity)
+{
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+  mgr.UserFlags.bv_eq_refine_width = 32;
 
-  ASSERT_EQ(1u, bb.abstractedEQs().size());
-  EXPECT_EQ(eq, bb.abstractedEQs()[0].eqNode);
+  ASTNode a = makeSymbol("pru_a", 256);
+  ASTNode b = makeSymbol("pru_b", 256);
+  ASTNode c = makeSymbol("pru_c", 256);
+
+  ASTNode eq_ab = factory->CreateNode(EQ, a, b);
+  ASTNode eq_bc = factory->CreateNode(EQ, b, c);
+  ASTNode neq_ac = factory->CreateNode(NOT, factory->CreateNode(EQ, a, c));
+
+  ASTNode formula = factory->CreateNode(AND, eq_ab,
+      factory->CreateNode(AND, eq_bc, neq_ac));
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_VALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, PrefixRefinementSmallWidth)
+{
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+  mgr.UserFlags.bv_eq_refine_width = 8;
+
+  ASTNode a = makeSymbol("psm_a", 256);
+  ASTNode b = makeSymbol("psm_b", 256);
+
+  ASTNode eq = factory->CreateNode(EQ, a, b);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
 }
 
 } // namespace
