@@ -353,6 +353,11 @@ void ExtraMain::create_options()
       ->capture_default_str();
 
   const char* const bb_group = "Bit-blasting options";
+  app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,
+                 "hard limit on AIG AND-gate nodes during bit-blasting; "
+                 "the solver reports unknown when it is exceeded (0: unlimited)")
+      ->group(bb_group)
+      ->capture_default_str();
   bool_arg("--bb.div-v1", bm->UserFlags.division_variant_1,
            "unsigned division encoding variant 1", bb_group);
 

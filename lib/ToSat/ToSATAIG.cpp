@@ -73,6 +73,13 @@ bool ToSATAIG::CallSAT(SATSolver& satSolver, const ASTNode& input,
 
   first = false;
   Cnf_Dat_t* cnfData = bitblast(input, needAbsRef);
+
+  if (cnfData == NULL)
+  {
+    bm->soft_timeout_expired = true;
+    return false;
+  }
+
   handle_cnf_options(cnfData, needAbsRef);
 
   assert(satSolver.nVars() == 0);
@@ -130,27 +137,42 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
   Simplifier simp(bm, &sm);
 
   BBNodeManagerAIG mgr;
+  mgr.nodeBudget = bm->UserFlags.aig_node_budget;
   BitBlaster bb(&mgr, &simp, bm->defaultNodeFactory, &bm->UserFlags, cb);
 
   bm->GetRunTimes()->start(RunTimes::BitBlasting);
-  BBNodeAIG BBFormula = bb.BBForm(input);
 
-  bm->GetRunTimes()->stop(RunTimes::BitBlasting);
+  try
+  {
+    BBNodeAIG BBFormula = bb.BBForm(input);
+    bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
-  delete cb;
-  cb = NULL;
-  bb.cb = NULL;
+    delete cb;
+    cb = NULL;
+    bb.cb = NULL;
 
-  bm->GetRunTimes()->start(RunTimes::CNFConversion);
-  Cnf_Dat_t* cnfData = NULL;
-  toCNF.toCNF(BBFormula, cnfData, nodeToSATVar, needAbsRef, mgr);
-  bm->GetRunTimes()->stop(RunTimes::CNFConversion);
+    bm->GetRunTimes()->start(RunTimes::CNFConversion);
+    Cnf_Dat_t* cnfData = NULL;
+    toCNF.toCNF(BBFormula, cnfData, nodeToSATVar, needAbsRef, mgr);
+    bm->GetRunTimes()->stop(RunTimes::CNFConversion);
 
-  // Free the memory in the AIGs.
-  BBFormula = BBNodeAIG(); // null node
-  mgr.stop();
+    BBFormula = BBNodeAIG(); // null node
+    mgr.stop();
 
-  return cnfData;
+    return cnfData;
+  }
+  catch (const AIGBudgetExhausted& e)
+  {
+    bm->GetRunTimes()->stop(RunTimes::BitBlasting);
+    if (bm->UserFlags.stats_flag)
+      cerr << "AIG node budget exhausted at " << e.nodeCount << " nodes"
+           << endl;
+    delete cb;
+    cb = NULL;
+    bb.cb = NULL;
+    mgr.stop();
+    return NULL;
+  }
 }
 
 void ToSATAIG::add_cnf_to_solver(SATSolver& satSolver, Cnf_Dat_t* cnfData)

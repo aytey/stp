@@ -306,6 +306,11 @@ public:
   // output flags
   bool output_CNF_flag = false;
 
+  // Hard limit on AIG AND-gate nodes during bit-blasting. If the node
+  // count exceeds this the bit-blaster aborts and the solver reports
+  // unknown.  0 means unlimited (the default).
+  unsigned aig_node_budget = 0;
+
   /* Bitblasting options */
 
   // You can select these with any combination you want of true & false.
