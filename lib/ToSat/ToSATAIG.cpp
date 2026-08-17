@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "stp/UninterpretedFunctions/UFContext.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
+#include <sstream>
 
 namespace stp
 {
@@ -204,6 +205,17 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
     if (bm->UserFlags.stats_flag)
       cerr << "AIG node budget exhausted at " << e.nodeCount << " nodes"
            << endl;
+    // Say so here, where the reason is known. The no-answer leaves through the
+    // same door a clock expiry does -- soft_timeout_expired, so that the whole
+    // pipeline unwinds the one way it knows -- and by the time it surfaces
+    // nothing can tell the two apart. This is not a clock: more time on the
+    // same machine reproduces it exactly, and what a caller can act on is the
+    // flag to raise.
+    std::ostringstream detail;
+    detail << "the AIG node budget set by --aig-node-budget ("
+           << bm->UserFlags.aig_node_budget << ") ran out at " << e.nodeCount
+           << " nodes";
+    bm->noteUnknown(UnknownReason::Incomplete, detail.str());
     delete cb;
     cb = NULL;
     bb.cb = NULL;
