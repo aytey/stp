@@ -96,6 +96,82 @@ bool hasFloatingPointPosition(const UFSignature& signature)
   return false;
 }
 
+// One declaration's applications, partitioned so that only pairs drawn from
+// the same part can ever be congruent, together with what those parts cost.
+//
+// The partition is z3's reduce_args grouping: a position at which *every*
+// application holds a constant splits them by the value there, and two
+// applications in different parts differ at a position where the pair loop
+// sees two unequal constants and drops the pair. So the parts are both what
+// to charge for and what to walk. Charging C(n, 2) over the whole declaration
+// instead pushes it past a budget it fits inside -- measured, a declaration
+// with a literal tag in one position was charged 4950 where it installs 450 --
+// and walking the whole declaration instead spends time on pairs that can
+// produce nothing.
+//
+// The estimate must be an upper bound on what the loop emits, never under it,
+// or a declaration would spend budget it was not billed for. Within a part it
+// is the established count: pairs among the applications with a symbolic
+// actual somewhere, plus each all-constant application against each of those.
+// Two all-constant applications are never charged, in a part or out of one,
+// because they are either the same hash-consed handle or differ somewhere and
+// are dropped.
+struct CongruenceGroups
+{
+  std::vector<std::vector<const LoweredApplicationRecord*>> parts;
+  uint64_t estimate = 0;
+};
+
+CongruenceGroups
+groupForCongruence(const std::vector<const LoweredApplicationRecord*>& records)
+{
+  CongruenceGroups grouped;
+  if (records.size() < 2)
+    return grouped;
+  const size_t arity = records.front()->loweredActuals.size();
+
+  // Positions at which *every* application holds a constant. The quantifier
+  // has to be "every", not "here": "these two cannot be shown distinct" is
+  // not a transitive relation -- for arity two, (1,x), (1,2) and (3,2) relate
+  // the first to the second and the second to the third but not the first to
+  // the third -- so no partition models it. Restricting to positions that are
+  // constant throughout is what makes it an equivalence, and is the same
+  // restriction z3's reduce_args makes for the same reason.
+  std::vector<bool> constantEverywhere(arity, true);
+  for (const LoweredApplicationRecord* record : records)
+    for (size_t i = 0; i < arity; ++i)
+      if (!record->loweredActuals[i].isConstant())
+        constantEverywhere[i] = false;
+
+  std::map<ASTVec, size_t> partIndex;
+  for (const LoweredApplicationRecord* record : records)
+  {
+    ASTVec key;
+    for (size_t i = 0; i < arity; ++i)
+      if (constantEverywhere[i])
+        key.push_back(record->loweredActuals[i]);
+    const auto found = partIndex.find(key);
+    if (found == partIndex.end())
+    {
+      partIndex.emplace(key, grouped.parts.size());
+      grouped.parts.push_back({record});
+    }
+    else
+      grouped.parts[found->second].push_back(record);
+  }
+
+  for (const std::vector<const LoweredApplicationRecord*>& part : grouped.parts)
+  {
+    uint64_t constantArgued = 0;
+    for (const LoweredApplicationRecord* record : part)
+      if (allActualsConstant(*record))
+        constantArgued++;
+    const uint64_t symbolic = part.size() - constantArgued;
+    grouped.estimate += pairsAmong(symbolic) + constantArgued * symbolic;
+  }
+  return grouped;
+}
+
 // What one argument position of a candidate pair contributes to the premise.
 enum class PositionVerdict
 {
@@ -166,14 +242,12 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
   // differ in some position, so they never need a constraint between them.
   std::vector<std::pair<uint64_t, const UFDecl*>> selection;
   std::map<const UFDecl*, size_t> statIndex;
+  std::map<const UFDecl*, CongruenceGroups> groupsByDeclaration;
   for (const auto& entry : byDeclaration)
   {
-    uint64_t constantArgued = 0;
-    for (const LoweredApplicationRecord* record : entry.second)
-      if (allActualsConstant(*record))
-        constantArgued++;
-    const uint64_t symbolic = entry.second.size() - constantArgued;
-    const uint64_t cost = pairsAmong(symbolic) + constantArgued * symbolic;
+    const CongruenceGroups grouped = groupForCongruence(entry.second);
+    const uint64_t cost = grouped.estimate;
+    groupsByDeclaration.emplace(entry.first, grouped);
 
     UFEagerDeclarationStat stat;
     stat.name = entry.first->name();
@@ -254,9 +328,14 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
     }
     stat.outcome = UFEagerDeclarationStat::Outcome::Selected;
 
-    const std::vector<const LoweredApplicationRecord*>& records =
-        byDeclaration[candidate.second];
+    // Enumerate within a part only. Pairs drawn from different parts differ at
+    // a position where the loop would see two unequal constants and drop them,
+    // so walking them costs time and can produce nothing -- and since they are
+    // not charged either, walking them would leave the scan unbounded by the
+    // budget for a declaration made of many singleton parts.
     const UFSignature& signature = candidate.second->signature();
+    for (const std::vector<const LoweredApplicationRecord*>& records :
+         groupsByDeclaration[candidate.second].parts)
     for (size_t i = 0; i < records.size(); ++i)
       for (size_t j = i + 1; j < records.size(); ++j)
       {
