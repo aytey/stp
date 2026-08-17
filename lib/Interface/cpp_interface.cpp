@@ -1490,17 +1490,30 @@ void Cpp_interface::getValue(const ASTVec& v)
           getUninterpretedApplicationValue(n, &diagnostic);
       if (value.GetKind() == UNDEFINED)
       {
-        // A durable application the certified solve never reached, or one
-        // whose model has since been invalidated, has no public value. That
-        // is a request the current model cannot answer, not a feature the
-        // solver lacks, so the single SMT-LIB response is the computed
-        // reason -- never the internal result symbol and never a guess.
-        // The whole command is rejected: nothing buffered in `os` prints.
-        if (diagnostic.empty())
-          diagnostic = "uninterpreted-function application has no certified "
-                       "value";
-        rejectCurrentCommand(diagnostic);
-        return;
+        // The solve never reached this application, so there is no certified
+        // value to hand back -- but there is still an answer, and the same
+        // command list was already giving it: an application nested inside a
+        // term goes through the model evaluator, which completes it against
+        // the published interpretation, so (bvadd (f #x07) #x01) answered
+        // while the bare (f #x07) was refused. The printed model is total and
+        // says what (f #x07) is; refusing to repeat it here was the one place
+        // the two disagreed.
+        //
+        // Fall through to the ordinary term path, which is that evaluator.
+        // Anything genuinely unanswerable -- no model at all, an application
+        // from another context, one whose model has been invalidated -- fails
+        // there too, and the diagnostic computed above is what it reports.
+        if (!model_valid || GlobalSTP == NULL)
+        {
+          if (diagnostic.empty())
+            diagnostic = "uninterpreted-function application has no certified "
+                         "value";
+          rejectCurrentCommand(diagnostic);
+          return;
+        }
+        GlobalSTP->Ctr_Example->PrintSMTLIB2(os, n);
+        os << std::endl;
+        continue;
       }
       os << "( ";
       printer::SMTLIB2_Print1(os, n, 0, false);
