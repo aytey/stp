@@ -370,6 +370,41 @@ namespace stp
     }
   }
 
+  // (distinct t1 ... tn) is unsatisfiable as soon as n exceeds the number of
+  // values its operands' sort has: n terms cannot take n different values out
+  // of fewer than n. That is pigeonhole, and this parser expands distinct
+  // into C(n, 2) disequalities, so what reaches the solver is binary-encoded
+  // pigeonhole -- precisely the shape resolution cannot do in polynomial size.
+  // Measured: 16 operands over (_ BitVec 4) answer in 0.01s and 17 do not
+  // answer at all, so the cliff is one operand wide.
+  //
+  // Only sorts whose value count is exact are guarded. FloatingPoint is not:
+  // its equality here is FP_SMT_EQ, which identifies values the carrier keeps
+  // apart, so the count is not the carrier's. Arrays are not, having no finite
+  // count worth computing.
+  //
+  // A sort introduced by (declare-sort S 0) reaches this as its bit-vector
+  // carrier, and an uninterpreted sort is unbounded rather than 2^width wide.
+  // The guard is still not what would break such a query: the carrier is
+  // chosen (--uf-sort-width, 65536 values by default) to exceed any term count
+  // a query can have, and a query holding more terms of one uninterpreted sort
+  // than the carrier can tell apart is already being solved at the wrong
+  // cardinality before this test is reached.
+  bool distinctExceedsCardinality(const stp::SourceSort& sort, size_t operands)
+  {
+    typedef stp::SourceSort::Kind Kind;
+    if (sort.kind() == Kind::Bool)
+      return operands > 2;
+    if (sort.kind() != Kind::BitVector)
+      return false;
+    const unsigned width = sort.bitVectorWidth();
+    // 2^64 operands cannot be written down, so a wide sort is never exceeded
+    // and the shift that would overflow is never taken.
+    if (width >= 64)
+      return false;
+    return static_cast<uint64_t>(operands) > (static_cast<uint64_t>(1) << width);
+  }
+
   ASTNode* createNode(Kind k, ASTVec * c)
   {
     if (c->size() < 2)
@@ -2841,6 +2876,14 @@ FORMID_TOK
 
   checkSameSourceSort(terms, "distinct requires operands of the same sort");
 
+  if (!terms.empty() &&
+      distinctExceedsCardinality(terms[0].GetSourceSort(), terms.size()))
+  {
+    $$ = stp::GlobalParserInterface->newNode(
+        stp::GlobalParserInterface->CreateNode(FALSE));
+  }
+  else
+  {
   for(ASTVec::const_iterator it=terms.begin(),itend=terms.end();
       it!=itend; it++)
   {
@@ -2864,6 +2907,7 @@ FORMID_TOK
   $$ = (forms.size() == 1) ?
     stp::GlobalParserInterface->newNode(forms[0]) :
     stp::GlobalParserInterface->newNode(stp::GlobalParserInterface->CreateNode(AND, forms));
+  }
 
   delete $3;
 }
@@ -2876,6 +2920,14 @@ FORMID_TOK
 
   checkSameSourceSort(terms, "distinct requires operands of the same sort");
 
+  if (!terms.empty() &&
+      distinctExceedsCardinality(terms[0].GetSourceSort(), terms.size()))
+  {
+    $$ = stp::GlobalParserInterface->newNode(
+        stp::GlobalParserInterface->CreateNode(FALSE));
+  }
+  else
+  {
   for(ASTVec::const_iterator it=terms.begin(),itend=terms.end();
       it!=itend; it++) {
     for(ASTVec::const_iterator it2=it+1; it2!=itend; it2++) {
@@ -2896,6 +2948,7 @@ FORMID_TOK
   $$ = (forms.size() == 1) ?
     stp::GlobalParserInterface->newNode(forms[0]) :
     stp::GlobalParserInterface->newNode(stp::GlobalParserInterface->CreateNode(AND, forms));
+  }
 
   delete $3;
 }
