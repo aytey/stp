@@ -340,21 +340,19 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
       // that shape before its superlinear part begins.
       if (candidate.first > budget)
       {
-        // Every later declaration is at least as expensive, so they are all
-        // declined for the same reason; record that rather than leaving them
-        // indistinguishable from having had no pairs.
+        // Pass over this one and keep going. Stopping here would be right if
+        // the order were cheapest-first throughout, but it is cheapest-first
+        // within the bit-vector signatures and then again within the float
+        // ones, so a bit-vector declaration that does not fit says nothing
+        // about the floats queued behind every bit-vector one. Stopping was
+        // what made "floats take what is left" untrue: a float declaration of
+        // ten pairs was passed over because a bit-vector declaration of three
+        // hundred came first, while the same ten-pair declaration was selected
+        // when its signature was bit-vectors. It also left the float one
+        // labelled as having had no comparable pairs on a line that reported
+        // ten.
         stat.outcome = UFEagerDeclarationStat::Outcome::DeclinedBudget;
-        for (const std::pair<uint64_t, const UFDecl*>& later : selection)
-          if (later.first >= candidate.first && later.second != candidate.second)
-          {
-            UFEagerDeclarationStat& laterStat =
-                view.eagerStats.declarations[statIndex[later.second]];
-            if (laterStat.outcome ==
-                UFEagerDeclarationStat::Outcome::NoComparablePairs)
-              laterStat.outcome =
-                  UFEagerDeclarationStat::Outcome::DeclinedBudget;
-          }
-        break;
+        continue;
       }
       budget -= candidate.first;
       view.eagerStats.budgetSpent += candidate.first;
@@ -453,8 +451,22 @@ void UFLowering::reportEagerCongruence(const LoweredApplicationView& view) const
                 << "refinement loop" << std::endl;
     return;
   }
+  // By name, not in the order the declarations were collected: that order is
+  // the address order of the declaration records, so it varies between two
+  // runs of the same query and between two queries of the same shape. A
+  // fixture that reads one line after another was pinning the allocator.
+  std::vector<const UFEagerDeclarationStat*> ordered;
+  ordered.reserve(stats.declarations.size());
   for (const UFEagerDeclarationStat& stat : stats.declarations)
+    ordered.push_back(&stat);
+  std::stable_sort(ordered.begin(), ordered.end(),
+                   [](const UFEagerDeclarationStat* left,
+                      const UFEagerDeclarationStat* right) {
+                     return left->name < right->name;
+                   });
+  for (const UFEagerDeclarationStat* entry : ordered)
   {
+    const UFEagerDeclarationStat& stat = *entry;
     if (stat.estimatedPairs == 0)
       continue;
     std::cerr << "UF: eager " << stat.outcomeName() << " " << stat.name << " ("
