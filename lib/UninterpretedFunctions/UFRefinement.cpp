@@ -257,8 +257,7 @@ UFCandidateOutcome checkOneCandidate(
   {
     UFConcreteValue value;
     if (!candidate.read(record.resultSymbol,
-                        UFSignature::loweringSort(
-                            record.declaration->signature().codomain()),
+                        record.resultSymbol.GetSourceSort(),
                         value, state.diagnostic))
       return UFCandidateOutcome::InternalError;
     state.handleValues.insert(std::make_pair(record.durableHandle, value));
