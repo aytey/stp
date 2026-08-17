@@ -109,4 +109,64 @@ TEST_F(BVEQCCTest, LongerTransitivityChain)
   EXPECT_EQ(SOLVER_VALID, result);
 }
 
+TEST_F(BVEQCCTest, ManySymbolsInEquivalenceClasses)
+{
+  // 12 symbols in 3 equivalence classes of 4.
+  // All within-class equalities hold; no cross-class equalities.
+  // CC should find no conflicts and the formula should be SAT.
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  const unsigned numClasses = 3;
+  const unsigned classSize = 4;
+  std::vector<std::vector<ASTNode>> classes(numClasses);
+
+  for (unsigned c = 0; c < numClasses; ++c)
+    for (unsigned i = 0; i < classSize; ++i)
+    {
+      std::string name = "mc_" + std::to_string(c) + "_" + std::to_string(i);
+      classes[c].push_back(makeSymbol(name.c_str(), 256));
+    }
+
+  // Chain equalities within each class: s0=s1, s1=s2, s2=s3
+  ASTVec conjuncts;
+  for (unsigned c = 0; c < numClasses; ++c)
+    for (unsigned i = 0; i + 1 < classSize; ++i)
+      conjuncts.push_back(
+          factory->CreateNode(EQ, classes[c][i], classes[c][i + 1]));
+
+  ASTNode formula = conjuncts[0];
+  for (unsigned i = 1; i < conjuncts.size(); ++i)
+    formula = factory->CreateNode(AND, formula, conjuncts[i]);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
+
+TEST_F(BVEQCCTest, CrossClassDisequalityWithTransitivityConflict)
+{
+  // 3 classes: {a,b}, {c,d}, with a=b, c=d, b=c, but ¬(a=d).
+  // b=c merges the two classes, so a=d by transitivity → UNSAT.
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  ASTNode a = makeSymbol("xc_a", 256);
+  ASTNode b = makeSymbol("xc_b", 256);
+  ASTNode c = makeSymbol("xc_c", 256);
+  ASTNode d = makeSymbol("xc_d", 256);
+
+  ASTNode formula = factory->CreateNode(AND,
+      factory->CreateNode(AND,
+          factory->CreateNode(EQ, a, b),
+          factory->CreateNode(EQ, c, d)),
+      factory->CreateNode(AND,
+          factory->CreateNode(EQ, b, c),
+          factory->CreateNode(NOT, factory->CreateNode(EQ, a, d))));
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_VALID, result);
+}
+
 } // namespace
