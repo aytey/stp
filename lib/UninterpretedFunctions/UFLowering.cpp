@@ -5,6 +5,7 @@
 #include "stp/Util/DagWalk.h"
 #include <algorithm>
 #include <iostream>
+#include <string>
 
 namespace stp
 {
@@ -773,6 +774,22 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
                      "SourceSort",
                      application);
         SourceSort solvedCodomain = UFSignature::loweringSort(codomain);
+        // The name a narrowed result gets has to say how wide it is. The
+        // deterministic namespace keys a symbol on the application alone, and
+        // its contract is that the key settles the sort -- one key, one
+        // symbol, one sort, so that an identical block rebuilds an identical
+        // root. A narrowed width does not keep that bargain: it is read off
+        // how many applications the *current* root has, and the same durable
+        // application is lowered again in the next solve with a different
+        // count behind it. Two applications of f under a push, three after
+        // the pop, and the same handle wants one bit and then two.
+        //
+        // So the width joins the key rather than silently disagreeing with
+        // it. Only a result that was actually narrowed is tagged, which
+        // leaves every unnarrowed name exactly as it was -- including the
+        // rounding-mode results a persistent block has to rebuild and re-pin
+        // by name.
+        std::string resultPrefix = "uf_result";
         if (manager_->UserFlags.uf_narrow_results &&
             solvedCodomain.kind() == SourceSort::Kind::BitVector &&
             narrowing.nonNarrowable.count(declaration) == 0)
@@ -785,6 +802,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
             if (narrowWidth < solvedCodomain.bitVectorWidth())
             {
               solvedCodomain = SourceSort::bitVector(narrowWidth);
+              resultPrefix += "_w" + std::to_string(narrowWidth);
               if (manager_->UserFlags.stats_flag &&
                   reportedNarrow.insert(declaration).second)
                 std::cerr << "UF: narrowing result of "
@@ -796,7 +814,7 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
           }
         }
         record.resultSymbol = manager_->CreateDeterministicSourceVariable(
-            solvedCodomain, "uf_result", application);
+            solvedCodomain, resultPrefix, application);
         if (record.resultSymbol.GetSourceSort() != solvedCodomain)
           FatalError("UF lowering allocated a result at the wrong SourceSort",
                      record.resultSymbol);
