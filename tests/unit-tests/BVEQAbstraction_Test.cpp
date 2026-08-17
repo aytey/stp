@@ -104,7 +104,7 @@ TEST_F(BVEQAbstractionTest, NoAbstractionBelowWidthThreshold)
   EXPECT_TRUE(bb.abstractedEQs().empty());
 }
 
-TEST_F(BVEQAbstractionTest, NoAbstractionForNonSymbolOperands)
+TEST_F(BVEQAbstractionTest, AbstractionWithNonSymbolOperandsViaProxyCIs)
 {
   mgr.UserFlags.bv_eq_abstraction = true;
   mgr.UserFlags.bv_eq_abstraction_width = 64;
@@ -122,7 +122,8 @@ TEST_F(BVEQAbstractionTest, NoAbstractionForNonSymbolOperands)
 
   bb.BBForm(eq);
 
-  EXPECT_TRUE(bb.abstractedEQs().empty());
+  EXPECT_EQ(1u, bb.abstractedEQs().size());
+  EXPECT_FALSE(bb.sideConstraints().empty());
 }
 
 TEST_F(BVEQAbstractionTest, BooleanSkeletonContradictionIsUnsatWithoutRefinement)
@@ -362,6 +363,74 @@ TEST_F(BVEQAbstractionTest, BVPLUSConstantOperandAbstraction)
   STP stp(&mgr);
   SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
   EXPECT_EQ(SOLVER_INVALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, ITEAbstractionCreatesAbstraction)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  ASTNode p = makeSymbol("ite_p", 0);
+  ASTNode x = makeSymbol("ite_x", 256);
+  ASTNode y = makeSymbol("ite_y", 256);
+  ASTNode ite = factory->CreateTerm(ITE, 256, p, x, y);
+  ASTNode z = makeSymbol("ite_z", 256);
+  ASTNode eq = factory->CreateNode(EQ, ite, z);
+
+  BBNodeManagerAIG aigMgr;
+  stp::SubstitutionMap sm(&mgr);
+  Simplifier simp(&mgr, &sm);
+  BitBlaster bb(&aigMgr, &simp, factory, &mgr.UserFlags);
+
+  bb.BBForm(eq);
+
+  bool foundITE = false;
+  for (const auto& a : bb.abstractedTerms())
+    if (a.opKind == ITE) foundITE = true;
+  EXPECT_TRUE(foundITE);
+  EXPECT_FALSE(bb.sideConstraints().empty());
+}
+
+TEST_F(BVEQAbstractionTest, ITEAbstractionSatResult)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  // ite(p, x, y) = z is trivially SAT
+  ASTNode p = makeSymbol("ites_p", 0);
+  ASTNode x = makeSymbol("ites_x", 256);
+  ASTNode y = makeSymbol("ites_y", 256);
+  ASTNode z = makeSymbol("ites_z", 256);
+  ASTNode ite = factory->CreateTerm(ITE, 256, p, x, y);
+  ASTNode eq = factory->CreateNode(EQ, ite, z);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(eq, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_INVALID, result);
+}
+
+TEST_F(BVEQAbstractionTest, ITEAbstractionUnsatResult)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_eq_abstraction_width = 64;
+
+  // ite(p, x, y) = z AND x != z AND y != z → UNSAT
+  ASTNode p = makeSymbol("iteu_p", 0);
+  ASTNode x = makeSymbol("iteu_x", 256);
+  ASTNode y = makeSymbol("iteu_y", 256);
+  ASTNode z = makeSymbol("iteu_z", 256);
+  ASTNode ite = factory->CreateTerm(ITE, 256, p, x, y);
+  ASTNode eqIteZ = factory->CreateNode(EQ, ite, z);
+  ASTNode xNeqZ = factory->CreateNode(NOT, factory->CreateNode(EQ, x, z));
+  ASTNode yNeqZ = factory->CreateNode(NOT, factory->CreateNode(EQ, y, z));
+  ASTNode formula = factory->CreateNode(AND,
+      factory->CreateNode(AND, eqIteZ, xNeqZ), yNeqZ);
+
+  STP stp(&mgr);
+  SOLVER_RETURN_TYPE result = stp.TopLevelSTP(formula, mgr.ASTFalse);
+  EXPECT_EQ(SOLVER_VALID, result);
 }
 
 } // namespace

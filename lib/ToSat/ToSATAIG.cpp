@@ -146,6 +146,8 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
   try
   {
     BBNodeAIG BBFormula = bb.BBForm(input);
+    for (const auto& sc : bb.sideConstraints())
+      BBFormula = BBNodeAIG(Aig_And(mgr.aigMgr, BBFormula.n, sc.n));
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
     delete cb;
@@ -182,6 +184,12 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
       }
       a.numOperands = raw.numOperands;
       a.width = raw.width;
+      if (raw.condCISymbolIndex >= 0)
+      {
+        Aig_Obj_t* condObj = (Aig_Obj_t*)Vec_PtrEntry(
+            mgr.aigMgr->vCis, raw.condCISymbolIndex);
+        a.condSATVar = cnfData->pVarNums[condObj->Id];
+      }
       bvTermAbstractions_.push_back(std::move(a));
     }
 
@@ -367,6 +375,8 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
           if (v != ~((unsigned)0))
             satSolver.setFrozen(v);
     }
+    if (a.condSATVar != 0)
+      satSolver.setFrozen(a.condSATVar);
   }
 }
 
@@ -472,14 +482,20 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
   }
 
   // Phase 2: Bit-level Tseitin encoding for remaining inconsistencies.
-  // When bv_eq_refine_width > 0, encode only a prefix of bits per round,
-  // doubling each time. The backward clause is deferred until all bits
-  // are covered.
-  unsigned refined = 0;
+  // Scan phase: identify inconsistent EQs (model reads only).
   const unsigned refineWidth = bm->UserFlags.bv_eq_refine_width;
 
-  for (auto& abs : bvEQAbstractions_)
+  struct InconsistentEQ {
+    size_t absIdx;
+    unsigned newEnd;
+    const std::vector<unsigned>* leftVars;
+    const std::vector<unsigned>* rightVars;
+  };
+  std::vector<InconsistentEQ> incEQs;
+
+  for (size_t idx = 0; idx < bvEQAbstractions_.size(); ++idx)
   {
+    auto& abs = bvEQAbstractions_[idx];
     if (abs.defined)
       continue;
 
@@ -507,22 +523,25 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
 
     unsigned newEnd;
     if (refineWidth == 0 || refineWidth >= abs.width)
-    {
       newEnd = abs.width;
-    }
     else if (abs.refinedBits == 0)
-    {
       newEnd = std::min(refineWidth, abs.width);
-    }
     else
-    {
       newEnd = std::min(abs.refinedBits * 2, abs.width);
-    }
 
-    for (unsigned bit = abs.refinedBits; bit < newEnd; ++bit)
+    incEQs.push_back({idx, newEnd, &leftIt->second, &rightIt->second});
+  }
+
+  // Clause phase: add Tseitin encoding (no model reads).
+  unsigned refined = 0;
+  for (auto& inc : incEQs)
+  {
+    auto& abs = bvEQAbstractions_[inc.absIdx];
+
+    for (unsigned bit = abs.refinedBits; bit < inc.newEnd; ++bit)
     {
-      unsigned lv = leftIt->second[bit];
-      unsigned rv = rightIt->second[bit];
+      unsigned lv = (*inc.leftVars)[bit];
+      unsigned rv = (*inc.rightVars)[bit];
       unsigned h = solver.newVar();
       solver.setFrozen(h);
       abs.xnorHelpers.push_back(h);
@@ -559,7 +578,7 @@ unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
       solver.addClause(cl);
     }
 
-    abs.refinedBits = newEnd;
+    abs.refinedBits = inc.newEnd;
 
     if (abs.refinedBits >= abs.width)
     {
@@ -624,13 +643,105 @@ static bool getOperandVars(
   return true;
 }
 
+static bool isBVCompare(Kind k)
+{
+  return k == BVLE || k == BVGE || k == BVGT || k == BVLT ||
+         k == BVSLE || k == BVSGE || k == BVSGT || k == BVSLT;
+}
+
+static bool computeBVLE(const std::vector<bool>& left,
+                        const std::vector<bool>& right,
+                        bool isSigned)
+{
+  unsigned w = left.size();
+  if (isSigned)
+  {
+    bool aSign = left[w - 1];
+    bool bSign = right[w - 1];
+    if (aSign && !bSign) return true;
+    if (!aSign && bSign) return false;
+  }
+  for (int i = (int)w - 1; i >= 0; --i)
+  {
+    if (isSigned && i == (int)w - 1) continue;
+    if (!left[i] && right[i]) return true;
+    if (left[i] && !right[i]) return false;
+  }
+  return true;
+}
+
+static bool computeBVCompare(Kind k, const std::vector<bool>& aBits,
+                             const std::vector<bool>& bBits)
+{
+  switch (k)
+  {
+    case BVLE:  return computeBVLE(aBits, bBits, false);
+    case BVGE:  return computeBVLE(bBits, aBits, false);
+    case BVGT:  return !computeBVLE(aBits, bBits, false);
+    case BVLT:  return !computeBVLE(bBits, aBits, false);
+    case BVSLE: return computeBVLE(aBits, bBits, true);
+    case BVSGE: return computeBVLE(bBits, aBits, true);
+    case BVSGT: return !computeBVLE(aBits, bBits, true);
+    case BVSLT: return !computeBVLE(bBits, aBits, true);
+    default:    return false;
+  }
+}
+
+
 unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
 {
-  unsigned refined = 0;
-  for (auto& abs : bvTermAbstractions_)
+  // Phase 1: Scan all abstractions, reading model values to find inconsistencies.
+  // Cache the data needed for clause generation so we don't need modelValue later.
+  struct InconsistentCmp {
+    size_t absIdx;
+    bool swapOps, negateResult, isSigned;
+  };
+  struct InconsistentPlus {
+    size_t absIdx;
+  };
+  struct InconsistentITE {
+    size_t absIdx;
+  };
+  struct InconsistentDivMul {
+    size_t absIdx;
+    std::vector<bool> aBits, bBits, expected;
+  };
+
+  std::vector<InconsistentCmp> incCmps;
+  std::vector<InconsistentPlus> incPlus;
+  std::vector<InconsistentITE> incITE;
+  std::vector<InconsistentDivMul> incDivMul;
+
+  for (size_t idx = 0; idx < bvTermAbstractions_.size(); ++idx)
   {
+    auto& abs = bvTermAbstractions_[idx];
     if (abs.defined)
       continue;
+
+    if (isBVCompare(abs.opKind))
+    {
+      if (abs.condSATVar == 0) continue;
+
+      std::vector<bool> aBits, bBits;
+      if (!getOperandBits(abs.operands[0], abs.width, nodeToSATVar, solver, aBits))
+        continue;
+      if (!getOperandBits(abs.operands[1], abs.width, nodeToSATVar, solver, bBits))
+        continue;
+
+      bool expected = computeBVCompare(abs.opKind, aBits, bBits);
+      bool actual = (solver.modelValue(abs.condSATVar) == solver.true_literal());
+      if (expected == actual)
+        continue;
+
+      bool swapOps = (abs.opKind == BVGE || abs.opKind == BVSGE || abs.opKind == BVSLT);
+      bool negateResult = (abs.opKind == BVGT || abs.opKind == BVLT ||
+                           abs.opKind == BVSGT || abs.opKind == BVSLT);
+      bool isSigned = (abs.opKind == BVSLE || abs.opKind == BVSGE ||
+                       abs.opKind == BVSGT || abs.opKind == BVSLT);
+
+      incCmps.push_back({idx, swapOps, negateResult, isSigned});
+      continue;
+    }
 
     auto resultIt = nodeToSATVar.find(abs.termNode);
     if (resultIt == nodeToSATVar.end())
@@ -640,11 +751,9 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
     if (abs.opKind == BVPLUS)
     {
       std::vector<bool> leftBits, rightBits;
-      if (!getOperandBits(abs.operands[0], abs.width, nodeToSATVar,
-                          solver, leftBits))
+      if (!getOperandBits(abs.operands[0], abs.width, nodeToSATVar, solver, leftBits))
         continue;
-      if (!getOperandBits(abs.operands[1], abs.width, nodeToSATVar,
-                          solver, rightBits))
+      if (!getOperandBits(abs.operands[1], abs.width, nodeToSATVar, solver, rightBits))
         continue;
 
       const bool lNeg = abs.operandNegated[0];
@@ -660,70 +769,301 @@ unsigned ToSATAIG::refineBVTermInconsistencies(SATSolver& solver)
         bool s = (solver.modelValue(resultVars[bit]) == solver.true_literal());
         bool expectedSum = l ^ r ^ carry;
         carry = (l && r) || (l && carry) || (r && carry);
-        if (s != expectedSum)
-        {
-          consistent = false;
-          break;
-        }
+        if (s != expectedSum) { consistent = false; break; }
       }
-      if (consistent)
+      if (consistent) continue;
+
+      incPlus.push_back({idx});
+    }
+    else if (abs.opKind == ITE)
+    {
+      if (abs.condSATVar == 0) continue;
+
+      bool condVal = (solver.modelValue(abs.condSATVar) == solver.true_literal());
+      unsigned branchIdx = condVal ? 1 : 2;
+      std::vector<bool> branchBits;
+      if (!getOperandBits(abs.operands[branchIdx], abs.width, nodeToSATVar, solver, branchBits))
         continue;
 
-      std::vector<unsigned> leftVars, rightVars;
-      if (!getOperandVars(abs.operands[0], abs.width, nodeToSATVar,
-                          solver, leftVars))
-        continue;
-      if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar,
-                          solver, rightVars))
-        continue;
-
-      unsigned carryVar = solver.newVar();
-      solver.setFrozen(carryVar);
-      {
-        SATSolver::vec_literals cl;
-        cl.push(SATSolver::mkLit(carryVar, !carryInit));
-        solver.addClause(cl);
-      }
-
+      bool consistent = true;
       for (unsigned bit = 0; bit < abs.width; ++bit)
       {
-        unsigned l = leftVars[bit];
-        unsigned r = rightVars[bit];
-        unsigned s = resultVars[bit];
-        unsigned c = carryVar;
-        SATSolver::vec_literals cl;
+        bool r = (solver.modelValue(resultVars[bit]) == solver.true_literal());
+        if (r != branchBits[bit]) { consistent = false; break; }
+      }
+      if (consistent) continue;
 
-        // s ⟺ l' ⊕ r' ⊕ c where l' = l^lNeg, r' = r^rNeg
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+      incITE.push_back({idx});
+    }
+    else if (abs.opKind == BVMULT || abs.opKind == BVDIV || abs.opKind == BVMOD)
+    {
+      std::vector<bool> aBits, bBits;
+      if (!getOperandBits(abs.operands[0], abs.width, nodeToSATVar, solver, aBits))
+        continue;
+      if (!getOperandBits(abs.operands[1], abs.width, nodeToSATVar, solver, bBits))
+        continue;
 
-        if (bit < abs.width - 1)
+      unsigned W = abs.width;
+      std::vector<bool> expected(W, false);
+      if (abs.opKind == BVMULT)
+      {
+        for (unsigned i = 0; i < W; ++i)
+          if (aBits[i])
+            for (unsigned j = 0; j < W && i + j < W; ++j)
+              if (bBits[j])
+              {
+                bool carry = false;
+                for (unsigned p = i + j; p < W; ++p)
+                {
+                  if (p == i + j)
+                  {
+                    bool sum = expected[p] ^ true ^ carry;
+                    carry = (expected[p] && true) || (expected[p] && carry) || (true && carry);
+                    expected[p] = sum;
+                  }
+                  else
+                  {
+                    bool sum = expected[p] ^ false ^ carry;
+                    carry = (expected[p] && carry);
+                    expected[p] = sum;
+                  }
+                  if (!carry) break;
+                }
+              }
+      }
+      else
+      {
+        bool divisorZero = true;
+        for (unsigned i = 0; i < W; ++i)
+          if (bBits[i]) { divisorZero = false; break; }
+
+        if (divisorZero)
         {
-          unsigned nc = solver.newVar();
-          solver.setFrozen(nc);
+          if (abs.opKind == BVDIV)
+            for (unsigned i = 0; i < W; ++i) expected[i] = true;
+        }
+        else
+        {
+          std::vector<bool> quotient(W, false);
+          std::vector<bool> remainder(W, false);
+          for (int i = (int)W - 1; i >= 0; --i)
+          {
+            for (int j = (int)W - 1; j > 0; --j)
+              remainder[j] = remainder[j - 1];
+            remainder[0] = aBits[i];
 
-          // nc ⟺ MAJ(l', r', c)
-          cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-          cl.clear(); cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+            bool geq = true;
+            for (int j = (int)W - 1; j >= 0; --j)
+            {
+              if (!remainder[j] && bBits[j]) { geq = false; break; }
+              if (remainder[j] && !bBits[j]) break;
+            }
 
-          carryVar = nc;
+            if (geq)
+            {
+              quotient[i] = true;
+              bool borrow = false;
+              for (unsigned j = 0; j < W; ++j)
+              {
+                bool sub = remainder[j] ^ bBits[j] ^ borrow;
+                borrow = (!remainder[j] && bBits[j]) ||
+                         (!remainder[j] && borrow) ||
+                         (bBits[j] && borrow);
+                remainder[j] = sub;
+              }
+            }
+          }
+          expected = (abs.opKind == BVDIV) ? quotient : remainder;
         }
       }
 
-      abs.defined = true;
-      refined++;
+      bool consistent = true;
+      for (unsigned bit = 0; bit < W; ++bit)
+      {
+        bool r = (solver.modelValue(resultVars[bit]) == solver.true_literal());
+        if (r != expected[bit]) { consistent = false; break; }
+      }
+      if (consistent) continue;
+
+      incDivMul.push_back({idx, std::move(aBits), std::move(bBits),
+                            std::move(expected)});
     }
   }
+
+  // Phase 2: Add refinement clauses (no model reads needed).
+  unsigned refined = 0;
+
+  for (auto& inc : incCmps)
+  {
+    auto& abs = bvTermAbstractions_[inc.absIdx];
+    std::vector<unsigned> leftVars, rightVars;
+    if (!getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, leftVars))
+      continue;
+    if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, rightVars))
+      continue;
+    const std::vector<unsigned>& lv = inc.swapOps ? rightVars : leftVars;
+    const std::vector<unsigned>& rv = inc.swapOps ? leftVars : rightVars;
+
+    unsigned carryVar = solver.newVar();
+    solver.setFrozen(carryVar);
+    {
+      SATSolver::vec_literals cl;
+      cl.push(SATSolver::mkLit(carryVar, false));
+      solver.addClause(cl);
+    }
+
+    for (int bit = (int)abs.width - 1; bit >= 0; --bit)
+    {
+      unsigned a = lv[bit];
+      unsigned b = rv[bit];
+      bool flipSign = (inc.isSigned && bit == (int)abs.width - 1);
+
+      auto xP = SATSolver::mkLit(a, !flipSign);
+      auto xN = SATSolver::mkLit(a, flipSign);
+      auto yP = SATSolver::mkLit(b, flipSign);
+      auto yN = SATSolver::mkLit(b, !flipSign);
+      auto zP = SATSolver::mkLit(carryVar, false);
+      auto zN = SATSolver::mkLit(carryVar, true);
+
+      unsigned nc = solver.newVar();
+      solver.setFrozen(nc);
+
+      SATSolver::vec_literals cl;
+      cl.clear(); cl.push(xN); cl.push(yN); cl.push(SATSolver::mkLit(nc, false)); solver.addClause(cl);
+      cl.clear(); cl.push(xN); cl.push(zN); cl.push(SATSolver::mkLit(nc, false)); solver.addClause(cl);
+      cl.clear(); cl.push(yN); cl.push(zN); cl.push(SATSolver::mkLit(nc, false)); solver.addClause(cl);
+      cl.clear(); cl.push(xP); cl.push(yP); cl.push(SATSolver::mkLit(nc, true)); solver.addClause(cl);
+      cl.clear(); cl.push(xP); cl.push(zP); cl.push(SATSolver::mkLit(nc, true)); solver.addClause(cl);
+      cl.clear(); cl.push(yP); cl.push(zP); cl.push(SATSolver::mkLit(nc, true)); solver.addClause(cl);
+
+      carryVar = nc;
+    }
+
+    {
+      SATSolver::vec_literals cl;
+      cl.clear(); cl.push(SATSolver::mkLit(abs.condSATVar, inc.negateResult));  cl.push(SATSolver::mkLit(carryVar, true));  solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(abs.condSATVar, !inc.negateResult)); cl.push(SATSolver::mkLit(carryVar, false)); solver.addClause(cl);
+    }
+
+    abs.defined = true;
+    refined++;
+  }
+
+  for (auto& inc : incPlus)
+  {
+    auto& abs = bvTermAbstractions_[inc.absIdx];
+    std::vector<unsigned> leftVars, rightVars;
+    if (!getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, leftVars))
+      continue;
+    if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, rightVars))
+      continue;
+    auto resultIt = nodeToSATVar.find(abs.termNode);
+    const std::vector<unsigned>& resultVars = resultIt->second;
+    const bool lNeg = abs.operandNegated[0];
+    const bool rNeg = abs.operandNegated[1];
+    const bool carryInit = (lNeg != rNeg);
+
+    unsigned carryVar = solver.newVar();
+    solver.setFrozen(carryVar);
+    {
+      SATSolver::vec_literals cl;
+      cl.push(SATSolver::mkLit(carryVar, !carryInit));
+      solver.addClause(cl);
+    }
+
+    for (unsigned bit = 0; bit < abs.width; ++bit)
+    {
+      unsigned l = leftVars[bit];
+      unsigned r = rightVars[bit];
+      unsigned s = resultVars[bit];
+      unsigned c = carryVar;
+      SATSolver::vec_literals cl;
+
+      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,true));  solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(s,false)); solver.addClause(cl);
+
+      if (bit < abs.width - 1)
+      {
+        unsigned nc = solver.newVar();
+        solver.setFrozen(nc);
+
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+        cl.clear(); cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
+
+        carryVar = nc;
+      }
+    }
+
+    abs.defined = true;
+    refined++;
+  }
+
+  for (auto& inc : incITE)
+  {
+    auto& abs = bvTermAbstractions_[inc.absIdx];
+    std::vector<unsigned> thenVars, elseVars;
+    if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, thenVars))
+      continue;
+    if (!getOperandVars(abs.operands[2], abs.width, nodeToSATVar, solver, elseVars))
+      continue;
+    auto resultIt = nodeToSATVar.find(abs.termNode);
+    const std::vector<unsigned>& resultVars = resultIt->second;
+    unsigned c = abs.condSATVar;
+
+    for (unsigned bit = 0; bit < abs.width; ++bit)
+    {
+      unsigned r = resultVars[bit];
+      unsigned t = thenVars[bit];
+      unsigned e = elseVars[bit];
+      SATSolver::vec_literals cl;
+
+      cl.clear(); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(t,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(c,true));  cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(t,true));  solver.addClause(cl);
+
+      cl.clear(); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(r,true));  cl.push(SATSolver::mkLit(e,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(c,false)); cl.push(SATSolver::mkLit(r,false)); cl.push(SATSolver::mkLit(e,true));  solver.addClause(cl);
+    }
+
+    abs.defined = true;
+    refined++;
+  }
+
+  for (auto& inc : incDivMul)
+  {
+    auto& abs = bvTermAbstractions_[inc.absIdx];
+    std::vector<unsigned> aVars, bVars;
+    if (!getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, aVars))
+      continue;
+    if (!getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, bVars))
+      continue;
+    auto resultIt = nodeToSATVar.find(abs.termNode);
+    const std::vector<unsigned>& resultVars = resultIt->second;
+    unsigned W = abs.width;
+
+    for (unsigned bit = 0; bit < W; ++bit)
+    {
+      SATSolver::vec_literals cl;
+      for (unsigned i = 0; i < W; ++i)
+        cl.push(SATSolver::mkLit(aVars[i], inc.aBits[i]));
+      for (unsigned i = 0; i < W; ++i)
+        cl.push(SATSolver::mkLit(bVars[i], inc.bBits[i]));
+      cl.push(SATSolver::mkLit(resultVars[bit], !inc.expected[bit]));
+      solver.addClause(cl);
+    }
+
+    refined++;
+  }
+
   return refined;
 }
 

@@ -346,15 +346,21 @@ public:
     unsigned numOperands;
     unsigned width;
     bool operandNegated[3] = {false, false, false};
+    int condCISymbolIndex = -1;
   };
 
 private:
   std::vector<RawBVTermAbstraction> abstractedTerms_;
+  std::vector<BBNode> sideConstraints_;
 
 public:
   const std::vector<RawBVTermAbstraction>& abstractedTerms() const
   {
     return abstractedTerms_;
+  }
+  const std::vector<BBNode>& sideConstraints() const
+  {
+    return sideConstraints_;
   }
   BitBlaster& operator=(const BitBlaster& other) = delete;
   BitBlaster(const BitBlaster& other) = delete;

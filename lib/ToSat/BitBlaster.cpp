@@ -43,6 +43,39 @@ static bool allBBNodesAreCIs(const BBNodeVec& vec)
   return !vec.empty();
 }
 
+// For operands that contain internal AIG nodes (e.g. BVAND results),
+// create fresh proxy CIs with biconditional side constraints so that
+// downstream abstraction can proceed.
+static BBNodeVec ensureProxyCIs(
+    BBNodeManagerAIG* nf,
+    const ASTNode& node,
+    const BBNodeVec& bits,
+    std::vector<BBNode>& sideConstraints)
+{
+  auto it = nf->symbolToBBNode.find(node);
+  if (it != nf->symbolToBBNode.end())
+    return it->second;
+
+  if (allBBNodesAreCIs(bits))
+  {
+    nf->symbolToBBNode[node] = bits;
+    return bits;
+  }
+
+  unsigned width = bits.size();
+  BBNodeVec proxies(width);
+  for (unsigned i = 0; i < width; i++)
+  {
+    proxies[i] = BBNodeAIG(Aig_ObjCreateCi(nf->aigMgr));
+    proxies[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
+    Aig_Obj_t* bicond = Aig_Not(orderedAigExor(
+        nf->aigMgr, proxies[i].n, bits[i].n));
+    sideConstraints.push_back(BBNodeAIG(bicond));
+  }
+  nf->symbolToBBNode[node] = proxies;
+  return proxies;
+}
+
 /********************************************************************
  * BitBlast
  *
@@ -837,6 +870,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
   const auto kids_end = term.end();
   const unsigned int num_bits = term.GetValueWidth();
 
+
   switch (k)
   {
     case UF_APPLY:
@@ -957,11 +991,47 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
 
     case ITE:
     {
-      // Term version of ITE.
       const BBNode& cond = BBForm(term[0], support);
       const BBNodeVec& thn = BBTerm(term[1], support);
       const BBNodeVec& els = BBTerm(term[2], support);
-      result = BBITE(cond, thn, els);
+
+      if (uf->bv_term_abstraction &&
+          num_bits >= uf->bv_eq_abstraction_width)
+      {
+        ensureProxyCIs(nf, term[1], thn, sideConstraints_);
+        ensureProxyCIs(nf, term[2], els, sideConstraints_);
+
+        BBNodeVec abstracted(num_bits);
+        for (unsigned i = 0; i < num_bits; i++)
+        {
+          abstracted[i] = BBNodeAIG(Aig_ObjCreateCi(nf->aigMgr));
+          abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
+        }
+        BBNodeAIG condCI(Aig_ObjCreateCi(nf->aigMgr));
+        condCI.symbol_index = nf->aigMgr->vCis->nSize - 1;
+
+        Aig_Obj_t* bicond = Aig_Not(orderedAigExor(
+            nf->aigMgr, condCI.n, cond.n));
+        sideConstraints_.push_back(BBNodeAIG(bicond));
+
+        nf->symbolToBBNode[term] = abstracted;
+
+        RawBVTermAbstraction raw;
+        raw.termNode = term;
+        raw.opKind = ITE;
+        raw.operands[0] = term[0];
+        raw.operands[1] = term[1];
+        raw.operands[2] = term[2];
+        raw.numOperands = 3;
+        raw.width = num_bits;
+        raw.condCISymbolIndex = condCI.symbol_index;
+        abstractedTerms_.push_back(raw);
+        result = abstracted;
+      }
+      else
+      {
+        result = BBITE(cond, thn, els);
+      }
       break;
     }
 
@@ -1060,7 +1130,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           {
             ASTNode inner = realOp[i][0];
             auto memo = BBTermMemo.find(inner);
-            if (memo != BBTermMemo.end() && allBBNodesAreCIs(memo->second))
+            if (memo != BBTermMemo.end())
             {
               realOp[i] = inner;
               negated[i] = true;
@@ -1069,12 +1139,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           }
         }
 
-        bool eligible[2];
-        for (int i = 0; i < 2; i++)
-          eligible[i] = allBBNodesAreCIs(*opVecs[i]) ||
-                        realOp[i].GetKind() == BVCONST;
-
-        if (eligible[0] && eligible[1] && !(negated[0] && negated[1]))
+        if (!(negated[0] && negated[1]))
         {
           BBNodeVec abstracted(num_bits);
           for (unsigned i = 0; i < num_bits; i++)
@@ -1084,9 +1149,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           }
           nf->symbolToBBNode[term] = abstracted;
           for (int i = 0; i < 2; i++)
-            if (realOp[i].GetKind() != BVCONST &&
-                nf->symbolToBBNode.find(realOp[i]) == nf->symbolToBBNode.end())
-              nf->symbolToBBNode[realOp[i]] = *opVecs[i];
+            if (realOp[i].GetKind() != BVCONST)
+              ensureProxyCIs(nf, realOp[i], *opVecs[i], sideConstraints_);
           RawBVTermAbstraction raw;
           raw.termNode = term;
           raw.opKind = BVPLUS;
@@ -1163,9 +1227,36 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       BBNodeVec mpcd1 = BBTerm(term[0], support);
       const BBNodeVec& mpcd2 = BBTerm(term[1], support);
       updateTerm(term[0], mpcd1, support);
-
       assert(mpcd1.size() == mpcd2.size());
-      result = BBMult(mpcd1, mpcd2, support, term);
+
+      if (uf->bv_term_abstraction &&
+          num_bits >= uf->bv_eq_abstraction_width)
+      {
+        BBNodeVec op0 = ensureProxyCIs(nf, term[0], mpcd1, sideConstraints_);
+        BBNodeVec op1 = ensureProxyCIs(nf, term[1], mpcd2, sideConstraints_);
+
+        BBNodeVec abstracted(num_bits);
+        for (unsigned i = 0; i < num_bits; i++)
+        {
+          abstracted[i] = BBNodeAIG(Aig_ObjCreateCi(nf->aigMgr));
+          abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
+        }
+        nf->symbolToBBNode[term] = abstracted;
+
+        RawBVTermAbstraction raw;
+        raw.termNode = term;
+        raw.opKind = BVMULT;
+        raw.operands[0] = term[0];
+        raw.operands[1] = term[1];
+        raw.numOperands = 2;
+        raw.width = num_bits;
+        abstractedTerms_.push_back(raw);
+        result = abstracted;
+      }
+      else
+      {
+        result = BBMult(mpcd1, mpcd2, support, term);
+      }
       break;
     }
     case SBVREM:
@@ -1184,20 +1275,46 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       const BBNodeVec& dvsr = BBTerm(term[1], support);
       assert(dvdd.size() == num_bits);
       assert(dvsr.size() == num_bits);
-      BBNodeVec q(num_bits);
-      BBNodeVec r(num_bits);
-      BBDivMod(dvdd, dvsr, q, r, num_bits, support);
-      if (k == BVDIV)
+
+      if (uf->bv_term_abstraction &&
+          num_bits >= uf->bv_eq_abstraction_width)
       {
-        BBNodeVec zero(term.GetValueWidth(), BBFalse);
+        ensureProxyCIs(nf, term[0], dvdd, sideConstraints_);
+        ensureProxyCIs(nf, term[1], dvsr, sideConstraints_);
 
-        BBNode eq = BBEQ(zero, dvsr);
-        BBNodeVec max(term.GetValueWidth(), BBTrue);
+        BBNodeVec abstracted(num_bits);
+        for (unsigned i = 0; i < num_bits; i++)
+        {
+          abstracted[i] = BBNodeAIG(Aig_ObjCreateCi(nf->aigMgr));
+          abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
+        }
+        nf->symbolToBBNode[term] = abstracted;
 
-        result = BBITE(eq, max, q);
+        RawBVTermAbstraction raw;
+        raw.termNode = term;
+        raw.opKind = k;
+        raw.operands[0] = term[0];
+        raw.operands[1] = term[1];
+        raw.numOperands = 2;
+        raw.width = num_bits;
+        abstractedTerms_.push_back(raw);
+        result = abstracted;
       }
       else
-        result = r;
+      {
+        BBNodeVec q(num_bits);
+        BBNodeVec r(num_bits);
+        BBDivMod(dvdd, dvsr, q, r, num_bits, support);
+        if (k == BVDIV)
+        {
+          BBNodeVec zero(term.GetValueWidth(), BBFalse);
+          BBNode eq = BBEQ(zero, dvsr);
+          BBNodeVec max(term.GetValueWidth(), BBTrue);
+          result = BBITE(eq, max, q);
+        }
+        else
+          result = r;
+      }
       break;
     }
     //  n-ary bitwise operators.
@@ -1576,9 +1693,10 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
       assert(left.size() == right.size());
 
       if (uf->bv_eq_abstraction &&
-          form[0].GetKind() == SYMBOL && form[1].GetKind() == SYMBOL &&
           left.size() >= uf->bv_eq_abstraction_width)
       {
+        ensureProxyCIs(nf, form[0], left, sideConstraints_);
+        ensureProxyCIs(nf, form[1], right, sideConstraints_);
         BBNodeAIG abstractCI(Aig_ObjCreateCi(nf->aigMgr));
         abstractCI.symbol_index = nf->aigMgr->vCis->nSize - 1;
         abstractedEQs_.push_back({form, abstractCI, form[0], form[1]});
@@ -1600,6 +1718,30 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
     case BVSGT:
     case BVSLT:
     {
+      if (uf->bv_term_abstraction)
+      {
+        const BBNodeVec& left = BBTerm(form[0], support);
+        const BBNodeVec& right = BBTerm(form[1], support);
+        if (left.size() >= uf->bv_eq_abstraction_width)
+        {
+          ensureProxyCIs(nf, form[0], left, sideConstraints_);
+          ensureProxyCIs(nf, form[1], right, sideConstraints_);
+          BBNodeAIG abstractCI(Aig_ObjCreateCi(nf->aigMgr));
+          abstractCI.symbol_index = nf->aigMgr->vCis->nSize - 1;
+
+          RawBVTermAbstraction raw;
+          raw.termNode = form;
+          raw.opKind = k;
+          raw.operands[0] = form[0];
+          raw.operands[1] = form[1];
+          raw.numOperands = 2;
+          raw.width = left.size();
+          raw.condCISymbolIndex = abstractCI.symbol_index;
+          abstractedTerms_.push_back(raw);
+          result = abstractCI;
+          break;
+        }
+      }
       result = BBcompare(form, support);
       break;
     }

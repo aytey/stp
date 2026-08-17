@@ -89,6 +89,7 @@ private:
     unsigned numOperands;
     unsigned width;
     bool operandNegated[3] = {false, false, false};
+    unsigned condSATVar = 0;
     bool defined = false;
   };
   std::vector<BVTermAbstraction> bvTermAbstractions_;
