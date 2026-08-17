@@ -395,17 +395,14 @@ namespace stp
     typedef stp::SourceSort::Kind Kind;
     if (sort.kind() == Kind::Bool)
       return operands > 2;
+    // Only a bit-vector's width is its cardinality. A sort declared by
+    // declare-sort is unbounded -- (distinct s0 .. s16) over it is satisfiable
+    // in a seventeen-element domain however narrow its carrier is -- and it is
+    // excluded here by having a kind of its own, so this needs no side channel
+    // to ask about it. It used to need one, and that side channel could not
+    // tell a carrier from a genuine bit-vector of the same width, which cost
+    // every such query this fold for the rest of the session.
     if (sort.kind() != Kind::BitVector)
-      return false;
-    // A sort introduced by declare-sort arrives here as a bit-vector carrier
-    // that is indistinguishable from a declared one of the same width, and an
-    // uninterpreted sort is UNBOUNDED: (distinct s0 .. s16) over it is
-    // satisfiable in a seventeen-element domain however narrow the carrier
-    // is. Reading the width as a cardinality would answer that unsat, which
-    // is worse than the blow-up this guard exists to avoid -- a wrong answer
-    // rather than a slow one -- so a width any declared sort has claimed is
-    // never guarded.
-    if (stp::GlobalParserInterface->isDeclaredSortCarrier(sort))
       return false;
     const unsigned width = sort.bitVectorWidth();
     // 2^64 operands cannot be written down, so a wide sort is never exceeded
@@ -496,6 +493,22 @@ namespace stp
               stp::FPSpecial::PlusZero, resultSort.exponentWidth(),
               resultSort.significandWidth());
           break;
+        case stp::SourceSort::Kind::Uninterpreted:
+        {
+          // A sort declared by declare-sort has no constants, so the
+          // placeholder has to be a symbol of it. A zero of the carrier width
+          // would be a bit-vector term, and the enclosing production compares
+          // full sorts -- which is exactly the failure this switch exists to
+          // avoid, one kind further on. Minted through the manager because the
+          // name is reserved, and stable so repeated rejections in one query
+          // intern to one node.
+          std::ostringstream placeholder;
+          placeholder << "@declared_sort_placeholder_"
+                      << resultSort.uninterpretedId();
+          application = stp::GlobalParserBM->CreateSourceSymbol(
+              placeholder.str().c_str(), resultSort);
+          break;
+        }
         default:
           application = stp::GlobalParserInterface->CreateZeroConst(
               resultSort.packedWidth());
@@ -853,6 +866,17 @@ namespace stp
     delete rm;
     delete expr;
     return n;
+  }
+
+  // (_ BitVec 0) is not a sort. SourceSort::bitVector asserts a positive
+  // width, so without this the asserting build aborts inside a header and the
+  // NDEBUG build carries a zero-width symbol through the pipeline as a
+  // Boolean. The array-component rule already refuses it with this wording;
+  // the scalar rules did not.
+  void checkBitVectorWidth(unsigned int width)
+  {
+    if (width == 0)
+      fatal_yyerror("bit-vectors must be of positive length");
   }
 
   // The indexed to_fp forms and the special values carry the format as
@@ -1598,6 +1622,7 @@ namespace stp
 %token FLOATINGPOINT_TOK
 %token ROUNDINGMODE_TOK
 %token <fn> ROUNDINGMODE_FUNCTIONID_TOK
+%token <fn> DECLAREDSORT_FUNCTIONID_TOK
 %token FLOAT16_TOK
 %token FLOAT32_TOK
 %token FLOAT64_TOK
@@ -1875,13 +1900,22 @@ cmdi:
        stp::GlobalParserInterface->getUnsatAssumptions();
     }
 |
-     /* A nullary uninterpreted sort becomes a bit-vector carrier wide enough
-        that nothing the query can say distinguishes more elements than it
-        holds. The sort has no operation but equality, so a query mentioning
-        k terms of it is satisfiable exactly when it is satisfiable over k
-        elements: a wider carrier is always sound, and only a narrower one
-        would not be. The width has to be chosen here, before any term of the
-        sort exists, so it cannot be derived from k -- see uf_sort_width.
+     /* A nullary uninterpreted sort gets an identity of its own and a
+        bit-vector carrier wide enough that nothing the query can say
+        distinguishes more elements than it holds. The sort has no operation
+        but equality, so a query mentioning k terms of it is satisfiable
+        exactly when it is satisfiable over k elements: a wider carrier is
+        always sound, and only a narrower one would not be. The width has to be
+        chosen here, before any term of the sort exists, so it cannot be
+        derived from k -- see uf_sort_width.
+
+        The identity is the part that took two attempts. Registered as its bare
+        carrier, the sort *was* that bit-vector: two declared sorts were one
+        sort and each was the same sort as a genuine bit-vector of the same
+        width, so (= s t) across two sorts and (bvadd e e) on an element were
+        both accepted. Every frontend guard compares a full SourceSort and
+        every one of them already refuses a float of the same packed width;
+        none of them was at fault.
 
         Parametric sorts (arity > 0) have no such reading and stay
         unsupported, as does every sort declaration when the uninterpreted
@@ -1893,12 +1927,10 @@ cmdi:
          stp::GlobalParserInterface->unsupported();
        else
        {
-         const stp::SourceSort carrier = stp::SourceSort::bitVector(
-             stp::GlobalParserInterface->getUserFlags().uf_sort_width);
-         stp::GlobalParserInterface->addSortAlias(*$2, carrier);
-         // The carrier now stands for an unbounded sort, so nothing may
-         // reason from its width to how many values the sort has.
-         stp::GlobalParserInterface->noteDeclaredSortCarrier(carrier);
+         stp::GlobalParserInterface->addSortAlias(
+             *$2, stp::registerUninterpretedSort(
+                      *$2, stp::GlobalParserInterface->getUserFlags()
+                               .uf_sort_width));
          stp::GlobalParserInterface->success();
        }
        delete $2;
@@ -2058,6 +2090,7 @@ LPAREN_TOK
 function_param:
 function_param_open STRING_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK RPAREN_TOK
 {
+  checkBitVectorWidth($6);
   $$ = new ASTNode(stp::GlobalParserInterface->CreateSourceSymbol(
       $2->c_str(), stp::SourceSort::bitVector($6)));
   stp::GlobalParserInterface->addTemporarySymbol(*$$);
@@ -2178,6 +2211,30 @@ function_def_name LPAREN_TOK function_params RPAREN_TOK STRING_TOK an_term
   delete $3;
   delete $5;
   stp::GlobalParserInterface->deleteNode($6);
+}
+|
+function_def_name LPAREN_TOK RPAREN_TOK STRING_TOK an_term
+{
+  // The zero-arity form of the arm above. It was missing, which is what stopped
+  // a printed model from being read back: the model of a symbol of a declared
+  // sort is exactly a nullary define-fun at that sort.
+  stp::SourceSort resolved;
+  if (!stp::GlobalParserInterface->lookupSortAlias(*$4, resolved))
+  {
+    fatal_yyerror("unknown sort (not built in, and not a declared sort)");
+  }
+  if ($5->GetSourceSort() != resolved)
+  {
+    fatal_yyerror("define-fun: the body's sort does not match the declared "
+                  "result sort");
+  }
+
+  ASTVec empty;
+  stp::GlobalParserInterface->storeFunction(*$1, empty, *$5);
+
+  delete $1;
+  delete $4;
+  stp::GlobalParserInterface->deleteNode($5);
 }
 |
 function_def_name LPAREN_TOK function_params RPAREN_TOK BOOL_TOK an_formula
@@ -2480,6 +2537,7 @@ var_decl:
 STRING_TOK LPAREN_TOK RPAREN_TOK LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
   ABANDON_IF_REDECLARED_ZERO_ARITY(delete $1);
+  checkBitVectorWidth($7);
   declareScalarSymbol($1, stp::SourceSort::bitVector($7));
 }
 | STRING_TOK LPAREN_TOK RPAREN_TOK STRING_TOK
@@ -2720,6 +2778,7 @@ LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 const_decl:
 STRING_TOK  LPAREN_TOK UNDERSCORE_TOK BITVEC_TOK NUMERAL_TOK RPAREN_TOK
 {
+  checkBitVectorWidth($5);
   declareScalarSymbol($1, stp::SourceSort::bitVector($5));
 }
 | STRING_TOK BOOL_TOK
@@ -3871,6 +3930,27 @@ TERMID_TOK
       stp::GlobalParserInterface->applyFunction(*$1, empty));
   if ($$->GetSourceSort().kind() != stp::SourceSort::Kind::RoundingMode)
     yyerror("Must be RoundingMode type");
+}
+| LPAREN_TOK DECLAREDSORT_FUNCTIONID_TOK an_mixed RPAREN_TOK
+{
+  // A define-fun whose result sort is one declared by declare-sort. Its own
+  // token for the same reason RoundingMode has one: the lexer dispatches a
+  // function name by its result sort, and before this sort had a kind of its
+  // own such a function reached the bit-vector token and was accepted as a
+  // bit-vector term.
+  $$ = stp::GlobalParserInterface->newNode(
+      stp::GlobalParserInterface->applyFunction(*$2, *$3));
+  if ($$->GetSourceSort().kind() != stp::SourceSort::Kind::Uninterpreted)
+    yyerror("Must be a declared sort");
+  delete $3;
+}
+| DECLAREDSORT_FUNCTIONID_TOK
+{
+  ASTVec empty;
+  $$ = stp::GlobalParserInterface->newNode(
+      stp::GlobalParserInterface->applyFunction(*$1, empty));
+  if ($$->GetSourceSort().kind() != stp::SourceSort::Kind::Uninterpreted)
+    yyerror("Must be a declared sort");
 }
 | LPAREN_TOK EXCLAIMATION_MARK_TOK an_term NAMED_ATTRIBUTE_TOK STRING_TOK RPAREN_TOK
 {

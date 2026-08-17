@@ -80,9 +80,33 @@ enum SOLVER_RETURN_TYPE
   SOLVER_VALID = 1,
   SOLVER_UNDECIDED = 2,
   SOLVER_TIMEOUT = 3,
+  // No answer for a reason that is not the clock: the method STP would have
+  // used is incomplete for this input, so neither verdict may be reported.
+  // Appended, and nothing switches exhaustively on this enum, so a consumer
+  // that has not heard of it compares unequal to every case it knows -- which
+  // is the right default for "no answer". SOLVER_TIMEOUT keeps its own value
+  // because the two are told apart by (get-info :reason-unknown), not by the
+  // answer, which is `unknown` for both.
+  SOLVER_UNKNOWN = 4,
   SOLVER_ERROR = -100,
   SOLVER_UNSATISFIABLE = 1,
   SOLVER_SATISFIABLE = 0
+};
+
+// Why the last solve had no answer, for (get-info :reason-unknown). The two
+// spellings are the ones SMT-LIB 2 predefines for the flag beyond a free-form
+// s-expression; `incomplete` is exactly its meaning here -- the encoding STP
+// would have solved cannot represent every model of the input.
+enum class UnknownReason
+{
+  None,
+  Timeout,
+  // The conflict budget (--max-num-confl) ran out. Told apart from the clock
+  // because a caller acts differently on the two: a wall-clock timeout may
+  // succeed with more time on the same machine, while a conflict budget is
+  // deterministic and will not.
+  ConflictBudget,
+  Incomplete
 };
 
 // Empty vector. Useful commonly used ASTNodes

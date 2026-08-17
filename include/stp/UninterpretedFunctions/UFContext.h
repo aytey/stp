@@ -37,6 +37,12 @@ public:
 
   const UFDecl* lookup(const std::string& name) const;
   const UFDecl* lookupIdentity(const ASTNode& identity) const;
+
+  // Every declaration's identity symbol. Such a symbol carries its
+  // declaration's codomain sort so that an application can derive its own, but
+  // it denotes the function rather than an element of that sort -- so anything
+  // counting terms of a sort has to leave these out.
+  void collectIdentitySymbols(ASTNodeSet& out) const;
   bool isActive(const UFDecl* decl) const;
   bool owns(const UFDecl* decl) const;
   std::vector<const UFDecl*> activeDeclarations() const;
