@@ -3,6 +3,8 @@
 #include "extlib-constbv/constantbv.h"
 #include "extlib-unordered-dense/ankerl/unordered_dense.h"
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 
 namespace stp
 {
@@ -497,6 +499,30 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
                           declaration->signature().codomain()),
                       candidate, result, out.diagnostic))
         return out;
+
+      if (getenv("STP_UF_DUMP_CANDIDATE") != NULL)
+      {
+        std::cerr << "UFDUMP cand=" << candidateVersion << " rec="
+                  << record->stableOrder << " resSym="
+                  << record->resultSymbol.GetName() << " argSym=";
+        for (size_t i = 0; i < record->namedActuals.size(); ++i)
+          std::cerr << (record->namedActuals[i].GetKind() == SYMBOL
+                            ? record->namedActuals[i].GetName()
+                            : "<const>")
+                    << " ";
+        std::cerr << " args=";
+        for (size_t i = 0; i < tuple.size(); ++i)
+        {
+          std::cerr << "[";
+          for (size_t b = tuple[i].bytes().size(); b > 0; --b)
+            std::cerr << std::hex << (unsigned)tuple[i].bytes()[b - 1] << std::dec << ".";
+          std::cerr << "] ";
+        }
+        std::cerr << " res=[";
+        for (size_t b = result.bytes().size(); b > 0; --b)
+          std::cerr << std::hex << (unsigned)result.bytes()[b - 1] << std::dec << ".";
+        std::cerr << "]" << std::endl;
+      }
 
       const ObservationTable::iterator found = table.find(tuple);
       if (found == table.end())

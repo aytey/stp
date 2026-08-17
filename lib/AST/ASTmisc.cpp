@@ -154,6 +154,68 @@ bool numberOfReadsLessThan(const ASTNode& n, int limit)
   }
 }
 
+// What eager array Ackermannisation would cost, against a bound.
+//
+// The read count the policy gates on is a proxy for how much the transform
+// builds, and it is a bad one: a read whose array operand is a chain of
+// WRITEs becomes one if-then-else per link in that chain, so ten reads over
+// flat arrays cost ten nodes and nine reads over a four-thousand-deep store
+// chain cost thirty-six thousand. Measured, that is the difference between
+// 0.12s and 5.8s on the same query -- the eager path is 48x SLOWER there than
+// leaving it to read refinement.
+//
+// So this sums, over the distinct reads, the depth of the WRITE/ITE chain
+// between each read and the array it ultimately indexes, and stops as soon as
+// the bound is passed. It says nothing about the index-equality axioms the
+// transform also builds; it is the term that makes the difference between a
+// cheap eager expansion and a catastrophic one.
+bool arrayEagerCostLessThan(const ASTNode& n, uint64_t limit)
+{
+  if (limit == 0)
+    return false;
+
+  // Depth of the WRITE/ITE spine under one read's array operand. Shared
+  // spines are walked once per read, which is the same count the transform
+  // pays: it expands each read against the whole chain.
+  const auto spineDepth = [limit](const ASTNode& start) {
+    uint64_t depth = 0;
+    ASTNode current = start;
+    while (current.GetKind() == WRITE ||
+           (current.GetKind() == ITE && current.GetIndexWidth() > 0))
+    {
+      depth++;
+      // A WRITE's array operand is child 0; so is an array-valued ITE's
+      // first branch. Following one branch is enough for a bound: the
+      // transform walks both, so this under-counts rather than over-counts,
+      // and under-counting only makes the guard more permissive.
+      current = current[current.GetKind() == WRITE ? 0 : 1];
+      if (depth >= limit)
+        return depth;
+    }
+    return depth;
+  };
+
+  std::unordered_set<uint64_t> visited;
+  uint64_t cost = 0;
+  std::vector<ASTNode> pending(1, n);
+  while (!pending.empty())
+  {
+    const ASTNode current = pending.back();
+    pending.pop_back();
+    if (current.isAtom() || !visited.insert(current.GetNodeNum()).second)
+      continue;
+    if (current.GetKind() == READ)
+    {
+      cost += 1 + spineDepth(current[0]);
+      if (cost >= limit)
+        return false;
+    }
+    for (size_t i = 0; i < current.Degree(); ++i)
+      pending.push_back(current[i]);
+  }
+  return cost < limit;
+}
+
 // See the declaration for why this exists: constants of one value need
 // not be one node, because a floating-point constant interns apart from
 // the plain constant with its bits.
