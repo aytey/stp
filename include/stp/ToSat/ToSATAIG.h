@@ -68,6 +68,32 @@ private:
 
   ToCNFAIG toCNF;
 
+  struct BVEQAbstraction
+  {
+    ASTNode eqNode;
+    unsigned abstractionSATVar;
+    ASTNode leftSymbol;
+    ASTNode rightSymbol;
+    unsigned width;
+    bool defined = false;
+    unsigned refinedBits = 0;
+    std::vector<unsigned> xnorHelpers;
+  };
+  std::vector<BVEQAbstraction> bvEQAbstractions_;
+
+  struct BVTermAbstraction
+  {
+    ASTNode termNode;
+    Kind opKind;
+    ASTNode operands[3];
+    unsigned numOperands;
+    unsigned width;
+    bool operandNegated[3] = {false, false, false};
+    unsigned condSATVar = 0;
+    bool defined = false;
+  };
+  std::vector<BVTermAbstraction> bvTermAbstractions_;
+
   void init()
   {
     count = 0;
@@ -108,6 +134,12 @@ public:
   ASTNodeToSATVar& SATVar_to_SymbolIndexMap() { return nodeToSATVar; }
 
   bool CallSAT(SATSolver& satSolver, const ASTNode& input, bool needAbsRef);
+
+  bool hasBVEQAbstractions() const { return !bvEQAbstractions_.empty(); }
+  unsigned refineBVEQInconsistencies(SATSolver& solver);
+
+  bool hasBVTermAbstractions() const { return !bvTermAbstractions_.empty(); }
+  unsigned refineBVTermInconsistencies(SATSolver& solver);
 };
 }
 

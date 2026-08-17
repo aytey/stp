@@ -84,10 +84,16 @@ bool UFLemmaOracle::buildAndValidate(const UFCongruenceConflict& conflict,
   // never as a float.
   const SourceSort codomain = UFSignature::loweringSort(
       conflict.declaration->signature().codomain());
-  if (!supported(codomain) || conflict.leftResult.GetSourceSort() != codomain ||
-      conflict.rightResult.GetSourceSort() != codomain ||
-      conflict.leftResultValue.sort() != codomain ||
-      conflict.rightResultValue.sort() != codomain)
+  const SourceSort resultSort = conflict.leftResult.GetSourceSort();
+  const bool narrowedBV =
+      codomain.kind() == SourceSort::Kind::BitVector &&
+      resultSort.kind() == SourceSort::Kind::BitVector &&
+      resultSort.bitVectorWidth() <= codomain.bitVectorWidth();
+  if (!supported(resultSort) ||
+      (resultSort != codomain && !narrowedBV) ||
+      conflict.rightResult.GetSourceSort() != resultSort ||
+      conflict.leftResultValue.sort() != resultSort ||
+      conflict.rightResultValue.sort() != resultSort)
   {
     diagnostic = "UF lemma certificate has an invalid result sort";
     return false;
@@ -159,7 +165,7 @@ bool UFLemmaOracle::buildAndValidate(const UFCongruenceConflict& conflict,
   }
 
   const EqualityKey conclusion =
-      keyFor(conflict.leftResult, conflict.rightResult, codomain);
+      keyFor(conflict.leftResult, conflict.rightResult, resultSort);
   if (conclusion.left == conclusion.right)
   {
     diagnostic = "UF lemma conflict has a reflexive result equality";
@@ -167,7 +173,7 @@ bool UFLemmaOracle::buildAndValidate(const UFCongruenceConflict& conflict,
   }
   lemma.conclusion.left = conclusion.left;
   lemma.conclusion.right = conclusion.right;
-  lemma.conclusion.sort = codomain;
+  lemma.conclusion.sort = resultSort;
   lemma.conclusion.originalPosition = conflict.arguments.size();
   lemma.candidateVersion = conflict.candidateVersion;
 

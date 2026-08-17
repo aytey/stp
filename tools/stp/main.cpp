@@ -351,8 +351,43 @@ void ExtraMain::create_options()
                  "sound and only a smaller one is not")
       ->group(refinement_group)
       ->capture_default_str();
+  bool_arg("--uf-narrow-results", bm->UserFlags.uf_narrow_results,
+           "narrow UF result sorts whose applications are used only for "
+           "equality to ceil(log2(N+1)) bits, cutting the AIG cost of each "
+           "congruence constraint from O(width) to O(log N)",
+           refinement_group);
+  bool_arg("--uf-inject-args", bm->UserFlags.uf_inject_args,
+           "assert injectivity for equality-only UF declarations in the "
+           "eager congruence encoding, giving the SAT solver bidirectional "
+           "propagation between argument and result equalities",
+           refinement_group);
+
+  bool_arg("--bv-eq-abstraction", bm->UserFlags.bv_eq_abstraction,
+           "replace wide symbol-symbol BV equalities with fresh Boolean "
+           "variables during bit-blasting, refining lazily via CEGAR",
+           refinement_group);
+  app.add_option("--bv-eq-abstraction-width",
+                 bm->UserFlags.bv_eq_abstraction_width,
+                 "minimum bit-vector width for BV equality abstraction")
+      ->group(refinement_group)
+      ->capture_default_str();
+  app.add_option("--bv-eq-refine-width",
+                 bm->UserFlags.bv_eq_refine_width,
+                 "initial prefix width for lazy BV equality refinement (0 = full)")
+      ->group(refinement_group)
+      ->capture_default_str();
+
+  bool_arg("--bv-term-abstraction", bm->UserFlags.bv_term_abstraction,
+           "abstract wide BV arithmetic (BVPLUS) during bit-blasting, "
+           "refining lazily via CEGAR",
+           refinement_group);
 
   const char* const bb_group = "Bit-blasting options";
+  app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,
+                 "hard limit on AIG AND-gate nodes during bit-blasting; "
+                 "the solver reports unknown when it is exceeded (0: unlimited)")
+      ->group(bb_group)
+      ->capture_default_str();
   bool_arg("--bb.div-v1", bm->UserFlags.division_variant_1,
            "unsigned division encoding variant 1", bb_group);
 

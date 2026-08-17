@@ -10,6 +10,75 @@ namespace stp
 
 namespace
 {
+
+unsigned bitsForDistinct(unsigned n)
+{
+  if (n <= 1)
+    return 1;
+  unsigned bits = 0;
+  unsigned v = n;
+  while (v > 0)
+  {
+    bits++;
+    v >>= 1;
+  }
+  if (n == (1u << (bits - 1)))
+    return bits - 1;
+  return bits;
+}
+
+struct NarrowAnalysis
+{
+  std::map<const UFDecl*, unsigned> applicationCount;
+  std::set<const UFDecl*> nonNarrowable;
+};
+
+NarrowAnalysis analyzeNarrowability(const ASTNode& root, UFContext* context)
+{
+  NarrowAnalysis result;
+  ASTNodeSet visited;
+  walkPreOrder(root, [&](const ASTNode& n) -> bool {
+    if (!visited.insert(n).second)
+      return false;
+
+    if (n.GetKind() == UF_APPLY)
+    {
+      const UFDecl* decl = context->lookupIdentity(n[0]);
+      if (decl)
+        result.applicationCount[decl]++;
+    }
+
+    for (size_t i = 0; i < n.Degree(); i++)
+    {
+      if (n[i].GetKind() != UF_APPLY)
+        continue;
+      const UFDecl* childDecl = context->lookupIdentity(n[i][0]);
+      if (!childDecl)
+        continue;
+
+      if (n.GetKind() != EQ)
+      {
+        result.nonNarrowable.insert(childDecl);
+        continue;
+      }
+      size_t other = (i == 0) ? 1 : 0;
+      if (other >= n.Degree() || n[other].GetKind() != UF_APPLY)
+      {
+        result.nonNarrowable.insert(childDecl);
+        continue;
+      }
+      const UFDecl* otherDecl = context->lookupIdentity(n[other][0]);
+      if (otherDecl != childDecl)
+      {
+        result.nonNarrowable.insert(childDecl);
+        result.nonNarrowable.insert(otherDecl);
+      }
+    }
+    return true;
+  });
+  return result;
+}
+
 bool isLeafActual(const ASTNode& actual)
 {
   return actual.GetKind() == SYMBOL || actual.isConstant();
@@ -218,7 +287,9 @@ PositionVerdict comparePosition(NodeFactory* factory, const ASTNode& left,
 // that already attaches naming definitions, a persistent block inherits its
 // guard with no new guard logic, and ordinary preprocessing gets to simplify
 // or delete constraints whose results nothing constrains.
-void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
+void UFLowering::installEagerCongruence(
+    LoweredApplicationView& view,
+    const std::set<const UFDecl*>& injectable) const
 {
   typedef UserDefinedFlags::UFEagerMode Mode;
   const Mode mode = manager_->UserFlags.uf_eager_mode;
@@ -385,16 +456,21 @@ void UFLowering::installEagerCongruence(LoweredApplicationView& view) const
         const ASTNode conclusion = factory->CreateNode(
             signature.codomain().kind() == SourceSort::Kind::Bool ? IFF : EQ,
             left.resultSymbol, right.resultSymbol);
-        // Two distinct handles whose actuals all lowered to the same scalars
-        // are unconditionally congruent, so the implication collapses.
+        const ASTNode premiseConj =
+            premise.empty()
+                ? ASTNode()
+                : premise.size() == 1
+                      ? premise[0]
+                      : factory->CreateNode(AND, premise);
         view.congruenceConstraints.push_back(
             premise.empty()
                 ? conclusion
-                : factory->CreateNode(IMPLIES,
-                                      premise.size() == 1
-                                          ? premise[0]
-                                          : factory->CreateNode(AND, premise),
-                                      conclusion));
+                : factory->CreateNode(IMPLIES, premiseConj, conclusion));
+
+        if (!premise.empty() &&
+            injectable.count(candidate.second) != 0)
+          view.congruenceConstraints.push_back(
+              factory->CreateNode(IMPLIES, conclusion, premiseConj));
       }
   }
 }
@@ -466,6 +542,16 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
   }
   context->beginSolveProtection();
 
+  // Pre-analysis: detect UF declarations whose results are used only for
+  // equality with other results of the same declaration. Their result sort
+  // can be narrowed from the declared width to ceil(log2(N+1)) bits,
+  // cutting the AIG cost of every congruence constraint from O(width) to
+  // O(log N).
+  NarrowAnalysis narrowing;
+  if (manager_->UserFlags.uf_narrow_results ||
+      manager_->UserFlags.uf_inject_args)
+    narrowing = analyzeNarrowability(publicRoot, context);
+
   // A name is canonical per lowered expression, matching the reference
   // oracle. This both avoids redundant definitions and makes an identical
   // persistent block reconstruct the identical semantic root.
@@ -529,6 +615,8 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
                  reinterpreted);
     return reinterpreted;
   };
+
+  std::set<const UFDecl*> reportedNarrow;
 
   // A compound actual cannot be named while the walk is running: whether the
   // name is needed depends on how many applications its declaration turns out
@@ -636,7 +724,29 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
           FatalError("UF lowering found a durable result with the wrong "
                      "SourceSort",
                      application);
-        const SourceSort solvedCodomain = UFSignature::loweringSort(codomain);
+        SourceSort solvedCodomain = UFSignature::loweringSort(codomain);
+        if (manager_->UserFlags.uf_narrow_results &&
+            solvedCodomain.kind() == SourceSort::Kind::BitVector &&
+            narrowing.nonNarrowable.count(declaration) == 0)
+        {
+          auto it = narrowing.applicationCount.find(declaration);
+          if (it != narrowing.applicationCount.end())
+          {
+            const unsigned narrowWidth =
+                bitsForDistinct(it->second);
+            if (narrowWidth < solvedCodomain.bitVectorWidth())
+            {
+              solvedCodomain = SourceSort::bitVector(narrowWidth);
+              if (manager_->UserFlags.stats_flag &&
+                  reportedNarrow.insert(declaration).second)
+                std::cerr << "UF: narrowing result of "
+                          << declaration->name() << " from "
+                          << codomain.bitVectorWidth() << " to "
+                          << narrowWidth << " bits (" << it->second
+                          << " applications)" << std::endl;
+            }
+          }
+        }
         record.resultSymbol = manager_->CreateDeterministicSourceVariable(
             solvedCodomain, "uf_result", application);
         if (record.resultSymbol.GetSourceSort() != solvedCodomain)
@@ -724,7 +834,15 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
     if (!record.observableArguments)
       record.namedActuals.clear();
 
-  installEagerCongruence(view);
+  std::set<const UFDecl*> injectable;
+  if (manager_->UserFlags.uf_inject_args)
+  {
+    for (const auto& entry : narrowing.applicationCount)
+      if (narrowing.nonNarrowable.count(entry.first) == 0)
+        injectable.insert(entry.first);
+  }
+
+  installEagerCongruence(view, injectable);
   reportEagerCongruence(view);
 
   // This checks the whole barrier once, including the naming definitions.

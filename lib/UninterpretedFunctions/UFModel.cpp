@@ -42,12 +42,19 @@ void printSort(std::ostream& os, const SourceSort& sort)
 }
 
 // Seed values are stored at the lowering sort; `declared` is the signature
-// sort they will be published at. The two differ only for FloatingPoint.
+// sort they will be published at. The two differ only for FloatingPoint
+// (and for narrowed bit-vector results).
 void requireValueSort(const UFConcreteValue& value,
                       const SourceSort& declared)
 {
-  if (value.sort() != UFSignature::loweringSort(declared))
-    FatalError("UF model seed contains a value at the wrong SourceSort");
+  const SourceSort expected = UFSignature::loweringSort(declared);
+  if (value.sort() == expected)
+    return;
+  if (expected.kind() == SourceSort::Kind::BitVector &&
+      value.sort().kind() == SourceSort::Kind::BitVector &&
+      value.sort().bitVectorWidth() <= expected.bitVectorWidth())
+    return;
+  FatalError("UF model seed contains a value at the wrong SourceSort");
 }
 
 void printValue(std::ostream& os, STPMgr* manager,
@@ -169,14 +176,28 @@ ASTNode UFModel::concreteValue(STPMgr* manager,
 ASTNode UFModel::concreteValue(STPMgr* manager, const UFConcreteValue& value,
                                const SourceSort& declared)
 {
-  if (value.sort() != UFSignature::loweringSort(declared))
+  const SourceSort expected = UFSignature::loweringSort(declared);
+  const bool narrowedBV =
+      expected.kind() == SourceSort::Kind::BitVector &&
+      value.sort().kind() == SourceSort::Kind::BitVector &&
+      value.sort().bitVectorWidth() < expected.bitVectorWidth();
+  if (value.sort() != expected && !narrowedBV)
     FatalError("UF concrete-value conversion received a value at the wrong "
                "lowering sort");
+  if (narrowedBV)
+  {
+    const unsigned targetWidth = expected.bitVectorWidth();
+    std::vector<uint8_t> extended((targetWidth + 7) / 8, 0);
+    const std::vector<uint8_t>& src = value.bytes();
+    for (size_t i = 0; i < src.size() && i < extended.size(); ++i)
+      extended[i] = src[i];
+    const UFConcreteValue widened =
+        UFConcreteValue::bitVector(targetWidth, extended);
+    return concreteValue(manager, widened);
+  }
   const ASTNode solved = concreteValue(manager, value);
   if (declared.kind() != SourceSort::Kind::FloatingPoint)
     return solved;
-  // A float was solved as its canonical packed bits. Crossing back is the
-  // same reinterpretation the formula got, done on a constant.
   return manager->LiftSourceValue(solved, declared);
 }
 
@@ -220,7 +241,12 @@ bool UFModel::evaluateApplication(STPMgr* manager,
     return false;
   }
   const SourceSort declared = durableHandle.GetSourceSort();
-  if (concrete.sort() != UFSignature::loweringSort(declared))
+  const SourceSort expected = UFSignature::loweringSort(declared);
+  const bool narrowedBV =
+      expected.kind() == SourceSort::Kind::BitVector &&
+      concrete.sort().kind() == SourceSort::Kind::BitVector &&
+      concrete.sort().bitVectorWidth() <= expected.bitVectorWidth();
+  if (concrete.sort() != expected && !narrowedBV)
   {
     diagnostic = "certified uninterpreted-function value has the wrong "
                  "SourceSort";
