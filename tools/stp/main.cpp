@@ -351,6 +351,11 @@ void ExtraMain::create_options()
                  "sound and only a smaller one is not")
       ->group(refinement_group)
       ->capture_default_str();
+  bool_arg("--uf-narrow-results", bm->UserFlags.uf_narrow_results,
+           "narrow UF result sorts whose applications are used only for "
+           "equality to ceil(log2(N+1)) bits, cutting the AIG cost of each "
+           "congruence constraint from O(width) to O(log N)",
+           refinement_group);
 
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,
