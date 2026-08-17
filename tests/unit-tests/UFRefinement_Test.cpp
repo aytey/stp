@@ -109,6 +109,7 @@ struct RefinementFixture
         function(NULL), tosat(&manager)
   {
     manager.UserFlags.enable_uninterpreted_functions = true;
+    manager.UserFlags.uf_narrow_results = false;
     context = manager.getUFContext();
     std::string diagnostic;
     function = context->declareFunction(
@@ -182,6 +183,7 @@ struct ConstantOperandFixture
         function(NULL), tosat(&manager)
   {
     manager.UserFlags.enable_uninterpreted_functions = true;
+    manager.UserFlags.uf_narrow_results = false;
     context = manager.getUFContext();
     std::string diagnostic;
     const SourceSort boolean = SourceSort::boolean();
@@ -257,6 +259,7 @@ struct IdenticalPremiseFixture
         function(NULL), tosat(&manager)
   {
     manager.UserFlags.enable_uninterpreted_functions = true;
+    manager.UserFlags.uf_narrow_results = false;
     context = manager.getUFContext();
     std::string diagnostic;
     const SourceSort bv2 = SourceSort::bitVector(2);

@@ -26,6 +26,7 @@ THE SOFTWARE.
 #define BBNodeManagerAIG_H_
 
 #include <cstdint>
+#include <stdexcept>
 
 #include "BBNodeAIG.h"
 #include "stp/ToSat/ToSATBase.h"
@@ -86,10 +87,18 @@ inline Aig_Obj_t* orderedAigMux(Aig_Man_t* p, Aig_Obj_t* pC, Aig_Obj_t* p1,
 }
 
 // Creates AIG nodes with ABC and wraps them in BBNodeAIG's.
+struct AIGBudgetExhausted : public std::runtime_error
+{
+  int nodeCount;
+  AIGBudgetExhausted(int n)
+      : std::runtime_error("AIG node budget exhausted"), nodeCount(n) {}
+};
+
 class BBNodeManagerAIG
 {
 public:
   Aig_Man_t* aigMgr;
+  unsigned nodeBudget = 0;
 
   // Map from symbols to their AIG nodes.
   typedef std::map<ASTNode, vector<BBNodeAIG>> SymbolToBBNode;
@@ -98,6 +107,13 @@ public:
   int totalNumberOfNodes()
   {
     return aigMgr->nObjs[AIG_OBJ_AND]; // without having removed non-reachable.
+  }
+
+  void checkBudget()
+  {
+    if (nodeBudget > 0 &&
+        static_cast<unsigned>(aigMgr->nObjs[AIG_OBJ_AND]) > nodeBudget)
+      throw AIGBudgetExhausted(aigMgr->nObjs[AIG_OBJ_AND]);
   }
 
 private:
@@ -277,6 +293,7 @@ public:
         assert(false);
         exit(-1);
     }
+    checkBudget();
     return BBNodeAIG(pNode);
   }
 

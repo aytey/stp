@@ -367,11 +367,26 @@ UFCheckPlan UFChecker::validate(
     // the declared sort everywhere but FloatingPoint, which the core never
     // sees: it is solved as its canonical packed carrier and only becomes a
     // float again at the model boundary.
-    if (record.resultSymbol.GetSourceSort() !=
-        UFSignature::loweringSort(signature.codomain()))
+    //
+    // uf_narrow_results may have reduced the result width; the symbol then
+    // carries a BitVector sort narrower than the declared codomain, and that
+    // is legal as long as the kind stays BitVector.
     {
-      plan.diagnostic_ = "UFCHK result symbol has the wrong SourceSort";
-      return plan;
+      const SourceSort expected =
+          UFSignature::loweringSort(signature.codomain());
+      const SourceSort actual = record.resultSymbol.GetSourceSort();
+      if (actual != expected)
+      {
+        const bool narrowedBV =
+            expected.kind() == SourceSort::Kind::BitVector &&
+            actual.kind() == SourceSort::Kind::BitVector &&
+            actual.bitVectorWidth() < expected.bitVectorWidth();
+        if (!narrowedBV)
+        {
+          plan.diagnostic_ = "UFCHK result symbol has the wrong SourceSort";
+          return plan;
+        }
+      }
     }
     for (size_t i = 0; i < signature.arity(); ++i)
     {
@@ -466,13 +481,14 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     // of it has to satisfy.
     bool constantInterpretation = false;
     UFConcreteValue constantValue;
+    const SourceSort resultSort = records.empty()
+        ? UFSignature::loweringSort(declaration->signature().codomain())
+        : records[0]->resultSymbol.GetSourceSort();
     for (const LoweredApplicationRecord* record : records)
     {
       if (!record->observableArguments)
       {
-        if (!readScalar(record->resultSymbol,
-                        UFSignature::loweringSort(
-                            declaration->signature().codomain()),
+        if (!readScalar(record->resultSymbol, resultSort,
                         candidate, constantValue, out.diagnostic))
           return out;
         constantInterpretation = true;
@@ -492,9 +508,7 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
         tuple.push_back(value);
       }
       UFConcreteValue result;
-      if (!readScalar(record->resultSymbol,
-                      UFSignature::loweringSort(
-                          declaration->signature().codomain()),
+      if (!readScalar(record->resultSymbol, resultSort,
                       candidate, result, out.diagnostic))
         return out;
 
@@ -576,8 +590,7 @@ UFCheckResult UFChecker::check(const UFCheckPlan& plan,
     function.defaultValue =
         constantInterpretation
             ? constantValue
-            : UFConcreteValue::zero(UFSignature::loweringSort(
-                  declaration->signature().codomain()));
+            : UFConcreteValue::zero(resultSort);
     function.cases.reserve(table.size());
     for (const auto& entry : table)
     {

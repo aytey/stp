@@ -271,6 +271,22 @@ public:
   // uninterpreted sort in practice; raise it if a query ever needs more.
   unsigned uf_sort_width = 16;
 
+  // Narrow the result sort of a UF declaration whose applications are used
+  // only for equality comparisons (both sides of the same declaration).
+  // Reducing a 256-bit result to ceil(log2(N+1)) bits cuts the number of
+  // AIG nodes per congruence constraint from ~511 to a handful. The
+  // analysis is conservative: any non-equality use disqualifies the
+  // declaration. Enabled by default; set to false if it causes trouble.
+  bool uf_narrow_results = true;
+
+  // For declarations whose results appear only in equality contexts, add
+  // the reverse implication (= result_i result_j) => (= arg_i arg_j) in
+  // the eager congruence encoding. This asserts injectivity, giving the
+  // SAT solver bidirectional propagation between argument and result
+  // equalities. Sound when the function is injective in every satisfying
+  // assignment; may produce spurious UNSAT otherwise.
+  bool uf_inject_args = false;
+
   // Replace a (distinct x1 ... xn) whose operands are variables occurring
   // nowhere else with the strict chain x1 < x2 < ... < xn. Every permutation
   // of such operands maps the formula to itself, so fixing one of the n!
@@ -305,6 +321,16 @@ public:
 
   // output flags
   bool output_CNF_flag = false;
+
+  // Hard limit on AIG AND-gate nodes during bit-blasting. If the node
+  // count exceeds this the bit-blaster aborts and the solver reports
+  // unknown.  0 means unlimited (the default).
+  unsigned aig_node_budget = 0;
+
+  bool bv_eq_abstraction = false;
+  unsigned bv_eq_abstraction_width = 64;
+  unsigned bv_eq_refine_width = 0;
+  bool bv_term_abstraction = false;
 
   /* Bitblasting options */
 
