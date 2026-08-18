@@ -1114,7 +1114,7 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   if (carrierMayBeShort && last_run.result == SOLVER_UNSATISFIABLE)
   {
     last_run.result = SOLVER_UNKNOWN;
-    bm.noteUnknown(UnknownReason::Incomplete, carrierExhausted);
+    bm.noteUnknown(UnknownReason::CarrierExhausted, carrierExhausted);
   }
 
   // A model exists exactly when this check concluded SAT and the solve
@@ -1485,10 +1485,14 @@ void Cpp_interface::getInfo(std::string flag)
         cout << "(:reason-unknown (incomplete \"the conflict budget set by "
                 "--max-num-confl ran out\"))" << endl;
         break;
+      case UnknownReason::AIGBudget:
+      case UnknownReason::CarrierExhausted:
       case UnknownReason::Incomplete:
         // The predefined SMT-LIB spelling, followed by what was incomplete:
         // the flag admits an s-expression, and a bare "incomplete" tells a
-        // caller nothing they can act on.
+        // caller nothing they can act on. All three share it because the
+        // sentence is what says which, and SMT-LIB2 has no spelling that
+        // would say it better.
         cout << "(:reason-unknown (incomplete \"" << bm.unknown_detail
              << "\"))" << endl;
         break;

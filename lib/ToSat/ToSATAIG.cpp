@@ -220,7 +220,7 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
     detail << "the AIG node budget set by --aig-node-budget ("
            << bm->UserFlags.aig_node_budget << ") ran out at " << e.nodeCount
            << " AND gates; raise it, or set it to 0 for no limit";
-    bm->noteUnknown(UnknownReason::Incomplete, detail.str());
+    bm->noteUnknown(UnknownReason::AIGBudget, detail.str());
     delete cb;
     cb = NULL;
     bb.cb = NULL;

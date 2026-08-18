@@ -851,6 +851,10 @@ enum reason_unknown_t vc_getReasonUnknown(VC vc)
       return REASON_UNKNOWN_CONFLICT_BUDGET;
     case stp::UnknownReason::Incomplete:
       return REASON_UNKNOWN_INCOMPLETE;
+    case stp::UnknownReason::AIGBudget:
+      return REASON_UNKNOWN_AIG_BUDGET;
+    case stp::UnknownReason::CarrierExhausted:
+      return REASON_UNKNOWN_CARRIER_EXHAUSTED;
     case stp::UnknownReason::None:
       break;
   }

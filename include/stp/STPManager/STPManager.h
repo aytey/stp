@@ -200,8 +200,21 @@ public:
   // `unknown` and both already count as an unknown to explain.
   SOLVER_RETURN_TYPE noAnswerVerdict() const
   {
-    return unknown_reason == UnknownReason::Incomplete ? SOLVER_UNKNOWN
-                                                       : SOLVER_TIMEOUT;
+    switch (unknown_reason)
+    {
+      // None is the clock too: it is what the pipeline's own checks see when
+      // the clock expires before any solver has run and had a reason to
+      // record.
+      case UnknownReason::None:
+      case UnknownReason::Timeout:
+      case UnknownReason::ConflictBudget:
+        return SOLVER_TIMEOUT;
+      case UnknownReason::Incomplete:
+      case UnknownReason::AIGBudget:
+      case UnknownReason::CarrierExhausted:
+        break;
+    }
+    return SOLVER_UNKNOWN;
   }
 
   void clearUnknown()

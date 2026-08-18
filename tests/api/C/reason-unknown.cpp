@@ -83,15 +83,17 @@ TEST(reason_unknown, TheClockAndTheConflictBudgetAreToldApartByTheReason)
 }
 
 // The AIG budget is neither, so it does not borrow the clock's verdict, and it
-// is the one cause whose name alone is not enough to act on -- the sentence
-// says which budget and what it reached.
+// has a value of its own rather than the catch-all it used to report as: a
+// caller sets this budget in order to act on it firing, and would otherwise
+// have had to read that out of the sentence. The sentence still says what it
+// reached, which the value cannot.
 TEST(reason_unknown, TheAigBudgetIsNotReportedAsAClock)
 {
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, 50);
   assertFactoring(vc);
   EXPECT_EQ(4, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
-  EXPECT_EQ(REASON_UNKNOWN_INCOMPLETE, vc_getReasonUnknown(vc));
+  EXPECT_EQ(REASON_UNKNOWN_AIG_BUDGET, vc_getReasonUnknown(vc));
 
   const std::string why = detail(vc);
   EXPECT_NE(std::string::npos, why.find("--aig-node-budget")) << why;

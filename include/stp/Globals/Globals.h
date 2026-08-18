@@ -114,7 +114,22 @@ enum class UnknownReason
   // succeed with more time on the same machine, while a conflict budget is
   // deterministic and will not.
   ConflictBudget,
-  Incomplete
+  // Neither a clock nor a budget the SAT solver enforces: something stopped
+  // before an answer and named itself. Incomplete is what a cause with no
+  // name of its own reports as, and both of the ones below were it until
+  // they were named -- they are appended rather than inserted, so nothing
+  // that already reports Incomplete moves.
+  //
+  // They are told apart because the action differs: each names a different
+  // flag to raise. SMT-LIB2 spells all three the same, as (incomplete "..."),
+  // since the sentence already says which; a caller holding only the value --
+  // vc_getReasonUnknown -- has nothing to read the sentence for.
+  Incomplete,
+  // --aig-node-budget stopped bit-blasting before the AIG exhausted memory.
+  AIGBudget,
+  // A declared sort's carrier was too narrow for the query, so an unsat that
+  // may be an artefact of the encoding was withheld. Raise --uf-sort-width.
+  CarrierExhausted
 };
 
 // Empty vector. Useful commonly used ASTNodes

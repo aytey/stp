@@ -418,7 +418,7 @@ enum ifaceflag_t
   //!
   //! Exceeding it ends the query without an answer. vc_query returns 4 rather
   //! than the 3 a clock gives, because no clock caused it, and
-  //! vc_getReasonUnknown returns REASON_UNKNOWN_INCOMPLETE with a sentence
+  //! vc_getReasonUnknown returns REASON_UNKNOWN_AIG_BUDGET, with a sentence
   //! naming this budget and the count it stopped at -- the same sentence
   //! SMT-LIB2 reads through (get-info :reason-unknown).
   //!
@@ -591,11 +591,31 @@ enum reason_unknown_t
   //! worth doing is raising the budget.
   REASON_UNKNOWN_CONFLICT_BUDGET,
 
-  //! Something else stopped before an answer, and it names itself: a budget of
-  //! its own, such as AIG_NODE_BUDGET, or a method incomplete for this input.
-  //! vc_getReasonUnknownToBuffer gives the sentence, which says which and what
-  //! it stopped at.
-  REASON_UNKNOWN_INCOMPLETE
+  //! Something stopped before an answer and has no value of its own here yet.
+  //! vc_getReasonUnknownToBuffer gives the sentence, which says what.
+  //!
+  //! The two below were this until they were named, and are appended rather
+  //! than inserted so that nothing already reporting as incomplete moves. A
+  //! caller that has not heard of a later addition compares unequal to every
+  //! value it knows and still has the sentence to fall back on, which is what
+  //! makes naming a cause a safe change to make.
+  REASON_UNKNOWN_INCOMPLETE,
+
+  //! AIG_NODE_BUDGET stopped bit-blasting before the AIG exhausted memory.
+  //! Deterministic: re-running reproduces it exactly, so what is worth doing
+  //! is raising that budget, and the sentence says what it stopped at.
+  REASON_UNKNOWN_AIG_BUDGET,
+
+  //! A sort introduced by (declare-sort S 0) had a carrier too narrow for the
+  //! query, so an unsat that may be an artefact of the encoding was withheld
+  //! rather than reported. Raise UF_SORT_WIDTH.
+  //!
+  //! Not reachable through this interface today: a declared sort can only come
+  //! from an SMT-LIB2 (declare-sort), and the sorts a UF may be declared over
+  //! here are built by vc_boolType, vc_bvType, vc_fpType and
+  //! vc_fpRoundingModeType. Named for what it is so that reading the sentence
+  //! is not the only way to know it, if that ever changes.
+  REASON_UNKNOWN_CARRIER_EXHAUSTED
 };
 
 //! \brief Returns why the last query had no answer.
