@@ -190,6 +190,20 @@ public:
                                           : UnknownReason::ConflictBudget);
   }
 
+  // The verdict a no-answer leaves with. Only one of the three causes is a
+  // clock, and SOLVER_TIMEOUT says clock; the other two are budgets, which
+  // more time will not move. SMT-LIB2 tells them apart through
+  // (get-info :reason-unknown) whatever the verdict says, but a caller who
+  // has only the verdict -- vc_query, which never reaches that reader -- is
+  // otherwise told the wrong thing, so a cause that is not the clock and not
+  // the conflict budget leaves as SOLVER_UNKNOWN instead. Both already print
+  // `unknown` and both already count as an unknown to explain.
+  SOLVER_RETURN_TYPE noAnswerVerdict() const
+  {
+    return unknown_reason == UnknownReason::Incomplete ? SOLVER_UNKNOWN
+                                                       : SOLVER_TIMEOUT;
+  }
+
   void clearUnknown()
   {
     unknown_reason = UnknownReason::None;

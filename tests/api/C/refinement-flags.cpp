@@ -250,12 +250,11 @@ TEST(refinement_flags, AnUnknownAckermannModeIsRefused)
 // (8 bits to 2 for three applications) and is checked end to end.
 
 // The AIG budget is the one option here that can change what a query answers,
-// so what it answers is worth pinning. Exceeding it ends the query with 3 --
-// the same value a clock expiry gives, the two being told apart by the reason
-// recorded for the unknown rather than by the verdict, and this interface
-// exposing no route to that reason. Without the budget the same query is
-// decided, which is what says the 3 came from the budget and not from the
-// query being hard.
+// so what it answers is worth pinning: exceeding it ends the query with 4,
+// and without the budget the same query is decided, which is what says the 4
+// came from the budget and not from the query being hard. Why 4 rather than
+// the 3 a clock gives, and how the causes that do share a verdict are told
+// apart, belong to reason-unknown.cpp.
 TEST(refinement_flags, TheAigBudgetEndsAQueryWithoutAnAnswer)
 {
   for (int budget = 0; budget <= 50; budget += 50)
@@ -274,7 +273,7 @@ TEST(refinement_flags, TheAigBudgetEndsAQueryWithoutAnAnswer)
     if (budget == 0)
       EXPECT_EQ(0, answer) << "no limit, so the query is decided";
     else
-      EXPECT_EQ(3, answer) << "budget " << budget;
+      EXPECT_EQ(4, answer) << "budget " << budget;
     vc_Destroy(vc);
   }
 }

@@ -200,7 +200,7 @@ SOLVER_RETURN_TYPE IncrementalSolver::Impl::solvePlainExactStack(
     solver->printStats();
 
   if (bm->soft_timeout_expired)
-    return SOLVER_TIMEOUT;
+    return bm->noAnswerVerdict();
 
   if (!sat)
   {

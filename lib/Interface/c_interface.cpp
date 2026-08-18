@@ -841,6 +841,33 @@ void vc_printCounterExampleToBuffer(VC vc, char** buf, size_t* len)
   memcpy(*buf, cstr, size);
 }
 
+enum reason_unknown_t vc_getReasonUnknown(VC vc)
+{
+  switch (mgr(vc)->unknown_reason)
+  {
+    case stp::UnknownReason::Timeout:
+      return REASON_UNKNOWN_TIMEOUT;
+    case stp::UnknownReason::ConflictBudget:
+      return REASON_UNKNOWN_CONFLICT_BUDGET;
+    case stp::UnknownReason::Incomplete:
+      return REASON_UNKNOWN_INCOMPLETE;
+    case stp::UnknownReason::None:
+      break;
+  }
+  return REASON_UNKNOWN_NONE;
+}
+
+void vc_getReasonUnknownToBuffer(VC vc, char** buf, size_t* len)
+{
+  // Empty rather than absent when there is nothing to say, so that a caller
+  // has one shape to handle and always something to free.
+  const std::string& detail = mgr(vc)->unknown_detail;
+  const size_t size = detail.size() + 1; // chars plus the terminating null
+  *buf = (char*)malloc(size);
+  *len = size;
+  memcpy(*buf, detail.c_str(), size);
+}
+
 void vc_printExprToBuffer(VC vc, Expr e, char** buf, size_t* len)
 {
   stp::STPMgr* b = mgr(vc);

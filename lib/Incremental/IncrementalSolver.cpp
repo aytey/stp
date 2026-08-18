@@ -529,7 +529,7 @@ IncrementalSolver::checkSatBody(const ASTVec& assertionsSMT2,
     impl->solver->printStats();
 
   if (bm->soft_timeout_expired)
-    return SOLVER_TIMEOUT;
+    return bm->noAnswerVerdict();
 
   if (!sat)
   {

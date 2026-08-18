@@ -2920,7 +2920,7 @@ AbsRefine_CounterExample::CallSAT_ResultCheck(SATSolver& SatSolver,
       ufTheoryAdapter != NULL && ufTheoryAdapter->active();
 
   if (bm->soft_timeout_expired)
-    return SOLVER_TIMEOUT;
+    return bm->noAnswerVerdict();
 
   if (!sat)
   {

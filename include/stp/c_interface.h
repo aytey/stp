@@ -416,13 +416,11 @@ enum ifaceflag_t
   //! --aig-node-budget. A negative value is refused with a nonfatal
   //! diagnostic.
   //!
-  //! Exceeding it ends the query without an answer, and vc_query returns 3 --
-  //! the same value a clock expiry returns, because the two are told apart by
-  //! the reason recorded for the unknown rather than by the verdict. An
-  //! SMT-LIB2 caller reads that reason from (get-info :reason-unknown), which
-  //! names this budget and the count it stopped at; this interface exposes no
-  //! route to it, so a vc_* caller that sets a budget cannot currently tell a
-  //! budget from a clock.
+  //! Exceeding it ends the query without an answer. vc_query returns 4 rather
+  //! than the 3 a clock gives, because no clock caused it, and
+  //! vc_getReasonUnknown returns REASON_UNKNOWN_INCOMPLETE with a sentence
+  //! naming this budget and the count it stopped at -- the same sentence
+  //! SMT-LIB2 reads through (get-info :reason-unknown).
   //!
   AIG_NODE_BUDGET
 
@@ -571,6 +569,55 @@ DLL_PUBLIC Expr vc_applyUninterpretedFunction(
 //! nonfatal diagnostic through vc_registerErrorHandler (or stderr) and
 //! returns NULL. No internal lowered symbol is exposed.
 DLL_PUBLIC Expr vc_getUninterpretedFunctionValue(VC vc, Expr application);
+
+//! \brief Why the last query had no answer.
+//!
+//! vc_query reports a query it could not decide as 3, whatever stopped it, so
+//! this is how a caller learns which of the causes it was and whether trying
+//! again could help. It is the C API's reading of the same record SMT-LIB2
+//! reports through (get-info :reason-unknown).
+//!
+enum reason_unknown_t
+{
+  //! No unknown to explain: the last query was answered, or none has run.
+  REASON_UNKNOWN_NONE = 0,
+
+  //! The wall clock given to vc_query_with_timeout ran out. The only cause
+  //! that more time on the same machine may get past.
+  REASON_UNKNOWN_TIMEOUT,
+
+  //! The conflict budget given to vc_query_with_timeout ran out. Deterministic
+  //! -- re-running with a longer clock reproduces it exactly -- so what is
+  //! worth doing is raising the budget.
+  REASON_UNKNOWN_CONFLICT_BUDGET,
+
+  //! Something else stopped before an answer, and it names itself: a budget of
+  //! its own, such as AIG_NODE_BUDGET, or a method incomplete for this input.
+  //! vc_getReasonUnknownToBuffer gives the sentence, which says which and what
+  //! it stopped at.
+  REASON_UNKNOWN_INCOMPLETE
+};
+
+//! \brief Returns why the last query had no answer.
+//!
+//! Meaningful after vc_query returns 3 or 4; REASON_UNKNOWN_NONE at any other
+//! time, since there is then no unknown to explain. The record is cleared at
+//! the start of every query, so this describes the last one and not the
+//! session.
+DLL_PUBLIC enum reason_unknown_t vc_getReasonUnknown(VC vc);
+
+//! \brief Prints why the last query had no answer into a buffer allocated by
+//!        STP.
+//!
+//! The buffer is returned via output parameter 'buf' alongside its length
+//! 'len'. It is the responsibility of the caller to free the memory
+//! afterwards.
+//!
+//! Only REASON_UNKNOWN_INCOMPLETE carries a sentence, because it is the only
+//! cause that is not named by vc_getReasonUnknown alone; the others write an
+//! empty string. Prose for a person to read: a caller deciding what to do next
+//! wants vc_getReasonUnknown, which is why the two are separate.
+DLL_PUBLIC void vc_getReasonUnknownToBuffer(VC vc, char** buf, size_t* len);
 
 //! \brief Returns the type of the given expression.
 //!

@@ -80,13 +80,21 @@ enum SOLVER_RETURN_TYPE
   SOLVER_VALID = 1,
   SOLVER_UNDECIDED = 2,
   SOLVER_TIMEOUT = 3,
-  // No answer for a reason that is not the clock: the method STP would have
-  // used is incomplete for this input, so neither verdict may be reported.
-  // Appended, and nothing switches exhaustively on this enum, so a consumer
-  // that has not heard of it compares unequal to every case it knows -- which
-  // is the right default for "no answer". SOLVER_TIMEOUT keeps its own value
-  // because the two are told apart by (get-info :reason-unknown), not by the
-  // answer, which is `unknown` for both.
+  // No answer for a reason that is not a budget the SAT solver enforces:
+  // either the method STP would have used is incomplete for this input, or
+  // something stopped before the solver was reached, so neither verdict may
+  // be reported. Appended, and nothing switches exhaustively on this enum, so
+  // a consumer that has not heard of it compares unequal to every case it
+  // knows -- which is the right default for "no answer".
+  //
+  // Which of the two a no-answer leaves as is STPMgr::noAnswerVerdict: this
+  // one for UnknownReason::Incomplete, SOLVER_TIMEOUT for the clock and the
+  // conflict budget. The split is coarse on purpose -- the clock and the
+  // conflict budget genuinely share a verdict, and (get-info :reason-unknown)
+  // or vc_getReasonUnknown is what separates those two. What it does buy is
+  // that nothing is called a timeout that no clock could have caused, which
+  // matters to a caller holding only the verdict: vc_query is one, and until
+  // vc_getReasonUnknown existed it was the only thing such a caller had.
   SOLVER_UNKNOWN = 4,
   SOLVER_ERROR = -100,
   SOLVER_UNSATISFIABLE = 1,
