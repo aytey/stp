@@ -313,7 +313,118 @@ enum ifaceflag_t
   //! C API's way to reach --bv-term-abstraction. It shares the width floor
   //! set by BV_EQ_ABSTRACTION_WIDTH.
   //!
-  BV_TERM_ABSTRACTION
+  BV_TERM_ABSTRACTION,
+
+  //! Whether BV_TERM_ABSTRACTION covers BVMULT, BVDIV and BVMOD as well.
+  //!
+  //! `param_value` nonzero includes them (the default), zero leaves them
+  //! encoded exactly from the start. This is the C API's way to reach
+  //! --bv-term-abstraction-mult.
+  //!
+  //! Those three are the operations refined by ruling out one pair of operand
+  //! values at a time, which is why they can be excluded on their own: what
+  //! remains -- BVPLUS, ITE and the comparisons -- each define themselves in
+  //! a single round.
+  //!
+  BV_TERM_ABSTRACTION_MULT,
+
+  //! How many blocking lemmas one abstracted BVMULT, BVDIV or BVMOD may take
+  //! before its refinement encodes the operation exactly instead of ruling
+  //! out further operand pairs (default 32).
+  //!
+  //! `param_value` is that count; zero never escalates and enumerates without
+  //! limit. This is the C API's way to reach --bv-term-abstraction-rounds.
+  //!
+  //! Escalating is not an incompleteness: the exact encoding answers what the
+  //! query would have answered unabstracted, so no query becomes unknown. A
+  //! negative value is refused with a nonfatal diagnostic and leaves the count
+  //! unchanged, as for the widths above.
+  //!
+  BV_TERM_ABSTRACTION_ROUNDS,
+
+  //! How many congruence lemmas one refuted candidate may install during
+  //! uninterpreted-function refinement (default 8).
+  //!
+  //! `param_value` is that count: zero installs every conflict the candidate
+  //! exposes, and one is the one-lemma-per-round reference profile. This is
+  //! the C API's way to reach --uf-lemmas-per-round. A negative value is
+  //! refused with a nonfatal diagnostic.
+  //!
+  UF_LEMMAS_PER_ROUND,
+
+  //! Whether a function's pairwise congruence constraints are installed
+  //! before the first solve rather than earned by a refuted candidate.
+  //!
+  //! `param_value` is 0 for 'auto' (the default: the declarations whose pair
+  //! count fits UF_ACKERMANN_BUDGET, cheapest first), 1 for 'on' (every
+  //! declaration) and 2 for 'off' (none). This is the C API's way to reach
+  //! --uf-ackermann. Any other value is refused with a nonfatal diagnostic
+  //! and leaves the mode unchanged, because the field is an enumeration and
+  //! a value outside it names no mode at all.
+  //!
+  UF_ACKERMANN,
+
+  //! How many congruence constraints UF_ACKERMANN's 'auto' mode may install
+  //! up front (default 256).
+  //!
+  //! `param_value` is that count. This is the C API's way to reach
+  //! --uf-ackermann-budget. A negative value is refused with a nonfatal
+  //! diagnostic.
+  //!
+  UF_ACKERMANN_BUDGET,
+
+  //! Bias the first candidate so the congruence checker's scalars start out
+  //! pairwise different.
+  //!
+  //! `param_value` nonzero enables, zero disables (the default). This is the
+  //! C API's way to reach --uf-phase-hints. It is advisory and affects search
+  //! order only, so it cannot change an answer.
+  //!
+  UF_PHASE_HINTS,
+
+  //! The bit-vector width given to a sort introduced by (declare-sort S 0),
+  //! which bounds how many elements of that sort a query can tell apart
+  //! (default 16).
+  //!
+  //! `param_value` is that width. A larger value is always sound and only a
+  //! smaller one is not, so raising it is the way to answer a query that
+  //! exhausted the carrier. This is the C API's way to reach --uf-sort-width.
+  //!
+  //! Accepted between 1 and 1024, and refused with a nonfatal diagnostic
+  //! outside that, leaving the width unchanged. Both ends were reachable and
+  //! neither failed cleanly: zero made every element a zero-width term that
+  //! the legacy width checks read as a Boolean, and a width past the ceiling
+  //! overflowed the word arithmetic the bit-vector layer is built on and
+  //! answered unsat for two elements of an unbounded sort.
+  //!
+  UF_SORT_WIDTH,
+
+  //! Replace a (distinct ...) over variables that occur nowhere else with a
+  //! strict chain, fixing one of the n! equivalent orderings the bit-blaster
+  //! would otherwise search.
+  //!
+  //! `param_value` nonzero enables (the default), zero disables. This is the
+  //! C API's way to reach --distinct-ordering.
+  //!
+  DISTINCT_ORDERING,
+
+  //! A hard limit on the AND gates bit-blasting may build, so that a query
+  //! whose AIG would exhaust the machine reports unknown instead (default 0:
+  //! no limit).
+  //!
+  //! `param_value` is that count. This is the C API's way to reach
+  //! --aig-node-budget. A negative value is refused with a nonfatal
+  //! diagnostic.
+  //!
+  //! Exceeding it ends the query without an answer, and vc_query returns 3 --
+  //! the same value a clock expiry returns, because the two are told apart by
+  //! the reason recorded for the unknown rather than by the verdict. An
+  //! SMT-LIB2 caller reads that reason from (get-info :reason-unknown), which
+  //! names this budget and the count it stopped at; this interface exposes no
+  //! route to it, so a vc_* caller that sets a budget cannot currently tell a
+  //! budget from a clock.
+  //!
+  AIG_NODE_BUDGET
 
 };
 

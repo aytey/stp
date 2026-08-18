@@ -1,11 +1,18 @@
-// The refinement encodings a C API client can now reach.
+// The options this branch added that a C API client can now reach.
 //
-// --uf-narrow-results, --uf-inject-args, --bv-eq-abstraction,
-// --bv-eq-abstraction-width, --bv-eq-refine-width and --bv-term-abstraction
-// were reachable only by a query read from a file: a client driving STP
-// through vc_* had no way to turn any of them on or off, and got whatever the
-// defaults were. Each now has an ifaceflag_t that writes the same UserFlags
-// field the CLI parser writes.
+// Every one of them was reachable only by a query read from a file: a client
+// driving STP through vc_* had no way to turn any of them on or off, and got
+// whatever the defaults were. Each now has an ifaceflag_t that writes the same
+// UserFlags field the CLI parser writes -- the two refinement profiles
+// (--uf-narrow-results, --uf-inject-args), the eager congruence encoding
+// (--uf-ackermann, --uf-ackermann-budget, --uf-lemmas-per-round,
+// --uf-phase-hints), the declared-sort carrier (--uf-sort-width), the BV
+// abstractions and what bounds them (--bv-eq-abstraction,
+// --bv-eq-abstraction-width, --bv-eq-refine-width, --bv-term-abstraction,
+// --bv-term-abstraction-mult, --bv-term-abstraction-rounds), the distinct
+// rewrite (--distinct-ordering) and the bit-blasting limit
+// (--aig-node-budget). --uninterpreted-functions itself already had a route,
+// through vc_setFlag(vc, 'u').
 //
 // The VC handle IS the stp::STP object, so reading the flags back off it is
 // an honest probe for "did this reach the field the solver consults?" -- the
@@ -40,6 +47,15 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_FALSE(flags(vc).bv_term_abstraction);
   EXPECT_EQ(64u, flags(vc).bv_eq_abstraction_width);
   EXPECT_EQ(0u, flags(vc).bv_eq_refine_width);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
+  EXPECT_EQ(8u, flags(vc).uf_lemmas_per_round);
+  EXPECT_EQ(stp::UserDefinedFlags::UFEagerMode::AUTO, flags(vc).uf_eager_mode);
+  EXPECT_EQ(256u, flags(vc).uf_eager_budget);
+  EXPECT_FALSE(flags(vc).uf_phase_hints);
+  EXPECT_EQ(16u, flags(vc).uf_sort_width);
+  EXPECT_TRUE(flags(vc).distinct_ordering);
+  EXPECT_EQ(0u, flags(vc).aig_node_budget);
   vc_Destroy(vc);
 }
 
@@ -82,6 +98,50 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_setInterfaceFlags(vc, BV_EQ_REFINE_WIDTH, 8);
   EXPECT_EQ(8u, flags(vc).bv_eq_refine_width);
 
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 0);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+
+  vc_setInterfaceFlags(vc, UF_PHASE_HINTS, 1);
+  EXPECT_TRUE(flags(vc).uf_phase_hints);
+  vc_setInterfaceFlags(vc, UF_PHASE_HINTS, 0);
+  EXPECT_FALSE(flags(vc).uf_phase_hints);
+
+  vc_setInterfaceFlags(vc, DISTINCT_ORDERING, 0);
+  EXPECT_FALSE(flags(vc).distinct_ordering);
+  vc_setInterfaceFlags(vc, DISTINCT_ORDERING, 1);
+  EXPECT_TRUE(flags(vc).distinct_ordering);
+
+  // Zero is a meaning of its own for each of these three, not an absence:
+  // never escalate, install every conflict, no AIG limit.
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, 0);
+  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_rounds);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, 4);
+  EXPECT_EQ(4u, flags(vc).bv_term_abstraction_rounds);
+  vc_setInterfaceFlags(vc, UF_LEMMAS_PER_ROUND, 0);
+  EXPECT_EQ(0u, flags(vc).uf_lemmas_per_round);
+  vc_setInterfaceFlags(vc, UF_LEMMAS_PER_ROUND, 1);
+  EXPECT_EQ(1u, flags(vc).uf_lemmas_per_round);
+  vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, 5000);
+  EXPECT_EQ(5000u, flags(vc).aig_node_budget);
+  vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, 0);
+  EXPECT_EQ(0u, flags(vc).aig_node_budget);
+
+  vc_setInterfaceFlags(vc, UF_ACKERMANN_BUDGET, 12);
+  EXPECT_EQ(12u, flags(vc).uf_eager_budget);
+  vc_setInterfaceFlags(vc, UF_SORT_WIDTH, 5);
+  EXPECT_EQ(5u, flags(vc).uf_sort_width);
+
+  // The three modes, by ordinal, in the order --uf-ackermann names them.
+  typedef stp::UserDefinedFlags::UFEagerMode Mode;
+  vc_setInterfaceFlags(vc, UF_ACKERMANN, 1);
+  EXPECT_EQ(Mode::ON, flags(vc).uf_eager_mode);
+  vc_setInterfaceFlags(vc, UF_ACKERMANN, 2);
+  EXPECT_EQ(Mode::OFF, flags(vc).uf_eager_mode);
+  vc_setInterfaceFlags(vc, UF_ACKERMANN, 0);
+  EXPECT_EQ(Mode::AUTO, flags(vc).uf_eager_mode);
+
   vc_Destroy(vc);
 }
 
@@ -103,6 +163,71 @@ TEST(refinement_flags, ANegativeWidthIsRefusedAndLeavesTheWidthAlone)
   EXPECT_EQ(4u, flags(vc).bv_eq_refine_width);
   EXPECT_EQ(2, errors);
 
+  // Every other field an int reaches that is unsigned underneath, refused the
+  // same way and left holding what it had.
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, -1);
+  EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
+  vc_setInterfaceFlags(vc, UF_LEMMAS_PER_ROUND, -1);
+  EXPECT_EQ(8u, flags(vc).uf_lemmas_per_round);
+  vc_setInterfaceFlags(vc, UF_ACKERMANN_BUDGET, -1);
+  EXPECT_EQ(256u, flags(vc).uf_eager_budget);
+  vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, -1);
+  EXPECT_EQ(0u, flags(vc).aig_node_budget);
+  EXPECT_EQ(6, errors);
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+// The declared-sort width is bounded at both ends, not merely at zero: a
+// zero-width element is read as a Boolean by the legacy width checks, and a
+// width past the ceiling overflows the word arithmetic underneath. Both are
+// refused and leave the width as it was, so a client cannot reach either.
+TEST(refinement_flags, TheSortWidthIsRefusedOutsideTheRangeTheCLITakes)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+
+  VC vc = vc_createValidityChecker();
+  const int outside[] = {-1, 0, 1025, 100000};
+  for (const int bad : outside)
+  {
+    vc_setInterfaceFlags(vc, UF_SORT_WIDTH, bad);
+    EXPECT_EQ(16u, flags(vc).uf_sort_width) << "width " << bad;
+  }
+  EXPECT_EQ(4, errors);
+
+  // and the two ends that are inside it
+  vc_setInterfaceFlags(vc, UF_SORT_WIDTH, 1);
+  EXPECT_EQ(1u, flags(vc).uf_sort_width);
+  vc_setInterfaceFlags(vc, UF_SORT_WIDTH, 1024);
+  EXPECT_EQ(1024u, flags(vc).uf_sort_width);
+  EXPECT_EQ(4, errors);
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+// UF_ACKERMANN names one of three modes. A value outside them names none, so
+// it is refused rather than stored: the field is an enumeration, and the
+// lowering tests it arm by arm.
+TEST(refinement_flags, AnUnknownAckermannModeIsRefused)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+
+  VC vc = vc_createValidityChecker();
+  typedef stp::UserDefinedFlags::UFEagerMode Mode;
+  vc_setInterfaceFlags(vc, UF_ACKERMANN, 1);
+  ASSERT_EQ(Mode::ON, flags(vc).uf_eager_mode);
+  const int outside[] = {-1, 3, 99};
+  for (const int bad : outside)
+  {
+    vc_setInterfaceFlags(vc, UF_ACKERMANN, bad);
+    EXPECT_EQ(Mode::ON, flags(vc).uf_eager_mode) << "mode " << bad;
+  }
+  EXPECT_EQ(3, errors);
+
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
 }
@@ -123,6 +248,36 @@ TEST(refinement_flags, ANegativeWidthIsRefusedAndLeavesTheWidthAlone)
 // the encoding ever running -- and a vacuous test that reads as an
 // end-to-end one is worse than an absent one. UF narrowing below does engage
 // (8 bits to 2 for three applications) and is checked end to end.
+
+// The AIG budget is the one option here that can change what a query answers,
+// so what it answers is worth pinning. Exceeding it ends the query with 3 --
+// the same value a clock expiry gives, the two being told apart by the reason
+// recorded for the unknown rather than by the verdict, and this interface
+// exposing no route to that reason. Without the budget the same query is
+// decided, which is what says the 3 came from the budget and not from the
+// query being hard.
+TEST(refinement_flags, TheAigBudgetEndsAQueryWithoutAnAnswer)
+{
+  for (int budget = 0; budget <= 50; budget += 50)
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, budget);
+    Type bv = vc_bvType(vc, 32);
+    Expr x = vc_varExpr(vc, "x", bv);
+    Expr y = vc_varExpr(vc, "y", bv);
+    vc_assertFormula(
+        vc, vc_eqExpr(vc, vc_bvMultExpr(vc, 32, x, y),
+                      vc_bvConstExprFromInt(vc, 32, 0xffff)));
+    vc_assertFormula(
+        vc, vc_bvGtExpr(vc, x, vc_bvConstExprFromInt(vc, 32, 1)));
+    const int answer = vc_query(vc, vc_falseExpr(vc));
+    if (budget == 0)
+      EXPECT_EQ(0, answer) << "no limit, so the query is decided";
+    else
+      EXPECT_EQ(3, answer) << "budget " << budget;
+    vc_Destroy(vc);
+  }
+}
 
 // Narrowing is invisible from out here: it re-sorts the introduced result
 // symbol the solver reasons about, and the model still reads back at the

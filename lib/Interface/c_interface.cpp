@@ -373,6 +373,17 @@ void reportUFAPIError(const std::string& message)
     std::cerr << "CInterface: " << message << std::endl;
 }
 
+// The interface passes an int for fields that are unsigned in UserFlags.
+// Answering whether this one may be stored, and saying so through the same
+// nonfatal path the rest of this interface uses when it may not.
+bool nonNegativeFlag(int param_value, const char* flag)
+{
+  if (param_value >= 0)
+    return true;
+  reportUFAPIError(std::string(flag) + " must not be negative");
+  return false;
+}
+
 /* this method is purposefully not public! */
 std::pair<unsigned int, unsigned int> getTypeSizes(Type type)
 {
@@ -504,25 +515,77 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION:
       b->UserFlags.bv_term_abstraction = param_value != 0;
       break;
-    // Both widths are unsigned in UserFlags, so a negative value would wrap
-    // to a threshold no term can reach -- silently disabling the abstraction
-    // the caller was asking for. Refuse it and leave the width alone.
+    case BV_TERM_ABSTRACTION_MULT:
+      b->UserFlags.bv_term_abstraction_mult = param_value != 0;
+      break;
+    case UF_PHASE_HINTS:
+      b->UserFlags.uf_phase_hints = param_value != 0;
+      break;
+    case DISTINCT_ORDERING:
+      b->UserFlags.distinct_ordering = param_value != 0;
+      break;
+    // Every field below is unsigned in UserFlags, so a negative value would
+    // wrap to something enormous: for a width, a threshold no term can reach,
+    // silently disabling the abstraction the caller was asking for; for a
+    // budget, no limit at all. Refuse it and leave the field as it was.
     case BV_EQ_ABSTRACTION_WIDTH:
-      if (param_value < 0)
-      {
-        reportUFAPIError("BV_EQ_ABSTRACTION_WIDTH must not be negative");
-        break;
-      }
-      b->UserFlags.bv_eq_abstraction_width =
-          static_cast<unsigned>(param_value);
+      if (nonNegativeFlag(param_value, "BV_EQ_ABSTRACTION_WIDTH"))
+        b->UserFlags.bv_eq_abstraction_width =
+            static_cast<unsigned>(param_value);
       break;
     case BV_EQ_REFINE_WIDTH:
-      if (param_value < 0)
+      if (nonNegativeFlag(param_value, "BV_EQ_REFINE_WIDTH"))
+        b->UserFlags.bv_eq_refine_width = static_cast<unsigned>(param_value);
+      break;
+    case BV_TERM_ABSTRACTION_ROUNDS:
+      if (nonNegativeFlag(param_value, "BV_TERM_ABSTRACTION_ROUNDS"))
+        b->UserFlags.bv_term_abstraction_rounds =
+            static_cast<unsigned>(param_value);
+      break;
+    case UF_LEMMAS_PER_ROUND:
+      if (nonNegativeFlag(param_value, "UF_LEMMAS_PER_ROUND"))
+        b->UserFlags.uf_lemmas_per_round = static_cast<unsigned>(param_value);
+      break;
+    case UF_ACKERMANN_BUDGET:
+      if (nonNegativeFlag(param_value, "UF_ACKERMANN_BUDGET"))
+        b->UserFlags.uf_eager_budget = static_cast<unsigned>(param_value);
+      break;
+    case AIG_NODE_BUDGET:
+      if (nonNegativeFlag(param_value, "AIG_NODE_BUDGET"))
+        b->UserFlags.aig_node_budget = static_cast<unsigned>(param_value);
+      break;
+    // Bounded at both ends rather than merely at zero, because both ends were
+    // reachable and neither failed cleanly: a zero-width element is read as a
+    // Boolean by the legacy width checks, and a width past the ceiling
+    // overflows the word arithmetic underneath and answers unsat for two
+    // elements of an unbounded sort. The CLI refuses the same range.
+    case UF_SORT_WIDTH:
+      if (param_value < 1 || param_value > 1024)
       {
-        reportUFAPIError("BV_EQ_REFINE_WIDTH must not be negative");
+        reportUFAPIError("UF_SORT_WIDTH must be between 1 and 1024");
         break;
       }
-      b->UserFlags.bv_eq_refine_width = static_cast<unsigned>(param_value);
+      b->UserFlags.uf_sort_width = static_cast<unsigned>(param_value);
+      break;
+    // An enumeration, so a value outside it names no mode; taking it would
+    // leave the field holding something no arm of the lowering tests for.
+    case UF_ACKERMANN:
+      switch (param_value)
+      {
+        case 0:
+          b->UserFlags.uf_eager_mode =
+              stp::UserDefinedFlags::UFEagerMode::AUTO;
+          break;
+        case 1:
+          b->UserFlags.uf_eager_mode = stp::UserDefinedFlags::UFEagerMode::ON;
+          break;
+        case 2:
+          b->UserFlags.uf_eager_mode = stp::UserDefinedFlags::UFEagerMode::OFF;
+          break;
+        default:
+          reportUFAPIError("UF_ACKERMANN must be 0 (auto), 1 (on) or 2 (off)");
+          break;
+      }
       break;
     default:
       stp::FatalError("C_interface: vc_setInterfaceFlags: Unrecognized flag\n");
