@@ -387,9 +387,24 @@ void ExtraMain::create_options()
       ->capture_default_str();
 
   bool_arg("--bv-term-abstraction", bm->UserFlags.bv_term_abstraction,
-           "abstract wide BV arithmetic (BVPLUS) during bit-blasting, "
+           "abstract wide BV arithmetic and comparisons (BVPLUS, BVMULT, "
+           "BVDIV, BVMOD, ITE and the inequalities) during bit-blasting, "
            "refining lazily via CEGAR",
            refinement_group);
+  bool_arg("--bv-term-abstraction-mult", bm->UserFlags.bv_term_abstraction_mult,
+           "include BVMULT, BVDIV and BVMOD in BV term abstraction; they are "
+           "the ones refined by ruling out one pair of operand values at a "
+           "time, so turning them off leaves only the operations that define "
+           "themselves in a single round",
+           refinement_group);
+  app.add_option("--bv-term-abstraction-rounds",
+                 bm->UserFlags.bv_term_abstraction_rounds,
+                 "blocking lemmas one abstracted BVMULT/BVDIV/BVMOD may take "
+                 "before its refinement encodes the operation exactly instead "
+                 "of enumerating further operand pairs (0: never; enumerate "
+                 "without limit)")
+      ->group(refinement_group)
+      ->capture_default_str();
 
   const char* const bb_group = "Bit-blasting options";
   app.add_option("--aig-node-budget", bm->UserFlags.aig_node_budget,

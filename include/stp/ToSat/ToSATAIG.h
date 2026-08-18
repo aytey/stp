@@ -91,6 +91,9 @@ private:
     bool operandNegated[3] = {false, false, false};
     unsigned condSATVar = 0;
     bool defined = false;
+    // Blocking lemmas spent on this one abstraction so far; see
+    // bv_term_abstraction_rounds.
+    unsigned blockedRounds = 0;
   };
   std::vector<BVTermAbstraction> bvTermAbstractions_;
 

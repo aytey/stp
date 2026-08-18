@@ -1229,7 +1229,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       updateTerm(term[0], mpcd1, support);
       assert(mpcd1.size() == mpcd2.size());
 
-      if (uf->bv_term_abstraction &&
+      if (uf->bv_term_abstraction && uf->bv_term_abstraction_mult &&
           num_bits >= uf->bv_eq_abstraction_width)
       {
         BBNodeVec op0 = ensureProxyCIs(nf, term[0], mpcd1, sideConstraints_);
@@ -1276,7 +1276,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       assert(dvdd.size() == num_bits);
       assert(dvsr.size() == num_bits);
 
-      if (uf->bv_term_abstraction &&
+      if (uf->bv_term_abstraction && uf->bv_term_abstraction_mult &&
           num_bits >= uf->bv_eq_abstraction_width)
       {
         ensureProxyCIs(nf, term[0], dvdd, sideConstraints_);
