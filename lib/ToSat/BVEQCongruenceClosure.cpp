@@ -5,11 +5,15 @@ namespace stp
 
 void BVEQCongruenceClosure::init(unsigned n)
 {
-  parent_.resize(n);
-  rank_.resize(n, 0);
-  parentEdge_.resize(n, -1);
+  parent_.assign(n, 0);
+  rank_.assign(n, 0);
+  proofParent_.assign(n, 0);
+  proofEdge_.assign(n, -1);
   for (unsigned i = 0; i < n; ++i)
+  {
     parent_[i] = i;
+    proofParent_[i] = i;
+  }
 }
 
 unsigned BVEQCongruenceClosure::find(unsigned x)
@@ -19,37 +23,91 @@ unsigned BVEQCongruenceClosure::find(unsigned x)
   return x;
 }
 
+void BVEQCongruenceClosure::reroot(unsigned x)
+{
+  // Walk to the root first, then relink on the way back: rewriting the links
+  // in place while following them would lose the rest of the path.
+  std::vector<unsigned> nodes;
+  std::vector<int> edges;
+  unsigned cur = x;
+  while (proofParent_[cur] != cur)
+  {
+    nodes.push_back(cur);
+    edges.push_back(proofEdge_[cur]);
+    cur = proofParent_[cur];
+  }
+  nodes.push_back(cur);
+
+  for (size_t i = nodes.size(); i-- > 1;)
+  {
+    proofParent_[nodes[i]] = nodes[i - 1];
+    proofEdge_[nodes[i]] = edges[i - 1];
+  }
+  proofParent_[x] = x;
+  proofEdge_[x] = -1;
+}
+
 void BVEQCongruenceClosure::unite(unsigned x, unsigned y, unsigned eqIdx)
 {
   unsigned rx = find(x);
   unsigned ry = find(y);
   if (rx == ry)
     return;
+
+  // The proof edge goes between the equality's own two sides, not between
+  // the class representatives -- that is the whole point of keeping it apart
+  // from the union-find below.
+  reroot(x);
+  proofParent_[x] = y;
+  proofEdge_[x] = static_cast<int>(eqIdx);
+
   if (rank_[rx] < rank_[ry])
   {
     parent_[rx] = ry;
-    parentEdge_[rx] = eqIdx;
   }
   else if (rank_[rx] > rank_[ry])
   {
     parent_[ry] = rx;
-    parentEdge_[ry] = eqIdx;
   }
   else
   {
     parent_[ry] = rx;
-    parentEdge_[ry] = eqIdx;
     rank_[rx]++;
   }
 }
 
-void BVEQCongruenceClosure::pathToRoot(unsigned x, std::vector<unsigned>& path)
+void BVEQCongruenceClosure::explain(unsigned x, unsigned y,
+                                    std::vector<unsigned>& edges)
 {
-  while (parent_[x] != x)
+  std::vector<unsigned> px, py;
+  for (unsigned cur = x;; cur = proofParent_[cur])
   {
-    path.push_back(parentEdge_[x]);
-    x = parent_[x];
+    px.push_back(cur);
+    if (proofParent_[cur] == cur)
+      break;
   }
+  for (unsigned cur = y;; cur = proofParent_[cur])
+  {
+    py.push_back(cur);
+    if (proofParent_[cur] == cur)
+      break;
+  }
+
+  // Both paths end at the root of the shared proof tree. Dropping the common
+  // suffix leaves the two halves that meet at the deepest shared ancestor,
+  // which together are the path from x to y.
+  size_t i = px.size();
+  size_t j = py.size();
+  while (i > 0 && j > 0 && px[i - 1] == py[j - 1])
+  {
+    --i;
+    --j;
+  }
+
+  for (size_t k = 0; k < i; ++k)
+    edges.push_back(static_cast<unsigned>(proofEdge_[px[k]]));
+  for (size_t k = 0; k < j; ++k)
+    edges.push_back(static_cast<unsigned>(proofEdge_[py[k]]));
 }
 
 unsigned BVEQCongruenceClosure::check(
@@ -83,14 +141,11 @@ unsigned BVEQCongruenceClosure::check(
     if (rl != rr)
       continue;
 
-    std::vector<unsigned> pathL, pathR;
-    pathToRoot(equalities[i].left, pathL);
-    pathToRoot(equalities[i].right, pathR);
+    std::vector<unsigned> path;
+    explain(equalities[i].left, equalities[i].right, path);
 
     SATSolver::vec_literals cl;
-    for (unsigned idx : pathL)
-      cl.push(SATSolver::mkLit(equalities[idx].satVar, true));
-    for (unsigned idx : pathR)
+    for (unsigned idx : path)
       cl.push(SATSolver::mkLit(equalities[idx].satVar, true));
     cl.push(SATSolver::mkLit(equalities[i].satVar, false));
     solver.addClause(cl);
