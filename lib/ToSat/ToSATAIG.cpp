@@ -467,6 +467,29 @@ bool ToSATAIG::runSolver(SATSolver& satSolver)
   return result;
 }
 
+// Both abstraction families in one call, equalities first: theirs is the
+// cheaper scan, and the congruence phase inside it can refute a candidate
+// at word level without reading a single bit. A round that refined an
+// equality stops there rather than going on to the terms -- the term scan
+// reads the same model, and what it would find in it has already been
+// ruled out.
+unsigned ToSATAIG::refineAbstractions(SATSolver& solver)
+{
+  unsigned refined = 0;
+  if (hasBVEQAbstractions())
+    refined = refineBVEQInconsistencies(solver);
+  if (refined == 0 && hasBVTermAbstractions())
+    refined = refineBVTermInconsistencies(solver);
+  if (refined > 0)
+  {
+    abstractionRefinements_ += refined;
+    if (bm->UserFlags.stats_flag)
+      std::cerr << "BV abstraction: refined " << refined << " operations"
+                << std::endl;
+  }
+  return refined;
+}
+
 unsigned ToSATAIG::refineBVEQInconsistencies(SATSolver& solver)
 {
   // Phase 1: Congruence closure — detect transitivity conflicts at word level.

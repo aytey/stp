@@ -992,6 +992,12 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   // skeleton the lowering rebuilt rather than repeating the question
   // just answered. The equalities themselves are checked against the
   // published array cells, not re-evaluated here.
+
+  // Snapshotted before the first solve: that call refines the bit-vector
+  // abstractions too, and the driver's loop below reads the count to decide
+  // whether the round it is looking at made progress.
+  uint64_t abstractionsRefined = satBase->abstractionRefinements();
+
   res = Ctr_Example->CallSAT_ResultCheck(NewSolver, inputToSat, semantic_input,
                                          original_input, satBase,
                                          maybeRefinement);
@@ -1021,62 +1027,42 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   assert(batchUFView->active() || toSATAIG.hasBVEQAbstractions() ||
          toSATAIG.hasBVTermAbstractions() || !bm->UserFlags.ackermannisation);
 
-  // Refinement driver. In an active equality solve the extensionality
-  // checker owns the complete array graph, so each undecided candidate
-  // must carry a pending theory lemma and legacy read refinement is
-  // never entered. Without an active equality, retain STP's ordinary
-  // read-refinement path unchanged.
+  // Refinement driver. Every owner that retained a candidate-blocking
+  // lemma is drained before the next solve, rather than the first one
+  // that has something: the round has to leave no certificate behind.
+  // The bit-vector abstractions are refined inside CallSAT_ResultCheck,
+  // ahead of the checkers, so a round that refined one arrives here with
+  // nothing pending and the raised count is what says the search has
+  // somewhere to go. Encoding only the abstraction's clauses and
+  // re-solving is what used to happen, and it presented the array
+  // checker with a second candidate while its certificate for the first
+  // was still pending -- which the checker refuses outright, and is
+  // right to: dropping the certificate would lose the conflict.
+  //
+  // In an active equality solve the extensionality checker owns the
+  // complete array graph, so each undecided candidate must carry a
+  // pending theory lemma and legacy read refinement is never entered.
+  // Without an active equality, retain STP's ordinary read-refinement
+  // path unchanged.
   while (true)
   {
-    if (toSATAIG.hasBVEQAbstractions() || toSATAIG.hasBVTermAbstractions())
-    {
-      unsigned refined = 0;
-      if (toSATAIG.hasBVEQAbstractions())
-        refined = toSATAIG.refineBVEQInconsistencies(NewSolver);
-      if (refined == 0 && toSATAIG.hasBVTermAbstractions())
-        refined += toSATAIG.refineBVTermInconsistencies(NewSolver);
-      if (refined > 0)
-      {
-        if (bm->UserFlags.stats_flag)
-          std::cerr << "BV abstraction: refined " << refined
-                    << " operations" << std::endl;
-        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
-                                               semantic_input, original_input,
-                                               satBase, true);
-      }
-      else if (extActive && ext->hasPendingLemma())
-      {
-        ext->encodePendingLemmas(NewSolver, satBase);
-        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
-                                               semantic_input, original_input,
-                                               satBase, true);
-      }
-      else if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
-      {
-        batchUFAdapter->encodePendingLemmas(NewSolver, satBase);
-        res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
-                                               semantic_input, original_input,
-                                               satBase, true);
-      }
-      else
-      {
-        if (!arrayops)
-          FatalError("BV abstraction refinement reached undecided without a "
-                     "pending candidate-blocking lemma");
-        res = Ctr_Example->SATBased_ArrayReadRefinement(NewSolver,
-                                                        semantic_input, satBase);
-      }
-    }
-    else if (extActive && ext->hasPendingLemma())
+    const uint64_t refinedNow = satBase->abstractionRefinements();
+    bool progress = refinedNow != abstractionsRefined;
+    abstractionsRefined = refinedNow;
+
+    if (extActive && ext->hasPendingLemma())
     {
       ext->encodePendingLemmas(NewSolver, satBase);
-      res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
-                                             semantic_input, original_input,
-                                             satBase, true);
+      progress = true;
     }
-    else if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
+    if (batchUFView->active() && batchUFAdapter->hasPendingLemma())
     {
       batchUFAdapter->encodePendingLemmas(NewSolver, satBase);
+      progress = true;
+    }
+
+    if (progress)
+    {
       res = Ctr_Example->CallSAT_ResultCheck(NewSolver, bm->ASTTrue,
                                              semantic_input, original_input,
                                              satBase, true);
@@ -1084,7 +1070,7 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
     else
     {
       if (!arrayops)
-        FatalError("UF refinement reached undecided without a pending "
+        FatalError("refinement reached undecided without a pending "
                    "candidate-blocking lemma");
       res = Ctr_Example->SATBased_ArrayReadRefinement(NewSolver,
                                                       semantic_input, satBase);

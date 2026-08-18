@@ -2930,6 +2930,24 @@ AbsRefine_CounterExample::CallSAT_ResultCheck(SATSolver& SatSolver,
   }
   else if (SatSolver.okay())
   {
+    // Before anything else looks at this candidate. The bit-vector
+    // abstractions are an over-approximation: an abstracted equality or
+    // operation is a free Boolean, or a free vector of bits, until
+    // refinement pins it to the operands it stands for, and a candidate
+    // which gives it a value the operands do not justify is not an
+    // assignment of the query. Both theory checkers and the model
+    // evaluation below treat exactly that as an internal error -- they
+    // are entitled to, since every other producer of a candidate hands
+    // them a faithful bit-vector layer -- so the abstraction has to be
+    // the first refinement owner consulted, not a later one in the
+    // driver's loop. It is also the only one whose progress does not
+    // depend on a constructed counterexample: it reads the SAT model
+    // directly, which is what lets it run ahead of the shortcut below
+    // and keeps a query that asked for no model from being answered
+    // from an unrefined abstraction.
+    if (tosat->refineAbstractions(SatSolver) > 0)
+      return SOLVER_UNDECIDED;
+
     if (!bm->UserFlags.construct_counterexample_flag && !ufActive)
       return SOLVER_INVALID;
 

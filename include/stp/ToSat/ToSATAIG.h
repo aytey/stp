@@ -97,6 +97,9 @@ private:
   };
   std::vector<BVTermAbstraction> bvTermAbstractions_;
 
+  // Refinements this instance has made; see ToSATBase.
+  uint64_t abstractionRefinements_ = 0;
+
   void init()
   {
     count = 0;
@@ -143,6 +146,12 @@ public:
 
   bool hasBVTermAbstractions() const { return !bvTermAbstractions_.empty(); }
   unsigned refineBVTermInconsistencies(SATSolver& solver);
+
+  unsigned refineAbstractions(SATSolver& solver) override;
+  uint64_t abstractionRefinements() const override
+  {
+    return abstractionRefinements_;
+  }
 };
 }
 
