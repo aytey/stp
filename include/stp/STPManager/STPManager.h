@@ -212,6 +212,7 @@ public:
       case UnknownReason::Incomplete:
       case UnknownReason::AIGBudget:
       case UnknownReason::CarrierExhausted:
+      case UnknownReason::AssumedInjectivity:
         break;
     }
     return SOLVER_UNKNOWN;
@@ -221,6 +222,60 @@ public:
   {
     unknown_reason = UnknownReason::None;
     unknown_detail.clear();
+  }
+
+  // How much injectivity --uf-inject-args put into the encoding this solve is
+  // about to run over, recorded by UF lowering. Zero whenever the flag is off,
+  // and also whenever it is on but no declaration qualified -- an encoding
+  // nothing was assumed about is an encoding whose unsat means what it says.
+  uint64_t uf_injectivity_assumed = 0;
+  uint64_t uf_injectivity_declarations = 0;
+
+  void noteInjectivityAssumed(uint64_t implications, uint64_t declarations)
+  {
+    uf_injectivity_assumed += implications;
+    uf_injectivity_declarations += declarations;
+  }
+
+  // Called at the top of a solve, by the driver that is about to build the
+  // encoding. The record describes one solve's encoding, not the session.
+  void clearInjectivityAssumed()
+  {
+    uf_injectivity_assumed = 0;
+    uf_injectivity_declarations = 0;
+  }
+
+  // The verdict a solve leaves with, once what the encoding assumed on its own
+  // account is taken into account. Called by whoever holds the result.
+  //
+  // Congruence is entailed by the query, so every other constraint UF lowering
+  // installs preserves both answers. The converse implication --uf-inject-args
+  // installs is not: it asserts that a declaration is injective, which the
+  // caller never wrote, and it can only remove models. That makes the two
+  // answers unequal in standing. `sat` is sound whatever was assumed -- a model
+  // of the strengthened formula is a model of the query, conjuncts having only
+  // been added -- and is kept. `unsat` refutes the query with injectivity on
+  // top of it, which is not the query, and nothing in the output would tell
+  // that from a refutation. So it is withheld, exactly as an unsat reached over
+  // a carrier too narrow for the query is withheld.
+  //
+  // Lives here rather than in one driver so that the batch pipeline and the
+  // incremental driver answer the question the same way, and so that the rule
+  // is stated once.
+  SOLVER_RETURN_TYPE withholdAssumedUnsat(SOLVER_RETURN_TYPE result)
+  {
+    if (result != SOLVER_UNSATISFIABLE || uf_injectivity_assumed == 0)
+      return result;
+    noteUnknown(UnknownReason::AssumedInjectivity,
+                "--uf-inject-args assumed " +
+                    std::to_string(uf_injectivity_declarations) +
+                    " uninterpreted function(s) injective, adding " +
+                    std::to_string(uf_injectivity_assumed) +
+                    " implication(s) the query does not entail, so this unsat "
+                    "may be an artefact of that assumption rather than a "
+                    "refutation; re-run without --uf-inject-args to decide the "
+                    "query");
+    return noAnswerVerdict();
   }
 
   // No nodes should already have the iteration number that is returned from

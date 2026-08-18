@@ -366,9 +366,12 @@ void ExtraMain::create_options()
            "congruence constraint from O(width) to O(log N)",
            refinement_group);
   bool_arg("--uf-inject-args", bm->UserFlags.uf_inject_args,
-           "assert injectivity for equality-only UF declarations in the "
-           "eager congruence encoding, giving the SAT solver bidirectional "
-           "propagation between argument and result equalities",
+           "assume equality-only UF declarations are injective and encode it, "
+           "giving the SAT solver bidirectional propagation between argument "
+           "and result equalities. NOT semantics-preserving, unlike every "
+           "other flag in this group: it adds an assumption the query did not "
+           "make, so `sat` still answers the query but an `unsat` reached over "
+           "the assumption is withheld and reported as `unknown`",
            refinement_group);
 
   bool_arg("--bv-eq-abstraction", bm->UserFlags.bv_eq_abstraction,

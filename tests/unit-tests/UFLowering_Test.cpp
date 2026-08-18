@@ -271,3 +271,75 @@ TEST(UFLowering, InjectArgsAddsReverseImplications)
             viewWithout.congruenceConstraints.size())
       << "inject-args should add reverse implications";
 }
+
+// What the lowering assumed, and the rule the drivers apply to it.
+//
+// The converse implication is the one constraint installed here that the query
+// does not entail, so it is the one that can change the answer, and it changes
+// it in exactly one direction: models are removed, never added. The lowering
+// therefore counts those separately from the congruence constraints and hands
+// the count to the manager, and the manager withholds an unsat reached over
+// any of them while passing a sat straight through. Both halves are pinned
+// here, because a rule that withheld both answers would be a plain loss and
+// one that withheld neither is the defect.
+TEST(UFLowering, InjectArgsRecordsWhatItAssumedAndOnlyUnsatIsWithheld)
+{
+  STPMgr manager;
+  manager.UserFlags.enable_uninterpreted_functions = true;
+  manager.UserFlags.uf_inject_args = true;
+  UFContext* const context = manager.getUFContext();
+  const SourceSort bv8 = SourceSort::bitVector(8);
+  std::string diagnostic;
+  const UFDecl* const f =
+      context->declareFunction("f", {bv8}, bv8, &diagnostic);
+  ASSERT_NE(nullptr, f) << diagnostic;
+
+  NodeFactory* const factory = manager.defaultNodeFactory;
+  const ASTNode a = manager.CreateSourceSymbol("a", bv8);
+  const ASTNode b = manager.CreateSourceSymbol("b", bv8);
+  const ASTNode fa = context->apply(f, {a}, &diagnostic);
+  const ASTNode fb = context->apply(f, {b}, &diagnostic);
+  ASSERT_FALSE(fa.IsNull()) << diagnostic;
+  ASSERT_FALSE(fb.IsNull()) << diagnostic;
+  const ASTNode root = factory->CreateNode(EQ, fa, fb);
+
+  manager.clearInjectivityAssumed();
+  UFLowering lowerer(&manager);
+  const LoweredApplicationView viewWith =
+      lowerer.lowerCompletedRoot(root, UFSolveScope::batch(70));
+
+  EXPECT_EQ(1u, viewWith.eagerStats.emittedInjectivity());
+  EXPECT_EQ(1u, viewWith.eagerStats.injectiveDeclarations());
+  EXPECT_EQ(1u, manager.uf_injectivity_assumed);
+
+  EXPECT_EQ(SOLVER_UNKNOWN,
+            manager.withholdAssumedUnsat(SOLVER_UNSATISFIABLE));
+  EXPECT_EQ(UnknownReason::AssumedInjectivity, manager.unknown_reason);
+  EXPECT_NE(std::string::npos,
+            manager.unknown_detail.find("--uf-inject-args"))
+      << manager.unknown_detail;
+
+  manager.clearUnknown();
+  EXPECT_EQ(SOLVER_SATISFIABLE,
+            manager.withholdAssumedUnsat(SOLVER_SATISFIABLE))
+      << "a model of the strengthened formula is a model of the query";
+  EXPECT_EQ(UnknownReason::None, manager.unknown_reason);
+
+  // Nothing assumed, nothing withheld. The rule keys on what was installed
+  // rather than on the flag, so a query the flag finds nothing to assume about
+  // keeps its refutation.
+  manager.UserFlags.uf_inject_args = false;
+  manager.clearInjectivityAssumed();
+  const ASTNode fa2 = context->apply(f, {a}, &diagnostic);
+  const ASTNode fb2 = context->apply(f, {b}, &diagnostic);
+  const ASTNode root2 = factory->CreateNode(EQ, fa2, fb2);
+  UFLowering lowerer2(&manager);
+  const LoweredApplicationView viewWithout =
+      lowerer2.lowerCompletedRoot(root2, UFSolveScope::batch(71));
+
+  EXPECT_EQ(0u, viewWithout.eagerStats.emittedInjectivity());
+  EXPECT_EQ(0u, manager.uf_injectivity_assumed);
+  EXPECT_EQ(SOLVER_UNSATISFIABLE,
+            manager.withholdAssumedUnsat(SOLVER_UNSATISFIABLE));
+  EXPECT_EQ(UnknownReason::None, manager.unknown_reason);
+}

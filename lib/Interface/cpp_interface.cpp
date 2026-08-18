@@ -1487,10 +1487,11 @@ void Cpp_interface::getInfo(std::string flag)
         break;
       case UnknownReason::AIGBudget:
       case UnknownReason::CarrierExhausted:
+      case UnknownReason::AssumedInjectivity:
       case UnknownReason::Incomplete:
         // The predefined SMT-LIB spelling, followed by what was incomplete:
         // the flag admits an s-expression, and a bare "incomplete" tells a
-        // caller nothing they can act on. All three share it because the
+        // caller nothing they can act on. All four share it because the
         // sentence is what says which, and SMT-LIB2 has no spelling that
         // would say it better.
         cout << "(:reason-unknown (incomplete \"" << bm.unknown_detail

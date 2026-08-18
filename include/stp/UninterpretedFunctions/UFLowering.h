@@ -91,6 +91,14 @@ struct DLL_PUBLIC UFEagerDeclarationStat
   uint64_t enumeratedPairs = 0;
   uint64_t skippedImpossiblePairs = 0;
   uint64_t emittedConstraints = 0;
+  // Of those constraints, the ones that are the converse of congruence --
+  // results equal implies arguments equal -- installed only under
+  // --uf-inject-args. Counted apart from the rest because they are the only
+  // ones that can remove a model: the query the encoding then describes is
+  // the caller's query with injectivity assumed on top, so a solve that
+  // reaches unsat over any of them has refuted that, not the query. Whoever
+  // reports the verdict needs to know one was installed.
+  uint64_t emittedInjectivity = 0;
   Outcome outcome = Outcome::NoComparablePairs;
 
   const char* outcomeName() const
@@ -121,6 +129,20 @@ struct DLL_PUBLIC UFEagerStats
     uint64_t total = 0;
     for (const UFEagerDeclarationStat& stat : declarations)
       total += stat.emittedConstraints;
+    return total;
+  }
+  uint64_t emittedInjectivity() const
+  {
+    uint64_t total = 0;
+    for (const UFEagerDeclarationStat& stat : declarations)
+      total += stat.emittedInjectivity;
+    return total;
+  }
+  uint64_t injectiveDeclarations() const
+  {
+    uint64_t total = 0;
+    for (const UFEagerDeclarationStat& stat : declarations)
+      total += stat.emittedInjectivity != 0 ? 1 : 0;
     return total;
   }
   uint64_t selectedDeclarations() const
@@ -154,7 +176,9 @@ public:
   ASTVec sortConstraints;
   // Pairwise congruence constraints installed before the first solve for the
   // declarations the eager policy selected. Empty in the reference profile,
-  // where every congruence clause is earned by a refuted candidate.
+  // where every congruence clause is earned by a refuted candidate. Under
+  // --uf-inject-args this vector also holds the converse implications, which
+  // eagerStats.emittedInjectivity() counts.
   ASTVec congruenceConstraints;
   // What the policy decided, and what it cost. Reported under -s.
   UFEagerStats eagerStats;

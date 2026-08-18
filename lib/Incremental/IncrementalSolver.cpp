@@ -207,6 +207,11 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
                                                bool firstForcedIncrementalSolve)
 {
   impl->beginProfile(assertionsSMT2.size());
+  // What the encoding assumed on its own account belongs to the solve that is
+  // about to build it. The exact-stack route lowers the whole active stack
+  // whenever any level applies an uninterpreted function, so what this solve
+  // records is what this solve's block asserts.
+  impl->bm->clearInjectivityAssumed();
   const SOLVER_RETURN_TYPE result = checkSatBody(
       assertionsSMT2, assumeLastLevelPerConjunct, firstForcedIncrementalSolve);
   impl->finishProfile();
@@ -214,7 +219,10 @@ SOLVER_RETURN_TYPE IncrementalSolver::checkSat(const ASTVec& assertionsSMT2,
   // never runs here; without this the checker's rounds are invisible in
   // exactly the mode that accumulates the most of them.
   reportExtensionalityLemmas();
-  return result;
+  // Before the caller sees it, and before the frontend's core-aware cache
+  // records it: an unsat that --uf-inject-args may have caused must not be
+  // remembered as one either.
+  return impl->bm->withholdAssumedUnsat(result);
 }
 
 void IncrementalSolver::reportExtensionalityLemmas() const

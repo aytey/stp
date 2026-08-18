@@ -283,8 +283,16 @@ public:
   // the reverse implication (= result_i result_j) => (= arg_i arg_j) in
   // the eager congruence encoding. This asserts injectivity, giving the
   // SAT solver bidirectional propagation between argument and result
-  // equalities. Sound when the function is injective in every satisfying
-  // assignment; may produce spurious UNSAT otherwise.
+  // equalities.
+  //
+  // Congruence itself is entailed by the query; its converse is not. So this
+  // is the one thing the lowering installs that changes what the encoding
+  // means: it describes the query with injectivity conjoined. Only models are
+  // lost by that, so `sat` still answers the query, while an `unsat` refutes
+  // the strengthened query and is withheld -- see STPMgr::withholdAssumedUnsat
+  // and UnknownReason::AssumedInjectivity. Off by default, and not an
+  // optimisation: what it buys is faster model-finding on a query whose
+  // functions are injective anyway.
   bool uf_inject_args = false;
 
   // Replace a (distinct x1 ... xn) whose operands are variables occurring

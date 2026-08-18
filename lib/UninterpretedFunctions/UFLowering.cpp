@@ -503,8 +503,16 @@ void UFLowering::installEagerCongruence(
 
         if (!premise.empty() &&
             injectable.count(candidate.second) != 0)
+        {
+          // The converse of congruence, and the one constraint here that is
+          // not entailed by the query: it says this declaration is injective
+          // on the pair, which the caller never asserted. Counted separately
+          // so that the verdict can be withheld if the solve then reaches
+          // unsat -- see STPMgr::withholdAssumedUnsat.
+          stat.emittedInjectivity++;
           view.congruenceConstraints.push_back(
               factory->CreateNode(IMPLIES, conclusion, premiseConj));
+        }
       }
     }
   }
@@ -560,6 +568,10 @@ void UFLowering::reportEagerCongruence(const LoweredApplicationView& view) const
             << stats.emittedConstraints() << " constraints, budget "
             << stats.budgetSpent << "/" << stats.budget << " spent"
             << std::endl;
+  if (stats.emittedInjectivity() != 0)
+    std::cerr << "UF: eager " << stats.emittedInjectivity()
+              << " of those assume injectivity (--uf-inject-args); an unsat "
+              << "over them is withheld" << std::endl;
 }
 
 LoweredApplicationView
@@ -910,6 +922,13 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
 
   installEagerCongruence(view, injectable);
   reportEagerCongruence(view);
+
+  // Tell the driver what this lowering assumed. It is the driver that holds
+  // the verdict, and this is the one thing installed here that the verdict
+  // depends on: everything else in the encoding is entailed by the query, so
+  // only these implications can turn a satisfiable query unsatisfiable.
+  manager_->noteInjectivityAssumed(view.eagerStats.emittedInjectivity(),
+                                   view.eagerStats.injectiveDeclarations());
 
   // This checks the whole barrier once, including the naming definitions.
   // Scanning every progressively larger actual separately would turn a

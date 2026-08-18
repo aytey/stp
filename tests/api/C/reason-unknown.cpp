@@ -112,3 +112,80 @@ TEST(reason_unknown, WithoutTheBudgetTheSameQueryIsDecided)
   EXPECT_EQ(REASON_UNKNOWN_NONE, vc_getReasonUnknown(vc));
   vc_Destroy(vc);
 }
+
+// A cause a client reaches only through this interface's own flag. Every other
+// cause above is a budget: something ran out before an answer. This one is an
+// answer the solver reached and STP declined to pass on, because
+// UF_EQUALITY_INJECTIVITY had put an assumption into the encoding that the
+// query never made. Congruence is entailed by the query; its converse says the
+// function is injective, and asserting that can only remove models. So a `sat`
+// found over it is still a model of the query and is reported, while an
+// `unsat` refutes the query with the assumption on top of it -- which is not
+// the query, and is the one answer a caller cannot tell from a real
+// refutation. It is withheld, and this is where a caller learns that it was.
+//
+// The query: three pairwise-distinct two-bit arguments to a function into one
+// bit. At least two of the three results must collide, so the disjunction is a
+// tautology and the whole thing is plainly satisfiable -- there is no query
+// content here to be non-injective about. Injectivity contradicts it outright,
+// which is how this used to answer 1.
+namespace
+{
+void assertPigeonhole(VC vc)
+{
+  vc_setFlag(vc, 'u');
+  Type bv2 = vc_bvType(vc, 2);
+  Type bv1 = vc_bvType(vc, 1);
+  const UFDeclHandle f =
+      vc_declareUninterpretedFunction(vc, "f", &bv2, 1, bv1);
+  EXPECT_NE(0u, f);
+
+  Expr a = vc_varExpr(vc, "a", bv2);
+  Expr b = vc_varExpr(vc, "b", bv2);
+  Expr c = vc_varExpr(vc, "c", bv2);
+  vc_assertFormula(vc, vc_notExpr(vc, vc_eqExpr(vc, a, b)));
+  vc_assertFormula(vc, vc_notExpr(vc, vc_eqExpr(vc, b, c)));
+  vc_assertFormula(vc, vc_notExpr(vc, vc_eqExpr(vc, a, c)));
+
+  Expr fa = vc_applyUninterpretedFunction(vc, f, &a, 1);
+  Expr fb = vc_applyUninterpretedFunction(vc, f, &b, 1);
+  Expr fc = vc_applyUninterpretedFunction(vc, f, &c, 1);
+  vc_assertFormula(
+      vc, vc_orExpr(vc, vc_eqExpr(vc, fa, fb),
+                    vc_orExpr(vc, vc_eqExpr(vc, fb, fc),
+                              vc_eqExpr(vc, fa, fc))));
+}
+} // namespace
+
+TEST(reason_unknown, AnAssumedInjectivityUnsatIsWithheldAndSaysSo)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, UF_EQUALITY_INJECTIVITY, 1);
+  assertPigeonhole(vc);
+
+  EXPECT_EQ(4, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
+  EXPECT_EQ(REASON_UNKNOWN_ASSUMED_INJECTIVITY, vc_getReasonUnknown(vc));
+
+  // The value says which flag to clear; the sentence says how much of the
+  // encoding was the assumption, which is what tells a deliberate use of the
+  // flag from having left it on by accident.
+  const std::string why = detail(vc);
+  EXPECT_NE(std::string::npos, why.find("--uf-inject-args")) << why;
+  EXPECT_NE(std::string::npos, why.find("3 implication")) << why;
+  vc_Destroy(vc);
+}
+
+// Same query, flag off: satisfiable, and answered. So the 4 above is the
+// assumption speaking and not the query being unsatisfiable -- which is the
+// whole claim, since a withheld unsat and a real one are indistinguishable
+// from outside without it.
+TEST(reason_unknown, WithoutTheAssumptionTheSameQueryIsSatisfiable)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, UF_EQUALITY_INJECTIVITY, 0);
+  assertPigeonhole(vc);
+
+  EXPECT_EQ(0, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
+  EXPECT_EQ(REASON_UNKNOWN_NONE, vc_getReasonUnknown(vc));
+  vc_Destroy(vc);
+}

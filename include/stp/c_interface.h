@@ -263,10 +263,18 @@ enum ifaceflag_t
   //! `param_value` nonzero enables, zero disables (the default). This is the
   //! C API's way to reach --uf-inject-args.
   //!
-  //! This is an under-approximation, not a sound default: it is faithful only
-  //! when the function is injective in every satisfying assignment, and can
-  //! report unsat for a satisfiable query otherwise. Enable it for a query
-  //! known to be that shape, or to exercise the encoding.
+  //! This is an under-approximation: injectivity is an assumption the query
+  //! did not make, so the encoding describes the query with that assumption
+  //! conjoined and not the query. Only models are lost by that, never gained,
+  //! which is why the two answers are not treated alike. A `sat` is a genuine
+  //! model of the query and is reported. An `unsat` refutes only the
+  //! strengthened query, so vc_query withholds it and answers 4, with
+  //! vc_getReasonUnknown giving REASON_UNKNOWN_ASSUMED_INJECTIVITY; clear
+  //! this flag and ask again to decide the query itself.
+  //!
+  //! So this buys faster model-finding on a query whose functions are
+  //! injective anyway, and nothing at all on one that is unsatisfiable. It is
+  //! not a semantics-preserving optimisation and must not be enabled as one.
   //!
   //! Set this before the query it should apply to, as for UF_NARROW_RESULTS.
   //!
@@ -615,7 +623,17 @@ enum reason_unknown_t
   //! here are built by vc_boolType, vc_bvType, vc_fpType and
   //! vc_fpRoundingModeType. Named for what it is so that reading the sentence
   //! is not the only way to know it, if that ever changes.
-  REASON_UNKNOWN_CARRIER_EXHAUSTED
+  REASON_UNKNOWN_CARRIER_EXHAUSTED,
+
+  //! UF_EQUALITY_INJECTIVITY put injectivity into the encoding, so an unsat
+  //! reached over it refutes the query with an assumption the caller never
+  //! made on top of it, and was withheld rather than reported. Clearing that
+  //! flag and asking again decides the query itself.
+  //!
+  //! Only `unsat` is affected. A `sat` reached this way is a genuine model of
+  //! the query -- the assumption only ever removes models -- and is reported
+  //! as `sat`.
+  REASON_UNKNOWN_ASSUMED_INJECTIVITY
 };
 
 //! \brief Returns why the last query had no answer.
@@ -633,9 +651,10 @@ DLL_PUBLIC enum reason_unknown_t vc_getReasonUnknown(VC vc);
 //! 'len'. It is the responsibility of the caller to free the memory
 //! afterwards.
 //!
-//! Only REASON_UNKNOWN_INCOMPLETE carries a sentence, because it is the only
-//! cause that is not named by vc_getReasonUnknown alone; the others write an
-//! empty string. Prose for a person to read: a caller deciding what to do next
+//! REASON_UNKNOWN_INCOMPLETE, REASON_UNKNOWN_AIG_BUDGET,
+//! REASON_UNKNOWN_CARRIER_EXHAUSTED and REASON_UNKNOWN_ASSUMED_INJECTIVITY
+//! carry a sentence, saying what was reached or what was assumed; the causes
+//! their name alone is enough to act on write an empty string. Prose for a person to read: a caller deciding what to do next
 //! wants vc_getReasonUnknown, which is why the two are separate.
 DLL_PUBLIC void vc_getReasonUnknownToBuffer(VC vc, char** buf, size_t* len);
 

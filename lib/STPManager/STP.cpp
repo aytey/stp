@@ -227,6 +227,9 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
   // the submitted root in batchUFView and pass only its semantic replacement
   // plus query-local naming definitions onward.
   *batchUFView = LoweredApplicationView();
+  // Each batch query builds its encoding from nothing, so what the last one
+  // assumed says nothing about this one.
+  bm->clearInjectivityAssumed();
   if (bm->UserFlags.enable_uninterpreted_functions)
   {
     UFLowering lowerer(bm);
@@ -275,7 +278,7 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
 
   bm->UserFlags.construct_counterexample_flag = constructForCaller;
   bm->UserFlags.ackermannisation = saved_ack;
-  return result;
+  return bm->withholdAssumedUnsat(result);
 }
 
 ASTNode STP::callSizeReducing(ASTNode inputToSat, 
