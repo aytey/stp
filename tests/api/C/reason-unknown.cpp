@@ -113,22 +113,21 @@ TEST(reason_unknown, WithoutTheBudgetTheSameQueryIsDecided)
   vc_Destroy(vc);
 }
 
-// A cause a client reaches only through this interface's own flag. Every other
-// cause above is a budget: something ran out before an answer. This one is an
-// answer the solver reached and STP declined to pass on, because
-// UF_EQUALITY_INJECTIVITY had put an assumption into the encoding that the
-// query never made. Congruence is entailed by the query; its converse says the
-// function is injective, and asserting that can only remove models. So a `sat`
-// found over it is still a model of the query and is reported, while an
-// `unsat` refutes the query with the assumption on top of it -- which is not
-// the query, and is the one answer a caller cannot tell from a real
-// refutation. It is withheld, and this is where a caller learns that it was.
+// The one cause on this list that names a flag of this interface, and the one
+// a caller should never see. UF_EQUALITY_INJECTIVITY asserts that
+// equality-only uninterpreted functions are injective, which the query did not
+// say and which can only remove models. An `unsat` over it therefore refutes
+// the query with an assumption on top of it -- not the query -- and there was
+// a time when vc_query reported exactly that as 1.
 //
-// The query: three pairwise-distinct two-bit arguments to a function into one
-// bit. At least two of the three results must collide, so the disjunction is a
-// tautology and the whole thing is plainly satisfiable -- there is no query
-// content here to be non-injective about. Injectivity contradicts it outright,
-// which is how this used to answer 1.
+// It does not any more, and not by withholding the answer either: the
+// assumption is installed behind an activation literal the search holds, so
+// STP can ask whether the refutation used it and take it back when it did.
+// The query below is satisfiable, plainly -- three pairwise-distinct two-bit
+// arguments to a function into one bit, asserting that two of the three
+// results collide, which three values into two must. So the answer is 0 with
+// the flag and 0 without it, and REASON_UNKNOWN_ASSUMED_INJECTIVITY stays a
+// value the header explains rather than one this returns.
 namespace
 {
 void assertPigeonhole(VC vc)
@@ -157,35 +156,53 @@ void assertPigeonhole(VC vc)
 }
 } // namespace
 
-TEST(reason_unknown, AnAssumedInjectivityUnsatIsWithheldAndSaysSo)
+TEST(reason_unknown, AnAssumedInjectivityIsRetractedRatherThanReported)
 {
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, UF_EQUALITY_INJECTIVITY, 1);
   assertPigeonhole(vc);
 
-  EXPECT_EQ(4, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
-  EXPECT_EQ(REASON_UNKNOWN_ASSUMED_INJECTIVITY, vc_getReasonUnknown(vc));
-
-  // The value says which flag to clear; the sentence says how much of the
-  // encoding was the assumption, which is what tells a deliberate use of the
-  // flag from having left it on by accident.
-  const std::string why = detail(vc);
-  EXPECT_NE(std::string::npos, why.find("--uf-inject-args")) << why;
-  EXPECT_NE(std::string::npos, why.find("3 implication")) << why;
+  EXPECT_EQ(0, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
+  EXPECT_EQ(REASON_UNKNOWN_NONE, vc_getReasonUnknown(vc));
+  EXPECT_EQ("", detail(vc));
   vc_Destroy(vc);
 }
 
-// Same query, flag off: satisfiable, and answered. So the 4 above is the
-// assumption speaking and not the query being unsatisfiable -- which is the
-// whole claim, since a withheld unsat and a real one are indistinguishable
-// from outside without it.
-TEST(reason_unknown, WithoutTheAssumptionTheSameQueryIsSatisfiable)
+// Same query, flag clear. Equal to the above is the entire point: the flag is
+// a search hint, and a hint that changed the answer would not be one.
+TEST(reason_unknown, TheSameQueryAnswersTheSameWithoutTheAssumption)
 {
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, UF_EQUALITY_INJECTIVITY, 0);
   assertPigeonhole(vc);
 
   EXPECT_EQ(0, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
+  EXPECT_EQ(REASON_UNKNOWN_NONE, vc_getReasonUnknown(vc));
+  vc_Destroy(vc);
+}
+
+// And an unsatisfiable query with the assumption installed over it keeps its
+// refutation. Taking an answer back on the assumption's account is the cost of
+// the rule; taking one back that the assumption had nothing to do with would
+// be the rule quietly failing to be a search hint.
+TEST(reason_unknown, AnUnsatisfiableQueryKeepsItsRefutationUnderTheAssumption)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, UF_EQUALITY_INJECTIVITY, 1);
+  vc_setFlag(vc, 'u');
+  Type bv4 = vc_bvType(vc, 4);
+  const UFDeclHandle g =
+      vc_declareUninterpretedFunction(vc, "g", &bv4, 1, bv4);
+  EXPECT_NE(0u, g);
+
+  Expr p = vc_varExpr(vc, "p", bv4);
+  Expr q = vc_varExpr(vc, "q", bv4);
+  Expr gp = vc_applyUninterpretedFunction(vc, g, &p, 1);
+  Expr gq = vc_applyUninterpretedFunction(vc, g, &q, 1);
+  vc_assertFormula(vc, vc_notExpr(vc, vc_eqExpr(vc, gp, gq)));
+  vc_assertFormula(vc, vc_eqExpr(vc, p, q));
+
+  EXPECT_EQ(1, vc_query_with_timeout(vc, vc_falseExpr(vc), -1, -1));
   EXPECT_EQ(REASON_UNKNOWN_NONE, vc_getReasonUnknown(vc));
   vc_Destroy(vc);
 }

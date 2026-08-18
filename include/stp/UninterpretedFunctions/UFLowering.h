@@ -180,6 +180,17 @@ public:
   // --uf-inject-args this vector also holds the converse implications, which
   // eagerStats.emittedInjectivity() counts.
   ASTVec congruenceConstraints;
+  // The activation symbol every converse implication is installed behind, so
+  // that a driver can withdraw the whole assumption without re-encoding: each
+  // one is `guard => (results equal => arguments equal)`, and a guard that is
+  // not assumed is free, which the solver satisfies by making it false. Null
+  // unless --uf-inject-args installed at least one such implication.
+  //
+  // This is what makes the assumption an abstraction rather than an axiom.
+  // Nothing else in the encoding is retractable, and nothing else needs to
+  // be: congruence is entailed by the query, so no answer ever has to be
+  // taken back on its account.
+  ASTNode injectivityGuard;
   // What the policy decided, and what it cost. Reported under -s.
   UFEagerStats eagerStats;
   ASTNodeSet protectedSymbols;
@@ -211,10 +222,11 @@ public:
 
 private:
   // Fills view.congruenceConstraints for the declarations the eager policy
-  // selects. A no-op in the reference profile.
-  void installEagerCongruence(
-      LoweredApplicationView& view,
-      const std::set<const UFDecl*>& injectable) const;
+  // selects. A no-op in the reference profile. `guard`, when not null, is the
+  // activation symbol each converse implication is installed behind.
+  void installEagerCongruence(LoweredApplicationView& view,
+                              const std::set<const UFDecl*>& injectable,
+                              const ASTNode& guard) const;
 
   // Prints view.eagerStats under -s. Called once per lowering, so a persistent
   // solve reports the decision it took for each block.

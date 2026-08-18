@@ -263,18 +263,21 @@ enum ifaceflag_t
   //! `param_value` nonzero enables, zero disables (the default). This is the
   //! C API's way to reach --uf-inject-args.
   //!
-  //! This is an under-approximation: injectivity is an assumption the query
-  //! did not make, so the encoding describes the query with that assumption
-  //! conjoined and not the query. Only models are lost by that, never gained,
-  //! which is why the two answers are not treated alike. A `sat` is a genuine
-  //! model of the query and is reported. An `unsat` refutes only the
-  //! strengthened query, so vc_query withholds it and answers 4, with
-  //! vc_getReasonUnknown giving REASON_UNKNOWN_ASSUMED_INJECTIVITY; clear
-  //! this flag and ask again to decide the query itself.
+  //! Injectivity is an assumption the query did not make, so the encoding
+  //! describes the query with that assumption conjoined. Only models are lost
+  //! by that, never gained, which is why the two answers are not treated
+  //! alike: a `sat` is a genuine model of the query, while an `unsat` refutes
+  //! only the strengthened query.
   //!
-  //! So this buys faster model-finding on a query whose functions are
-  //! injective anyway, and nothing at all on one that is unsatisfiable. It is
-  //! not a semantics-preserving optimisation and must not be enabled as one.
+  //! STP therefore installs the assumption retractably and settles the
+  //! question itself -- a refutation that used it is taken back and the query
+  //! decided without it -- so vc_query answers the same thing with this flag
+  //! set as without it. It is a search hint, not a change of semantics.
+  //!
+  //! What it buys is faster model-finding on a query whose functions are
+  //! injective anyway. What it costs is a second search on a query where the
+  //! assumption turns out to be wrong, so it is worth setting for the shape
+  //! it suits and not as a general optimisation.
   //!
   //! Set this before the query it should apply to, as for UF_NARROW_RESULTS.
   //!
@@ -625,14 +628,17 @@ enum reason_unknown_t
   //! is not the only way to know it, if that ever changes.
   REASON_UNKNOWN_CARRIER_EXHAUSTED,
 
-  //! UF_EQUALITY_INJECTIVITY put injectivity into the encoding, so an unsat
-  //! reached over it refutes the query with an assumption the caller never
-  //! made on top of it, and was withheld rather than reported. Clearing that
-  //! flag and asking again decides the query itself.
+  //! UF_EQUALITY_INJECTIVITY put injectivity into the encoding, and the driver
+  //! holding the verdict could neither confirm nor take back a refutation that
+  //! may rest on it, so the unsat was withheld rather than reported. Clearing
+  //! that flag and asking again decides the query.
   //!
-  //! Only `unsat` is affected. A `sat` reached this way is a genuine model of
-  //! the query -- the assumption only ever removes models -- and is reported
-  //! as `sat`.
+  //! Not reachable through either shipped driver today: both install the
+  //! assumption behind an activation literal, ask the search whether the
+  //! refutation used it, and decide the query without it when it did. Named
+  //! for what it is because it is the floor those drivers would fall to, and
+  //! because a caller reading a value it does not recognise is better served
+  //! than one reading `unsat`.
   REASON_UNKNOWN_ASSUMED_INJECTIVITY
 };
 

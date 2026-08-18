@@ -130,9 +130,11 @@ enum class UnknownReason
   // A declared sort's carrier was too narrow for the query, so an unsat that
   // may be an artefact of the encoding was withheld. Raise --uf-sort-width.
   CarrierExhausted,
-  // --uf-inject-args put injectivity into the encoding, so an unsat that may
-  // be an artefact of that assumption rather than a refutation of the query
-  // was withheld. Drop the flag to decide the query itself.
+  // --uf-inject-args put injectivity into the encoding and the driver that
+  // holds the verdict could neither confirm nor take back a refutation that
+  // may rest on it, so the unsat was withheld. Both shipped drivers do close
+  // that question -- see STPMgr::solveRetractingInjectivity -- so this is the
+  // floor a driver falls to rather than report an unsat nobody can attribute.
   AssumedInjectivity
 };
 

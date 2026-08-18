@@ -312,8 +312,8 @@ PositionVerdict comparePosition(NodeFactory* factory, const ASTNode& left,
 // guard with no new guard logic, and ordinary preprocessing gets to simplify
 // or delete constraints whose results nothing constrains.
 void UFLowering::installEagerCongruence(
-    LoweredApplicationView& view,
-    const std::set<const UFDecl*>& injectable) const
+    LoweredApplicationView& view, const std::set<const UFDecl*>& injectable,
+    const ASTNode& guard) const
 {
   typedef UserDefinedFlags::UFEagerMode Mode;
   const Mode mode = manager_->UserFlags.uf_eager_mode;
@@ -506,12 +506,19 @@ void UFLowering::installEagerCongruence(
         {
           // The converse of congruence, and the one constraint here that is
           // not entailed by the query: it says this declaration is injective
-          // on the pair, which the caller never asserted. Counted separately
-          // so that the verdict can be withheld if the solve then reaches
-          // unsat -- see STPMgr::withholdAssumedUnsat.
+          // on the pair, which the caller never asserted. It goes in behind
+          // the activation symbol so that a refutation resting on it can be
+          // taken back rather than reported -- see
+          // STPMgr::solveRetractingInjectivity. Counted separately, because
+          // the guard is only sound if every one of them is behind it, and a
+          // driver with no way to assume the guard has to know that these
+          // exist at all.
           stat.emittedInjectivity++;
+          const ASTNode converse =
+              factory->CreateNode(IMPLIES, conclusion, premiseConj);
           view.congruenceConstraints.push_back(
-              factory->CreateNode(IMPLIES, conclusion, premiseConj));
+              guard.IsNull() ? converse
+                             : factory->CreateNode(IMPLIES, guard, converse));
         }
       }
     }
@@ -570,8 +577,9 @@ void UFLowering::reportEagerCongruence(const LoweredApplicationView& view) const
             << std::endl;
   if (stats.emittedInjectivity() != 0)
     std::cerr << "UF: eager " << stats.emittedInjectivity()
-              << " of those assume injectivity (--uf-inject-args); an unsat "
-              << "over them is withheld" << std::endl;
+              << " of those assume injectivity (--uf-inject-args), behind one "
+              << "guard the search can be asked about and withdraw"
+              << std::endl;
 }
 
 LoweredApplicationView
@@ -913,22 +921,48 @@ UFLowering::lowerCompletedRoot(const ASTNode& publicRoot,
       record.namedActuals.clear();
 
   std::set<const UFDecl*> injectable;
+  ASTNode injectivityGuard;
   if (manager_->UserFlags.uf_inject_args)
   {
     for (const auto& entry : narrowing.applicationCount)
       if (narrowing.nonNarrowable.count(entry.first) == 0)
         injectable.insert(entry.first);
+
+    // Minted before the pair loop rather than on first use, so that every
+    // converse implication of this lowering is behind the same symbol and
+    // withdrawing it withdraws all of them. Keyed on the root being lowered,
+    // which is what makes an identical persistent block rebuild an identical
+    // guard along with an identical semantic root.
+    if (!injectable.empty())
+      injectivityGuard = manager_->CreateDeterministicSourceVariable(
+          SourceSort::boolean(), "uf_inject_guard", publicRoot);
   }
 
-  installEagerCongruence(view, injectable);
+  installEagerCongruence(view, injectable, injectivityGuard);
   reportEagerCongruence(view);
 
-  // Tell the driver what this lowering assumed. It is the driver that holds
-  // the verdict, and this is the one thing installed here that the verdict
-  // depends on: everything else in the encoding is entailed by the query, so
-  // only these implications can turn a satisfiable query unsatisfiable.
+  // Tell the driver what this lowering assumed, and how to take it back. It is
+  // the driver that holds the verdict, and this is the one thing installed
+  // here that the verdict depends on: everything else in the encoding is
+  // entailed by the query, so only these implications can turn a satisfiable
+  // query unsatisfiable.
+  //
+  // The guard is registered as protected only when it is actually load-bearing.
+  // A lowering that installed no converse implication has nothing to retract
+  // and must not leave a free symbol behind for the simplifier to carry.
+  if (view.eagerStats.emittedInjectivity() != 0)
+  {
+    view.injectivityGuard = injectivityGuard;
+    // Without this the simplifier is free to do exactly what the guard was
+    // built to allow -- observe that nothing constrains it, set it false, and
+    // delete every implication behind it. That is sound, but it silently
+    // turns the flag off. RemoveUnconstrained and SubstitutionMap both honour
+    // this set.
+    view.protectedSymbols.insert(injectivityGuard);
+  }
   manager_->noteInjectivityAssumed(view.eagerStats.emittedInjectivity(),
-                                   view.eagerStats.injectiveDeclarations());
+                                   view.eagerStats.injectiveDeclarations(),
+                                   view.injectivityGuard);
 
   // This checks the whole barrier once, including the naming definitions.
   // Scanning every progressively larger actual separately would turn a

@@ -174,8 +174,46 @@ SATSolver* STP::get_new_sat_solver()
 
 // The absolute TopLevel function that invokes STP on the input
 // formula
+// Decide one query, twice if the first run cannot say whose refutation it
+// reached.
+//
+// --uf-inject-args puts injectivity into the encoding, which the query never
+// asserted, so an unsat over it may be the assumption's rather than the
+// query's. Normally the solver settles that itself: the implications sit
+// behind an assumption the search can be asked about and, if the refutation
+// used it, withdrawn -- two searches on one encoding, no second pipeline run.
+// See STPMgr::solveRetractingInjectivity.
+//
+// What that cannot cover is a refutation reached before the solver was ever
+// asked. Preprocessing works on the strengthened formula, so a formula it
+// proves false may have been proved false with the assumption's help, and
+// there is no assumption trail to interrogate afterwards. Nor is there a
+// cheaper question to ask than the one below: run the query again with the
+// flag off, and report what that says. bm->uf_injectivity_assumed is exactly
+// the "nobody established this" record -- both resolvers clear it -- so this
+// second run happens only in the case the first run could not close.
 SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
                                     const ASTNode& query)
+{
+  const SOLVER_RETURN_TYPE first = topLevelSTPOnce(inputasserts, query);
+  if (first != SOLVER_UNSATISFIABLE || bm->uf_injectivity_assumed == 0)
+    return first;
+
+  if (bm->UserFlags.stats_flag)
+    std::cerr << "UF: refuted before the search could be asked about the "
+              << "injectivity assumption, deciding the query without it"
+              << std::endl;
+
+  const bool saved = bm->UserFlags.uf_inject_args;
+  bm->UserFlags.uf_inject_args = false;
+  const SOLVER_RETURN_TYPE second = topLevelSTPOnce(inputasserts, query);
+  bm->UserFlags.uf_inject_args = saved;
+  bm->clearInjectivityAssumed();
+  return second;
+}
+
+SOLVER_RETURN_TYPE STP::topLevelSTPOnce(const ASTNode& inputasserts,
+                                        const ASTNode& query)
 {
   // Candidate construction is an implementation requirement; publication is
   // a caller permission. TopLevelSTPAux may force construction for array/UF
@@ -278,7 +316,9 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
 
   bm->UserFlags.construct_counterexample_flag = constructForCaller;
   bm->UserFlags.ackermannisation = saved_ack;
-  return bm->withholdAssumedUnsat(result);
+  // Raw: whether an unsat here is the query's is TopLevelSTP's question, and
+  // it has a second run to answer it with.
+  return result;
 }
 
 ASTNode STP::callSizeReducing(ASTNode inputToSat, 

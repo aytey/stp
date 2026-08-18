@@ -272,17 +272,22 @@ TEST(UFLowering, InjectArgsAddsReverseImplications)
       << "inject-args should add reverse implications";
 }
 
-// What the lowering assumed, and the rule the drivers apply to it.
+// What the lowering assumed, how a driver can take it back, and the floor if
+// one does not.
 //
-// The converse implication is the one constraint installed here that the query
-// does not entail, so it is the one that can change the answer, and it changes
-// it in exactly one direction: models are removed, never added. The lowering
-// therefore counts those separately from the congruence constraints and hands
-// the count to the manager, and the manager withholds an unsat reached over
-// any of them while passing a sat straight through. Both halves are pinned
-// here, because a rule that withheld both answers would be a plain loss and
-// one that withheld neither is the defect.
-TEST(UFLowering, InjectArgsRecordsWhatItAssumedAndOnlyUnsatIsWithheld)
+// The converse implication is the only constraint installed here that the
+// query does not entail, so it is the only one that can change the answer, and
+// it changes it in one direction: models are removed, never added. Three
+// things follow, and all three are pinned here.
+//
+// It is counted apart from the congruence constraints, because a driver has to
+// know one exists at all. It is installed behind an activation symbol, and
+// that symbol is protected, because a guard the simplifier is free to set
+// false is a flag that silently does nothing. And the manager's rule keeps a
+// `sat` while withholding an `unsat` -- the floor a driver falls to when it
+// has not established whose refutation it holds. A rule that withheld both
+// answers would be a plain loss; one that withheld neither is the defect.
+TEST(UFLowering, InjectArgsInstallsARetractableAssumptionAndCountsIt)
 {
   STPMgr manager;
   manager.UserFlags.enable_uninterpreted_functions = true;
@@ -312,6 +317,25 @@ TEST(UFLowering, InjectArgsRecordsWhatItAssumedAndOnlyUnsatIsWithheld)
   EXPECT_EQ(1u, viewWith.eagerStats.injectiveDeclarations());
   EXPECT_EQ(1u, manager.uf_injectivity_assumed);
 
+  // One guard for the whole lowering, reported to the driver, and untouchable
+  // -- withdrawing it has to withdraw every implication at once, and nothing
+  // between here and the solver may decide it.
+  ASSERT_FALSE(viewWith.injectivityGuard.IsNull());
+  EXPECT_EQ(viewWith.injectivityGuard, manager.uf_injectivity_guard);
+  EXPECT_EQ(SourceSort::Kind::Bool,
+            viewWith.injectivityGuard.GetSourceSort().kind());
+  EXPECT_EQ(1u, viewWith.protectedSymbols.count(viewWith.injectivityGuard));
+
+  // Every converse implication is behind it. Counting the constraints that
+  // mention the guard is the test that no path installed one bare: a single
+  // unguarded implication would be an assumption nothing can retract.
+  size_t guarded = 0;
+  for (const ASTNode& constraint : viewWith.congruenceConstraints)
+    if (constraint.GetKind() == IMPLIES &&
+        constraint[0] == viewWith.injectivityGuard)
+      guarded++;
+  EXPECT_EQ(viewWith.eagerStats.emittedInjectivity(), guarded);
+
   EXPECT_EQ(SOLVER_UNKNOWN,
             manager.withholdAssumedUnsat(SOLVER_UNSATISFIABLE));
   EXPECT_EQ(UnknownReason::AssumedInjectivity, manager.unknown_reason);
@@ -325,9 +349,16 @@ TEST(UFLowering, InjectArgsRecordsWhatItAssumedAndOnlyUnsatIsWithheld)
       << "a model of the strengthened formula is a model of the query";
   EXPECT_EQ(UnknownReason::None, manager.unknown_reason);
 
-  // Nothing assumed, nothing withheld. The rule keys on what was installed
-  // rather than on the flag, so a query the flag finds nothing to assume about
-  // keeps its refutation.
+  // A driver that established whose refutation it holds says so by clearing
+  // the record, and then the same unsat is reported rather than withheld.
+  // This is what solveRetractingInjectivity does on both of its outcomes.
+  manager.uf_injectivity_assumed = 0;
+  EXPECT_EQ(SOLVER_UNSATISFIABLE,
+            manager.withholdAssumedUnsat(SOLVER_UNSATISFIABLE));
+  EXPECT_EQ(UnknownReason::None, manager.unknown_reason);
+
+  // Nothing assumed, no guard, nothing to retract, nothing withheld. The rule
+  // keys on what was installed rather than on the flag.
   manager.UserFlags.uf_inject_args = false;
   manager.clearInjectivityAssumed();
   const ASTNode fa2 = context->apply(f, {a}, &diagnostic);
@@ -338,6 +369,7 @@ TEST(UFLowering, InjectArgsRecordsWhatItAssumedAndOnlyUnsatIsWithheld)
       lowerer2.lowerCompletedRoot(root2, UFSolveScope::batch(71));
 
   EXPECT_EQ(0u, viewWithout.eagerStats.emittedInjectivity());
+  EXPECT_TRUE(viewWithout.injectivityGuard.IsNull());
   EXPECT_EQ(0u, manager.uf_injectivity_assumed);
   EXPECT_EQ(SOLVER_UNSATISFIABLE,
             manager.withholdAssumedUnsat(SOLVER_UNSATISFIABLE));

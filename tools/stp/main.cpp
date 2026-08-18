@@ -368,10 +368,12 @@ void ExtraMain::create_options()
   bool_arg("--uf-inject-args", bm->UserFlags.uf_inject_args,
            "assume equality-only UF declarations are injective and encode it, "
            "giving the SAT solver bidirectional propagation between argument "
-           "and result equalities. NOT semantics-preserving, unlike every "
-           "other flag in this group: it adds an assumption the query did not "
-           "make, so `sat` still answers the query but an `unsat` reached over "
-           "the assumption is withheld and reported as `unknown`",
+           "and result equalities. The assumption is not entailed by the "
+           "query, so it is installed retractably: a refutation that used it "
+           "is taken back and the query decided without it. Verdicts are "
+           "unchanged; what this buys is faster model-finding on a query "
+           "whose functions are injective anyway, and it costs a second "
+           "search on one that is not",
            refinement_group);
 
   bool_arg("--bv-eq-abstraction", bm->UserFlags.bv_eq_abstraction,
