@@ -32,6 +32,7 @@ THE SOFTWARE.
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/ToCNFAIG.h"
 #include "stp/ToSat/BitBlaster.h"
+#include "stp/ToSat/BVAbstractionRefiner.h"
 #include "stp/Util/RunTimes.h"
 
 namespace stp
@@ -68,37 +69,10 @@ private:
 
   ToCNFAIG toCNF;
 
-  struct BVEQAbstraction
-  {
-    ASTNode eqNode;
-    unsigned abstractionSATVar;
-    ASTNode leftSymbol;
-    ASTNode rightSymbol;
-    unsigned width;
-    bool defined = false;
-    unsigned refinedBits = 0;
-    std::vector<unsigned> xnorHelpers;
-  };
-  std::vector<BVEQAbstraction> bvEQAbstractions_;
-
-  struct BVTermAbstraction
-  {
-    ASTNode termNode;
-    Kind opKind;
-    ASTNode operands[3];
-    unsigned numOperands;
-    unsigned width;
-    bool operandNegated[3] = {false, false, false};
-    unsigned condSATVar = 0;
-    bool defined = false;
-    // Blocking lemmas spent on this one abstraction so far; see
-    // bv_term_abstraction_rounds.
-    unsigned blockedRounds = 0;
-  };
-  std::vector<BVTermAbstraction> bvTermAbstractions_;
-
-  // Refinements this instance has made; see ToSATBase.
-  uint64_t abstractionRefinements_ = 0;
+  // The abstractions this lowering minted, and the CEGAR loop that
+  // refines them. Both live here for the batch pipeline's lifetime of one
+  // query; the incremental driver keeps its own across a session.
+  BVAbstractionRefiner abstraction_;
 
   void init()
   {
@@ -116,7 +90,7 @@ public:
   bool cbIsDestructed() { return cb == NULL; }
 
   ToSATAIG(STPMgr* bm, ArrayTransformer* at)
-      : ToSATBase(bm), toCNF(bm->UserFlags)
+      : ToSATBase(bm), toCNF(bm->UserFlags), abstraction_(bm)
   {
     cb = NULL;
     init();
@@ -125,7 +99,7 @@ public:
 
   ToSATAIG(STPMgr* bm, simplifier::constantBitP::ConstantBitPropagation* cb_,
            ArrayTransformer* at)
-      : ToSATBase(bm), cb(cb_), toCNF(bm->UserFlags)
+      : ToSATBase(bm), cb(cb_), toCNF(bm->UserFlags), abstraction_(bm)
   {
     cb = cb_;
     init();
@@ -141,16 +115,13 @@ public:
 
   bool CallSAT(SATSolver& satSolver, const ASTNode& input, bool needAbsRef);
 
-  bool hasBVEQAbstractions() const { return !bvEQAbstractions_.empty(); }
-  unsigned refineBVEQInconsistencies(SATSolver& solver);
-
-  bool hasBVTermAbstractions() const { return !bvTermAbstractions_.empty(); }
-  unsigned refineBVTermInconsistencies(SATSolver& solver);
+  bool hasBVEQAbstractions() const { return abstraction_.hasEqualities(); }
+  bool hasBVTermAbstractions() const { return abstraction_.hasTerms(); }
 
   unsigned refineAbstractions(SATSolver& solver) override;
   uint64_t abstractionRefinements() const override
   {
-    return abstractionRefinements_;
+    return abstraction_.refinements();
   }
 };
 }
