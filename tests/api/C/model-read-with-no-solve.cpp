@@ -1,0 +1,191 @@
+/***********
+AUTHORS: Andrew Teylu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+**********************/
+
+// vc_getCounterExample when no query has been run.
+//
+// There is no model to read, and the only honest answer is to say so. What
+// the C API did instead depended on the sort asked about:
+//
+//   bit-vector    a value, invented out of an empty model
+//   Boolean       a value, invented the same way
+//   floating pt   Fatal Error -> abort(), taking the process down
+//
+// The first two are the worse half. A caller that reads a model it never
+// asked for gets a number back with nothing to distinguish it from a real
+// one, and the abort at least could not be mistaken for an answer.
+//
+// The SMT-LIB2 frontend has never had this: a get-value with no check-sat
+// behind it answers "unsupported", because Cpp_interface::model_valid records
+// whether a solve produced a model and the get-value path consults it. The C
+// API reaches AbsRefine_CounterExample directly and had no equivalent, so
+// what came back was whatever an empty counterexample map happened to
+// evaluate to.
+//
+// So: refused, through the API rather than through abort(), and refused the
+// same way whatever the sort. That is the shape the header already documents
+// for the sibling entry point vc_getUninterpretedFunctionValue -- a nonfatal
+// diagnostic and NULL -- and this makes vc_getCounterExample match it.
+//
+// Note what is NOT being changed. A model read after a query that came back
+// VALID is a different question, with a different answer: the query was
+// decided, and that there is no counterexample is itself the answer. That
+// path is AbsRefine_CounterExample's ValidFlag arm and it keeps its existing
+// behaviour, which the last case here pins so a future narrowing of this
+// refusal does not quietly swallow it.
+
+#include "stp/c_interface.h"
+#include <gtest/gtest.h>
+#include <string>
+
+namespace
+{
+
+// The most recent diagnostic the library reported through the C API's
+// handler, which is process-global; every case that installs it takes it
+// back down again.
+std::string lastDiagnostic;
+
+void recordDiagnostic(const char* message)
+{
+  lastDiagnostic = message != NULL ? message : "";
+}
+
+// A float that has to be evaluated rather than folded: built out of a
+// symbolic sign and exponent, so it is not already a constant.
+Expr buildFloat(VC vc)
+{
+  Expr sign = vc_varExpr(vc, "s", vc_bvType(vc, 1));
+  Expr exponent = vc_varExpr(vc, "e", vc_bvType(vc, 5));
+  return vc_fpToFPFromIEEEBV(
+      vc, 5, 11,
+      vc_bvConcatExpr(vc, sign,
+                      vc_bvConcatExpr(vc, exponent,
+                                      vc_bvConstExprFromLL(vc, 10, 0))));
+}
+
+} // namespace
+
+// A bit-vector, which used to come back as an invented value.
+TEST(model_read_with_no_solve, bitvector_is_refused_not_invented)
+{
+  VC vc = vc_createValidityChecker();
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, x));
+
+  vc_Destroy(vc);
+}
+
+// A Boolean, likewise.
+TEST(model_read_with_no_solve, boolean_is_refused_not_invented)
+{
+  VC vc = vc_createValidityChecker();
+  Expr b = vc_varExpr(vc, "b", vc_boolType(vc));
+
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, b));
+
+  vc_Destroy(vc);
+}
+
+// A float, which used to abort. The case is an ordinary EXPECT rather than a
+// death test precisely because the call has to return at all.
+TEST(model_read_with_no_solve, float_is_refused_not_aborted)
+{
+  VC vc = vc_createValidityChecker();
+  Expr f = buildFloat(vc);
+
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, f));
+
+  vc_Destroy(vc);
+}
+
+// The incremental driver reaches the model machinery by its own route, so it
+// is asked separately.
+TEST(model_read_with_no_solve, incremental_is_refused_too)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'i');
+
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+  Expr f = buildFloat(vc);
+
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, x));
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, f));
+
+  vc_Destroy(vc);
+}
+
+// Refusing is not the same as going quiet: the caller is told, through the
+// handler the header documents for exactly this class of failure.
+TEST(model_read_with_no_solve, the_refusal_is_reported)
+{
+  lastDiagnostic.clear();
+  vc_registerErrorHandler(recordDiagnostic);
+
+  VC vc = vc_createValidityChecker();
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, x));
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(NULL); // process-global; put it back
+
+  EXPECT_NE(std::string::npos, lastDiagnostic.find("no model"))
+      << "diagnostic was: " << lastDiagnostic;
+}
+
+// The other side of the refusal, so that it stays as narrow as it claims to
+// be: once a query has been answered, every one of these sorts answers.
+TEST(model_read_with_no_solve, a_solved_query_still_answers)
+{
+  VC vc = vc_createValidityChecker();
+
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+  Expr b = vc_varExpr(vc, "b", vc_boolType(vc));
+  Expr f = buildFloat(vc);
+  vc_assertFormula(vc, vc_eqExpr(vc, x, vc_bvConstExprFromLL(vc, 8, 7)));
+
+  ASSERT_EQ(0, vc_query(vc, vc_falseExpr(vc))); // 0 == INVALID == satisfiable
+
+  Expr xval = vc_getCounterExample(vc, x);
+  ASSERT_NE((Expr)NULL, xval);
+  EXPECT_EQ((unsigned long long)7, getBVUnsignedLongLong(xval));
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, b));
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, f));
+
+  vc_Destroy(vc);
+}
+
+// And a query that was decided the other way keeps the answer it already
+// gave. There is no counterexample to a valid query, but that is a decided
+// question rather than an unanswerable one, and it is not what this refusal
+// is about: the call still returns a wrapper rather than NULL.
+TEST(model_read_with_no_solve, a_valid_query_is_not_the_same_as_no_query)
+{
+  VC vc = vc_createValidityChecker();
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 8));
+
+  ASSERT_EQ(1, vc_query(vc, vc_trueExpr(vc))); // 1 == VALID
+
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, x));
+
+  vc_Destroy(vc);
+}
