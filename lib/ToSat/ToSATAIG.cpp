@@ -185,8 +185,33 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
   try
   {
     BBNodeAIG BBFormula = bb.BBForm(input);
-    for (const auto& sc : bb.sideConstraints())
-      BBFormula = BBNodeAIG(Aig_And(mgr.aigMgr, BBFormula.n, sc.n));
+
+    // Hand the side constraints over as one variadic AND, so that
+    // CreateNode folds them into a log-height tower.
+    //
+    // Conjoining them one at a time instead -- BBFormula =
+    // Aig_And(BBFormula, sc) once per constraint -- leaves an AIG whose
+    // depth is the number of constraints, and every AIG -> CNF walk ABC
+    // has is a plain recursive DFS: Cnf_ManScanMapping_rec under
+    // Cnf_Derive, Cnf_CollectVolume_rec under Cnf_DeriveFast, and so on
+    // for the Mf_ManGenerateCnf routes. One frame per link exhausts an
+    // 8 MiB stack at around 105k links, and there is one link per bit of
+    // each distinct abstracted operand, so a query carrying a few
+    // thousand wide equalities took the process out. How many there are
+    // is chosen by whoever wrote the input, so no stack size is a fix.
+    //
+    // The incremental route never had this: syncAbstractions() asserts
+    // each constraint as its own permanent unit clause and builds no
+    // chain at all.
+    const std::vector<BBNodeAIG>& side = bb.sideConstraints();
+    if (!side.empty())
+    {
+      std::vector<BBNodeAIG> conjuncts;
+      conjuncts.reserve(side.size() + 1);
+      conjuncts.push_back(BBFormula);
+      conjuncts.insert(conjuncts.end(), side.begin(), side.end());
+      BBFormula = mgr.CreateNode(AND, conjuncts);
+    }
     bm->GetRunTimes()->stop(RunTimes::BitBlasting);
 
     delete cb;
