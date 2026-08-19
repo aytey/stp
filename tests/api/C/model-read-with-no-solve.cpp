@@ -51,6 +51,14 @@ THE SOFTWARE.
 // path is AbsRefine_CounterExample's ValidFlag arm and it keeps its existing
 // behaviour, which the last case here pins so a future narrowing of this
 // refusal does not quietly swallow it.
+//
+// And note the one thing the refusal does not reach: a constant. It already
+// is its own value, so there is nothing about it to read out of a model and
+// nothing to invent, and it answers with no query behind it -- which is what
+// this entry point has always done, and what reading the value of a literal
+// through the bindings relies on. The cases at the end pin both sides of
+// that line: what counts as a constant answers, and a term that still has to
+// be evaluated does not, however much of it is constant.
 
 #include "stp/c_interface.h"
 #include <gtest/gtest.h>
@@ -186,6 +194,71 @@ TEST(model_read_with_no_solve, a_valid_query_is_not_the_same_as_no_query)
   ASSERT_EQ(1, vc_query(vc, vc_trueExpr(vc))); // 1 == VALID
 
   EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, x));
+
+  vc_Destroy(vc);
+}
+
+// A constant carries its own value, so it needs no query behind it.
+TEST(model_read_with_no_solve, a_constant_answers_with_no_query)
+{
+  VC vc = vc_createValidityChecker();
+
+  Expr value = vc_getCounterExample(vc, vc_bvConstExprFromLL(vc, 32, 18));
+  ASSERT_NE((Expr)NULL, value);
+  EXPECT_EQ((unsigned long long)18, getBVUnsignedLongLong(value));
+
+  // The Boolean constants are constants too, and answer the same way.
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, vc_trueExpr(vc)));
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, vc_falseExpr(vc)));
+
+  vc_Destroy(vc);
+}
+
+// A term over constants answers exactly when it is a constant by the time it
+// is asked about -- which, with the simplifying factory a validity checker
+// installs, a product of two literals is. The point of the case is that this
+// is the same rule and not a second one: what answers is a constant, not a
+// term that merely has constant leaves.
+TEST(model_read_with_no_solve, a_folded_term_is_a_constant_like_any_other)
+{
+  VC vc = vc_createValidityChecker();
+
+  Expr folded = vc_bvMultExpr(vc, 32, vc_bvConstExprFromLL(vc, 32, 18),
+                              vc_bvConstExprFromLL(vc, 32, 2));
+  Expr value = vc_getCounterExample(vc, folded);
+  ASSERT_NE((Expr)NULL, value);
+  EXPECT_EQ((unsigned long long)36, getBVUnsignedLongLong(value));
+
+  vc_Destroy(vc);
+}
+
+// A float constant goes through the same door, and it is worth saying so
+// explicitly: this is the sort that used to take the process down. What comes
+// back is the constant itself, with nothing evaluated against an empty model,
+// so the fatal is not on this path. A float that does have to be evaluated is
+// still refused -- float_is_refused_not_aborted above is that case.
+TEST(model_read_with_no_solve, a_float_constant_answers_with_no_query)
+{
+  VC vc = vc_createValidityChecker();
+
+  // 0x3C00 is 1.0 in binary16, and built out of constant bits it folds to a
+  // constant rather than staying a term to evaluate.
+  Expr f = vc_fpToFPFromIEEEBV(vc, 5, 11, vc_bvConstExprFromLL(vc, 16, 0x3C00));
+  EXPECT_NE((Expr)NULL, vc_getCounterExample(vc, f));
+
+  vc_Destroy(vc);
+}
+
+// The other side of that line: one symbol anywhere in the term and there is
+// something a model has to supply, so the refusal applies as before.
+TEST(model_read_with_no_solve, a_term_with_a_symbol_in_it_is_still_refused)
+{
+  VC vc = vc_createValidityChecker();
+
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 32));
+  Expr mixed = vc_bvPlusExpr(vc, 32, x, vc_bvConstExprFromLL(vc, 32, 36));
+
+  EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, mixed));
 
   vc_Destroy(vc);
 }
