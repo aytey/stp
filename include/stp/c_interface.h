@@ -1005,6 +1005,12 @@ DLL_PUBLIC int vc_query(VC vc, Expr e);
 //! used to answer from the empty counterexample map instead, which invented a
 //! value for a bit-vector or a Boolean and was fatal for a float.
 //!
+//! A constant is the exception, and needs no query behind it: it already is
+//! its own value, so there is nothing for it to read out of a model and
+//! nothing to invent. That covers a bit-vector constant and the Boolean
+//! constants; a symbol, and any term that has to be evaluated to reach a
+//! value, needs a model like everything else.
+//!
 DLL_PUBLIC Expr vc_getCounterExample(VC vc, Expr e);
 
 //! \brief Returns an array from a counter example after an invalid query.

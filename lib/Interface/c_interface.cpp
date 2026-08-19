@@ -1353,17 +1353,26 @@ Expr vc_getCounterExample(VC vc, Expr e)
       static_cast<stp::ASTNode*>(e)->GetKind() == stp::UF_APPLY)
     return vc_getUninterpretedFunctionValue(vc, e);
   stp::STP* stp_i = (stp::STP*)vc;
+  stp::ASTNode* a = (stp::ASTNode*)e;
 
-  // No decided query behind this call means no model to read: either none has
-  // been run, or the last one timed out or errored, or a vc_push or vc_query
-  // has discarded the one there was. Refuse, rather than evaluate against an
-  // empty counterexample map -- which returned an invented value for a
-  // bit-vector or a Boolean, and for a float reached the model evaluator's
-  // fatal and took the process down. The SMT-LIB2 frontend has always
-  // answered this "unsupported"; this is the same refusal in the shape the
-  // header documents for the sibling entry point
+  // A constant already is its own value. Nothing about it is read out of a
+  // model, so the refusal below has nothing to protect it from: it answers
+  // with no query behind it, which is what this entry point has always done
+  // and what reading the value of a literal through the bindings relies on.
+  // The narrowing is to constants alone -- a symbol, or any term that has to
+  // be evaluated to reach a value, still has nothing to say without a model.
+  const bool isOwnValue = (a != NULL && a->isConstant());
+
+  // For everything else, no decided query behind this call means no model to
+  // read: either none has been run, or the last one timed out or errored, or
+  // a vc_push or vc_query has discarded the one there was. Refuse, rather
+  // than evaluate against an empty counterexample map -- which returned an
+  // invented value for a bit-vector or a Boolean, and for a float reached the
+  // model evaluator's fatal and took the process down. The SMT-LIB2 frontend
+  // has always answered this "unsupported"; this is the same refusal in the
+  // shape the header documents for the sibling entry point
   // vc_getUninterpretedFunctionValue.
-  if (!stp_i->queryAnswered)
+  if (!isOwnValue && !stp_i->queryAnswered)
   {
     reportUFAPIError("vc_getCounterExample: no model to read -- no query has "
                      "been answered since the last vc_push or vc_query");
@@ -1371,7 +1380,6 @@ Expr vc_getCounterExample(VC vc, Expr e)
   }
 
   materializePendingModel(vc);
-  stp::ASTNode* a = (stp::ASTNode*)e;
 
   // Reading a floating-point value blasts the term, so this checker's manager
   // must be current (see vc_query_with_timeout).
