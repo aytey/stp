@@ -206,6 +206,22 @@ SOLVER_RETURN_TYPE STP::TopLevelSTP(const ASTNode& inputasserts,
 
   const bool saved = bm->UserFlags.uf_inject_args;
   bm->UserFlags.uf_inject_args = false;
+  // A second run of the pipeline is a second solve, and every solve reaches
+  // topLevelSTPOnce over tables nobody has written yet: the SMT-LIB2 frontend
+  // clears them in Cpp_interface::resetSolver, the C API in vc_query, and the
+  // single-query tool has never run anything. This one is reached from inside
+  // the driver, so nothing did it here, and the run inherits the first run's
+  // substitution map, array-transform tables and bit-blasting cache.
+  //
+  // The substitution map is the one that bites rather than merely wastes:
+  // RemoveUnconstrained's array rules meet a symbol the first run already
+  // substituted and call UpdateSubstitutionMapFewChecks, whose whole contract
+  // is that its caller has established the symbol is not in the map. Same
+  // clearing as the frontends do, and in the same place relative to the solve
+  // -- before it, so the first run's answer is complete and the second run's
+  // model is built over its own encoding.
+  bm->ClearAllTables();
+  ClearAllTables();
   const SOLVER_RETURN_TYPE second = topLevelSTPOnce(inputasserts, query);
   bm->UserFlags.uf_inject_args = saved;
   bm->clearInjectivityAssumed();
