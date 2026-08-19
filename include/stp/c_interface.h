@@ -995,6 +995,16 @@ DLL_PUBLIC int vc_query(VC vc, Expr e);
 //! packed bits. So it can be fed straight back -- vc_eqExpr(vc, e, value) is
 //! well sorted, and asserting it pins 'e' to the value.
 //!
+//! There has to be a model to read. A query must have been answered -- VALID
+//! or INVALID, not a timeout or an error -- and it must still be the last
+//! thing to have happened: as vc_pop and vc_push document, a counterexample
+//! survives vc_pop and is discarded by the next vc_push or vc_query. Called
+//! with no model behind it, this reports a nonfatal diagnostic through
+//! vc_registerErrorHandler (or stderr) and returns NULL, as
+//! vc_getUninterpretedFunctionValue does for the same class of misuse. It
+//! used to answer from the empty counterexample map instead, which invented a
+//! value for a bit-vector or a Boolean and was fatal for a float.
+//!
 DLL_PUBLIC Expr vc_getCounterExample(VC vc, Expr e);
 
 //! \brief Returns an array from a counter example after an invalid query.

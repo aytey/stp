@@ -89,6 +89,10 @@ const LoweredApplicationView& STP::lastBatchUFView() const
 
 void STP::ClearAllTables(void)
 {
+  // The counterexample goes with them, so there is no longer a model to read.
+  // Whoever decides the next query says so again.
+  queryAnswered = false;
+
   if (simp != NULL)
     simp->ClearAllTables();
   if (arrayTransformer != NULL)
