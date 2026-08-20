@@ -84,6 +84,7 @@ ASTNode ArrayTransformer::TransformFormula_TopLevel(const ASTNode& form)
 
   assert(TransformMap == NULL);
   TransformMap = new ASTNodeMap(100);
+  cellSortConstraints.clear();
 
   ExtensionalityContext* ext = bm->getExtensionalityIfAny();
   // Constant-bit propagation also creates local ArrayTransformers for
@@ -111,6 +112,8 @@ ASTNode ArrayTransformer::TransformFormula_TopLevel(const ASTNode& form)
 
   if (bm->UserFlags.stats_flag)
     printArrayStats();
+
+  ASTVec sideConstraints;
 
   // This establishes equalities between every indexes, and a fresh variable.
   if (!bm->UserFlags.ackermannisation)
@@ -177,18 +180,24 @@ ASTNode ArrayTransformer::TransformFormula_TopLevel(const ASTNode& form)
       }
     }
 
-    runTimes->stop(RunTimes::Transforming);
+    sideConstraints.insert(sideConstraints.end(), equalsNodes.begin(),
+                           equalsNodes.end());
+  }
 
-    if (equalsNodes.size() > 0)
-      return nf->CreateNode(AND, result, equalsNodes);
-    else
-      return result;
-  }
-  else
-  {
-    runTimes->stop(RunTimes::Transforming);
-    return result;
-  }
+  // The sort constraints the fresh read abstractions owe. Not inside the
+  // branch above: eager Ackermannisation abstracts each read to one of
+  // these variables too -- it builds the if-then-else over them instead of
+  // leaving the refinement loop to relate them -- so the cells are exactly
+  // as much in need of pinning either way.
+  sideConstraints.insert(sideConstraints.end(), cellSortConstraints.begin(),
+                         cellSortConstraints.end());
+  cellSortConstraints.clear();
+
+  runTimes->stop(RunTimes::Transforming);
+
+  if (sideConstraints.size() > 0)
+    return nf->CreateNode(AND, result, sideConstraints);
+  return result;
 }
 
 ArrayTransformer::TransformResult
@@ -357,6 +366,7 @@ class ArrayTransformer::TransformDriver
   std::map<ASTNode, vector<std::pair<ASTNode, ASTNode>>>& ack_pair;
   const bool& recordTouchedReads;
   std::vector<std::pair<ASTNode, ASTNode>>& touchedReads;
+  ASTVec& cellSortConstraints;
 
   ASTNode finishTransformTerm(const ASTNode& term, const ASTNode& result)
   {
@@ -942,6 +952,23 @@ class ArrayTransformer::TransformDriver
           CurrentSymbol.SetExpWidth(term.GetExpWidth());
           CurrentSymbol.SetSigWidth(term.GetSigWidth());
 
+          // A cell of an array of modes holds a mode, and five bits carry
+          // one only through five of their thirty-two patterns. FpTotalise
+          // pins the reads the formula names, and it has run by now; the
+          // reads read-over-write and read-over-if-then-else expansion
+          // introduce over the base array are minted here, afterwards, and
+          // nothing else will pin them. Left free, such a cell is not
+          // merely an unanswered don't-care: the solve is entitled to
+          // witness a disequality of two arrays of modes with two carriers
+          // that name no mode at all, and every reader downstream -- the
+          // congruence axioms, which compare the carriers, and the model,
+          // which must publish a mode -- is then reading a different cell
+          // than the other. Pin it where the array-equality checker pins
+          // its own virtual reads, so that there is one answer.
+          if (bm->arrayHasRmElement(arrName))
+            cellSortConstraints.push_back(
+                bm->roundingModeValidConstraint(CurrentSymbol));
+
           ASTNode symbolResult = CurrentSymbol;
 
           if (!bm->UserFlags.ackermannisation)
@@ -1143,7 +1170,8 @@ public:
         ASTFalse(owner.ASTFalse), ASTUndefined(owner.ASTUndefined),
         arrayToIndexToRead(owner.arrayToIndexToRead), ack_pair(owner.ack_pair),
         recordTouchedReads(owner.recordTouchedReads),
-        touchedReads(owner.touchedReads)
+        touchedReads(owner.touchedReads),
+        cellSortConstraints(owner.cellSortConstraints)
   {
   }
 
