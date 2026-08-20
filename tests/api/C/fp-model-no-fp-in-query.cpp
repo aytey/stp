@@ -49,8 +49,20 @@ THE SOFTWARE.
 //   * with no solve at all there is still no model, and the question is
 //     still refused rather than answered with an invented value.
 //
+// Two places read that published context, and the last three cases here are
+// the second of them. A float term's value goes through
+// requireFpEncodingContext and aborted there; an equality between
+// float-indexed arrays goes through arrayEqualityIsModelDecidable, which
+// reads the same field directly rather than through that accessor, and
+// aborted at its own site with a message of its own. One NULL, two readers.
+// Neither arm stands in for the other: a fix that satisfied the accessor by
+// conjuring a context at read time -- the alternative the fix commit weighed
+// and rejected, because it would answer a question with no solve behind it
+// by inventing one -- passes every case above and still aborts below.
+//
 // Found by a Murxla campaign cross-checking STP against STP under a differing
-// option vector; reduced from a 143-line trace.
+// option vector. The float-term arm was reduced from a 143-line trace; the
+// array arm arrived separately out of the same campaign, from a 69-line one.
 
 #include "stp/c_interface.h"
 #include <gtest/gtest.h>
@@ -94,6 +106,34 @@ void assertBitsAreOne(VC vc, Expr sign, Expr exponent)
 // vc_query of `false` asserts nothing and asks for a model of the stack as it
 // stands; 0 is INVALID, i.e. satisfiable.
 int solve(VC vc) { return vc_query(vc, vc_falseExpr(vc)); }
+
+// Two arrays whose *index* sort is in the floating-point theory, which is
+// what the array-equality reader gates on: arrayEqualityIsModelDecidable
+// asks sort.index().usesFloatingPointTheory(), and RoundingMode satisfies it.
+// No Float is needed anywhere, and neither array is ever asserted about, so
+// nothing here reaches the encoder.
+void buildRoundingModeArrays(VC vc, Expr* a, Expr* b)
+{
+  const Type rm = vc_fpRoundingModeType(vc);
+  const Type arr = vc_arrayType(vc, rm, rm);
+  *a = vc_varExpr(vc, "a", arr);
+  *b = vc_varExpr(vc, "b", arr);
+}
+
+// Four bits pinned to 3: a real solve with a forced value in it, and nothing
+// in it about an array or a float. The array cases read it back alongside
+// the equality so that they stay anchored to a model that exists and has
+// something in it -- a change that made the solve vacuous would fail them
+// rather than leave them quietly exercising nothing.
+const unsigned long long ANCHOR_BITS = 3;
+
+Expr assertAnchor(VC vc)
+{
+  Expr x = vc_varExpr(vc, "x", vc_bvType(vc, 4));
+  vc_assertFormula(vc,
+                   vc_eqExpr(vc, x, vc_bvConstExprFromLL(vc, 4, ANCHOR_BITS)));
+  return x;
+}
 
 } // namespace
 
@@ -313,4 +353,121 @@ TEST(fp_model_no_fp_in_query, no_solve_is_still_not_answered)
   EXPECT_EQ((Expr)NULL, vc_getCounterExample(vc, f));
 
   vc_Destroy(vc);
+}
+
+// The other reader of the same published context, and the other place the
+// same NULL was fatal. Everything above asks for a float term's value and
+// goes through requireFpEncodingContext; these ask whether two float-indexed
+// arrays are equal, which goes through arrayEqualityIsModelDecidable -- a
+// gate that reads the field directly rather than through that accessor, and
+// aborted at its own site with its own message:
+//
+//   Fatal Error: array-equality: cannot evaluate an opaque equality over
+//                float-indexed arrays that was not reachable in the most
+//                recent solve
+//
+// Nothing here asserts anything about an array, so no float reaches the
+// encoder, no context is built, and the driver published NULL -- which the
+// gate read as "no solve has run" for a query that had just been solved.
+//
+// The answer is true because neither array is in the model at all: with no
+// cells recorded against either, ArraysEqualUsingModel has no index at which
+// they could disagree. That makes it the evaluator's answer rather than the
+// SAT search's, which is the only reason this file names it. Nothing
+// constrains these arrays, so a value the search had picked freely would not
+// be the test's to pin -- the same care the float cases take by holding
+// their carrier bits, arrived at from the other direction.
+TEST(fp_model_no_fp_in_query, incremental_float_indexed_array_equality_answers)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'i');
+  vc_setFlag(vc, 'x'); // must precede creation of any term
+
+  Expr a, b;
+  buildRoundingModeArrays(vc, &a, &b);
+  Expr x = assertAnchor(vc);
+
+  ASSERT_EQ(0, solve(vc));
+
+  Expr anchor = vc_getCounterExample(vc, x);
+  ASSERT_NE((Expr)NULL, anchor);
+  ASSERT_EQ(ANCHOR_BITS, getBVUnsignedLongLong(anchor));
+
+  Expr value = vc_getCounterExample(vc, vc_eqExpr(vc, a, b));
+  ASSERT_NE((Expr)NULL, value);
+  EXPECT_EQ(1, vc_isBool(value));
+
+  vc_Destroy(vc);
+}
+
+// The campaign's own reproducer, which reaches "the solve never encoded
+// them" by a different road: the arrays *are* mentioned, in an assumption
+// that happens to be a tautology, so the rewriter removes it before encoding
+// and they still never arrive.
+//
+// The case above does not depend on that rewrite and this one does, which is
+// why both are here. If the rewriter ever stops folding an implication from
+// a formula to itself, this case stops exercising the gate -- it would still
+// pass, having encoded the arrays and built a context the honest way -- and
+// the case above is what would still be covering the site.
+TEST(fp_model_no_fp_in_query,
+     incremental_array_equality_mentioned_but_rewritten_away)
+{
+  VC vc = vc_createValidityChecker();
+  vc_setFlag(vc, 'i');
+  vc_setFlag(vc, 'x'); // must precede creation of any term
+
+  Expr a, b;
+  buildRoundingModeArrays(vc, &a, &b);
+  Expr equality = vc_eqExpr(vc, a, b);
+  vc_assertFormula(vc, vc_impliesExpr(vc, equality, equality));
+  Expr x = assertAnchor(vc);
+
+  ASSERT_EQ(0, solve(vc));
+
+  Expr anchor = vc_getCounterExample(vc, x);
+  ASSERT_NE((Expr)NULL, anchor);
+  ASSERT_EQ(ANCHOR_BITS, getBVUnsignedLongLong(anchor));
+
+  Expr value = vc_getCounterExample(vc, equality);
+  ASSERT_NE((Expr)NULL, value);
+  EXPECT_EQ(1, vc_isBool(value));
+
+  vc_Destroy(vc);
+}
+
+// The invariant the two above are instances of, as the float cases have it:
+// one question about one model, so the two drivers answer it the same way.
+// The batch driver has always answered this one.
+TEST(fp_model_no_fp_in_query, incremental_array_equality_agrees_with_batch)
+{
+  int answers[2];
+
+  for (int incremental = 0; incremental < 2; incremental++)
+  {
+    VC vc = vc_createValidityChecker();
+    if (incremental)
+      vc_setFlag(vc, 'i');
+    vc_setFlag(vc, 'x'); // must precede creation of any term
+
+    Expr a, b;
+    buildRoundingModeArrays(vc, &a, &b);
+    Expr x = assertAnchor(vc);
+
+    ASSERT_EQ(0, solve(vc)) << "incremental " << incremental;
+
+    Expr anchor = vc_getCounterExample(vc, x);
+    ASSERT_NE((Expr)NULL, anchor) << "incremental " << incremental;
+    ASSERT_EQ(ANCHOR_BITS, getBVUnsignedLongLong(anchor))
+        << "incremental " << incremental;
+
+    Expr value = vc_getCounterExample(vc, vc_eqExpr(vc, a, b));
+    ASSERT_NE((Expr)NULL, value) << "incremental " << incremental;
+    answers[incremental] = vc_isBool(value);
+
+    vc_Destroy(vc);
+  }
+
+  EXPECT_EQ(answers[0], answers[1]);
+  EXPECT_EQ(1, answers[1]);
 }
