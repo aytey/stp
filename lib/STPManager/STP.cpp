@@ -865,6 +865,21 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   if (simp->hasUnappliedSubstitutions())
     inputToSat = simp->applySubstitutionMap(inputToSat);
 
+  // Extract sub-terms shared between additions, and between multiplies,
+  // ahead of unconstrained-variable elimination: a pair of otherwise-unused
+  // variables occurring only inside the shared node makes that node
+  // collapsible there. This also keeps the extraction ahead of the
+  // ConstantBitPropagation object built below, whose fixed-point map must
+  // describe the exact tree handed to ToSATAIG.
+  if (bm->UserFlags.enable_common_subsum)
+  {
+    CommonSubSum sums(bm, bm->defaultNodeFactory, BVPLUS);
+    inputToSat = sums.topLevel(inputToSat);
+    CommonSubSum products(bm, bm->defaultNodeFactory, BVMULT);
+    inputToSat = products.topLevel(inputToSat);
+    bm->ASTNodeStats("After Common Sub-term Extraction: ", inputToSat);
+  }
+
   if (bm->UserFlags.enable_unconstrained)
   {
     RemoveUnconstrained r(*bm);
@@ -1007,17 +1022,6 @@ STP::TopLevelSTPAux(SATSolver& NewSolver, const ASTNode& original_input,
   const bool maybeRefinement =
       (arrayops && !bm->UserFlags.ackermannisation) || batchUFView->active() ||
       bm->UserFlags.bv_eq_abstraction || bm->UserFlags.bv_term_abstraction;
-
-  // Must run before the ConstantBitPropagation object below is built: cb's
-  // fixed-point map has to describe the exact tree handed to ToSATAIG, and a
-  // rewrite between the two leaves nodes the propagator has never seen, which
-  // BitBlaster's checkAtFixedPoint assertion rejects.
-  if (bm->UserFlags.enable_common_subsum)
-  {
-    CommonSubSum css(bm, bm->defaultNodeFactory);
-    inputToSat = css.topLevel(inputToSat);
-    bm->ASTNodeStats("After Common Sub-sum Extraction: ", inputToSat);
-  }
 
   simplifier::constantBitP::ConstantBitPropagation* cb = NULL;
   std::unique_ptr<simplifier::constantBitP::ConstantBitPropagation> cleaner;

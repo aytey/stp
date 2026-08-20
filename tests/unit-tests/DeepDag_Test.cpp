@@ -503,7 +503,10 @@ bool remainderFoldingOk(Context& c, unsigned pairs)
 
 bool flattenIdentityOk(Context& c, unsigned depth)
 {
-  const ASTNode top = c.formula(c.chain(BVMULT, depth));
+  // A kind the pass traverses but never merges (BVMULT flattens now, like
+  // BVPLUS), so this stays a pure walk of the whole chain: stack safety
+  // with no rewriting.
+  const ASTNode top = c.formula(c.chain(BVSUB, depth));
   c.roots.push_back(top);
 
   Flatten flattener(&c.mgr, c.nf);
@@ -1546,7 +1549,7 @@ bool commonSubSumOk(Context& c, unsigned depth)
 {
   const ASTNode f = c.formula(c.chain(BVPLUS, depth));
   c.roots.push_back(f);
-  CommonSubSum css(&c.mgr, c.nf);
+  CommonSubSum css(&c.mgr, c.nf, BVPLUS);
   ASTNode g = f;
   return css.topLevel(g).GetKind() != UNDEFINED;
 }

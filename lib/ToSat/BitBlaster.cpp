@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ********************************************************************/
 #include "stp/ToSat/BitBlaster.h"
+#include "stp/FloatBlaster/FloatBlaster.h"
 #include "stp/Simplifier/Simplifier.h"
 #include "stp/Simplifier/constantBitP/ConstantBitPropagation.h"
 #include "stp/Simplifier/constantBitP/FixedBits.h"
@@ -369,14 +370,9 @@ void BitBlaster::getConsts(const ASTNode& form,
     if (!constNode)
       continue;
 
-    CBV val = CONSTANTBV::BitVector_Create(n.GetValueWidth(), true);
-    for (int i = 0; i < (int)x.size(); i++)
-    {
-      if (x[i] == BBTrue)
-        CONSTANTBV::BitVector_Bit_On(val, i);
-    }
-
-    ASTNode r = ASTNF->CreateConstant(val, n.GetValueWidth());
+    // getConstant re-makes a float's packed bits as an ASTFPConst, keeping
+    // the substitution type-correct.
+    ASTNode r = getConstant(x, n);
     if (n.GetKind() == SYMBOL)
       simp->UpdateSubstitutionMap(n, r);
     else
@@ -658,7 +654,18 @@ ASTNode BitBlaster::getConstant(const BBNodeVec& v,
     if (v[i] == nf->getTrue())
       CONSTANTBV::BitVector_Bit_On(bv, i);
 
-  return ASTNF->CreateConstant(bv, v.size());
+  const ASTNode result = ASTNF->CreateConstant(bv, v.size());
+
+  // n may be a float carried as its packed bits (see isBitsValued). A plain
+  // BVCONST cannot hold the format, so the constant that stands in for n has
+  // to be re-made as an interned ASTFPConst -- otherwise the rebuilt parent
+  // carries a bitvector where an fp is required and fails BVTypeCheck.
+  const unsigned int exp_width = n.GetExpWidth();
+  if (exp_width != 0)
+    return FloatBlaster::withFormat(&ASTNF->getStpMgr(), result, exp_width,
+                                    n.GetSigWidth());
+
+  return result;
 }
 
 // This block checks if the bitblasting/fixed bits have discovered
@@ -754,7 +761,12 @@ BitBlaster::simplify_during_bb(ASTNode& term,
       else
         nBits = it->second;
 
-      if (n_term.isConstant())
+      // concreteToAbstract only models bit-vector and boolean constants;
+      // a floating-point constant reaches its unhandled default and aborts.
+      // Such a node keeps its default (all-unknown) FixedBits, which is sound.
+      if (n_term.isConstant() &&
+          (n_term.GetType() == BITVECTOR_TYPE ||
+           n_term.GetType() == BOOLEAN_TYPE))
       {
         // It's assumed elsewhere that constants map to themselves in the
         // fixed map.
@@ -836,11 +848,17 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
     }
   }
 
-  if (!priming && unprimedDepth >= unprimedDepthLimit)
+  // Prime below this node once the recursion budget is spent -- and, while a
+  // priming walk is in progress, on any memo miss that is not one of the
+  // walk's own visits. The walk only covers nodes that existed when it ran:
+  // simplify_during_bb can replace a term with a freshly simplified one whose
+  // subtree nests with the input, and recursing into it mid-priming would put
+  // that depth back on the stack with the budget switched off.
+  if (!knownMissing && (priming != 0 || unprimedDepth >= unprimedDepthLimit))
   {
-    priming = true;
+    ++priming;
     primeMemos(term, support);
-    priming = false;
+    --priming;
 
     it = BBTermMemo.find(term);
     if (it != BBTermMemo.end())
@@ -850,7 +868,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
     }
   }
 
-  UnprimedDepth depth(unprimedDepth, !priming);
+  UnprimedDepth depth(unprimedDepth, priming == 0);
 
   if (uf != NULL && uf->optimize_flag && uf->simplify_during_BB_flag)
   {
@@ -1222,7 +1240,25 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
     case BVMULT:
     {
       assert(BVTypeCheck(term));
-      assert(term.Degree() == 2);
+
+      if (term.Degree() > 2)
+      {
+        // BBMult and the multiplication variants read their operands' AST
+        // nodes (constant detection, propagated-bit stats), so a wider
+        // multiply is lowered to a tree of genuine two-operand nodes.
+        std::deque<ASTNode> names(term.begin(), term.end());
+        std::sort(names.begin(), names.end(), stp::ExprLess{});
+        while (names.size() > 1)
+        {
+          ASTNode a = names.front();
+          names.pop_front();
+          ASTNode b = names.front();
+          names.pop_front();
+          names.push_back(ASTNF->CreateTerm(BVMULT, a.GetValueWidth(), a, b));
+        }
+        result = BBTerm(names.front(), support);
+        break;
+      }
 
       BBNodeVec mpcd1 = BBTerm(term[0], support);
       const BBNodeVec& mpcd2 = BBTerm(term[1], support);
@@ -1590,18 +1626,22 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
     }
   }
 
-  if (!priming && unprimedDepth >= unprimedDepthLimit)
+  // Same trigger as BBTerm's, and for the same reason: a node built during a
+  // priming walk -- a rewritten condition under a term simplify_during_bb
+  // replaced -- is not in the memo, and descending it mid-priming is
+  // unbudgeted recursion that nests with the input.
+  if (!knownMissing && (priming != 0 || unprimedDepth >= unprimedDepthLimit))
   {
-    priming = true;
+    ++priming;
     primeMemos(form, support);
-    priming = false;
+    --priming;
 
     it = BBFormMemo.find(form);
     if (it != BBFormMemo.end())
       return it->second;
   }
 
-  UnprimedDepth depth(unprimedDepth, !priming);
+  UnprimedDepth depth(unprimedDepth, priming == 0);
 
   const Kind k = form.GetKind();
   if (!is_Form_kind(k))

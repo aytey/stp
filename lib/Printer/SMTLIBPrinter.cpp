@@ -29,8 +29,7 @@ THE SOFTWARE.
 #include <cassert>
 
 // Functions shared between the printers: the letize pass used by all of
-// them, and the traversal shared by the version1 and version2 SMT-LIB
-// printers.
+// them, and the SMT-LIB2 traversal.
 
 namespace printer
 {
@@ -71,16 +70,11 @@ static void printRoundingModeSMTLIB2(ostream& os, const ASTNode& rm,
       return;
     }
   }
-  SMTLIB_Print1(os, rm, 0, letize, false);
+  SMTLIB_Print1(os, rm, 0, letize);
 }
 
-// Prints one node, in SMT-LIB1 syntax when smtlib1 is set and in SMT-LIB2
-// syntax otherwise. The two dialects share the whole traversal; they differ
-// in exactly five places, each marked "dialect:" below. The floating-point
-// cases are not among them: SMT-LIB1 has no FP theory, so those nodes only
-// ever reach here with smtlib1 clear.
-void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
-                   bool smtlib1)
+// Prints one node, in SMT-LIB2 syntax.
+void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize)
 {
   if (!n.IsDefined())
   {
@@ -93,7 +87,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
   // of "(LET v0 = term1, v1=term1@term2,...
   if ((NodeLetVarMap1.find(n) != NodeLetVarMap1.end()) && !letize)
   {
-    SMTLIB_Print1(os, (NodeLetVarMap1[n]), indentation, letize, smtlib1);
+    SMTLIB_Print1(os, (NodeLetVarMap1[n]), indentation, letize);
     return;
   }
 
@@ -101,7 +95,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
   // term to be printed
   if ((NodeLetVarMap.find(n) != NodeLetVarMap.end()) && letize)
   {
-    SMTLIB_Print1(os, (NodeLetVarMap[n]), indentation, letize, smtlib1);
+    SMTLIB_Print1(os, (NodeLetVarMap[n]), indentation, letize);
     return;
   }
 
@@ -112,13 +106,10 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
   {
     case BITVECTOR:
     case BVCONST:
-      // dialect 1: the bitvector constant spelling.
-      if (smtlib1)
-        outputBitVec(n, os);
       // A rounding mode and a float are both stored as packed bits but
       // denote neither: print them by mode name and in (fp ...) syntax
       // rather than as bitvector literals.
-      else if (n.GetSourceSort().kind() == stp::SourceSort::Kind::RoundingMode)
+      if (n.GetSourceSort().kind() == stp::SourceSort::Kind::RoundingMode)
       {
         const char* name = roundingModeName(n.GetUnsignedConst());
         if (name == NULL)
@@ -131,21 +122,14 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
         outputBitVecSMTLIB2(n, os);
       break;
     case SYMBOL:
-      // dialect 2: SMT-LIB2 quotes symbols so that STP's names, which can
-      // contain characters SMT-LIB2 reserves, survive a round trip.
-      if (smtlib1)
-        n.nodeprint(os);
-      else
-      {
-        os << "|";
-        n.nodeprint(os);
-        os << "|";
-      }
+      // Quoted, so that STP's names, which can contain characters SMT-LIB2
+      // reserves, survive a round trip.
+      os << "|";
+      n.nodeprint(os);
+      os << "|";
       break;
     case UF_APPLY:
     {
-      if (smtlib1)
-        FatalError("UF_APPLY has no SMT-LIB1 representation", n);
       STPMgr* manager = n.GetNodeManager();
       UFContext* context =
           manager == NULL ? NULL : manager->getUFContextIfAny();
@@ -157,7 +141,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
       for (size_t i = 1; i < c.size(); ++i)
       {
         os << ' ';
-        SMTLIB_Print1(os, c[i], 0, letize, false);
+        SMTLIB_Print1(os, c[i], 0, letize);
       }
       os << ')';
       break;
@@ -176,9 +160,9 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
       else
         os << "("
            << "or ";
-      SMTLIB_Print1(os, c[0], 0, letize, smtlib1);
+      SMTLIB_Print1(os, c[0], 0, letize);
       os << " ";
-      SMTLIB_Print1(os, c[1], 0, letize, smtlib1);
+      SMTLIB_Print1(os, c[1], 0, letize);
       os << "))";
       break;
     case TRUE:
@@ -188,14 +172,9 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
     case BVZX:
     {
       unsigned int amount = c[1].GetUnsignedConst();
-      // dialect 3: indexed identifier syntax.
-      if (smtlib1)
-        os << (BVZX == kind ? "(zero_extend[" : "(sign_extend[");
-      else
-        os << (BVZX == kind ? "((_ zero_extend " : "((_ sign_extend ");
-
-      os << (amount - c[0].GetValueWidth()) << (smtlib1 ? "]" : ") ");
-      SMTLIB_Print1(os, c[0], indentation, letize, smtlib1);
+      os << (BVZX == kind ? "((_ zero_extend " : "((_ sign_extend ");
+      os << (amount - c[0].GetValueWidth()) << ") ";
+      SMTLIB_Print1(os, c[0], indentation, letize);
       os << ")";
     }
     break;
@@ -204,12 +183,8 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
       unsigned int upper = c[1].GetUnsignedConst();
       unsigned int lower = c[2].GetUnsignedConst();
       assert(upper >= lower);
-      // dialect 4: indexed identifier syntax.
-      if (smtlib1)
-        os << "(extract[" << upper << ":" << lower << "] ";
-      else
-        os << "((_ extract " << upper << " " << lower << ") ";
-      SMTLIB_Print1(os, c[0], indentation, letize, smtlib1);
+      os << "((_ extract " << upper << " " << lower << ") ";
+      SMTLIB_Print1(os, c[0], indentation, letize);
       os << ")";
     }
     break;
@@ -223,12 +198,12 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
     case FP_SQRT:
     case FP_ROUNDTOINTEGRAL:
     {
-      os << "(" << functionToSMTLIBName(kind, false) << " ";
+      os << "(" << functionToSMTLIBName(kind) << " ";
       printRoundingModeSMTLIB2(os, c[0], letize);
       for (size_t i = 1; i < c.size(); i++)
       {
         os << " ";
-        SMTLIB_Print1(os, c[i], 0, letize, false);
+        SMTLIB_Print1(os, c[i], 0, letize);
       }
       os << ")";
     }
@@ -238,11 +213,11 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
     {
       // A totalised node carries a third, internal child (the (+0, -0)
       // choice); the SMT-LIB form has exactly two operands.
-      os << "(" << functionToSMTLIBName(kind, false);
+      os << "(" << functionToSMTLIBName(kind);
       for (size_t i = 0; i < 2; i++)
       {
         os << " ";
-        SMTLIB_Print1(os, c[i], 0, letize, false);
+        SMTLIB_Print1(os, c[i], 0, letize);
       }
       os << ")";
     }
@@ -257,12 +232,12 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
         os << " ";
         printRoundingModeSMTLIB2(os, c[2], letize);
         os << " ";
-        SMTLIB_Print1(os, c[3], 0, letize, false);
+        SMTLIB_Print1(os, c[3], 0, letize);
       }
       else
       {
         os << " ";
-        SMTLIB_Print1(os, c[2], 0, letize, false);
+        SMTLIB_Print1(os, c[2], 0, letize);
       }
       os << ")";
     }
@@ -275,7 +250,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
          << c[1].GetUnsignedConst() << ") ";
       printRoundingModeSMTLIB2(os, c[2], letize);
       os << " ";
-      SMTLIB_Print1(os, c[3], 0, letize, false);
+      SMTLIB_Print1(os, c[3], 0, letize);
       os << ")";
     }
     break;
@@ -285,7 +260,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
          << c[1].GetUnsignedConst() << ") ";
       printRoundingModeSMTLIB2(os, c[2], letize);
       os << " ";
-      SMTLIB_Print1(os, c[3], 0, letize, false);
+      SMTLIB_Print1(os, c[3], 0, letize);
       os << ")";
     }
     break;
@@ -298,7 +273,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
          << c[0].GetUnsignedConst() << ") ";
       printRoundingModeSMTLIB2(os, c[1], letize);
       os << " ";
-      SMTLIB_Print1(os, c[2], 0, letize, false);
+      SMTLIB_Print1(os, c[2], 0, letize);
       os << ")";
     }
     break;
@@ -309,8 +284,6 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
       break;
     default:
     {
-      // dialect 5: a handful of operators were renamed between the versions,
-      // which functionToSMTLIBName() takes care of.
       if ((kind == AND || kind == OR || kind == XOR) && n.Degree() == 1)
       {
         FatalError("Wrong number of arguments to operation (must be >1).", n);
@@ -318,31 +291,31 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
 
       // SMT-LIB only allows these functions to have two parameters.
       if ((kind == AND || kind == OR || kind == XOR || BVPLUS == kind ||
-           kind == BVOR || kind == BVAND) &&
+           kind == BVMULT || kind == BVOR || kind == BVAND) &&
           n.Degree() > 2)
       {
         string close = "";
 
         for (size_t i = 0; i + 1 < c.size(); i++)
         {
-          os << "(" << functionToSMTLIBName(kind, smtlib1);
+          os << "(" << functionToSMTLIBName(kind);
           os << " ";
-          SMTLIB_Print1(os, c[i], 0, letize, smtlib1);
+          SMTLIB_Print1(os, c[i], 0, letize);
           os << " ";
           close += ")";
         }
-        SMTLIB_Print1(os, c[c.size() - 1], 0, letize, smtlib1);
+        SMTLIB_Print1(os, c[c.size() - 1], 0, letize);
         os << close;
       }
       else
       {
-        os << "(" << functionToSMTLIBName(kind, smtlib1);
+        os << "(" << functionToSMTLIBName(kind);
 
         auto iend = c.end();
         for (auto i = c.begin(); i != iend; i++)
         {
           os << " ";
-          SMTLIB_Print1(os, *i, 0, letize, smtlib1);
+          SMTLIB_Print1(os, *i, 0, letize);
         }
 
         os << ")";
@@ -353,7 +326,7 @@ void SMTLIB_Print1(ostream& os, const ASTNode n, int indentation, bool letize,
 
 // copied from Presentation Langauge printer.
 ostream& SMTLIB_Print(ostream& os, STPMgr* mgr, const ASTNode n,
-                      const int indentation, bool smtlib1)
+                      const int indentation)
 {
   // Clear the maps
   NodeLetVarMap.clear();
@@ -363,8 +336,7 @@ ostream& SMTLIB_Print(ostream& os, STPMgr* mgr, const ASTNode n,
   // pass 1: letize the node
   {
     ASTNodeSet seen;
-    // The last argument: SMT-LIB1 can only let-bind terms, not formulas.
-    LetizeState st = {seen, NodeLetVarMap, NodeLetVarVec, "?let_k_", smtlib1};
+    LetizeState st = {seen, NodeLetVarMap, NodeLetVarVec, "?let_k_"};
     LetizeNode(n, st, mgr);
   }
 
@@ -381,17 +353,13 @@ ostream& SMTLIB_Print(ostream& os, STPMgr* mgr, const ASTNode n,
     vector<pair<ASTNode, ASTNode>>::iterator it = NodeLetVarVec.begin();
     const vector<pair<ASTNode, ASTNode>>::iterator itend = NodeLetVarVec.end();
 
-    os << "(let (";
-    if (!smtlib1)
-      os << "(";
+    os << "(let ((";
     // print the let var first
-    SMTLIB_Print1(os, it->first, indentation, false, smtlib1);
+    SMTLIB_Print1(os, it->first, indentation, false);
     os << " ";
     // print the expr
-    SMTLIB_Print1(os, it->second, indentation, false, smtlib1);
-    os << " )";
-    if (!smtlib1)
-      os << ")";
+    SMTLIB_Print1(os, it->second, indentation, false);
+    os << " ))";
 
     // update the second map for proper printing of LET
     NodeLetVarMap1[it->second] = it->first;
@@ -400,29 +368,25 @@ ostream& SMTLIB_Print(ostream& os, STPMgr* mgr, const ASTNode n,
     for (it++; it != itend; it++)
     {
       os << " " << endl;
-      os << "(let (";
-      if (!smtlib1)
-        os << "(";
+      os << "(let ((";
       // print the let var first
-      SMTLIB_Print1(os, it->first, indentation, false, smtlib1);
+      SMTLIB_Print1(os, it->first, indentation, false);
       os << " ";
       // print the expr
-      SMTLIB_Print1(os, it->second, indentation, false, smtlib1);
-      os << ")";
-      if (!smtlib1)
-        os << ")";
+      SMTLIB_Print1(os, it->second, indentation, false);
+      os << "))";
 
       // update the second map for proper printing of LET
       NodeLetVarMap1[it->second] = it->first;
       closing += ")";
     }
     os << endl;
-    SMTLIB_Print1(os, n, indentation, true, smtlib1);
+    SMTLIB_Print1(os, n, indentation, true);
     os << closing;
     os << " )  ";
   }
   else
-    SMTLIB_Print1(os, n, indentation, false, smtlib1);
+    SMTLIB_Print1(os, n, indentation, false);
 
   os << endl;
   return os;
@@ -460,8 +424,7 @@ void LetizeNode(const ASTNode& n, LetizeState& st, STPMgr* stp)
       //
       // 2. if no, then create a new var and add it to the
       // 2. letVarMap
-      if ((!st.termsOnly || ccc.GetType() == BITVECTOR_TYPE) &&
-          st.letVarMap.find(ccc) == st.letVarMap.end())
+      if (st.letVarMap.find(ccc) == st.letVarMap.end())
       {
         // Create a new symbol. Get some name. if it conflicts with a
         // declared name, too bad.
@@ -486,20 +449,14 @@ void LetizeNode(const ASTNode& n, LetizeState& st, STPMgr* stp)
   }
 }
 
-string functionToSMTLIBName(const Kind k, bool smtlib1)
+string functionToSMTLIBName(const Kind k)
 {
   switch (k)
   {
     case IFF:
-      if (smtlib1)
-        return "iff";
-      else
-        return "=";
+      return "=";
     case IMPLIES:
-      if (smtlib1)
-        return "implies";
-      else
-        return "=>";
+      return "=>";
     case AND:
     case BVAND:
     case BVNAND:
@@ -569,9 +526,8 @@ string functionToSMTLIBName(const Kind k, bool smtlib1)
     case SBVMOD:
       return "bvsmod";
 
-    // Floating point (SMT-LIB 2 only; there is no SMT-LIB 1 FP theory).
-    // The indexed operators (to_fp, fp.to_ubv...) print through their own
-    // cases in SMTLIB2_Print1, not through this name map.
+    // Floating point. The indexed operators (to_fp, fp.to_ubv...) print
+    // through their own cases in SMTLIB_Print1, not through this name map.
     case FP_ABS:
       return "fp.abs";
     case FP_NEG:

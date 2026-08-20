@@ -209,8 +209,9 @@ void ExtraMain::create_options()
            "Pure literals are replaced.", simp_group);
 
   bool_arg("--common-subsum", bm->UserFlags.enable_common_subsum,
-           "Factor sub-sums shared between n-ary bvadd nodes into a single "
-           "shared node, so the adder is built once (needs --flattening)",
+           "Factor sub-terms shared between n-ary bvadd nodes, and between "
+           "n-ary bvmul nodes, into a single shared node, so the adder or "
+           "multiplier is built once (needs --flattening)",
            simp_group);
 
   bool_arg("--pair-extract", bm->UserFlags.enable_pair_extract,
@@ -486,10 +487,6 @@ void ExtraMain::create_options()
   app.add_flag("--print-back-SMTLIB2",
                bm->UserFlags.print_STPinput_back_SMTLIB2_flag,
                "print input in SMT-LIB2 format, then exit")
-      ->group(print_group);
-  app.add_flag("--print-back-SMTLIB1",
-               bm->UserFlags.print_STPinput_back_SMTLIB1_flag,
-               "print input in SMT-LIB1 format, then exit")
       ->group(print_group);
   app.add_flag("--print-back-GDL", bm->UserFlags.print_STPinput_back_GDL_flag,
                "print AiSee's graph format, then exit")

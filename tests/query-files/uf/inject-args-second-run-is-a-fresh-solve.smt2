@@ -36,7 +36,7 @@
 ; RUN: %solver --uninterpreted-functions --array-equality --incremental=off --uf-inject-args=1 -s %s 2>&1 | %OutputCheck --check-prefix=TRACE %s
 ; RUN: %solver --uninterpreted-functions --array-equality --incremental=on  --uf-inject-args=1 -s %s 2>&1 | %OutputCheck --check-prefix=TRACE %s
 ;
-; The instance a cross-checked fuzzing campaign minimised to, reduced to three
+; The instance a cross-checked fuzzing campaign minimised to, reduced to four
 ; declarations at width 1. Both asserts are load-bearing and so is each store:
 ; the array assert is what preprocessing refutes, and the UF assert is the only
 ; reason there is an assumption standing when it does. Neither refers to the
@@ -44,7 +44,13 @@
 ; assumed, and the second run exists to establish exactly that.
 ;
 ; The array assert writes #b0 over a cell already holding #b0, so it says an
-; array differs from itself and the query is unsatisfiable. f reads a *second*
+; array differs from itself and the query is unsatisfiable. It writes at a
+; symbolic index, and has to: the factory folds a self-store equality at a
+; concrete index to its read equality, which settles this query before
+; preprocessing is reached at all and leaves the second run nothing to be
+; about -- the verdict stays unsat, but by a route that never installs the
+; assumption. A symbolic index is past that rule, which keeps the refutation
+; in preprocessing where this test needs it. f reads a *second*
 ; free array: RemoveUnconstrained's READ rule replaces a free array with a
 ; write to a fresh one, and it is that replacement, on the second run, that
 ; met the first run's substitution.
@@ -61,10 +67,11 @@
 (set-logic QF_AUFBV)
 (declare-const a (Array (_ BitVec 1) (_ BitVec 1)))
 (declare-const b (Array (_ BitVec 1) (_ BitVec 1)))
+(declare-const i (_ BitVec 1))
 (declare-fun f ((_ BitVec 1)) (_ BitVec 1))
 (push 1)
 (assert (let ((w (store (store a #b0 #b0) #b1 #b0)))
-          (distinct w (store w #b0 #b0))))
+          (distinct w (store w i #b0))))
 (assert (= (f #b0) (f (select b #b0))))
 (check-sat)
 (echo "SECOND-RUN-DONE")
