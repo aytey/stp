@@ -225,8 +225,19 @@ void AbsRefine_CounterExample::ConstructCounterExample(
     if (symbol.GetType() == BITVECTOR_TYPE ||
         symbol.GetType() == FLOATINGPOINT_TYPE)
     {
-      CounterExampleMap[symbol] =
+      const ASTNode assigned =
           BoolVectoBVConst(&bitVector_array, symbol.GetValueWidth());
+
+      // Bits the solve left free arrive here as freely as bits it decided:
+      // an undefined literal completes to zero just above, and a symbol
+      // the current solve never constrained -- one whose pin was popped,
+      // whose variables the persistent encoding still holds -- gets
+      // whatever the backend happened to leave in them. Every carrier
+      // pattern is a bitvector and every one is a float, so only
+      // RoundingMode can be handed a pattern that denotes nothing.
+      CounterExampleMap[symbol] = bm->isRoundingModeSortedTerm(symbol)
+                                      ? completeRoundingMode(assigned)
+                                      : assigned;
     }
   }
 
@@ -325,6 +336,21 @@ void AbsRefine_CounterExample::ConstructCounterExample(
       // Get the ITE corresponding to the array-read and convert it
       // to a constant against the model
       ASTNode value = TermToConstTermUsingModel(value_ite);
+
+      // FpTotalise pins the reads the formula names, and it runs before
+      // this transform: the reads read-over-write and read-over-ite
+      // expansion introduce over the base array enter the formula after
+      // it, and are pinned only through the enclosing read they stand in
+      // for -- which pins them exactly when the expansion selects them.
+      // A cell whose read no selection reaches is a don't-care, and the
+      // bits behind it are free, so complete it as an unobserved cell of
+      // the same array is completed. (The array-equality path pins its
+      // own virtual reads; see ExtensionalityContext.)
+      //
+      // Only a value: evaluation hands back an unresolved read as itself,
+      // and the line below declines to record one of those at all.
+      if (BVCONST == value.GetKind() && bm->arrayHasRmElement(array))
+        value = completeRoundingMode(value);
       // save the result in the counter_example
       // As in TermToConstTermUsingModel: never record a read as its own value.
       if (!simp->InsideSubstitutionMap(key) && key != value)
@@ -375,6 +401,8 @@ class AbsRefine_CounterExample::EvaluationDriver
   {
     return owner.defaultCellValue(arrayTerm);
   }
+
+  ASTNode defaultRoundingMode() const { return owner.defaultRoundingMode(); }
 
   struct Frame
   {
@@ -1089,10 +1117,9 @@ class AbsRefine_CounterExample::EvaluationDriver
         // Has been simplified out and can take any value. A RoundingMode's
         // 5-bit representation has 27 junk patterns, though, so complete that
         // sort with a real value rather than the ordinary all-zero default.
-        return finish(
-            bm->isRoundingModeSortedTerm(term)
-                ? bm->CreateBVConst(5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN)
-                : bm->CreateZeroConst(term.GetValueWidth()));
+        return finish(bm->isRoundingModeSortedTerm(term)
+                          ? defaultRoundingMode()
+                          : bm->CreateZeroConst(term.GetValueWidth()));
       }
       case READ:
       {
@@ -1352,8 +1379,7 @@ class AbsRefine_CounterExample::EvaluationDriver
           // RoundingMode: 0b11111 is not one of that sort's five values and can
           // make SymFPU exhibit a non-IEEE sixth rounding behaviour.
           return finish(bm->isRoundingModeSortedTerm(f.entry)
-                            ? bm->CreateBVConst(
-                                  5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN)
+                            ? defaultRoundingMode()
                             : bm->CreateMaxConst(f.entry.GetValueWidth()));
         }
 
@@ -1785,18 +1811,35 @@ void AbsRefine_CounterExample::CollectArrayNodes(const ASTNode& arrayTerm,
   }
 }
 
+// See the header. RNE -- the same choice cvc5 makes, and IEEE 754's
+// default rounding direction.
+ASTNode AbsRefine_CounterExample::defaultRoundingMode() const
+{
+  return bm->CreateBVConst(5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+}
+
+// See the header.
+ASTNode
+AbsRefine_CounterExample::completeRoundingMode(const ASTNode& carrier) const
+{
+  if (carrier.GetKind() != BVCONST || carrier.GetValueWidth() != 5)
+    FatalError("a RoundingMode carrier is not a five-bit constant: ", carrier);
+
+  if (symbolic_fp::isRoundingModeEncoding(carrier.GetUnsignedConst()))
+    return carrier;
+  return defaultRoundingMode();
+}
+
 // See the header. Zero bits is +0.0 for a float element and a perfectly
 // ordinary bitvector otherwise, so the only sort needing its own answer
 // is RoundingMode, whose one-hot encoding leaves all-zero denoting
-// nothing at all. RNE is the mode published for such a cell -- the same
-// choice cvc5 makes, and IEEE 754's default rounding direction; the
-// value is a don't-care, so what matters is that every site takes it
-// from here and none of them invents its own.
+// nothing at all; the value is a don't-care, so what matters is that
+// every site takes it from here and none of them invents its own.
 ASTNode
 AbsRefine_CounterExample::defaultCellValue(const ASTNode& arrayTerm) const
 {
   if (bm->arrayHasRmElement(arrayTerm))
-    return bm->CreateBVConst(5, symbolic_fp::ROUND_NEAREST_TIES_TO_EVEN);
+    return defaultRoundingMode();
   return bm->CreateZeroConst(arrayTerm.GetValueWidth());
 }
 
