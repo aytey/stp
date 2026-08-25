@@ -439,7 +439,26 @@ public:
   // this was before.
   //
   // A ceiling and no longer the allowance itself: see the divisor below.
-  unsigned bv_term_abstraction_rounds = 32;
+  //
+  // Sixteen and not thirty-two, since the algebraic facts arrived. Thirty-two
+  // was measured when a round bought one blocking lemma and nothing else; a
+  // round now buys a fact about every pair of operands as often as not, so
+  // what the enumeration has left to find by the time it has spent sixteen is
+  // less than it was. Swept over the 291 `QF_BV/spear` files where the
+  // abstraction takes a division, two passes each:
+  //
+  //             rounds   2      4      8     16     32     64
+  //   this tree          108s   80s    68s   59s    74s    82s
+  //   before the facts    -      -     65s   72s    68s    76s
+  //
+  // The curve moved: before the facts the best of those was thirty-two, and
+  // now it is sixteen, and at thirty-two this tree is *slower* than the one
+  // without them. On the Certora family the setting is indifferent -- 30
+  // files solved at sixteen against 29 at thirty-two, inside its own spread.
+  //
+  // One number still bounds two purses, the blocking lemmas and the schema
+  // lemmas, and there is no measurement saying they want the same bound.
+  unsigned bv_term_abstraction_rounds = 16;
   // Optionally make that a rate instead: `width / this`, floored at one and
   // capped by the ceiling above. The argument for it is that a blocking
   // lemma rules out one pair of operand values, so what one is worth falls

@@ -79,7 +79,7 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_EQ(0u, flags(vc).bv_eq_refine_width);
   EXPECT_FALSE(flags(vc).bv_term_abstraction);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
-  EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
+  EXPECT_EQ(16u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_inc_bitblast);
