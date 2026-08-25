@@ -986,25 +986,44 @@ TEST_F(BVEQAbstractionTest, OnePassCanInstallBothKindsOfMultiplicationLemma)
 
   RecordingSolver solver;
   // First: 2 * 3 is 6, not the candidate zero. The power-of-two operand
-  // earns a schema. Second: 3 * 5 is 15, not the candidate one; both operands
-  // and both products are odd, so every applicable algebraic fact already
-  // holds and the candidate needs an ordinary blocking lemma.
-  const bool scripted[24] = {
-      false, true,  false, false, // a = 2
-      true,  true,  false, false, // b = 3
-      false, false, false, false, // first candidate = 0
-      true,  true,  false, false, // c = 3
-      true,  false, true,  false, // d = 5
-      true,  false, false, false  // second candidate = 1
-  };
+  // earns a schema. Find an independently inconsistent second candidate that
+  // satisfies every currently registered schema, so it genuinely exercises
+  // the ordinary blocking fallback even as that registry grows.
+  const unsigned firstValues[3] = {2, 3, 0};
+  unsigned secondValues[3] = {};
+  bool foundBlockingCandidate = false;
+  for (unsigned cv = 0; cv < 16 && !foundBlockingCandidate; ++cv)
+    for (unsigned dv = 0; dv < 16 && !foundBlockingCandidate; ++dv)
+      for (unsigned tv = 0; tv < 16; ++tv)
+      {
+        if (((cv * dv) & 15u) == tv)
+          continue;
+        std::vector<bool> cBits(4), dBits(4), tBits(4);
+        for (unsigned i = 0; i < 4; ++i)
+        {
+          cBits[i] = ((cv >> i) & 1u) != 0;
+          dBits[i] = ((dv >> i) & 1u) != 0;
+          tBits[i] = ((tv >> i) & 1u) != 0;
+        }
+        if (chooseMulSchema(cBits, dBits, tBits, 0).schema == MulSchema::None)
+        {
+          secondValues[0] = cv;
+          secondValues[1] = dv;
+          secondValues[2] = tv;
+          foundBlockingCandidate = true;
+          break;
+        }
+      }
+  ASSERT_TRUE(foundBlockingCandidate);
+
   for (unsigned i = 0; i < 4; ++i)
   {
-    solver.model[10 + i] = scripted[i];
-    solver.model[20 + i] = scripted[4 + i];
-    solver.model[30 + i] = scripted[8 + i];
-    solver.model[40 + i] = scripted[12 + i];
-    solver.model[50 + i] = scripted[16 + i];
-    solver.model[60 + i] = scripted[20 + i];
+    solver.model[10 + i] = ((firstValues[0] >> i) & 1u) != 0;
+    solver.model[20 + i] = ((firstValues[1] >> i) & 1u) != 0;
+    solver.model[30 + i] = ((firstValues[2] >> i) & 1u) != 0;
+    solver.model[40 + i] = ((secondValues[0] >> i) & 1u) != 0;
+    solver.model[50 + i] = ((secondValues[1] >> i) & 1u) != 0;
+    solver.model[60 + i] = ((secondValues[2] >> i) & 1u) != 0;
   }
 
   EXPECT_EQ(2u, refiner.refine(solver, bits));
