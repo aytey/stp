@@ -370,6 +370,13 @@ void ExtraMain::create_options()
            "time, so turning them off leaves only the operations that define "
            "themselves in a single round",
            refinement_group);
+  bool_arg("--bv-term-abstraction-divmod",
+           bm->UserFlags.bv_term_abstraction_divmod,
+           "include BVDIV and BVMOD in BV term abstraction, separately from "
+           "BVMULT above; a divider is much dearer than a multiplier, so what "
+           "the abstraction saves by not building one is not the same "
+           "decision",
+           refinement_group);
   bool_arg("--bv-term-abstraction-schemas",
            bm->UserFlags.bv_term_abstraction_schemas,
            "refine an abstracted BVMULT with algebraic facts that hold for "

@@ -539,6 +539,9 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_MULT:
       b->UserFlags.bv_term_abstraction_mult = param_value != 0;
       break;
+    case BV_TERM_ABSTRACTION_DIVMOD:
+      b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
+      break;
     case BV_TERM_ABSTRACTION_SCHEMAS:
       b->UserFlags.bv_term_abstraction_schemas = param_value != 0;
       break;

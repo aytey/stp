@@ -393,6 +393,16 @@ public:
   // query that would rather not pay for the rounds at all.
   bool bv_term_abstraction_mult = true;
 
+  // ... and the same for BVDIV and BVMOD, which used to share the flag above.
+  //
+  // They are not the same decision. What the abstraction saves is the circuit
+  // it does not build, and a divider is far dearer than a multiplier: on the
+  // 291 `QF_BV/spear` files that abstract a division, having it on is worth
+  // 2.5x. On `brummayerbiere2`, which holds no division at all, having it on
+  // costs twelve files out of sixty-five at a 60s cap -- all of that the
+  // multiplication half. One flag could not tell those apart.
+  bool bv_term_abstraction_divmod = true;
+
   // Which of the other abstractable kinds --bv-term-abstraction takes.
   //
   // It has always taken all of them, and the reason to doubt that looked

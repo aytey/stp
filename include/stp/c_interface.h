@@ -407,13 +407,23 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION,
 
-  //! Whether BV_TERM_ABSTRACTION covers BVMULT, BVDIV and BVMOD as well.
+  //! Whether BV_TERM_ABSTRACTION covers BVMULT.
   //!
-  //! `param_value` nonzero includes them (the default), zero leaves them
-  //! encoded exactly from the start. This is the C API's way to reach
-  //! --bv-term-abstraction-mult.
+  //! `param_value` nonzero includes it (the default), zero leaves every
+  //! multiplication encoded exactly from the start. This is the C API's way
+  //! to reach --bv-term-abstraction-mult.
   //!
   BV_TERM_ABSTRACTION_MULT,
+
+  //! ... and whether it covers BVDIV and BVMOD, which used to share the flag
+  //! above.
+  //!
+  //! They are not the same decision: what the abstraction saves is the
+  //! circuit it does not build, and a divider is far dearer than a
+  //! multiplier. `param_value` nonzero includes them (the default). This is
+  //! the C API's way to reach --bv-term-abstraction-divmod.
+  //!
+  BV_TERM_ABSTRACTION_DIVMOD,
 
   //! How many blocking lemmas one abstracted BVMULT, BVDIV or BVMOD may take
   //! before its refinement encodes the operation exactly instead of ruling

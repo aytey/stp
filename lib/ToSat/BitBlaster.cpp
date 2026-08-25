@@ -1451,7 +1451,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       if (num_bits >= uf->bv_abstraction_width)
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_DIVMOD]++;
 
-      if (uf->bv_term_abstraction && uf->bv_term_abstraction_mult &&
+      if (uf->bv_term_abstraction && uf->bv_term_abstraction_divmod &&
           num_bits >= uf->bv_abstraction_width)
       {
         {

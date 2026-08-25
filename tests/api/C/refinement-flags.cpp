@@ -79,6 +79,7 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_EQ(0u, flags(vc).bv_eq_refine_width);
   EXPECT_FALSE(flags(vc).bv_term_abstraction);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
   EXPECT_EQ(16u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
@@ -132,6 +133,14 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+
+  // The divisions moved out from under the flag above, so the two have to be
+  // settable apart -- that is the whole point of the split.
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 1);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
 
   // Any nonzero enables, as everywhere else in this call.
   vc_setInterfaceFlags(vc, BV_EQ_ABSTRACTION, 2);
