@@ -306,15 +306,23 @@ const char* divLemmaName(DivLemma lemma)
   return "unknown";
 }
 
-void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
-                                    unsigned width,
-                                    const std::vector<unsigned>& dividendVars,
-                                    const std::vector<unsigned>& divisorVars,
-                                    const std::vector<unsigned>& resultVars)
+namespace
 {
-  assert(dividendVars.size() >= width);
-  assert(divisorVars.size() >= width);
-  assert(resultVars.size() >= width);
+
+// Blast one theorem over two operands and an abstract result, splice the
+// resulting CNF onto the three live SAT vectors, and assert it. The operation
+// families differ only in the theorem they ask the BitBlaster to build; the
+// delicate CI/CNF variable mapping belongs in one place.
+template <typename BuildClaim>
+void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
+                        const std::vector<unsigned>& xVars,
+                        const std::vector<unsigned>& sVars,
+                        const std::vector<unsigned>& tVars,
+                        BuildClaim buildClaim)
+{
+  assert(xVars.size() >= width);
+  assert(sVars.size() >= width);
+  assert(tVars.size() >= width);
 
   AbstractionOff scope(bm->UserFlags);
 
@@ -338,7 +346,7 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
     }
 
   BBNodeSet support;
-  const BBNodeAIG claim = bb.BBDivLemma(lemma, x, s, t, support);
+  const BBNodeAIG claim = buildClaim(bb, x, s, t, support);
 
   Aig_ObjCreateCo(mgr.aigMgr, claim.n);
   for (const BBNodeAIG& c : support)
@@ -359,9 +367,9 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
     const int var = cnf->pVarNums[Aig_ManCi(mgr.aigMgr, (int)i)->Id];
     if (var < 0)
       continue;
-    cnfToSolver[var] = (i < width)         ? dividendVars[i]
-                       : (i < 2 * width)   ? divisorVars[i - width]
-                                           : resultVars[i - 2 * width];
+    cnfToSolver[var] = (i < width)         ? xVars[i]
+                       : (i < 2 * width)   ? sVars[i - width]
+                                           : tVars[i - 2 * width];
   }
 
   for (int var = 0; var < cnf->nVars; var++)
@@ -394,6 +402,22 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
   }
 
   Cnf_DataFree(cnf);
+}
+
+} // namespace
+
+void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& dividendVars,
+                                    const std::vector<unsigned>& divisorVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  encodeTernaryLemma(
+      bm, solver, width, dividendVars, divisorVars, resultVars,
+      [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+              const BBNodeVec& t, BBNodeSet& support) {
+        return bb.BBDivLemma(lemma, x, s, t, support);
+      });
 }
 
 void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,

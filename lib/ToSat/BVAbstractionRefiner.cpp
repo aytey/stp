@@ -725,7 +725,7 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                unsigned installedSchemas)
+                                uint64_t installedSchemas)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
 
@@ -900,7 +900,7 @@ const DivLemma* divLemmaTable(unsigned& count)
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                unsigned installedSchemas)
+                                uint64_t installedSchemas)
 {
   const unsigned width = (unsigned)tBits.size();
   const bool divisorZero = valueIsZero(bBits);

@@ -140,13 +140,13 @@ struct MulSchemaChoice
 // value-guarded schemas need no flag -- installing one for a given operand
 // value settles that value for good, and there are only as many of them as
 // there are bits.
-enum
+enum : uint64_t
 {
-  MUL_SCHEMA_INSTALLED_ODD = 1u,
-  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2u,
-  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4u,
-  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8u,
-  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16u
+  MUL_SCHEMA_INSTALLED_ODD = 1ull,
+  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2ull,
+  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4ull,
+  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8ull,
+  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull
 };
 
 // The first of the five facts above that this candidate contradicts, or
@@ -159,7 +159,7 @@ enum
 DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           unsigned installedSchemas);
+                                           uint64_t installedSchemas);
 
 // x[0] = 1 and s != 0 -> t != 0. This is the compact CNF form of the
 // ZeroProductOddOperand schema above. Exposed so the exhaustive test can
@@ -224,18 +224,18 @@ enum class DivSchema
 // division facts. They share the field with the multiplication flags, which
 // is safe because an abstraction is a multiplication or a division and
 // never both.
-enum
+enum : uint64_t
 {
-  DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8u,
-  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16u,
-  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32u,
+  DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
+  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16ull,
+  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32ull,
   // ... and one apiece for the eight DivLemma facts, which are
   // unconditional for the same reason and tracked the same way. The first
   // of them is 64; `DIV_LEMMA_INSTALLED(i)` is the bit for the i'th.
-  DIV_LEMMA_INSTALLED_FIRST = 64u
+  DIV_LEMMA_INSTALLED_FIRST = 64ull
 };
 
-inline unsigned divLemmaInstalledBit(unsigned index)
+inline uint64_t divLemmaInstalledBit(unsigned index)
 {
   return DIV_LEMMA_INSTALLED_FIRST << index;
 }
@@ -281,7 +281,7 @@ DLL_PUBLIC DivSchemaChoice chooseDivSchema(Kind opKind,
                                            const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           unsigned installedSchemas);
+                                           uint64_t installedSchemas);
 
 // A variable that holds exactly when `lv <= rv`. Shared by the comparison
 // refinement, which is where it comes from, and by the division bounds,
@@ -351,7 +351,7 @@ struct BVTermAbstraction
   // each one.
   unsigned schemaRounds = 0;
   // Which of the unconditional schemas are already in the solver.
-  unsigned installedSchemas = 0;
+  uint64_t installedSchemas = 0;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.
