@@ -3259,6 +3259,119 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
+                              const BBNodeVec& s, const BBNodeVec& t,
+                              BBNodeSet& support)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(t.size() == width);
+
+  const BBNodeVec zero = BBfill(width, BBFalse);
+
+  switch (lemma)
+  {
+    case RemLemma::DividendZero:
+      // x = 0 -> t = 0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(x, zero)),
+                            BBEQ(t, zero));
+
+    case RemLemma::DivisorEqualsDividend:
+      // s = x -> t = 0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(s, x)),
+                            BBEQ(t, zero));
+
+    case RemLemma::DividendBelowDivisor:
+      // x <u s -> t = x, written as its contrapositive so the comparison
+      // reads the same way round as every other one here.
+      return nf->CreateNode(OR, BBBVLE(s, x, false), BBEQ(t, x));
+
+    case RemLemma::DividendWithinDivisorOrRemainder:
+    {
+      // x = x & (s | t | -s)
+      const BBNodeVec negS = BBUminus(s);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(AND, x[i],
+                                nf->CreateNode(OR, s[i], t[i], negS[i]));
+      return BBEQ(x, rhs);
+    }
+
+    case RemLemma::DividendAboveRemainderOrAnd:
+    {
+      // x >=u (t | (x & s))
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(OR, t[i], nf->CreateNode(AND, x[i], s[i]));
+      return BBBVLE(rhs, x, false);
+    }
+
+    case RemLemma::RemainderOutsideOperandsNotOne:
+    {
+      // (t & ~(x | s)) != 1
+      BBNodeVec one = zero;
+      one[0] = BBTrue;
+      BBNodeVec masked(width);
+      for (unsigned i = 0; i < width; i++)
+        masked[i] = nf->CreateNode(
+            AND, t[i], nf->CreateNode(NOT, nf->CreateNode(OR, x[i], s[i])));
+      return nf->CreateNode(NOT, BBEQ(masked, one));
+    }
+
+    case RemLemma::RemainderNotOrOfComplements:
+    {
+      // t != (~x | -s)
+      const BBNodeVec negS = BBUminus(s);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(OR, nf->CreateNode(NOT, x[i]), negS[i]);
+      return nf->CreateNode(NOT, BBEQ(t, rhs));
+    }
+
+    case RemLemma::RemainderInOperandsAboveLowBit:
+    {
+      // (t & (x | s)) >=u (t & 1)
+      BBNodeVec lhs(width);
+      for (unsigned i = 0; i < width; i++)
+        lhs[i] = nf->CreateNode(AND, t[i], nf->CreateNode(OR, x[i], s[i]));
+      BBNodeVec low = zero;
+      low[0] = t[0];
+      return BBBVLE(low, lhs, false);
+    }
+
+    case RemLemma::DividendNotOrOfNegations:
+    {
+      // x != (-x | -(~t))
+      const BBNodeVec negX = BBUminus(x);
+      const BBNodeVec negNotT = BBUminus(BBNeg(t));
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(OR, negX[i], negNotT[i]);
+      return nf->CreateNode(NOT, BBEQ(x, rhs));
+    }
+
+    case RemLemma::DifferenceAboveRemainder:
+    {
+      // (x - s) >=u t
+      BBNodeVec diff = x;
+      BBSub(diff, s, support);
+      return BBBVLE(t, diff, false);
+    }
+
+    case RemLemma::XorAboveRemainder:
+    {
+      // ((-s) ^ (x | s)) >=u t
+      const BBNodeVec negS = BBUminus(s);
+      BBNodeVec lhs(width);
+      for (unsigned i = 0; i < width; i++)
+        lhs[i] = nf->CreateNode(XOR, negS[i], nf->CreateNode(OR, x[i], s[i]));
+      return BBBVLE(t, lhs, false);
+    }
+  }
+
+  FatalError("BBRemLemma: unknown lemma");
+  return BBFalse;
+}
 
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)

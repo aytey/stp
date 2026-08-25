@@ -395,11 +395,110 @@ const char* divLemmaName(DivLemma lemma)
   return "unknown";
 }
 
-void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
-                                    unsigned width,
-                                    const std::vector<unsigned>& dividendVars,
-                                    const std::vector<unsigned>& divisorVars,
-                                    const std::vector<unsigned>& resultVars)
+bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
+                   const std::vector<bool>& s, const std::vector<bool>& t)
+{
+  const unsigned W = (unsigned)x.size();
+  const std::vector<bool> zero(W, false);
+  std::vector<bool> one(W, false);
+  one[0] = true;
+
+  switch (lemma)
+  {
+    case RemLemma::DividendZero:
+      // x = 0 -> t = 0
+      return !allZero(x) || allZero(t);
+
+    case RemLemma::DivisorEqualsDividend:
+      // s = x -> t = 0
+      return s != x || allZero(t);
+
+    case RemLemma::DividendBelowDivisor:
+      // x <u s -> t = x
+      return ule(s, x) || t == x;
+
+    case RemLemma::DividendWithinDivisorOrRemainder:
+      // x = x & (s | t | -s)
+      return x == andOf(x, orOf(s, orOf(t, negOf(s))));
+
+    case RemLemma::DividendAboveRemainderOrAnd:
+      // x >=u (t | (x & s))
+      return ule(orOf(t, andOf(x, s)), x);
+
+    case RemLemma::RemainderOutsideOperandsNotOne:
+      // (t & ~(x | s)) != 1
+      return andOf(t, notOf(orOf(x, s))) != one;
+
+    case RemLemma::RemainderNotOrOfComplements:
+      // t != (~x | -s)
+      return t != orOf(notOf(x), negOf(s));
+
+    case RemLemma::RemainderInOperandsAboveLowBit:
+      // (t & (x | s)) >=u (t & 1)
+      return ule(andOf(t, one), andOf(t, orOf(x, s)));
+
+    case RemLemma::DividendNotOrOfNegations:
+      // x != (-x | -(~t))
+      return x != orOf(negOf(x), negOf(notOf(t)));
+
+    case RemLemma::DifferenceAboveRemainder:
+      // (x - s) >=u t
+      return ule(t, addOf(x, negOf(s)));
+
+    case RemLemma::XorAboveRemainder:
+      // ((-s) ^ (x | s)) >=u t
+      return ule(t, xorOf(negOf(s), orOf(x, s)));
+  }
+  return true;
+}
+
+unsigned remLemmaMinWidth(RemLemma lemma)
+{
+  // `x != (-x | -(~t))` is false at one and two bits -- at two, x = 2 over
+  // s = 3 leaves the remainder t = 2, and -2 | -(~2) is 2. Everything else
+  // here is true at every width, checked exhaustively to eight bits.
+  return (lemma == RemLemma::DividendNotOrOfNegations) ? 3 : 1;
+}
+
+const char* remLemmaName(RemLemma lemma)
+{
+  switch (lemma)
+  {
+    case RemLemma::DividendZero: return "dividend-zero";
+    case RemLemma::DivisorEqualsDividend: return "divisor-equals-dividend";
+    case RemLemma::DividendBelowDivisor: return "dividend-below-divisor";
+    case RemLemma::DividendWithinDivisorOrRemainder:
+      return "dividend-within-divisor-or-remainder";
+    case RemLemma::DividendAboveRemainderOrAnd:
+      return "dividend-above-remainder-or-and";
+    case RemLemma::RemainderOutsideOperandsNotOne:
+      return "remainder-outside-operands-not-one";
+    case RemLemma::RemainderNotOrOfComplements:
+      return "remainder-not-or-of-complements";
+    case RemLemma::RemainderInOperandsAboveLowBit:
+      return "remainder-in-operands-above-low-bit";
+    case RemLemma::DividendNotOrOfNegations:
+      return "dividend-not-or-of-negations";
+    case RemLemma::DifferenceAboveRemainder:
+      return "difference-above-remainder";
+    case RemLemma::XorAboveRemainder: return "xor-above-remainder";
+  }
+  return "unknown";
+}
+
+namespace
+{
+
+// The splice, which is the same for every fact there is: build the circuit
+// over three vectors of free inputs, hand the AIG to the CNF conversion the
+// query itself uses, and rename the CNF's variables to the ones the operands
+// and the abstraction's result are already carried by. What differs between
+// one fact and the next is `build`, and only that.
+template <typename Build>
+void spliceLemma(STPMgr* bm, SATSolver& solver, unsigned width,
+                 const std::vector<unsigned>& dividendVars,
+                 const std::vector<unsigned>& divisorVars,
+                 const std::vector<unsigned>& resultVars, Build build)
 {
   assert(dividendVars.size() >= width);
   assert(divisorVars.size() >= width);
@@ -414,8 +513,8 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
   BitBlaster bb(&mgr, &simp, bm->defaultNodeFactory, &bm->UserFlags);
 
   // Three input vectors this time, in the order the splice reads them back:
-  // the dividend, the divisor, then the abstraction's own result bits. The
-  // result is an input here and not an output -- the lemma constrains it
+  // the first operand, the second, then the abstraction's own result bits.
+  // The result is an input here and not an output -- the lemma constrains it
   // without defining it, which is the whole difference from `encode`.
   BBNodeVec x(width), s(width), t(width);
   BBNodeVec* const ins[3] = {&x, &s, &t};
@@ -427,7 +526,7 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
     }
 
   BBNodeSet support;
-  const BBNodeAIG claim = bb.BBDivLemma(lemma, x, s, t, support);
+  const BBNodeAIG claim = build(bb, x, s, t, support);
 
   Aig_ObjCreateCo(mgr.aigMgr, claim.n);
   for (const BBNodeAIG& c : support)
@@ -483,6 +582,34 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
   }
 
   Cnf_DataFree(cnf);
+}
+
+} // namespace
+
+void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& dividendVars,
+                                    const std::vector<unsigned>& divisorVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  spliceLemma(bm, solver, width, dividendVars, divisorVars, resultVars,
+              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+                      const BBNodeVec& t, BBNodeSet& support) {
+                return bb.BBDivLemma(lemma, x, s, t, support);
+              });
+}
+
+void BVExactEncoder::encodeRemLemma(SATSolver& solver, RemLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& dividendVars,
+                                    const std::vector<unsigned>& divisorVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  spliceLemma(bm, solver, width, dividendVars, divisorVars, resultVars,
+              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+                      const BBNodeVec& t, BBNodeSet& support) {
+                return bb.BBRemLemma(lemma, x, s, t, support);
+              });
 }
 
 void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,

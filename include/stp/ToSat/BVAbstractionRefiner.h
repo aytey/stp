@@ -196,11 +196,11 @@ enum class DivSchema
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
   QuotientAtMostDividend,
-  // One of the DivLemma facts, named by DivSchemaChoice::lemmaIndex. They
-  // are inequalities over the quotient rather than statements of what it
-  // is, and several shift by a variable amount, so unlike everything above
-  // they are built by the bit-blaster rather than written a clause at a
-  // time.
+  // One of the wider facts, named by DivSchemaChoice::lemmaIndex -- a
+  // DivLemma over a BVDIV and a RemLemma over a BVMOD. They are mostly
+  // inequalities over the result rather than statements of what it is, and
+  // several shift by a variable amount, so unlike everything above they are
+  // built by the bit-blaster rather than written a clause at a time.
   Lemma
 };
 
@@ -213,9 +213,11 @@ enum
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8u,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16u,
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32u,
-  // ... and one apiece for the DivLemma facts, which are unconditional for
-  // the same reason and tracked the same way. The first of them is 64;
-  // `divLemmaInstalledBit(i)` is the bit for the i'th.
+  // ... and one apiece for the wider facts, which are unconditional for the
+  // same reason and tracked the same way. The first of them is 64;
+  // `divLemmaInstalledBit(i)` is the bit for the i'th. The quotient and the
+  // remainder facts share the range: a record is a BVDIV or a BVMOD and
+  // never both, so only one of the two tables is ever indexed into it.
   DIV_LEMMA_INSTALLED_FIRST = 64u
 };
 
@@ -228,19 +230,21 @@ inline uint64_t divLemmaInstalledBit(unsigned index)
   return (uint64_t)DIV_LEMMA_INSTALLED_FIRST << index;
 }
 
-// The DivLemma facts the chooser offers, in the order it offers them, and
-// how many there are. Exposed so a test can walk the same table the refiner
-// does rather than keeping a second copy of it in step with this one.
+// The facts the chooser offers, in the order it offers them, and how many
+// there are: the quotient facts over a BVDIV and the remainder facts over a
+// BVMOD. Exposed so a test can walk the same tables the refiner does rather
+// than keeping a second copy of them in step with these.
 DLL_PUBLIC const DivLemma* divLemmaTable(unsigned& count);
+DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
 
 struct DivSchemaChoice
 {
   DivSchema schema = DivSchema::None;
   // log2 of the divisor, for the schema that has one.
   unsigned shift = 0;
-  // Set when `schema` is Lemma: which of the DivLemma facts to install, as
-  // an index into the table the refiner keeps. Held as an index rather than
-  // the enum so this header does not need the one that defines it.
+  // Set when `schema` is Lemma: which fact to install, as an index into the
+  // table for this record's kind. Held as an index rather than the enum so
+  // one field serves both tables.
   unsigned lemmaIndex = 0;
 };
 

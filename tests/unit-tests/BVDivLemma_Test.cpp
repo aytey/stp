@@ -18,8 +18,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 **********************/
 
-// The algebraic facts an abstracted BVDIV is refined with, beyond the ones
-// that name a divisor.
+// The algebraic facts an abstracted BVDIV or BVMOD is refined with, beyond
+// the ones that name a divisor.
 //
 // These are transcribed from another solver, and most of them are not facts
 // anyone would arrive at by reasoning about division -- `x >=u -((-s) & (-t))`
@@ -30,10 +30,10 @@ THE SOFTWARE.
 // reach it.
 //
 // So nothing here trusts the transcription. Three independent checks, and
-// they have to agree with each other and with division:
+// they have to agree with each other and with the operation:
 //
 //   * The predicate the refiner uses to decide whether a candidate breaks a
-//     lemma is evaluated at the *true* quotient, over every pair of operands.
+//     lemma is evaluated at the *true* result, over every pair of operands.
 //     A lemma false of real division is caught here, whatever the circuit
 //     does.
 //
@@ -54,11 +54,11 @@ THE SOFTWARE.
 // past the width -- which is where a shifter's other edge case lives -- and
 // small enough that nothing is sampled.
 //
-// The facts are taken from the refiner's own table rather than listed here,
-// so a fact added to one and not to the other is not a fact that goes
+// The facts are taken from the refiner's own tables rather than listed here,
+// so a fact that is added to one and not to the other is not a fact that goes
 // untested; and the circuit is built once per fact, with the triple asked for
 // by assumption, because encoding is the expensive half by a wide margin and
-// there are eighteen of them.
+// there are twenty-nine of them.
 #include "stp/ToSat/BVAbstractionRefiner.h"
 #include "stp/ToSat/BVExactEncoder.h"
 
@@ -69,7 +69,9 @@ THE SOFTWARE.
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace stp;
@@ -82,11 +84,85 @@ namespace
 const unsigned MAX_WIDTH = 5;
 const unsigned CIRCUIT_WIDTHS[2] = {3, 4};
 
-std::vector<DivLemma> lemmas()
+// One fact, whichever operation it belongs to: what it claims of a triple,
+// how narrow a bit vector it is still true of, and how to put it in front of
+// a solver.
+struct Fact
 {
+  std::string name;
+  unsigned minWidth;
+  std::function<bool(const std::vector<bool>&, const std::vector<bool>&,
+                     const std::vector<bool>&)>
+      holds;
+  std::function<void(BVExactEncoder&, SATSolver&, unsigned,
+                     const std::vector<unsigned>&,
+                     const std::vector<unsigned>&,
+                     const std::vector<unsigned>&)>
+      encode;
+};
+
+// SMT-LIB's bvudiv and bvurem, totalised the way the unabstracted circuit
+// totalises them: division by zero is all ones, and the remainder over a
+// zero divisor is the dividend.
+unsigned referenceDiv(unsigned x, unsigned s, unsigned width)
+{
+  return (s == 0) ? ((1u << width) - 1) : (x / s);
+}
+
+unsigned referenceRem(unsigned x, unsigned s, unsigned /*width*/)
+{
+  return (s == 0) ? x : (x % s);
+}
+
+struct Family
+{
+  const char* what;
+  unsigned (*reference)(unsigned, unsigned, unsigned);
+  std::vector<Fact> facts;
+};
+
+std::vector<Family> families()
+{
+  Family quotients{"BVDIV", referenceDiv, {}};
   unsigned count = 0;
-  const DivLemma* table = divLemmaTable(count);
-  return std::vector<DivLemma>(table, table + count);
+  const DivLemma* divTable = divLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const DivLemma lemma = divTable[i];
+    quotients.facts.push_back(
+        {divLemmaName(lemma), divLemmaMinWidth(lemma),
+         [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
+                 const std::vector<bool>& t) {
+           return divLemmaHolds(lemma, x, s, t);
+         },
+         [lemma](BVExactEncoder& enc, SATSolver& solver, unsigned width,
+                 const std::vector<unsigned>& xv,
+                 const std::vector<unsigned>& sv,
+                 const std::vector<unsigned>& tv) {
+           enc.encodeDivLemma(solver, lemma, width, xv, sv, tv);
+         }});
+  }
+
+  Family remainders{"BVMOD", referenceRem, {}};
+  const RemLemma* remTable = remLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const RemLemma lemma = remTable[i];
+    remainders.facts.push_back(
+        {remLemmaName(lemma), remLemmaMinWidth(lemma),
+         [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
+                 const std::vector<bool>& t) {
+           return remLemmaHolds(lemma, x, s, t);
+         },
+         [lemma](BVExactEncoder& enc, SATSolver& solver, unsigned width,
+                 const std::vector<unsigned>& xv,
+                 const std::vector<unsigned>& sv,
+                 const std::vector<unsigned>& tv) {
+           enc.encodeRemLemma(solver, lemma, width, xv, sv, tv);
+         }});
+  }
+
+  return {quotients, remainders};
 }
 
 std::vector<bool> bitsOf(unsigned value, unsigned width)
@@ -95,12 +171,6 @@ std::vector<bool> bitsOf(unsigned value, unsigned width)
   for (unsigned i = 0; i < width; ++i)
     bits[i] = ((value >> i) & 1u) != 0;
   return bits;
-}
-
-// SMT-LIB's bvudiv, totalised: division by zero is all ones.
-unsigned referenceDiv(unsigned x, unsigned s, unsigned width)
-{
-  return (s == 0) ? ((1u << width) - 1) : (x / s);
 }
 
 class BVDivLemmaTest : public ::testing::Test
@@ -119,7 +189,7 @@ protected:
     unsigned width = 0;
   };
 
-  Circuit build(DivLemma lemma, unsigned width)
+  Circuit build(const Fact& fact, unsigned width)
   {
     Circuit c;
     c.width = width;
@@ -135,8 +205,8 @@ protected:
         c.solver->setFrozen((*group[v])[i]);
       }
 
-    BVExactEncoder(&mgr).encodeDivLemma(*c.solver, lemma, width, xVars, sVars,
-                                        tVars);
+    BVExactEncoder encoder(&mgr);
+    fact.encode(encoder, *c.solver, width, xVars, sVars, tVars);
 
     for (unsigned v = 0; v < 3; ++v)
       c.vars.insert(c.vars.end(), group[v]->begin(), group[v]->end());
@@ -162,25 +232,26 @@ protected:
 
 } // namespace
 
-// Every lemma is true of division itself, at every pair of operands and at
-// every width it declares itself good for. This is the soundness claim: they
-// are asserted unconditionally and never retracted.
-TEST(BVDivLemma, every_lemma_is_true_of_division)
+// Every fact is true of the operation itself, at every pair of operands and
+// at every width it declares itself good for. This is the soundness claim:
+// they are asserted unconditionally and never retracted.
+TEST(BVDivLemma, every_lemma_is_true_of_the_operation)
 {
-  for (DivLemma lemma : lemmas())
-    for (unsigned width = divLemmaMinWidth(lemma); width <= MAX_WIDTH; ++width)
-    {
-      const unsigned values = 1u << width;
-      for (unsigned x = 0; x < values; x++)
-        for (unsigned s = 0; s < values; s++)
-        {
-          const unsigned t = referenceDiv(x, s, width);
-          ASSERT_TRUE(divLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
-                                    bitsOf(t, width)))
-              << divLemmaName(lemma) << " is false at " << width
-              << " bits of x=" << x << " s=" << s << " (quotient " << t << ")";
-        }
-    }
+  for (const Family& family : families())
+    for (const Fact& fact : family.facts)
+      for (unsigned width = fact.minWidth; width <= MAX_WIDTH; ++width)
+      {
+        const unsigned values = 1u << width;
+        for (unsigned x = 0; x < values; x++)
+          for (unsigned s = 0; s < values; s++)
+          {
+            const unsigned t = family.reference(x, s, width);
+            ASSERT_TRUE(fact.holds(bitsOf(x, width), bitsOf(s, width),
+                                   bitsOf(t, width)))
+                << family.what << " " << fact.name << " is false at " << width
+                << " bits of x=" << x << " s=" << s << " (result " << t << ")";
+          }
+      }
 }
 
 // ... and the minimum each declares is the narrowest it is true of, not a
@@ -189,43 +260,46 @@ TEST(BVDivLemma, every_lemma_is_true_of_division)
 // the sweep above would not see it.
 TEST(BVDivLemma, a_declared_minimum_width_is_the_narrowest_that_works)
 {
-  for (DivLemma lemma : lemmas())
-  {
-    const unsigned min = divLemmaMinWidth(lemma);
-    if (min == 1)
-      continue;
+  for (const Family& family : families())
+    for (const Fact& fact : family.facts)
+    {
+      if (fact.minWidth == 1)
+        continue;
 
-    const unsigned width = min - 1;
-    const unsigned values = 1u << width;
-    bool broken = false;
-    for (unsigned x = 0; x < values && !broken; x++)
-      for (unsigned s = 0; s < values && !broken; s++)
-        broken = !divLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
-                                bitsOf(referenceDiv(x, s, width), width));
+      const unsigned width = fact.minWidth - 1;
+      const unsigned values = 1u << width;
+      bool broken = false;
+      for (unsigned x = 0; x < values && !broken; x++)
+        for (unsigned s = 0; s < values && !broken; s++)
+          broken = !fact.holds(bitsOf(x, width), bitsOf(s, width),
+                               bitsOf(family.reference(x, s, width), width));
 
-    EXPECT_TRUE(broken) << divLemmaName(lemma) << " declares a minimum of "
-                        << min << " bits but is true of division at " << width;
-  }
+      EXPECT_TRUE(broken)
+          << family.what << " " << fact.name << " declares a minimum of "
+          << fact.minWidth << " bits but is true of the operation at " << width;
+    }
 }
 
-// Each lemma rules something out. One true of every triple would be sound and
+// Each fact rules something out. One true of every triple would be sound and
 // useless: the refiner would spend a round on it and the search would be free
 // to offer the same candidate again.
 TEST(BVDivLemma, every_lemma_rules_something_out)
 {
   const unsigned width = 4;
   const unsigned values = 1u << width;
-  for (DivLemma lemma : lemmas())
-  {
-    unsigned refuted = 0;
-    for (unsigned x = 0; x < values; x++)
-      for (unsigned s = 0; s < values; s++)
-        for (unsigned t = 0; t < values; t++)
-          if (!divLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
-                             bitsOf(t, width)))
-            refuted++;
-    EXPECT_GT(refuted, 0u) << divLemmaName(lemma) << " excludes no triple";
-  }
+  for (const Family& family : families())
+    for (const Fact& fact : family.facts)
+    {
+      unsigned refuted = 0;
+      for (unsigned x = 0; x < values; x++)
+        for (unsigned s = 0; s < values; s++)
+          for (unsigned t = 0; t < values; t++)
+            if (!fact.holds(bitsOf(x, width), bitsOf(s, width),
+                            bitsOf(t, width)))
+              refuted++;
+      EXPECT_GT(refuted, 0u)
+          << family.what << " " << fact.name << " excludes no triple";
+    }
 }
 
 // The circuit that goes into the solver says what its predicate says --
@@ -235,21 +309,22 @@ TEST_F(BVDivLemmaTest, the_circuit_agrees_with_the_predicate)
   for (unsigned width : CIRCUIT_WIDTHS)
   {
     const unsigned values = 1u << width;
-    for (DivLemma lemma : lemmas())
-    {
-      if (width < divLemmaMinWidth(lemma))
-        continue;
-      Circuit c = build(lemma, width);
-      for (unsigned x = 0; x < values; x++)
-        for (unsigned s = 0; s < values; s++)
-          for (unsigned t = 0; t < values; t++)
-          {
-            const bool want = divLemmaHolds(
-                lemma, bitsOf(x, width), bitsOf(s, width), bitsOf(t, width));
-            ASSERT_EQ(want, permits(c, x, s, t))
-                << divLemmaName(lemma) << " at " << width << " bits, x=" << x
-                << " s=" << s << " t=" << t;
-          }
-    }
+    for (const Family& family : families())
+      for (const Fact& fact : family.facts)
+      {
+        if (width < fact.minWidth)
+          continue;
+        Circuit c = build(fact, width);
+        for (unsigned x = 0; x < values; x++)
+          for (unsigned s = 0; s < values; s++)
+            for (unsigned t = 0; t < values; t++)
+            {
+              const bool want = fact.holds(bitsOf(x, width), bitsOf(s, width),
+                                           bitsOf(t, width));
+              ASSERT_EQ(want, permits(c, x, s, t))
+                  << family.what << " " << fact.name << " at " << width
+                  << " bits, x=" << x << " s=" << s << " t=" << t;
+            }
+      }
   }
 }

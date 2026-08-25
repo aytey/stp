@@ -65,6 +65,7 @@ using BBNodeVec = std::vector<BBNodeAIG>;
 using BBNodeSet = std::unordered_set<BBNodeAIG>;
 
 enum class DivLemma;
+enum class RemLemma;
 
 class BitBlaster
 {
@@ -519,6 +520,9 @@ public:
   BBNode BBDivLemma(DivLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
+  // ... and one about `t = x urem s`.
+  BBNode BBRemLemma(RemLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
+                    const BBNodeVec& t, BBNodeSet& support);
 
   // A logical right shift by a variable amount; several of the facts above
   // are inequalities over one.

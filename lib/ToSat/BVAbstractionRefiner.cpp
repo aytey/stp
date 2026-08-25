@@ -888,6 +888,33 @@ const DivLemma* divLemmaTable(unsigned& count)
   return DIV_LEMMAS;
 }
 
+// The RemLemma facts, in the order the chooser offers them. Not a firing
+// count this time -- nothing fired, because the family these were measured
+// on has no remainders to speak of -- but the order they are published in,
+// which puts the three that settle the operation outright ahead of the
+// eight synthesised inequalities.
+static const RemLemma REM_LEMMAS[] = {
+    RemLemma::DividendZero,
+    RemLemma::DivisorEqualsDividend,
+    RemLemma::DividendBelowDivisor,
+    RemLemma::DividendWithinDivisorOrRemainder,
+    RemLemma::DividendAboveRemainderOrAnd,
+    RemLemma::RemainderOutsideOperandsNotOne,
+    RemLemma::RemainderNotOrOfComplements,
+    RemLemma::RemainderInOperandsAboveLowBit,
+    RemLemma::DividendNotOrOfNegations,
+    RemLemma::DifferenceAboveRemainder,
+    RemLemma::XorAboveRemainder};
+
+static const unsigned REM_LEMMA_COUNT =
+    sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
+
+const RemLemma* remLemmaTable(unsigned& count)
+{
+  count = REM_LEMMA_COUNT;
+  return REM_LEMMAS;
+}
+
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -938,6 +965,19 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
             0 &&
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
+
+    // Then the wider facts about `t = a urem b`, first one the candidate
+    // breaks. Same loop as the quotient's below and for the same reasons;
+    // only the table differs.
+    for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
+    {
+      if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+        continue;
+      if (width < remLemmaMinWidth(REM_LEMMAS[i]))
+        continue;
+      if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
+        return {DivSchema::Lemma, 0, i};
+    }
   }
   else if (opKind == BVDIV)
   {
@@ -1723,9 +1763,14 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
 
         case DivSchema::Lemma:
-          BVExactEncoder(bm).encodeDivLemma(solver,
-                                            DIV_LEMMAS[inc.divSchema.lemmaIndex],
-                                            W, aVars, bVars, resultVars);
+          if (abs.opKind == BVDIV)
+            BVExactEncoder(bm).encodeDivLemma(
+                solver, DIV_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+                resultVars);
+          else
+            BVExactEncoder(bm).encodeRemLemma(
+                solver, REM_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+                resultVars);
           abs.installedSchemas |=
               divLemmaInstalledBit(inc.divSchema.lemmaIndex);
           break;
@@ -1738,9 +1783,11 @@ unsigned BVAbstractionRefiner::refineTerms(
       bm->UserFlags.coverage.bv_schema_lemmas++;
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
-                  << (inc.divSchema.schema == DivSchema::Lemma
+                  << (inc.divSchema.schema != DivSchema::Lemma
+                          ? divSchemaName(inc.divSchema.schema)
+                      : (abs.opKind == BVDIV)
                           ? divLemmaName(DIV_LEMMAS[inc.divSchema.lemmaIndex])
-                          : divSchemaName(inc.divSchema.schema))
+                          : remLemmaName(REM_LEMMAS[inc.divSchema.lemmaIndex]))
                   << " lemma" << std::endl;
       refined++;
       continue;

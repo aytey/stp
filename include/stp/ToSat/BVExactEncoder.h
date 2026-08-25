@@ -145,6 +145,58 @@ DLL_PUBLIC unsigned divLemmaMinWidth(DivLemma lemma);
 
 DLL_PUBLIC const char* divLemmaName(DivLemma lemma);
 
+// The same for `t = x urem s`, which STP had none of at all: an abstracted
+// BVMOD carried the two bounds and the divisor-guarded schemas and nothing
+// else, so the widest thing it could say about a remainder over a divisor
+// that was neither zero nor a power of two was that it was below the
+// divisor.
+//
+// The order here is the source's own rather than a firing count, because
+// there is no firing count: the family that motivated the division work
+// barely uses a remainder at all -- twenty-five lemma kinds fired across it
+// and not one of them was a UREM -- so what these are worth is untested and
+// the honest order is the one they were published in. What they cost is a
+// refinement round each, on an operation with nothing else to spend one on.
+//
+// One of the source's sixteen is absent by its own judgement rather than
+// mine: `~(-s) >=u t` is `s != 0 -> t <u s` written without the premise,
+// which STP already installs as DivSchema::RemainderBelowDivisor, and the
+// source keeps it commented out for the same reason.
+enum class RemLemma
+{
+  // x = 0 -> t = 0
+  DividendZero,
+  // s = x -> t = 0
+  DivisorEqualsDividend,
+  // x <u s -> t = x. The one that settles the operation outright, and the
+  // cheapest circuit of the eleven.
+  DividendBelowDivisor,
+  // x = x & (s | t | -s)
+  DividendWithinDivisorOrRemainder,
+  // x >=u (t | (x & s))
+  DividendAboveRemainderOrAnd,
+  // (t & ~(x | s)) != 1
+  RemainderOutsideOperandsNotOne,
+  // t != (~x | -s)
+  RemainderNotOrOfComplements,
+  // (t & (x | s)) >=u (t & 1)
+  RemainderInOperandsAboveLowBit,
+  // x != (-x | -(~t)). Restricted; see remLemmaMinWidth().
+  DividendNotOrOfNegations,
+  // (x - s) >=u t
+  DifferenceAboveRemainder,
+  // ((-s) ^ (x | s)) >=u t
+  XorAboveRemainder
+};
+
+DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+
+DLL_PUBLIC unsigned remLemmaMinWidth(RemLemma lemma);
+
+DLL_PUBLIC const char* remLemmaName(RemLemma lemma);
+
 class DLL_PUBLIC BVExactEncoder
 {
   STPMgr* bm;
@@ -184,6 +236,12 @@ public:
                       const std::vector<unsigned>& divisorVars,
                       const std::vector<unsigned>& resultVars);
 
+  // ... and one about `t = x urem s`, spliced the same way onto the same
+  // three sets of variables. Only the circuit differs.
+  void encodeRemLemma(SATSolver& solver, RemLemma lemma, unsigned width,
+                      const std::vector<unsigned>& dividendVars,
+                      const std::vector<unsigned>& divisorVars,
+                      const std::vector<unsigned>& resultVars);
 };
 
 } // namespace stp
