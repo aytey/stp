@@ -171,6 +171,23 @@ enum class MulLemma
   MulRef12
 };
 
+enum class AddLemma
+{
+  AddZero,
+  AddSame,
+  AddInv,
+  AddOverflow,
+  AddNoOverflow,
+  AddOr,
+  AddRef6,
+  AddRef7,
+  AddRef8,
+  AddRef9,
+  AddRef10,
+  AddRef11,
+  AddRef12
+};
+
 // Whether one of them holds of these three values. The refiner asks before
 // installing -- a lemma the candidate already satisfies rules nothing out --
 // and the tests ask to check the circuits say the same thing.
@@ -198,6 +215,12 @@ DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& tBits);
 DLL_PUBLIC bool mulLemmaApplicable(MulLemma lemma, unsigned width);
 DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
+
+DLL_PUBLIC bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+DLL_PUBLIC bool addLemmaApplicable(AddLemma lemma, unsigned width);
+DLL_PUBLIC const char* addLemmaName(AddLemma lemma);
 
 class DLL_PUBLIC BVExactEncoder
 {
@@ -244,6 +267,11 @@ public:
                       const std::vector<unsigned>& resultVars);
 
   void encodeMulLemma(SATSolver& solver, MulLemma lemma, unsigned width,
+                      const std::vector<unsigned>& xVars,
+                      const std::vector<unsigned>& sVars,
+                      const std::vector<unsigned>& resultVars);
+
+  void encodeAddLemma(SATSolver& solver, AddLemma lemma, unsigned width,
                       const std::vector<unsigned>& xVars,
                       const std::vector<unsigned>& sVars,
                       const std::vector<unsigned>& resultVars);

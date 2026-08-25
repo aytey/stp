@@ -741,6 +741,46 @@ const MulLemma* mulLemmaTable(unsigned& count)
   return MUL_LEMMAS;
 }
 
+static const AddLemma ADD_LEMMAS[] = {
+    AddLemma::AddZero,       AddLemma::AddSame, AddLemma::AddInv,
+    AddLemma::AddOverflow,   AddLemma::AddNoOverflow,
+    AddLemma::AddOr,         AddLemma::AddRef6, AddLemma::AddRef7,
+    AddLemma::AddRef8,       AddLemma::AddRef9, AddLemma::AddRef10,
+    AddLemma::AddRef11,      AddLemma::AddRef12};
+
+static const unsigned ADD_LEMMA_COUNT =
+    sizeof(ADD_LEMMAS) / sizeof(ADD_LEMMAS[0]);
+
+const AddLemma* addLemmaTable(unsigned& count)
+{
+  count = ADD_LEMMA_COUNT;
+  return ADD_LEMMAS;
+}
+
+AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
+                                const std::vector<bool>& bBits,
+                                const std::vector<bool>& tBits,
+                                uint64_t installedSchemas)
+{
+  const std::vector<bool>* ops[2] = {&aBits, &bBits};
+  for (unsigned lemmaIndex = 0; lemmaIndex < ADD_LEMMA_COUNT; ++lemmaIndex)
+  {
+    if (!addLemmaApplicable(ADD_LEMMAS[lemmaIndex],
+                            (unsigned)tBits.size()))
+      continue;
+    for (unsigned operand = 0; operand < 2; ++operand)
+    {
+      if ((installedSchemas &
+           addLemmaInstalledBit(lemmaIndex, operand)) != 0)
+        continue;
+      if (!addLemmaHolds(ADD_LEMMAS[lemmaIndex], *ops[operand],
+                         *ops[1 - operand], tBits))
+        return {true, operand, lemmaIndex};
+    }
+  }
+  return AddSchemaChoice();
+}
+
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -1430,6 +1470,7 @@ unsigned BVAbstractionRefiner::refineTerms(
   };
   struct InconsistentPlus {
     size_t absIdx;
+    AddSchemaChoice schema;
   };
   struct InconsistentITE {
     size_t absIdx;
@@ -1499,18 +1540,33 @@ unsigned BVAbstractionRefiner::refineTerms(
 
       bool carry = carryInit;
       bool consistent = true;
+      std::vector<bool> actual(abs.width);
       for (unsigned bit = 0; bit < abs.width; ++bit)
       {
         bool l = leftBits[bit] ^ lNeg;
         bool r = rightBits[bit] ^ rNeg;
         bool s = (solver.modelValue(resultVars[bit]) == solver.true_literal());
+        actual[bit] = s;
         bool expectedSum = l ^ r ^ carry;
         carry = (l && r) || (l && carry) || (r && carry);
-        if (s != expectedSum) { consistent = false; break; }
+        if (s != expectedSum)
+          consistent = false;
       }
       if (consistent) continue;
 
-      incPlus.push_back({idx});
+      if (lNeg)
+        leftBits = negatedValue(leftBits);
+      if (rNeg)
+        rightBits = negatedValue(rightBits);
+
+      AddSchemaChoice schema;
+      const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
+      if (bm->UserFlags.bv_term_abstraction_schemas &&
+          (schemaLimit == 0 || abs.schemaRounds < schemaLimit))
+        schema = chooseAddSchema(leftBits, rightBits, actual,
+                                 abs.installedSchemas);
+
+      incPlus.push_back({idx, schema});
     }
     else if (abs.opKind == ITE)
     {
@@ -1710,6 +1766,36 @@ unsigned BVAbstractionRefiner::refineTerms(
         encodedResultBitsOf(abs, nodeToSATVar);
     const bool lNeg = abs.operandNegated[0];
     const bool rNeg = abs.operandNegated[1];
+
+    if (inc.schema.found)
+    {
+      const std::vector<unsigned>* rawVars[2] = {&leftVars, &rightVars};
+      const bool negated[2] = {lNeg, rNeg};
+      const std::vector<unsigned>* effectiveVars[2] = {rawVars[0], rawVars[1]};
+      for (unsigned i = 0; i < 2; ++i)
+        if (negated[i])
+        {
+          if (abs.negatedOperand[i].empty())
+            abs.negatedOperand[i] = encodeNegate(solver, *rawVars[i], abs.width);
+          effectiveVars[i] = &abs.negatedOperand[i];
+        }
+
+      const unsigned chosen = inc.schema.operand;
+      BVExactEncoder(bm).encodeAddLemma(
+          solver, ADD_LEMMAS[inc.schema.lemmaIndex], abs.width,
+          *effectiveVars[chosen], *effectiveVars[1 - chosen], resultVars);
+      abs.installedSchemas |=
+          addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+      abs.schemaRounds++;
+      bm->UserFlags.coverage.bv_schema_lemmas++;
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "BV abstraction: BVPLUS "
+                  << addLemmaName(ADD_LEMMAS[inc.schema.lemmaIndex])
+                  << " lemma over operand " << chosen << std::endl;
+      refined++;
+      continue;
+    }
+
     const bool carryInit = (lNeg != rNeg);
 
     unsigned carryVar = solver.newVar();

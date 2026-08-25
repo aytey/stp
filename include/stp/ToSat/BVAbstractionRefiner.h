@@ -162,6 +162,24 @@ inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
 
 DLL_PUBLIC const MulLemma* mulLemmaTable(unsigned& count);
 
+struct AddSchemaChoice
+{
+  bool found = false;
+  unsigned operand = 0;
+  unsigned lemmaIndex = 0;
+};
+
+inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
+{
+  return uint64_t{1} << (2 * index + operand);
+}
+
+DLL_PUBLIC const AddLemma* addLemmaTable(unsigned& count);
+DLL_PUBLIC AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
+                                           const std::vector<bool>& bBits,
+                                           const std::vector<bool>& tBits,
+                                           uint64_t installedSchemas);
+
 // The first of the five facts above that this candidate contradicts, or
 // None. Pure: the caller has already read the model, and what comes back
 // depends on nothing else.
