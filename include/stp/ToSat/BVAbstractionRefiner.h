@@ -397,6 +397,21 @@ DLL_PUBLIC void encodeRemQuotientOne(
     const std::vector<unsigned>& divisorVars,
     const std::vector<unsigned>& remainderVars, unsigned width);
 
+// The low-prefix quotient/remainder recomposition theorem:
+//   low(x) = low((q * s) + r).
+// It holds for the SMT-LIB zero-divisor values as well as ordinary division.
+DLL_PUBLIC bool divRemLowPrefixHolds(
+    const std::vector<bool>& dividendBits,
+    const std::vector<bool>& divisorBits,
+    const std::vector<bool>& quotientBits,
+    const std::vector<bool>& remainderBits, unsigned prefixBits);
+DLL_PUBLIC void encodeDivRemLowPrefix(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars,
+    const std::vector<unsigned>& remainderVars, unsigned width,
+    unsigned prefixBits);
+
 // divisor = divisorBits -> every result bit is a constant or a bit of the
 // dividend, as `source` says. Exposed for the tests: what the schema claims
 // is checked by evaluating `divSchemaSources`, and that the clauses say the
@@ -448,6 +463,10 @@ struct BVTermAbstraction
   unsigned schemaRounds = 0;
   // Which of the unconditional schemas are already in the solver.
   uint64_t installedSchemas = 0;
+  // Set on both records when this BVDIV/BVMOD pair has received its shared
+  // low-prefix recomposition lemma. It cannot use installedSchemas because
+  // that field describes one operation, while this fact belongs to two.
+  bool divRemLowPrefixInstalled = false;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.
