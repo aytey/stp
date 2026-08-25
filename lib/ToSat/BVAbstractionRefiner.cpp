@@ -720,7 +720,7 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                unsigned installedSchemas)
+                                uint64_t installedSchemas)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
 
@@ -754,7 +754,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // The product carries at least as many trailing zeros as either operand.
   // Check operand 1 before operand 0 so schema selection remains
   // deterministic for this commutative operator.
-  static const unsigned tzInstalled[2] = {
+  static const uint64_t tzInstalled[2] = {
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0,
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1};
   for (unsigned pass = 0; pass < 2; ++pass)
@@ -860,13 +860,24 @@ static bool valueIsZero(const std::vector<bool>& bits)
 // which round buys which fact, and buying the most productive first is the
 // cheapest guess available.
 static const DivLemma DIV_LEMMAS[] = {
-    DivLemma::DivisorAboveShiftedDividend,          // 280 firings
-    DivLemma::QuotientBelowNegatedDivisor,          // 200
-    DivLemma::DividendAboveNegatedAnd,              // 187
-    DivLemma::DividendZero,                         // 171
-    DivLemma::DivisorEqualsDividend,                // 162
-    DivLemma::DivisorLessOneAboveShiftedDividend,   // 161
-    DivLemma::DivisorAllOnes};                      // 59
+    DivLemma::DivisorAboveShiftedDividend,           // 280 firings
+    DivLemma::QuotientBelowNegatedDivisor,           // 200
+    DivLemma::DividendAboveNegatedAnd,               // 187
+    DivLemma::DividendZero,                          // 171
+    DivLemma::DivisorEqualsDividend,                 // 162
+    DivLemma::DivisorLessOneAboveShiftedDividend,    // 161
+    DivLemma::DividendAboveShiftedDoubleQuotient,    // 125
+    DivLemma::QuotientNotNegatedAnd,                 // 62
+    DivLemma::DivisorAllOnes,                        // 59
+    DivLemma::DividendAboveDoubledShiftedDivisor,    // 54
+    DivLemma::DividendNotTwiceQuotientPlusOr,        // 26
+    DivLemma::QuotientAboveDoubledShiftedDividend,   // 14
+    DivLemma::DividendAboveOrAndDoubledDivisor,      // 10
+    DivLemma::MaskedDividendAboveDivisorAndQuotient, // 9
+    DivLemma::DividendAboveQuotientXorShifted,       // 3
+    DivLemma::ShiftedDividendNotOr,                  // 3
+    DivLemma::DividendAboveOrAndDoubledQuotient,     // 2
+    DivLemma::DividendAboveDivisorXorShifted};       // 2
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
@@ -880,7 +891,7 @@ const DivLemma* divLemmaTable(unsigned& count)
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                unsigned installedSchemas)
+                                uint64_t installedSchemas)
 {
   const unsigned width = (unsigned)tBits.size();
   const bool divisorZero = valueIsZero(bBits);
@@ -941,6 +952,12 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+        continue;
+      // A fact the source marks as restricted is skipped where it does not
+      // hold rather than left out of the table: the width that reaches here
+      // is whatever --bv-abstraction-width was set to, and only one of these
+      // is restricted at all.
+      if (width < divLemmaMinWidth(DIV_LEMMAS[i]))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i};

@@ -3053,6 +3053,30 @@ BBNodeVec BitBlaster::BBShiftRightByVariable(const BBNodeVec& value,
   return result;
 }
 
+// The same, shifting the other way. SMT-LIB's bvshl agrees with bvlshr on
+// what an out-of-range amount means -- the result is zero, not the value
+// left alone -- so the tail below is the same tail.
+BBNodeVec BitBlaster::BBShiftLeftByVariable(const BBNodeVec& value,
+                                            const BBNodeVec& amount,
+                                            unsigned width)
+{
+  BBNodeVec result = value;
+
+  unsigned stage = 0;
+  for (; (1u << stage) < width; ++stage)
+  {
+    BBNodeVec shifted = result;
+    BBLShift(shifted, 1u << stage);
+    result = BBITE(amount[stage], shifted, result);
+  }
+
+  const BBNodeVec zero = BBfill(width, BBFalse);
+  for (unsigned i = stage; i < width; ++i)
+    result = BBITE(amount[i], zero, result);
+
+  return result;
+}
+
 BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
                               const BBNodeVec& s, const BBNodeVec& t,
                               BBNodeSet& support)
@@ -3113,11 +3137,128 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       BBSub(sMinusOne, one, support);
       return BBBVLE(BBShiftRightByVariable(x, t, width), sMinusOne, false);
     }
+
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+    {
+      // x >=u ((t << 1) >> (t << s))
+      BBNodeVec doubled = t;
+      BBLShift(doubled, 1);
+      return BBBVLE(BBShiftRightByVariable(
+                        doubled, BBShiftLeftByVariable(t, s, width), width),
+                    x, false);
+    }
+
+    case DivLemma::QuotientNotNegatedAnd:
+    {
+      // t != -(s & ~x)
+      BBNodeVec conj(width);
+      for (unsigned i = 0; i < width; i++)
+        conj[i] = nf->CreateNode(AND, s[i], nf->CreateNode(NOT, x[i]));
+      return nf->CreateNode(NOT, BBEQ(t, BBUminus(conj)));
+    }
+
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
+    {
+      // x >=u ((s >> (s << t)) << 1)
+      BBNodeVec inner = BBShiftRightByVariable(
+          s, BBShiftLeftByVariable(s, t, width), width);
+      BBLShift(inner, 1);
+      return BBBVLE(inner, x, false);
+    }
+
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+    {
+      // x != t + t + (x | s)
+      BBNodeVec sum(width);
+      for (unsigned i = 0; i < width; i++)
+        sum[i] = nf->CreateNode(OR, x[i], s[i]);
+      BBPlus2(sum, t, BBFalse);
+      BBPlus2(sum, t, BBFalse);
+      return nf->CreateNode(NOT, BBEQ(x, sum));
+    }
+
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
+    {
+      // t >=u ((x >> s) << 1)
+      BBNodeVec inner = BBShiftRightByVariable(x, s, width);
+      BBLShift(inner, 1);
+      return BBBVLE(inner, t, false);
+    }
+
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
+    {
+      // x >=u ((x | t) & (s << 1))
+      BBNodeVec doubled = s;
+      BBLShift(doubled, 1);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(AND, nf->CreateNode(OR, x[i], t[i]), doubled[i]);
+      return BBBVLE(rhs, x, false);
+    }
+
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
+    {
+      // (x & -t) >=u (s & t)
+      const BBNodeVec negT = BBUminus(t);
+      BBNodeVec lhs(width), rhs(width);
+      for (unsigned i = 0; i < width; i++)
+      {
+        lhs[i] = nf->CreateNode(AND, x[i], negT[i]);
+        rhs[i] = nf->CreateNode(AND, s[i], t[i]);
+      }
+      return BBBVLE(rhs, lhs, false);
+    }
+
+    case DivLemma::DividendAboveQuotientXorShifted:
+    {
+      // x >=u (t ^ (t >> (s >> 1)))
+      BBNodeVec half = s;
+      BBRShift(half, 1);
+      const BBNodeVec shifted = BBShiftRightByVariable(t, half, width);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(XOR, t[i], shifted[i]);
+      return BBBVLE(rhs, x, false);
+    }
+
+    case DivLemma::ShiftedDividendNotOr:
+    {
+      // (x >> t) != (s | t)
+      BBNodeVec disj(width);
+      for (unsigned i = 0; i < width; i++)
+        disj[i] = nf->CreateNode(OR, s[i], t[i]);
+      return nf->CreateNode(
+          NOT, BBEQ(BBShiftRightByVariable(x, t, width), disj));
+    }
+
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
+    {
+      // x >=u ((x | s) & (t << 1))
+      BBNodeVec doubled = t;
+      BBLShift(doubled, 1);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(AND, nf->CreateNode(OR, x[i], s[i]), doubled[i]);
+      return BBBVLE(rhs, x, false);
+    }
+
+    case DivLemma::DividendAboveDivisorXorShifted:
+    {
+      // x >=u (s ^ (s >> (t >> 1)))
+      BBNodeVec half = t;
+      BBRShift(half, 1);
+      const BBNodeVec shifted = BBShiftRightByVariable(s, half, width);
+      BBNodeVec rhs(width);
+      for (unsigned i = 0; i < width; i++)
+        rhs[i] = nf->CreateNode(XOR, s[i], shifted[i]);
+      return BBBVLE(rhs, x, false);
+    }
   }
 
   FatalError("BBDivLemma: unknown lemma");
   return BBFalse;
 }
+
 
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)

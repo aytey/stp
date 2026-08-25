@@ -519,10 +519,18 @@ public:
   BBNode BBDivLemma(DivLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
+
   // A logical right shift by a variable amount; several of the facts above
   // are inequalities over one.
   BBNodeVec BBShiftRightByVariable(const BBNodeVec& value,
                                    const BBNodeVec& amount, unsigned width);
+
+  // ... and a left shift by a variable amount, which several more of them
+  // need. Kept beside its mirror rather than folded into it: the two differ
+  // only in which way the constant stages go, and a single routine taking a
+  // direction reads worse at every call site than two named ones do.
+  BBNodeVec BBShiftLeftByVariable(const BBNodeVec& value,
+                                  const BBNodeVec& amount, unsigned width);
 
   std::unordered_map<ASTNode, BBNodeVec, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>::iterator
   simplify_during_bb(ASTNode& term, BBNodeSet& support);

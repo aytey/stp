@@ -68,19 +68,19 @@ namespace stp
 //   Scalable Bit-Blasting with Abstractions.
 //   CAV 2024, LNCS 14681, pp. 178-200. doi:10.1007/978-3-031-65627-9_9
 //
-// The four with no premise are not facts anyone would derive by thinking
+// The ones with no premise are not facts anyone would derive by thinking
 // about division -- `x >=u -((-s) & (-t))` is the output of the syntax-guided
 // synthesis that paper describes -- which is the argument for porting them
 // rather than inventing a set.
 //
-// Which seven: the highest-firing ones measured on the queries that motivated
-// this, 1161 firings between them over the 73 files STP could not decide.
-// Fourteen more UDIV facts and sixteen UREM ones were left, the largest of
-// them firing 125 times against this set's 161 to 280. They were not skipped
-// on principle and the tail is not exhausted -- what stopped the porting is
-// that these seven are a wash on that family, which is measured in the commit
-// that adds them. Extending a set that does not pay needs a reason to expect
-// the next one to.
+// Which eighteen: every UDIV fact that fired at all on the queries that
+// motivated this -- 1530 firings between them over the 73 files STP could
+// not decide, from 280 down to 2. Fifteen more exist upstream and are not
+// here, having fired nothing. That is weaker evidence against them than it
+// looks: the solver those counts come from stops at the first fact a
+// candidate breaks, so a strong fact late in its order is never reached and
+// never counted. What is measured is which facts are productive *first*,
+// which is exactly what the table's order needs, and not which are useless.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -96,7 +96,30 @@ enum class DivLemma
   // s >=u (x >> t)
   DivisorAboveShiftedDividend,
   // (s - 1) >=u (x >> t)
-  DivisorLessOneAboveShiftedDividend
+  DivisorLessOneAboveShiftedDividend,
+  // x >=u ((t << 1) >> (t << s))
+  DividendAboveShiftedDoubleQuotient,
+  // t != -(s & ~x)
+  QuotientNotNegatedAnd,
+  // x >=u ((s >> (s << t)) << 1)
+  DividendAboveDoubledShiftedDivisor,
+  // x != t + t + (x | s). The one fact here that is false at a width the
+  // abstraction can be asked for; see divLemmaMinWidth().
+  DividendNotTwiceQuotientPlusOr,
+  // t >=u ((x >> s) << 1)
+  QuotientAboveDoubledShiftedDividend,
+  // x >=u ((x | t) & (s << 1))
+  DividendAboveOrAndDoubledDivisor,
+  // (x & -t) >=u (s & t)
+  MaskedDividendAboveDivisorAndQuotient,
+  // x >=u (t ^ (t >> (s >> 1)))
+  DividendAboveQuotientXorShifted,
+  // (x >> t) != (s | t)
+  ShiftedDividendNotOr,
+  // x >=u ((x | s) & (t << 1))
+  DividendAboveOrAndDoubledQuotient,
+  // x >=u (s ^ (s >> (t >> 1)))
+  DividendAboveDivisorXorShifted
 };
 
 // Whether one of them holds of these three values. The refiner asks before
@@ -107,6 +130,18 @@ enum class DivLemma
 DLL_PUBLIC bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& sBits,
                               const std::vector<bool>& tBits);
+
+// The narrowest bit vector a fact is true of. One for all but the synthesised
+// ones the source marks as restricted, which are false at a width or two and
+// true from there up.
+//
+// The solver they come from sidesteps this by refusing to abstract anything
+// narrower than three bits at all. STP's threshold is a flag whose default is
+// 64 but whose floor is one, so the restriction is carried per fact instead
+// and the chooser skips a fact the abstraction in front of it is too narrow
+// for. A minimum is exact rather than cautious: the tests check that the fact
+// really does fail one bit below it.
+DLL_PUBLIC unsigned divLemmaMinWidth(DivLemma lemma);
 
 DLL_PUBLIC const char* divLemmaName(DivLemma lemma);
 
@@ -148,6 +183,7 @@ public:
                       const std::vector<unsigned>& dividendVars,
                       const std::vector<unsigned>& divisorVars,
                       const std::vector<unsigned>& resultVars);
+
 };
 
 } // namespace stp

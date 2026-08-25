@@ -151,7 +151,7 @@ enum
 DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           unsigned installedSchemas);
+                                           uint64_t installedSchemas);
 
 // The algebraic facts an abstracted BVDIV or BVMOD is refined with.
 //
@@ -213,15 +213,19 @@ enum
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8u,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16u,
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32u,
-  // ... and one apiece for the seven DivLemma facts, which are
-  // unconditional for the same reason and tracked the same way. The first
-  // of them is 64; `DIV_LEMMA_INSTALLED(i)` is the bit for the i'th.
+  // ... and one apiece for the DivLemma facts, which are unconditional for
+  // the same reason and tracked the same way. The first of them is 64;
+  // `divLemmaInstalledBit(i)` is the bit for the i'th.
   DIV_LEMMA_INSTALLED_FIRST = 64u
 };
 
-inline unsigned divLemmaInstalledBit(unsigned index)
+// Sixty-four bits and not thirty-two. The field is nowhere near full, but
+// the shift below is what would overflow -- silently, and only once the
+// table grew past twenty-six entries, which is a thing a later commit does
+// without ever looking here.
+inline uint64_t divLemmaInstalledBit(unsigned index)
 {
-  return DIV_LEMMA_INSTALLED_FIRST << index;
+  return (uint64_t)DIV_LEMMA_INSTALLED_FIRST << index;
 }
 
 // The DivLemma facts the chooser offers, in the order it offers them, and
@@ -265,7 +269,7 @@ DLL_PUBLIC DivSchemaChoice chooseDivSchema(Kind opKind,
                                            const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           unsigned installedSchemas);
+                                           uint64_t installedSchemas);
 
 // A variable that holds exactly when `lv <= rv`. Shared by the comparison
 // refinement, which is where it comes from, and by the division bounds,
@@ -335,7 +339,7 @@ struct BVTermAbstraction
   // each one.
   unsigned schemaRounds = 0;
   // Which of the unconditional schemas are already in the solver.
-  unsigned installedSchemas = 0;
+  uint64_t installedSchemas = 0;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.

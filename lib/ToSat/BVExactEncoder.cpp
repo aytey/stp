@@ -193,32 +193,72 @@ std::vector<bool> andOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
-// A logical right shift by the value `amt` holds. A shift at or past the
-// width clears the vector, which is what SMT-LIB's bvlshr does and what the
-// circuit below is built to match.
-std::vector<bool> shrOf(const std::vector<bool>& v, const std::vector<bool>& amt)
+std::vector<bool> orOf(const std::vector<bool>& a, const std::vector<bool>& b)
 {
-  const unsigned W = (unsigned)v.size();
+  std::vector<bool> r(a.size());
+  for (unsigned i = 0; i < a.size(); ++i)
+    r[i] = a[i] || b[i];
+  return r;
+}
+
+std::vector<bool> xorOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  std::vector<bool> r(a.size());
+  for (unsigned i = 0; i < a.size(); ++i)
+    r[i] = (a[i] != b[i]);
+  return r;
+}
+
+std::vector<bool> addOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  std::vector<bool> r(a.size());
+  bool carry = false;
+  for (unsigned i = 0; i < a.size(); ++i)
+  {
+    r[i] = (a[i] != b[i]) != carry;
+    carry = (a[i] && b[i]) || (carry && (a[i] || b[i]));
+  }
+  return r;
+}
+
+// How far a shift by the value `amt` actually moves, saturated at the width.
+// Anything at or above the width clears the vector, which is what SMT-LIB
+// says of both bvlshr and bvshl and what the circuits are built to match, so
+// saturating is not an approximation -- it is the answer.
+unsigned shiftBy(const std::vector<bool>& amt, unsigned W)
+{
   unsigned long long by = 0;
   for (unsigned i = 0; i < W; ++i)
     if (amt[i])
     {
       if (i >= 64 || by > W)
-      {
-        by = W; // saturate rather than overflow; anything >= W clears it
-        break;
-      }
+        return W; // saturate rather than overflow
       by += (1ull << i);
       if (by > W)
-      {
-        by = W;
-        break;
-      }
+        return W;
     }
+  return (unsigned)by;
+}
+
+std::vector<bool> shrOf(const std::vector<bool>& v, const std::vector<bool>& amt)
+{
+  const unsigned W = (unsigned)v.size();
+  const unsigned by = shiftBy(amt, W);
 
   std::vector<bool> r(W, false);
   for (unsigned i = 0; i + by < W; ++i)
-    r[i] = v[i + (unsigned)by];
+    r[i] = v[i + by];
+  return r;
+}
+
+std::vector<bool> shlOf(const std::vector<bool>& v, const std::vector<bool>& amt)
+{
+  const unsigned W = (unsigned)v.size();
+  const unsigned by = shiftBy(amt, W);
+
+  std::vector<bool> r(W, false);
+  for (unsigned i = by; i < W; ++i)
+    r[i] = v[i - by];
   return r;
 }
 
@@ -258,8 +298,60 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
 
     case DivLemma::DivisorLessOneAboveShiftedDividend:
       return ule(shrOf(x, t), decOf(s));
+
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+      // x >=u ((t << 1) >> (t << s))
+      return ule(shrOf(shlOf(t, one), shlOf(t, s)), x);
+
+    case DivLemma::QuotientNotNegatedAnd:
+      // t != -(s & ~x)
+      return t != negOf(andOf(s, notOf(x)));
+
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
+      // x >=u ((s >> (s << t)) << 1)
+      return ule(shlOf(shrOf(s, shlOf(s, t)), one), x);
+
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+      // x != t + t + (x | s)
+      return x != addOf(t, addOf(t, orOf(x, s)));
+
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
+      // t >=u ((x >> s) << 1)
+      return ule(shlOf(shrOf(x, s), one), t);
+
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
+      // x >=u ((x | t) & (s << 1))
+      return ule(andOf(orOf(x, t), shlOf(s, one)), x);
+
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
+      // (x & -t) >=u (s & t)
+      return ule(andOf(s, t), andOf(x, negOf(t)));
+
+    case DivLemma::DividendAboveQuotientXorShifted:
+      // x >=u (t ^ (t >> (s >> 1)))
+      return ule(xorOf(t, shrOf(t, shrOf(s, one))), x);
+
+    case DivLemma::ShiftedDividendNotOr:
+      // (x >> t) != (s | t)
+      return shrOf(x, t) != orOf(s, t);
+
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
+      // x >=u ((x | s) & (t << 1))
+      return ule(andOf(orOf(x, s), shlOf(t, one)), x);
+
+    case DivLemma::DividendAboveDivisorXorShifted:
+      // x >=u (s ^ (s >> (t >> 1)))
+      return ule(xorOf(s, shrOf(s, shrOf(t, one))), x);
   }
   return true;
+}
+
+unsigned divLemmaMinWidth(DivLemma lemma)
+{
+  // `x != t + t + (x | s)` is false at one bit: x = 1, s = 0 gives the
+  // totalised quotient t = 1, and 1 + 1 + (1 | 0) is 1. Everything else here
+  // is true at every width, checked exhaustively to eight bits.
+  return (lemma == DivLemma::DividendNotTwiceQuotientPlusOr) ? 2 : 1;
 }
 
 const char* divLemmaName(DivLemma lemma)
@@ -277,6 +369,28 @@ const char* divLemmaName(DivLemma lemma)
       return "divisor-above-shifted-dividend";
     case DivLemma::DivisorLessOneAboveShiftedDividend:
       return "divisor-less-one-above-shifted-dividend";
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+      return "dividend-above-shifted-double-quotient";
+    case DivLemma::QuotientNotNegatedAnd:
+      return "quotient-not-negated-and";
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
+      return "dividend-above-doubled-shifted-divisor";
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+      return "dividend-not-twice-quotient-plus-or";
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
+      return "quotient-above-doubled-shifted-dividend";
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
+      return "dividend-above-or-and-doubled-divisor";
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
+      return "masked-dividend-above-divisor-and-quotient";
+    case DivLemma::DividendAboveQuotientXorShifted:
+      return "dividend-above-quotient-xor-shifted";
+    case DivLemma::ShiftedDividendNotOr:
+      return "shifted-dividend-not-or";
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
+      return "dividend-above-or-and-doubled-quotient";
+    case DivLemma::DividendAboveDivisorXorShifted:
+      return "dividend-above-divisor-xor-shifted";
   }
   return "unknown";
 }
