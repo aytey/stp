@@ -4,7 +4,7 @@ Date: 2026-08-25
 
 Branch: `cegar-variable-shift-udiv15`
 
-Code stack documented through: `381cc401`
+Code stack documented through: `9d763349`
 
 Base: `87be10ce` (`upstream/master`, merge of PR #990)
 
@@ -30,16 +30,23 @@ complete:
   restrictions, totalised zero-divisor behaviour, and complete end-to-end
   regressions are tested.
 
-This does **not** mean the complete stack should be merged as one feature.
-Correctness qualification is substantially ahead of performance
-qualification. UDIV15 and MUL8 have focused measurements. The low-frequency
-registry tail and the four newest STP-specific rules do not yet have the
-consumer-guided ablation needed to decide whether they help real workloads.
+The coverage-first qualification sweep is now complete. It found a small
+productive subset and a much larger neutral or harmful tail. Commit
+`9d763349` therefore keeps every sound implementation available but puts the
+families behind one named group mask:
 
-The correct next action is a final coverage-first, per-commit performance
-sweep. Do not add another lemma family before doing it. If that sweep is
-neutral, consider the abstraction-lemma research complete and return to
-preprocessing or solver/refinement architecture.
+- an explicitly enabled BV term abstraction inherits only `base,urem,mul-ref3`;
+- `all` reproduces the complete stack represented before the mask;
+- `none` reaches the ordinary operation-specific fallback without offering a
+  schema;
+- the master `--bv-term-abstraction-schemas=0` still overrides every group;
+- BV term abstraction itself remains off by default.
+
+This is the stopping point for inventing or importing more algebraic facts.
+The complete implementation remains useful for controlled experiments, but
+the corpus evidence does not justify enabling ADD, MUL8, the registry tails,
+low prefixes, quotient thresholds, quotient-one remainder, paired DIV/REM,
+or UDIV15 in the inherited profile.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
@@ -57,6 +64,11 @@ initial division work merged in PR #989:
 - The ITE, addition, and comparison families have their own scope flags.
 - `--bv-term-abstraction-schemas=1` enables algebraic schemas. The schema
   flag defaults to true, but term abstraction itself defaults to false.
+- `--bv-term-abstraction-schema-groups=base,urem,mul-ref3` selects the
+  schema families offered when the master schema flag is on. The value is a
+  comma-separated list; `all` and `none` are stand-alone aliases. Whitespace
+  and duplicate names are accepted, while malformed lists are rejected
+  without partially changing the mask.
 - `--bv-term-abstraction-rounds=32` separately caps schema rounds and
   value-pair blocking rounds for a heavy arithmetic record. Schema rounds do
   not consume the blocking allowance; after the blocking allowance is spent,
@@ -66,6 +78,29 @@ initial division work merged in PR #989:
 
 Signed division and remainder are translated to unsigned operations before
 bit-blasting, so they do not require separate abstraction registries.
+
+The named groups and their disposition are:
+
+| Group | Contents | In inherited profile? |
+| --- | --- | --- |
+| `base` | Schemas already present on merged master | yes |
+| `udiv15` | `DividendAboveShiftedDoubleQuotient` | no |
+| `udiv-extra` | Remaining non-base UDIV registry | no |
+| `urem` | Enabled UREM registry | yes |
+| `mul8` | Zero product with an odd operand | no |
+| `mul-ref3` | `MulRef3` alone | yes |
+| `mul-extra` | Remaining general MUL registry | no |
+| `add` | Complete ADD registry | no |
+| `quotient-thresholds` | UDIV power-of-two magnitude thresholds | no |
+| `low-prefix` | Exact low-three-bit ADD and MUL facts | no |
+| `quotient-one-rem` | Remainder in the quotient-one band | no |
+| `divrem-pair` | Paired DIV/REM low-prefix recomposition | no |
+
+This partition is deliberately coarser than individual lemmas. It supports
+qualified defaults and controlled experiments without making every
+low-frequency algebraic fact a permanent command-line option. The C API
+exposes the same bits through `BV_TERM_ABSTRACTION_SCHEMA_GROUPS`; unknown or
+negative mask bits are rejected.
 
 Every refinement clause is permanent and must therefore be a theorem about
 the operation. A candidate decides only *which* theorem is useful to add; it
@@ -82,8 +117,10 @@ build/stp -s --bv-term-abstraction=1 input.smt2
 ```
 
 `-t` reports candidates, abstractions, refinement rounds, blocking lemmas,
-and aggregate schema lemmas. `-s` prints each selected schema by name and
-the SAT/backend telemetry.
+aggregate schema lemmas, and the exact partition of schema firings over the
+twelve groups. `-s` prints each selected schema by name and the SAT/backend
+telemetry. The C counter API likewise exposes one counter for every group;
+the group counts always sum to the aggregate schema count.
 
 ## Source layout
 
@@ -95,6 +132,8 @@ The principal implementation files are:
 - `lib/ToSat/BVExactEncoder.cpp`
 - `include/stp/ToSat/BitBlaster.h`
 - `lib/ToSat/BitBlaster.cpp`
+- `include/stp/STPManager/UserDefinedFlags.h`
+- `lib/STPManager/UserDefinedFlags.cpp`
 
 `BVAbstractionRefiner` reads a candidate, chooses a violated fact, tracks
 which unconditional facts are installed, and emits the refinement.
@@ -102,6 +141,11 @@ which unconditional facts are installed, and emits the refinement.
 through the normal AIG/CNF path, and splices the resulting clauses onto the
 live operand/result SAT variables. This keeps exact fallback and complex
 synthesised lemmas aligned with STP's ordinary encoding.
+
+`UserDefinedFlags` defines the stable group ordinals, default mask, parser,
+and formatter used by the CLI and C API. The chooser records the group on
+every selected fact, and a single counter helper increments both the
+aggregate and exactly one group counter.
 
 The imported lemma source used for reconciliation was:
 
@@ -345,7 +389,7 @@ cmake --build build -j24
 ctest --test-dir build --output-on-failure -j24
 ```
 
-Result at `381cc401`:
+Result at `9d763349`:
 
 ```text
 100% tests passed, 0 tests failed out of 172
@@ -361,7 +405,7 @@ builds remain a PR/CI qualification item.
 
 ## Commit sequence
 
-These are the 14 code/test commits after `upstream/master`, oldest first:
+These are the 15 code/test commits after `upstream/master`, oldest first:
 
 1. `e6f4619d Add the UDIV15 abstraction fact`
    - Adds the highest-firing omitted UDIV fact and safe variable left/right
@@ -399,8 +443,11 @@ These are the 14 code/test commits after `upstream/master`, oldest first:
     - Adds the overflow-safe conditional `r = x-s` region.
 14. `381cc401 Relate paired division and remainder abstractions`
     - Adds low-prefix recomposition across matching DIV/REM records.
+15. `9d763349 Group BV abstraction schemas by qualification`
+    - Adds the named CLI/C-API mask, selects the corpus-qualified inherited
+      profile, attributes coverage counters, and tests every gate and alias.
 
-The handoff/documentation commit follows those 14 and intentionally contains
+The handoff/documentation commit follows those 15 and intentionally contains
 no source change.
 
 ## Measurements with positive local effects
@@ -513,126 +560,141 @@ partial multiplication bit-blasting remains default-off and does not have
 enough evidence to recommend it. Neither should be mixed into the final
 lemma qualification sweep.
 
-## What is not yet measured
+## Completed corpus qualification
 
-No defensible performance conclusion exists yet for:
+The final sweep searched
+`/mnt/baranem/smt2_problems/non-incremental` rather than selecting only the
+purpose-built regressions:
 
-- the complete low-frequency UDIV registry tail;
-- the UREM registry on a broad remainder-heavy corpus;
-- the complete MUL registry tail;
-- the ADD registry;
-- quotient power-of-two thresholds;
-- exact low ADD/MUL prefixes;
-- the quotient-one remainder band;
-- paired DIV/REM low-prefix recomposition.
+- 3,557 QF_BV/QF_ABV files whose source contains `bvudiv` or `bvurem`;
+- 3,385 completed coverage runs from that set;
+- 287 files with an abstracted division/remainder consumer;
+- 1,580 files that installed at least one schema;
+- a separate 20,846-file `bvmul` source set, with 20,745 completed coverage
+  runs and 184 actual wide-multiplication consumers.
 
-The tests establish that these are sound implementations of useful
-relationships. They do not establish that spending a refinement round and
-adding their clauses improves SAT search.
+No answer disagreement was observed in any corpus, boundary, ablation, or
+repeat. The important result is not that all of the facts are correct—the
+exhaustive tests already establish that—but that only two new families earned
+a place alongside the established `base` profile.
 
-## Outstanding qualification sweep
+### UREM registry
 
-Use coverage to make the timing experiment small rather than running every
-commit over every file.
+The first screen over 20 natural UREM consumers moved from 13 to 17 solves at
+a two-second budget, without a loss or disagreement. Four wide ecrw cases
+then reproduced the gain three times each:
 
-### 1. Build the relevant boundaries
+| Instance suffix | Full UREM wall time | Full UREM peak RSS |
+| --- | ---: | ---: |
+| `bw512_3` | 0.33 / 0.33 / 0.33 s | 55-59 MB |
+| `bw512_4` | 0.28 / 0.28 / 0.28 s | 60-62 MB |
+| `bw512_16` | 1.26 / 1.32 / 1.20 s | 85-87 MB |
+| `bw512_19` | 1.27 / 1.27 / 1.24 s | 84-87 MB |
 
-At minimum compare:
+The predecessor without the UREM registry reached the external limit on most
+runs at 8.90-9.02 seconds and roughly 2.19 GB. These are decisive construction
+and search improvements, not timing noise.
+
+A temporary per-lemma ablation established which relationship matters:
+
+- removing `UremRef4` still solved all four cases in every repeat; the chooser
+  selected `UremRef8` after `UremRef5` instead;
+- removing `UremRef5` left the two small cases solved, but `bw512_16` and
+  `bw512_19` both exhausted the limit twice at 9.40-9.56 seconds and roughly
+  2.22 GB.
+
+`UremRef5` is therefore essential to the two hard cases; `UremRef4` is not.
+The whole enabled UREM registry remains one group because its broader screen
+was positive and loss-free, and because per-lemma public flags would expose
+implementation ordering rather than a useful user-facing policy.
+
+### MulRef3
+
+On `rw_rule_candidate_vmcai_2022_bw512_7.smt2`, three interleaved repeats
+gave:
+
+| Groups | Wall time | Peak RSS |
+| --- | ---: | ---: |
+| `base` | 3.66 / 3.68 / 3.61 s | 765-768 MB |
+| `base,mul-ref3` | 0.12 / 0.12 / 0.12 s | 63-67 MB |
+| `all` | 0.12 / 0.13 / 0.12 s | 64-67 MB |
+
+The qualified profile fires six `base` facts and one `mul-ref3` fact on this
+target; no opt-in group fires. This isolates the gain and shows that the rest
+of the complete stack is unnecessary for it.
+
+### Groups retained only for explicit experiments
+
+The complete stack regressed the broadest 1,580-consumer comparison at a
+two-second budget: solves fell from 1,374 to 1,336, the median rose from
+0.64 to 0.73 seconds, common-solve time rose from 830.19 to 893.36 seconds,
+and there were 40 gains against 78 losses. All five ecrw gains were real, but
+77 SPEAR losses made this unsuitable as an inherited profile.
+
+The group-level evidence explains the default mask:
+
+- `add`: 1,368 to 1,337 solves over 1,550 consumers; median 0.64 to 0.69
+  seconds and common-solve total 821.14 to 865.94 seconds. Repeating the 95
+  changed files at five seconds still left ADD stably harmful, with no single
+  lemma accounting for the reversal.
+- `mul8`: 25 to 22 solves over 53 consumers. The three lost files eventually
+  solved at five seconds, but slowed from 0.53-0.55 to 1.74-1.79 seconds.
+- multiplication low prefixes: 77 to 75 solves over 125 consumers; median
+  0.62 to 0.765 seconds and common total 48.82 to 54.94 seconds.
+- all ADD/MUL prefixes together: a nearly neutral 1,133 to 1,135 solves over
+  1,346 consumers, but median and common total still worsened from 0.74 to
+  0.77 seconds and 807.67 to 830.83 seconds.
+- quotient thresholds: the same 72 of 78 solves, with common total moving
+  from 6.72 to 6.95 seconds.
+- quotient-one remainder: repeatable but balanced at three gains and two
+  losses, with slightly worse common-solve time.
+- paired DIV/REM recomposition: neutral on its three natural consumers.
+- UDIV15 and the remaining observed/unobserved UDIV facts: neutral on the
+  broad corpus. UDIV15 retains its strong synthetic regression, but it did
+  not earn inherited-profile status.
+- the remaining MUL registry has no isolated broad improvement sufficient to
+  overcome the losses seen when the complete tail is active.
+
+A temporary selective build at `c07ff56c`, with MUL8 removed and before ADD
+and the later STP-specific facts, provided a useful consistency check rather
+than a final profile: div/rem consumers moved from 1,378 to 1,385 solves and
+wide-multiplication consumers remained at 119 solves while their common total
+fell from 45.58 to 35.97 seconds. Repeating the changed sets at five seconds
+confirmed the gains. The named mask is preferable because it isolates the
+two relationships that later target ablations actually justified.
+
+Raw logs, while the temporary directory survives, are under:
 
 ```text
-87be10ce  merged master baseline
-e6f4619d  + UDIV15
-9988a606  + MUL8
-5932911a  + complete imported registries and qualification
-21c76364  + quotient thresholds
-6dfa0337  + low ADD/MUL prefixes
-a032a19c  + quotient-one remainder
-381cc401  + paired DIV/REM recomposition
+/tmp/stp-bv-corpus.2fP256
 ```
 
-The comparisons after `5932911a` are intentionally adjacent: each isolates
-one new rule. Compare `9988a606` to `5932911a` to judge the imported
-low-frequency registry tail as a group; split that group further only if its
-coverage or performance warrants it.
+## Recommended disposition and remaining work
 
-### 2. Run coverage-only passes
+Keep the complete sound implementation behind the named groups. Do not
+silently discard tested research code, but do not make the whole registry
+tail the inherited behaviour either. The qualified policy is:
 
-Use `-s` and `-t` to identify consumers and collect:
+```text
+term abstraction off by default
+schemas on when abstraction is requested
+schema groups = base,urem,mul-ref3
+```
 
-- candidates and abstracted terms by operation kind;
-- named schema firings;
-- refinement rounds;
-- blocking and schema lemma counts;
-- exact-fallback events;
-- SAT calls and fixed-conflict telemetry;
-- AIG/CNF size, construction time, wall time, and peak memory.
+`--bv-term-abstraction-schema-groups=all` is the reproducibility and future
+research setting. Individual opt-in groups make later workload-specific
+qualification possible without rebuilding or carrying private patches.
 
-Suggested workloads:
+The remaining work is integration rather than lemma discovery:
 
-- the 1,029 Certora QF_UFBV files for UDIV and multiplication continuity;
-- a broad QF_BV remainder/division corpus, including the Cryptol
-  `gcd_divides` family, for UREM and paired DIV/REM;
-- LatendresseFP and SyntheticFBA for ADD/MUL prefixes after FP lowering;
-- the established glycerol probes for continuity with the scheduling work.
+- run the repository CI matrix, particularly the non-CaDiCaL and Windows
+  configurations not present in this build;
+- decide whether review is clearest as this checkpoint or as an ordered PR
+  series, without changing the qualified default;
+- if requested during review, repeat the UREM screen on another independent
+  remainder-heavy corpus.
 
-Use explicit abstraction widths appropriate to the lowering under test.
-The default floor of 64 will not exercise every binary32-derived arithmetic
-term; earlier FP experiments used widths around 24 and 33 for that reason.
-
-### 3. Time only consumers
-
-For each rule, compare its commit to its immediate predecessor over files
-where that rule actually fired. Interleave versions and use repeated runs.
-Report gains and losses separately, not only a net solve count.
-
-Use both:
-
-- matched wall budgets for end-to-end solver value;
-- fixed-conflict checkpoints for construction/refinement/search diagnosis.
-
-CaDiCaL conflict counts are comparable only within the same backend and
-configuration. Do not compare MiniSat and CaDiCaL conflict totals directly.
-
-### 4. Keep criteria
-
-Keep a rule only if:
-
-- there are no answer disagreements;
-- it fires on more than a purpose-built regression, or its target win is
-  compelling enough to justify a deliberately narrow PR;
-- gains survive repeats and are not merely exchanged for similar losses;
-- it does not starve higher-value schemas or push terms prematurely to exact
-  encoding;
-- memory and final CNF growth remain acceptable.
-
-A rule with zero or negligible natural coverage should be abandoned rather
-than retained because it is mathematically attractive. A rule with a decisive
-target regression and neutral aggregate behaviour can be proposed as a small,
-independent PR with that limited claim; UDIV15 and MUL8 currently fit that
-description.
-
-### 5. Final hardening
-
-After selecting the surviving commits:
-
-- rebase/split them into reviewable PR branches;
-- run the full repository CI matrix, especially MiniSat,
-  simplifying MiniSat, CryptoMiniSat, Riss, CaDiCaL 2.1/3.0, and Windows;
-- preserve concise aggregate measurements in commit or PR text rather than
-  relying on `/tmp`;
-- leave `--bv-term-abstraction` default-off unless a much broader
-  qualification justifies changing it.
-
-## Recommended disposition
-
-Do not merge all 14 commits merely because the complete stack is sound.
-
-The present evidence supports preparing UDIV15 and MUL8 as small,
-independently reviewable changes. The registry-completion commits are valuable
-as a controlled research implementation and make omissions explicit, but
-need the sweep above before they become product changes. The four newest
-rules should be judged independently at their commit boundaries.
-
-If none of the unmeasured work survives that sweep, archive this branch and
-its handoff rather than continuing to invent algebraic facts. Previous results
-show that STP's larger remaining gap is not a missing list of lemmas.
+Further low-frequency lemmas, schema batching, affine-equality preprocessing,
+and broad exact-escalation changes are not justified by the collected
+evidence. New work should return to preprocessing or refinement/SAT
+architecture unless a new workload exposes a concrete missing relationship.
