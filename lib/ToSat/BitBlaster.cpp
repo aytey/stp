@@ -3269,6 +3269,11 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
         rhs[i] = nf->CreateNode(XOR, s[i], shifted[i]);
       return BBBVLE(rhs, x, false);
     }
+
+    case DivLemma::QuotientIsOne:
+      // s <=u x <u 2s -> t = 1
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
+                            BBEQ(t, one));
   }
 
   FatalError("BBDivLemma: unknown lemma");

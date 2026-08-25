@@ -378,6 +378,10 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
     case DivLemma::DividendAboveDivisorXorShifted:
       // x >=u (s ^ (s >> (t >> 1)))
       return ule(xorOf(s, shrOf(s, shrOf(t, one))), x);
+
+    case DivLemma::QuotientIsOne:
+      // s <=u x <u 2s -> t = 1
+      return !fitsExactlyOnce(x, s) || t == one;
   }
   return true;
 }
@@ -427,6 +431,7 @@ const char* divLemmaName(DivLemma lemma)
       return "dividend-above-or-and-doubled-quotient";
     case DivLemma::DividendAboveDivisorXorShifted:
       return "dividend-above-divisor-xor-shifted";
+    case DivLemma::QuotientIsOne: return "quotient-is-one";
   }
   return "unknown";
 }

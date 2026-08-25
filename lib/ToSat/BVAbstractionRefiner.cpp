@@ -917,6 +917,11 @@ static const DivLemma DIV_LEMMAS[] = {
     DivLemma::DivisorAboveShiftedDividend,           // 280 firings
     DivLemma::QuotientBelowNegatedDivisor,           // 200
     DivLemma::DividendAboveNegatedAnd,               // 187
+    // Not the source's, so it has no firing count. Placed here on the other
+    // measure: what it rules out that the rest of the table does not, which
+    // at six bits is 2.42% against 2.75% for the best fact above it and
+    // 0.00% for five of the ones below.
+    DivLemma::QuotientIsOne,
     DivLemma::DividendZero,                          // 171
     DivLemma::DivisorEqualsDividend,                 // 162
     DivLemma::DivisorLessOneAboveShiftedDividend,    // 161

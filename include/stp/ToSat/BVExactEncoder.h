@@ -119,7 +119,11 @@ enum class DivLemma
   // x >=u ((x | s) & (t << 1))
   DividendAboveOrAndDoubledQuotient,
   // x >=u (s ^ (s >> (t >> 1)))
-  DividendAboveDivisorXorShifted
+  DividendAboveDivisorXorShifted,
+  // s <=u x <u 2s -> t = 1, which is the remainder fact of the same premise
+  // read over a quotient: a divisor that fits the dividend exactly once
+  // divides it exactly once.
+  QuotientIsOne
 };
 
 // Whether one of them holds of these three values. The refiner asks before
