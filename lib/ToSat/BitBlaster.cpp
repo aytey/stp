@@ -3077,6 +3077,22 @@ BBNodeVec BitBlaster::BBShiftLeftByVariable(const BBNodeVec& value,
   return result;
 }
 
+// `s <=u x <u 2s`, as the single node the two "fits exactly once" facts open
+// with. The doubling is read in the integers: a divisor with its top bit set
+// doubles past the width, so nothing can reach 2s and that half of the
+// premise is free. `s != 0` is carried inside it -- a zero divisor cannot be
+// at most x and strictly above it at once.
+BBNode BitBlaster::BBFitsExactlyOnce(const BBNodeVec& x, const BBNodeVec& s)
+{
+  const unsigned width = (unsigned)x.size();
+  BBNodeVec twice = s;
+  BBLShift(twice, 1);
+  return nf->CreateNode(
+      AND, BBBVLE(s, x, false),
+      nf->CreateNode(OR, s[width - 1],
+                     nf->CreateNode(NOT, BBBVLE(twice, x, false))));
+}
+
 BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
                               const BBNodeVec& s, const BBNodeVec& t,
                               BBNodeSet& support)
@@ -3366,6 +3382,15 @@ BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
       for (unsigned i = 0; i < width; i++)
         lhs[i] = nf->CreateNode(XOR, negS[i], nf->CreateNode(OR, x[i], s[i]));
       return BBBVLE(t, lhs, false);
+    }
+
+    case RemLemma::RemainderIsDifference:
+    {
+      // s <=u x <u 2s -> t = x - s
+      BBNodeVec diff = x;
+      BBSub(diff, s, support);
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
+                            BBEQ(t, diff));
     }
   }
 

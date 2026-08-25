@@ -285,6 +285,21 @@ std::vector<bool> shlOf(const std::vector<bool>& v, const std::vector<bool>& amt
 
 } // namespace
 
+// `s <=u x <u 2s`, with the doubling read in the integers rather than in the
+// bit vector: a divisor whose top bit is set doubles past the width, so
+// nothing can reach 2s and the second half of the premise is free.
+//
+// The premise carries `s != 0` inside it -- a zero divisor cannot be at most
+// x and strictly above it at the same time -- so neither fact needs to say so.
+static bool fitsExactlyOnce(const std::vector<bool>& x,
+                            const std::vector<bool>& s)
+{
+  const unsigned W = (unsigned)x.size();
+  std::vector<bool> one(W, false);
+  one[0] = true;
+  return ule(s, x) && (s[W - 1] || !ule(shlOf(s, one), x));
+}
+
 bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
                    const std::vector<bool>& s, const std::vector<bool>& t)
 {
@@ -469,6 +484,10 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
     case RemLemma::XorAboveRemainder:
       // ((-s) ^ (x | s)) >=u t
       return ule(t, xorOf(negOf(s), orOf(x, s)));
+
+    case RemLemma::RemainderIsDifference:
+      // s <=u x <u 2s -> t = x - s
+      return !fitsExactlyOnce(x, s) || t == addOf(x, negOf(s));
   }
   return true;
 }
@@ -503,6 +522,7 @@ const char* remLemmaName(RemLemma lemma)
     case RemLemma::DifferenceAboveRemainder:
       return "difference-above-remainder";
     case RemLemma::XorAboveRemainder: return "xor-above-remainder";
+    case RemLemma::RemainderIsDifference: return "remainder-is-difference";
   }
   return "unknown";
 }

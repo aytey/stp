@@ -525,6 +525,9 @@ public:
   BBNode BBRemLemma(RemLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
+  // `s <=u x <u 2s`, the premise the two "fits exactly once" facts share.
+  BBNode BBFitsExactlyOnce(const BBNodeVec& x, const BBNodeVec& s);
+
   // ... and one about `t = x * s`, over `x` and `s` in the order the fact
   // is written rather than the order the multiplication holds them.
   BBNode BBMulLemma(MulLemma lemma, const BBNodeVec& x, const BBNodeVec& s,

@@ -186,7 +186,11 @@ enum class RemLemma
   // (x - s) >=u t
   DifferenceAboveRemainder,
   // ((-s) ^ (x | s)) >=u t
-  XorAboveRemainder
+  XorAboveRemainder,
+  // s <=u x <u 2s -> t = x - s, which is the quotient fact of the same name
+  // read over a remainder: subtracting the divisor once is the whole of the
+  // division.
+  RemainderIsDifference
 };
 
 DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,

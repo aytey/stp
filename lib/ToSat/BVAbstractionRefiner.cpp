@@ -951,6 +951,10 @@ static const RemLemma REM_LEMMAS[] = {
     RemLemma::DividendZero,
     RemLemma::DivisorEqualsDividend,
     RemLemma::DividendBelowDivisor,
+    // Ours rather than the source's, and next because it settles the
+    // operation outright the way the three above it do: 2.70% beyond the rest
+    // of the table at six bits, which is third of the twelve.
+    RemLemma::RemainderIsDifference,
     RemLemma::DividendWithinDivisorOrRemainder,
     RemLemma::DividendAboveRemainderOrAnd,
     RemLemma::RemainderOutsideOperandsNotOne,
