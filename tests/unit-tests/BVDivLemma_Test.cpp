@@ -40,8 +40,8 @@ THE SOFTWARE.
 //   * The circuit that goes into the solver is then asked, over every triple,
 //     whether it permits that triple -- and it must permit exactly the ones
 //     the predicate calls true. That catches a circuit that says something
-//     other than its predicate, including the barrel shifter underneath the
-//     four that shift by a variable amount.
+//     other than its predicate, including the barrel shifters underneath the
+//     facts that shift by a variable amount.
 //
 // Four bits, exhaustively, which is 256 operand pairs and 4096 triples per
 // lemma. Wide enough for a shift amount to run past the width -- which is
@@ -67,14 +67,14 @@ namespace
 const unsigned WIDTH = 4;
 const unsigned VALUES = 1u << WIDTH;
 
-const DivLemma LEMMAS[7] = {
-    DivLemma::DividendZero,
-    DivLemma::DivisorEqualsDividend,
-    DivLemma::DivisorAllOnes,
-    DivLemma::QuotientBelowNegatedDivisor,
-    DivLemma::DividendAboveNegatedAnd,
-    DivLemma::DivisorAboveShiftedDividend,
-    DivLemma::DivisorLessOneAboveShiftedDividend};
+const DivLemma LEMMAS[] = {DivLemma::DividendZero,
+                           DivLemma::DivisorEqualsDividend,
+                           DivLemma::DivisorAllOnes,
+                           DivLemma::QuotientBelowNegatedDivisor,
+                           DivLemma::DividendAboveNegatedAnd,
+                           DivLemma::DivisorAboveShiftedDividend,
+                           DivLemma::DivisorLessOneAboveShiftedDividend,
+                           DivLemma::DividendAboveShiftedDoubleQuotient};
 
 std::vector<bool> bitsOf(unsigned value)
 {

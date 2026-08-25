@@ -213,7 +213,7 @@ enum
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8u,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16u,
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32u,
-  // ... and one apiece for the seven DivLemma facts, which are
+  // ... and one apiece for the eight DivLemma facts, which are
   // unconditional for the same reason and tracked the same way. The first
   // of them is 64; `DIV_LEMMA_INSTALLED(i)` is the bit for the i'th.
   DIV_LEMMA_INSTALLED_FIRST = 64u

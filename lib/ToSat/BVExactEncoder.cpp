@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include "stp/ToSat/ToCNFAIG.h"
 
 #include <cassert>
+#include <limits>
 
 namespace stp
 {
@@ -193,32 +194,50 @@ std::vector<bool> andOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
-// A logical right shift by the value `amt` holds. A shift at or past the
-// width clears the vector, which is what SMT-LIB's bvlshr does and what the
-// circuit below is built to match.
-std::vector<bool> shrOf(const std::vector<bool>& v, const std::vector<bool>& amt)
+// The unsigned value of a shift amount, saturated at the value width. Once
+// the represented amount reaches that width both SMT-LIB logical shifts are
+// all zero, so there is no reason to risk overflowing a host integer while
+// reading the remaining high bits.
+unsigned saturatedShiftAmount(const std::vector<bool>& amount, unsigned width)
+{
+  unsigned by = 0;
+  for (unsigned i = 0; i < amount.size(); ++i)
+    if (amount[i])
+    {
+      if (i >= std::numeric_limits<unsigned>::digits)
+        return width;
+      const unsigned add = 1u << i;
+      if (add >= width || by >= width - add)
+        return width;
+      by += add;
+    }
+  return by;
+}
+
+// Logical shifts by the value `amount` holds. A shift at or past the width
+// clears the vector, matching both SMT-LIB operations and the barrel shifters
+// the circuit uses.
+std::vector<bool> shrOf(const std::vector<bool>& v,
+                        const std::vector<bool>& amount)
 {
   const unsigned W = (unsigned)v.size();
-  unsigned long long by = 0;
-  for (unsigned i = 0; i < W; ++i)
-    if (amt[i])
-    {
-      if (i >= 64 || by > W)
-      {
-        by = W; // saturate rather than overflow; anything >= W clears it
-        break;
-      }
-      by += (1ull << i);
-      if (by > W)
-      {
-        by = W;
-        break;
-      }
-    }
+  const unsigned by = saturatedShiftAmount(amount, W);
 
   std::vector<bool> r(W, false);
   for (unsigned i = 0; i + by < W; ++i)
-    r[i] = v[i + (unsigned)by];
+    r[i] = v[i + by];
+  return r;
+}
+
+std::vector<bool> shlOf(const std::vector<bool>& v,
+                        const std::vector<bool>& amount)
+{
+  const unsigned W = (unsigned)v.size();
+  const unsigned by = saturatedShiftAmount(amount, W);
+
+  std::vector<bool> r(W, false);
+  for (unsigned i = by; i < W; ++i)
+    r[i] = v[i - by];
   return r;
 }
 
@@ -258,6 +277,10 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
 
     case DivLemma::DivisorLessOneAboveShiftedDividend:
       return ule(shrOf(x, t), decOf(s));
+
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+      // x >=u ((t << 1) >> (t << s))
+      return ule(shrOf(shlOf(t, one), shlOf(t, s)), x);
   }
   return true;
 }
@@ -277,6 +300,8 @@ const char* divLemmaName(DivLemma lemma)
       return "divisor-above-shifted-dividend";
     case DivLemma::DivisorLessOneAboveShiftedDividend:
       return "divisor-less-one-above-shifted-dividend";
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+      return "dividend-above-shifted-double-quotient";
   }
   return "unknown";
 }

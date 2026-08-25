@@ -860,13 +860,14 @@ static bool valueIsZero(const std::vector<bool>& bits)
 // which round buys which fact, and buying the most productive first is the
 // cheapest guess available.
 static const DivLemma DIV_LEMMAS[] = {
-    DivLemma::DivisorAboveShiftedDividend,          // 280 firings
-    DivLemma::QuotientBelowNegatedDivisor,          // 200
-    DivLemma::DividendAboveNegatedAnd,              // 187
-    DivLemma::DividendZero,                         // 171
-    DivLemma::DivisorEqualsDividend,                // 162
-    DivLemma::DivisorLessOneAboveShiftedDividend,   // 161
-    DivLemma::DivisorAllOnes};                      // 59
+    DivLemma::DivisorAboveShiftedDividend,        // 280 firings
+    DivLemma::QuotientBelowNegatedDivisor,        // 200
+    DivLemma::DividendAboveNegatedAnd,            // 187
+    DivLemma::DividendZero,                       // 171
+    DivLemma::DivisorEqualsDividend,              // 162
+    DivLemma::DivisorLessOneAboveShiftedDividend, // 161
+    DivLemma::DividendAboveShiftedDoubleQuotient, // 125
+    DivLemma::DivisorAllOnes};                    // 59
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);

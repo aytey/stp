@@ -316,8 +316,6 @@ class BitBlaster
   // Count of leading zeros of v (from the MSB down) as an unsigned binary
   // vector of `countWidth` bits; an all-zero v counts v.size().
   BBNodeVec BBfpCLZ(const BBNodeVec& v, unsigned countWidth);
-  // Left shift v by the unsigned binary amount `amt` (zero fill).
-  BBNodeVec BBfpShiftLeft(const BBNodeVec& v, const BBNodeVec& amt);
   // Right shift v by `amt`, ORing every shifted-out bit into `sticky`.
   BBNodeVec BBfpShiftRightSticky(const BBNodeVec& v, const BBNodeVec& amt,
                                  BBNode& sticky);
@@ -519,8 +517,11 @@ public:
   BBNode BBDivLemma(DivLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
-  // A logical right shift by a variable amount; several of the facts above
-  // are inequalities over one.
+  // Logical shifts by a variable amount. Both are logarithmic barrel
+  // shifters, and any represented amount at or above the value width clears
+  // the vector as SMT-LIB requires.
+  BBNodeVec BBShiftLeftByVariable(const BBNodeVec& value,
+                                  const BBNodeVec& amount);
   BBNodeVec BBShiftRightByVariable(const BBNodeVec& value,
                                    const BBNodeVec& amount, unsigned width);
 

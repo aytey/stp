@@ -73,14 +73,13 @@ namespace stp
 // synthesis that paper describes -- which is the argument for porting them
 // rather than inventing a set.
 //
-// Which seven: the highest-firing ones measured on the queries that motivated
-// this, 1161 firings between them over the 73 files STP could not decide.
-// Fourteen more UDIV facts and sixteen UREM ones were left, the largest of
-// them firing 125 times against this set's 161 to 280. They were not skipped
-// on principle and the tail is not exhausted -- what stopped the porting is
-// that these seven are a wash on that family, which is measured in the commit
-// that adds them. Extending a set that does not pay needs a reason to expect
-// the next one to.
+// Which eight: the original seven are the highest-firing ones measured on the
+// queries that motivated this, 1161 firings between them over the 73 files STP
+// could not decide. The eighth was the largest measured omission, at another
+// 125 firings. Thirteen more UDIV facts and sixteen UREM ones remain. They were
+// not skipped on principle and the tail is not exhausted -- the original
+// seven were a wash on that family, so this last evidence-driven extension is
+// kept separate and measured rather than taken as proof that firing pays.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -96,7 +95,9 @@ enum class DivLemma
   // s >=u (x >> t)
   DivisorAboveShiftedDividend,
   // (s - 1) >=u (x >> t)
-  DivisorLessOneAboveShiftedDividend
+  DivisorLessOneAboveShiftedDividend,
+  // x >=u ((t << 1) >> (t << s))
+  DividendAboveShiftedDoubleQuotient
 };
 
 // Whether one of them holds of these three values. The refiner asks before
