@@ -245,6 +245,10 @@ inline uint64_t divLemmaInstalledBit(unsigned index)
 // does rather than keeping a second copy of it in step with this one.
 DLL_PUBLIC const DivLemma* divLemmaTable(unsigned& count);
 
+// All remainder facts STP transcribes, including the one upstream keeps
+// disabled. chooseDivSchema consults remLemmaEnabled() before offering one.
+DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
+
 struct DivSchemaChoice
 {
   DivSchema schema = DivSchema::None;

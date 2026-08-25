@@ -3338,6 +3338,79 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
+                              const BBNodeVec& s, const BBNodeVec& t,
+                              BBNodeSet& /*support*/)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(t.size() == width);
+  assert(remLemmaApplicable(lemma, width));
+
+  const BBNodeVec zero = BBfill(width, BBFalse);
+  BBNodeVec one = zero;
+  one[0] = BBTrue;
+
+  switch (lemma)
+  {
+    case RemLemma::UremRef2:
+      // x = 0 -> t = 0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(x, zero)),
+                            BBEQ(t, zero));
+
+    case RemLemma::UremRef4:
+      // s = x -> t = 0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(s, x)),
+                            BBEQ(t, zero));
+
+    case RemLemma::UremRef5:
+      // x <u s -> t = x
+      return nf->CreateNode(OR, BBBVLE(s, x, false), BBEQ(t, x));
+
+    case RemLemma::UremRef6:
+      // ~(-s) >=u t
+      return BBBVLE(t, BBNeg(BBUminus(s)), false);
+
+    case RemLemma::UremRef7:
+      // x = x & (s | t | -s)
+      return BBEQ(x, BBAnd(x, BBOr(s, BBOr(t, BBUminus(s)))));
+
+    case RemLemma::UremRef8:
+      // x >=u (t | (x & s))
+      return BBBVLE(BBOr(t, BBAnd(x, s)), x, false);
+
+    case RemLemma::UremRef9:
+      // 1 != (t & ~(x | s))
+      return nf->CreateNode(
+          NOT, BBEQ(one, BBAnd(t, BBNeg(BBOr(x, s)))));
+
+    case RemLemma::UremRef10:
+      // t != (~x | -s)
+      return nf->CreateNode(
+          NOT, BBEQ(t, BBOr(BBNeg(x), BBUminus(s))));
+
+    case RemLemma::UremRef11:
+      // (t & (x | s)) >=u (t & 1)
+      return BBBVLE(BBAnd(t, one), BBAnd(t, BBOr(x, s)), false);
+
+    case RemLemma::UremRef12:
+      // x != (-x | -(~t))
+      return nf->CreateNode(
+          NOT, BBEQ(x, BBOr(BBUminus(x), BBUminus(BBNeg(t)))));
+
+    case RemLemma::UremRef13:
+      // (x + -s) >=u t
+      return BBBVLE(t, BBAdd(x, BBUminus(s)), false);
+
+    case RemLemma::UremRef14:
+      // ((-s) xor (x | s)) >=u t
+      return BBBVLE(t, BBXor(BBUminus(s), BBOr(x, s)), false);
+  }
+
+  FatalError("BBRemLemma: unknown lemma");
+  return BBFalse;
+}
+
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)
 {

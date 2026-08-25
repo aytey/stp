@@ -65,6 +65,7 @@ using BBNodeVec = std::vector<BBNodeAIG>;
 using BBNodeSet = std::unordered_set<BBNodeAIG>;
 
 enum class DivLemma;
+enum class RemLemma;
 
 class BitBlaster
 {
@@ -519,6 +520,8 @@ public:
   // here: the caller has the AIG manager and the splice, and this has the
   // parts.
   BBNode BBDivLemma(DivLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
+                    const BBNodeVec& t, BBNodeSet& support);
+  BBNode BBRemLemma(RemLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
   // Logical shifts by a variable amount. Both are logarithmic barrel

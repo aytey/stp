@@ -920,10 +920,25 @@ static const DivLemma DIV_LEMMAS[] = {
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
 
+static const RemLemma REM_LEMMAS[] = {
+    RemLemma::UremRef2,  RemLemma::UremRef4,  RemLemma::UremRef5,
+    RemLemma::UremRef6,  RemLemma::UremRef7,  RemLemma::UremRef8,
+    RemLemma::UremRef9,  RemLemma::UremRef10, RemLemma::UremRef11,
+    RemLemma::UremRef12, RemLemma::UremRef13, RemLemma::UremRef14};
+
+static const unsigned REM_LEMMA_COUNT =
+    sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
+
 const DivLemma* divLemmaTable(unsigned& count)
 {
   count = DIV_LEMMA_COUNT;
   return DIV_LEMMAS;
+}
+
+const RemLemma* remLemmaTable(unsigned& count)
+{
+  count = REM_LEMMA_COUNT;
+  return REM_LEMMAS;
 }
 
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
@@ -976,6 +991,17 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
             0 &&
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
+
+    for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
+    {
+      if (!remLemmaEnabled(REM_LEMMAS[i]) ||
+          !remLemmaApplicable(REM_LEMMAS[i], width))
+        continue;
+      if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+        continue;
+      if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
+        return {DivSchema::Lemma, 0, i};
+    }
   }
   else if (opKind == BVDIV)
   {
@@ -1790,9 +1816,17 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
 
         case DivSchema::Lemma:
-          BVExactEncoder(bm).encodeDivLemma(solver,
-                                            DIV_LEMMAS[inc.divSchema.lemmaIndex],
-                                            W, aVars, bVars, resultVars);
+          if (abs.opKind == BVDIV)
+            BVExactEncoder(bm).encodeDivLemma(
+                solver, DIV_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+                resultVars);
+          else
+          {
+            assert(abs.opKind == BVMOD);
+            BVExactEncoder(bm).encodeRemLemma(
+                solver, REM_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+                resultVars);
+          }
           abs.installedSchemas |=
               divLemmaInstalledBit(inc.divSchema.lemmaIndex);
           break;
@@ -1806,7 +1840,11 @@ unsigned BVAbstractionRefiner::refineTerms(
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
                   << (inc.divSchema.schema == DivSchema::Lemma
-                          ? divLemmaName(DIV_LEMMAS[inc.divSchema.lemmaIndex])
+                          ? (abs.opKind == BVDIV
+                                 ? divLemmaName(
+                                       DIV_LEMMAS[inc.divSchema.lemmaIndex])
+                                 : remLemmaName(
+                                       REM_LEMMAS[inc.divSchema.lemmaIndex]))
                           : divSchemaName(inc.divSchema.schema))
                   << " lemma" << std::endl;
       refined++;

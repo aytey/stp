@@ -484,6 +484,106 @@ const char* divLemmaName(DivLemma lemma)
   return "unknown";
 }
 
+bool remLemmaApplicable(RemLemma lemma, unsigned width)
+{
+  if (lemma == RemLemma::UremRef12)
+    return width > 2;
+  return width > 0;
+}
+
+bool remLemmaEnabled(RemLemma lemma)
+{
+  // Bitwuzla defines but deliberately omits REF6 from its active registry.
+  // It is also redundant in STP: for s != 0, t < s implies t <= s - 1;
+  // for s = 0, its all-ones upper bound says nothing.
+  return lemma != RemLemma::UremRef6;
+}
+
+bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
+                   const std::vector<bool>& s, const std::vector<bool>& t)
+{
+  assert(x.size() == s.size());
+  assert(x.size() == t.size());
+  assert(remLemmaApplicable(lemma, (unsigned)x.size()));
+
+  const unsigned W = (unsigned)x.size();
+  const std::vector<bool> zero(W, false);
+  std::vector<bool> one(W, false);
+  one[0] = true;
+
+  switch (lemma)
+  {
+    case RemLemma::UremRef2:
+      // x = 0 -> t = 0
+      return !allZero(x) || allZero(t);
+
+    case RemLemma::UremRef4:
+      // s = x -> t = 0
+      return s != x || allZero(t);
+
+    case RemLemma::UremRef5:
+      // x <u s -> t = x
+      return ule(s, x) || t == x;
+
+    case RemLemma::UremRef6:
+      // ~(-s) >=u t
+      return ule(t, notOf(negOf(s)));
+
+    case RemLemma::UremRef7:
+      // x = x & (s | t | -s)
+      return x == andOf(x, orOf(s, orOf(t, negOf(s))));
+
+    case RemLemma::UremRef8:
+      // x >=u (t | (x & s))
+      return ule(orOf(t, andOf(x, s)), x);
+
+    case RemLemma::UremRef9:
+      // 1 != (t & ~(x | s))
+      return one != andOf(t, notOf(orOf(x, s)));
+
+    case RemLemma::UremRef10:
+      // t != (~x | -s)
+      return t != orOf(notOf(x), negOf(s));
+
+    case RemLemma::UremRef11:
+      // (t & (x | s)) >=u (t & 1)
+      return ule(andOf(t, one), andOf(t, orOf(x, s)));
+
+    case RemLemma::UremRef12:
+      // x != (-x | -(~t))
+      return x != orOf(negOf(x), negOf(notOf(t)));
+
+    case RemLemma::UremRef13:
+      // (x + -s) >=u t
+      return ule(t, addOf(x, negOf(s)));
+
+    case RemLemma::UremRef14:
+      // ((-s) xor (x | s)) >=u t
+      return ule(t, xorOf(negOf(s), orOf(x, s)));
+  }
+  return true;
+}
+
+const char* remLemmaName(RemLemma lemma)
+{
+  switch (lemma)
+  {
+    case RemLemma::UremRef2: return "urem-ref2";
+    case RemLemma::UremRef4: return "urem-ref4";
+    case RemLemma::UremRef5: return "urem-ref5";
+    case RemLemma::UremRef6: return "urem-ref6-disabled";
+    case RemLemma::UremRef7: return "urem-ref7";
+    case RemLemma::UremRef8: return "urem-ref8";
+    case RemLemma::UremRef9: return "urem-ref9";
+    case RemLemma::UremRef10: return "urem-ref10";
+    case RemLemma::UremRef11: return "urem-ref11";
+    case RemLemma::UremRef12: return "urem-ref12";
+    case RemLemma::UremRef13: return "urem-ref13";
+    case RemLemma::UremRef14: return "urem-ref14";
+  }
+  return "unknown";
+}
+
 namespace
 {
 
@@ -595,6 +695,20 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
       [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
               const BBNodeVec& t, BBNodeSet& support) {
         return bb.BBDivLemma(lemma, x, s, t, support);
+      });
+}
+
+void BVExactEncoder::encodeRemLemma(SATSolver& solver, RemLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& dividendVars,
+                                    const std::vector<unsigned>& divisorVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  encodeTernaryLemma(
+      bm, solver, width, dividendVars, divisorVars, resultVars,
+      [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+              const BBNodeVec& t, BBNodeSet& support) {
+        return bb.BBRemLemma(lemma, x, s, t, support);
       });
 }
 

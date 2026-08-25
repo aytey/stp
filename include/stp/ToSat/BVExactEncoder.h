@@ -129,6 +129,26 @@ enum class DivLemma
   UdivRef38
 };
 
+// The remainder-specific part of Bitwuzla's registry. UremRef6 is retained
+// so the transcription and its circuit stay checked, but the source solver
+// does not enable it and neither does STP: it is subsumed by the existing
+// non-zero-divisor remainder bound (and is vacuous over a zero divisor).
+enum class RemLemma
+{
+  UremRef2,
+  UremRef4,
+  UremRef5,
+  UremRef6,
+  UremRef7,
+  UremRef8,
+  UremRef9,
+  UremRef10,
+  UremRef11,
+  UremRef12,
+  UremRef13,
+  UremRef14
+};
+
 // Whether one of them holds of these three values. The refiner asks before
 // installing -- a lemma the candidate already satisfies rules nothing out --
 // and the tests ask to check the circuits say the same thing.
@@ -143,6 +163,13 @@ DLL_PUBLIC bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& xBits,
 DLL_PUBLIC bool divLemmaApplicable(DivLemma lemma, unsigned width);
 
 DLL_PUBLIC const char* divLemmaName(DivLemma lemma);
+
+DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+DLL_PUBLIC bool remLemmaApplicable(RemLemma lemma, unsigned width);
+DLL_PUBLIC bool remLemmaEnabled(RemLemma lemma);
+DLL_PUBLIC const char* remLemmaName(RemLemma lemma);
 
 class DLL_PUBLIC BVExactEncoder
 {
@@ -179,6 +206,11 @@ public:
   // over a shift by a variable amount, which is a barrel shifter, which is
   // not something to write a clause at a time.
   void encodeDivLemma(SATSolver& solver, DivLemma lemma, unsigned width,
+                      const std::vector<unsigned>& dividendVars,
+                      const std::vector<unsigned>& divisorVars,
+                      const std::vector<unsigned>& resultVars);
+
+  void encodeRemLemma(SATSolver& solver, RemLemma lemma, unsigned width,
                       const std::vector<unsigned>& dividendVars,
                       const std::vector<unsigned>& divisorVars,
                       const std::vector<unsigned>& resultVars);
