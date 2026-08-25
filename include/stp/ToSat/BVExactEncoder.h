@@ -149,6 +149,28 @@ enum class RemLemma
   UremRef14
 };
 
+// The unconditional multiplication facts not already represented by STP's
+// power-of-two, low-bit, trailing-zero and odd-inverse schemas. The IDs are
+// Bitwuzla's registry names; each has two readings because multiplication is
+// commutative but most synthesised expressions are not syntactically so.
+enum class MulLemma
+{
+  MulRef1,
+  MulRef3,
+  MulRefN3,
+  MulRefN5,
+  MulRefN6,
+  MulRef14,
+  MulRef15,
+  MulRefN9,
+  MulRef18,
+  MulRefN11,
+  MulRefN12,
+  MulRefN13,
+  MulRef13,
+  MulRef12
+};
+
 // Whether one of them holds of these three values. The refiner asks before
 // installing -- a lemma the candidate already satisfies rules nothing out --
 // and the tests ask to check the circuits say the same thing.
@@ -170,6 +192,12 @@ DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,
 DLL_PUBLIC bool remLemmaApplicable(RemLemma lemma, unsigned width);
 DLL_PUBLIC bool remLemmaEnabled(RemLemma lemma);
 DLL_PUBLIC const char* remLemmaName(RemLemma lemma);
+
+DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+DLL_PUBLIC bool mulLemmaApplicable(MulLemma lemma, unsigned width);
+DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
 
 class DLL_PUBLIC BVExactEncoder
 {
@@ -213,6 +241,11 @@ public:
   void encodeRemLemma(SATSolver& solver, RemLemma lemma, unsigned width,
                       const std::vector<unsigned>& dividendVars,
                       const std::vector<unsigned>& divisorVars,
+                      const std::vector<unsigned>& resultVars);
+
+  void encodeMulLemma(SATSolver& solver, MulLemma lemma, unsigned width,
+                      const std::vector<unsigned>& xVars,
+                      const std::vector<unsigned>& sVars,
                       const std::vector<unsigned>& resultVars);
 };
 

@@ -66,6 +66,7 @@ using BBNodeSet = std::unordered_set<BBNodeAIG>;
 
 enum class DivLemma;
 enum class RemLemma;
+enum class MulLemma;
 
 class BitBlaster
 {
@@ -522,6 +523,8 @@ public:
   BBNode BBDivLemma(DivLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
   BBNode BBRemLemma(RemLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
+                    const BBNodeVec& t, BBNodeSet& support);
+  BBNode BBMulLemma(MulLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
   // Logical shifts by a variable amount. Both are logarithmic barrel

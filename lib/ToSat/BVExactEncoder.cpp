@@ -584,6 +584,119 @@ const char* remLemmaName(RemLemma lemma)
   return "unknown";
 }
 
+bool mulLemmaApplicable(MulLemma lemma, unsigned width)
+{
+  switch (lemma)
+  {
+    case MulLemma::MulRef1:
+    case MulLemma::MulRef3:
+    case MulLemma::MulRefN3:
+    case MulLemma::MulRef14:
+    case MulLemma::MulRef15:
+    case MulLemma::MulRef13: return width > 1;
+    case MulLemma::MulRefN5: return width != 2;
+    default: return width > 0;
+  }
+}
+
+bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
+                   const std::vector<bool>& s, const std::vector<bool>& t)
+{
+  assert(x.size() == s.size());
+  assert(x.size() == t.size());
+  assert(mulLemmaApplicable(lemma, (unsigned)x.size()));
+
+  const unsigned W = (unsigned)x.size();
+  std::vector<bool> one(W, false);
+  one[0] = true;
+
+  switch (lemma)
+  {
+    case MulLemma::MulRef1:
+      // s != ~(t | (1 & (x | s)))
+      return s != notOf(orOf(t, andOf(one, orOf(x, s))));
+
+    case MulLemma::MulRef3:
+      // (x & t) != (s | ~t)
+      return andOf(x, t) != orOf(s, notOf(t));
+
+    case MulLemma::MulRefN3:
+    {
+      // t != ((s | 1) << (t << x))
+      std::vector<bool> sOrOne = s;
+      sOrOne[0] = true;
+      return t != shlOf(sOrOne, shlOf(t, x));
+    }
+
+    case MulLemma::MulRefN5:
+      // t >=u (1 & ((x & s) >> 1))
+      return ule(andOf(one, shrOf(andOf(x, s), one)), t);
+
+    case MulLemma::MulRefN6:
+      // x != (1 xor (x << (s xor t)))
+      return x != xorOf(one, shlOf(x, xorOf(s, t)));
+
+    case MulLemma::MulRef14:
+      // t != (1 | ~(x xor s))
+      return t != orOf(one, notOf(xorOf(x, s)));
+
+    case MulLemma::MulRef15:
+      // t != (~1 | (x xor s))
+      return t != orOf(notOf(one), xorOf(x, s));
+
+    case MulLemma::MulRefN9:
+      // x != (x << (s + t)) - 1
+      return x != subOf(shlOf(x, addOf(s, t)), one);
+
+    case MulLemma::MulRef18:
+      // x != 1 - (x << (s - t))
+      return x != subOf(one, shlOf(x, subOf(s, t)));
+
+    case MulLemma::MulRefN11:
+      // s != 1 + (s << (t - x))
+      return s != addOf(one, shlOf(s, subOf(t, x)));
+
+    case MulLemma::MulRefN12:
+      // s != 1 - (s << (t - x))
+      return s != subOf(one, shlOf(s, subOf(t, x)));
+
+    case MulLemma::MulRefN13:
+      // s != 1 + (s << (x - t))
+      return s != addOf(one, shlOf(s, subOf(x, t)));
+
+    case MulLemma::MulRef13:
+      // t != (1 | (x + s))
+      return t != orOf(one, addOf(x, s));
+
+    case MulLemma::MulRef12:
+      // x != ~(x << (s + t))
+      return x != notOf(shlOf(x, addOf(s, t)));
+  }
+  return true;
+}
+
+const char* mulLemmaName(MulLemma lemma)
+{
+  switch (lemma)
+  {
+    case MulLemma::MulRef1: return "mul-ref1";
+    case MulLemma::MulRef3: return "mul-ref3";
+    case MulLemma::MulRefN3: return "mul-refn3";
+    case MulLemma::MulRefN5: return "mul-refn5";
+    case MulLemma::MulRefN6: return "mul-refn6";
+    case MulLemma::MulRef14: return "mul-ref14";
+    case MulLemma::MulRef15: return "mul-ref15";
+    case MulLemma::MulRefN9: return "mul-refn9";
+    case MulLemma::MulRef18: return "mul-ref18";
+    case MulLemma::MulRefN11: return "mul-refn11";
+    case MulLemma::MulRefN12: return "mul-refn12";
+    case MulLemma::MulRefN13: return "mul-refn13";
+    case MulLemma::MulRef13: return "mul-ref13";
+    case MulLemma::MulRef12: return "mul-ref12";
+  }
+  return "unknown";
+}
+
 namespace
 {
 
@@ -709,6 +822,20 @@ void BVExactEncoder::encodeRemLemma(SATSolver& solver, RemLemma lemma,
       [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
               const BBNodeVec& t, BBNodeSet& support) {
         return bb.BBRemLemma(lemma, x, s, t, support);
+      });
+}
+
+void BVExactEncoder::encodeMulLemma(SATSolver& solver, MulLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& xVars,
+                                    const std::vector<unsigned>& sVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  encodeTernaryLemma(
+      bm, solver, width, xVars, sVars, resultVars,
+      [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+              const BBNodeVec& t, BBNodeSet& support) {
+        return bb.BBMulLemma(lemma, x, s, t, support);
       });
 }
 

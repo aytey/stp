@@ -722,6 +722,25 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
   return true;
 }
 
+static const MulLemma MUL_LEMMAS[] = {
+    MulLemma::MulRef3,  // 5 firings in the ranking corpus
+    MulLemma::MulRefN3, // 4
+
+    // The unobserved tail in upstream registry order.
+    MulLemma::MulRef1,   MulLemma::MulRefN5,  MulLemma::MulRefN6,
+    MulLemma::MulRef14,  MulLemma::MulRef15,  MulLemma::MulRefN9,
+    MulLemma::MulRef18,  MulLemma::MulRefN11, MulLemma::MulRefN12,
+    MulLemma::MulRefN13, MulLemma::MulRef13,  MulLemma::MulRef12};
+
+static const unsigned MUL_LEMMA_COUNT =
+    sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
+
+const MulLemma* mulLemmaTable(unsigned& count)
+{
+  count = MUL_LEMMA_COUNT;
+  return MUL_LEMMAS;
+}
+
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -791,6 +810,24 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       if ((installedSchemas & zeroProductInstalled[i]) == 0 && (*ops[i])[0] &&
           anyBitSet(*ops[1 - i]))
         return {MulSchema::ZeroProductOddOperand, i, 0};
+
+  // The remaining facts are unconditional but asymmetric expressions over a
+  // commutative operation. Offer each source fact in both readings, exactly
+  // once apiece.
+  for (unsigned lemmaIndex = 0; lemmaIndex < MUL_LEMMA_COUNT; ++lemmaIndex)
+  {
+    const MulLemma lemma = MUL_LEMMAS[lemmaIndex];
+    if (!mulLemmaApplicable(lemma, (unsigned)tBits.size()))
+      continue;
+    for (unsigned operand = 0; operand < 2; ++operand)
+    {
+      if ((installedSchemas &
+           mulLemmaInstalledBit(lemmaIndex, operand)) != 0)
+        continue;
+      if (!mulLemmaHolds(lemma, *ops[operand], *ops[1 - operand], tBits))
+        return {MulSchema::Lemma, operand, 0, lemmaIndex};
+    }
+  }
 
   return MulSchemaChoice();
 }
@@ -1109,6 +1146,7 @@ static const char* mulSchemaName(MulSchema schema)
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
+    case MulSchema::Lemma: return "lemma";
     case MulSchema::None: break;
   }
   return "none";
@@ -1902,6 +1940,14 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
         }
 
+        case MulSchema::Lemma:
+          BVExactEncoder(bm).encodeMulLemma(
+              solver, MUL_LEMMAS[inc.schema.lemmaIndex], W, *opVars[chosen],
+              *opVars[1 - chosen], resultVars);
+          abs.installedSchemas |=
+              mulLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+          break;
+
         case MulSchema::None:
           break;
       }
@@ -1910,7 +1956,10 @@ unsigned BVAbstractionRefiner::refineTerms(
       bm->UserFlags.coverage.bv_schema_lemmas++;
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVMULT "
-                  << mulSchemaName(inc.schema.schema) << " lemma over operand "
+                  << (inc.schema.schema == MulSchema::Lemma
+                          ? mulLemmaName(MUL_LEMMAS[inc.schema.lemmaIndex])
+                          : mulSchemaName(inc.schema.schema))
+                  << " lemma over operand "
                   << chosen << std::endl;
       refined++;
       continue;

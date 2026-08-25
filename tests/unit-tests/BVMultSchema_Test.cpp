@@ -145,6 +145,16 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
       return shiftHolds(other, choice.shift, t);
     case MulSchema::NegPow2:
       return shiftHolds(negated(other), choice.shift, t);
+    case MulSchema::Lemma:
+    {
+      unsigned count = 0;
+      const MulLemma* lemmas = mulLemmaTable(count);
+      EXPECT_LT(choice.lemmaIndex, count);
+      return choice.lemmaIndex < count &&
+             mulLemmaHolds(lemmas[choice.lemmaIndex],
+                           bitsOf(ops[choice.operand]), bitsOf(other),
+                           bitsOf(t));
+    }
     case MulSchema::None:
       break;
   }
@@ -152,7 +162,7 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
 }
 
 MulSchemaChoice choose(unsigned a, unsigned b, unsigned t,
-                       unsigned installed = 0)
+                       uint64_t installed = 0)
 {
   return chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), installed);
 }
@@ -366,11 +376,16 @@ TEST(bv_mult_schema, TooFewTrailingZerosIsRefusedOverTheOperandThatHasThem)
 // to, and re-emitting them would be paying a round for nothing.
 TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
 {
-  const unsigned all = MUL_SCHEMA_INSTALLED_ODD |
-                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
-                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
-                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 |
-                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1;
+  uint64_t all = MUL_SCHEMA_INSTALLED_ODD |
+                 MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
+                 MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
+                 MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 |
+                 MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1;
+  unsigned lemmaCount = 0;
+  mulLemmaTable(lemmaCount);
+  for (unsigned i = 0; i < lemmaCount; ++i)
+    for (unsigned operand = 0; operand < 2; ++operand)
+      all |= mulLemmaInstalledBit(i, operand);
 
   for (unsigned a = 0; a < VALUES; ++a)
     for (unsigned b = 0; b < VALUES; ++b)
@@ -380,6 +395,7 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
         EXPECT_NE(MulSchema::Odd, schema);
         EXPECT_NE(MulSchema::TrailingZeros, schema);
         EXPECT_NE(MulSchema::ZeroProductOddOperand, schema);
+        EXPECT_NE(MulSchema::Lemma, schema);
       }
 
   // One at a time: the two readings of the trailing-zero fact are separate
@@ -420,7 +436,7 @@ TEST(bv_mult_schema, AnOddOperandRefusesAWrongZeroProduct)
 
   const MulSchemaChoice firstInstalled =
       choose(3, 6, 0, MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0);
-  EXPECT_EQ(MulSchema::None, firstInstalled.schema);
+  EXPECT_NE(MulSchema::ZeroProductOddOperand, firstInstalled.schema);
 }
 
 // The compact implication circuit used by the refiner is equivalent to the

@@ -3411,6 +3411,126 @@ BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
+                              const BBNodeVec& s, const BBNodeVec& t,
+                              BBNodeSet& support)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(t.size() == width);
+  assert(mulLemmaApplicable(lemma, width));
+
+  BBNodeVec one = BBfill(width, BBFalse);
+  one[0] = BBTrue;
+
+  switch (lemma)
+  {
+    case MulLemma::MulRef1:
+      // s != ~(t | (1 & (x | s)))
+      return nf->CreateNode(
+          NOT,
+          BBEQ(s, BBNeg(BBOr(t, BBAnd(one, BBOr(x, s))))));
+
+    case MulLemma::MulRef3:
+      // (x & t) != (s | ~t)
+      return nf->CreateNode(
+          NOT, BBEQ(BBAnd(x, t), BBOr(s, BBNeg(t))));
+
+    case MulLemma::MulRefN3:
+    {
+      // t != ((s | 1) << (t << x))
+      BBNodeVec sOrOne = s;
+      sOrOne[0] = BBTrue;
+      return nf->CreateNode(
+          NOT,
+          BBEQ(t, BBShiftLeftByVariable(
+                      sOrOne, BBShiftLeftByVariable(t, x))));
+    }
+
+    case MulLemma::MulRefN5:
+    {
+      // t >=u (1 & ((x & s) >> 1))
+      BBNodeVec half = BBAnd(x, s);
+      BBRShift(half, 1);
+      return BBBVLE(BBAnd(one, half), t, false);
+    }
+
+    case MulLemma::MulRefN6:
+      // x != (1 xor (x << (s xor t)))
+      return nf->CreateNode(
+          NOT,
+          BBEQ(x, BBXor(one, BBShiftLeftByVariable(x, BBXor(s, t)))));
+
+    case MulLemma::MulRef14:
+      // t != (1 | ~(x xor s))
+      return nf->CreateNode(
+          NOT, BBEQ(t, BBOr(one, BBNeg(BBXor(x, s)))));
+
+    case MulLemma::MulRef15:
+      // t != (~1 | (x xor s))
+      return nf->CreateNode(
+          NOT, BBEQ(t, BBOr(BBNeg(one), BBXor(x, s))));
+
+    case MulLemma::MulRefN9:
+    {
+      // x != (x << (s + t)) - 1
+      BBNodeVec rhs = BBShiftLeftByVariable(x, BBAdd(s, t));
+      BBSub(rhs, one, support);
+      return nf->CreateNode(NOT, BBEQ(x, rhs));
+    }
+
+    case MulLemma::MulRef18:
+    {
+      // x != 1 - (x << (s - t))
+      BBNodeVec amount = s;
+      BBSub(amount, t, support);
+      BBNodeVec rhs = one;
+      BBSub(rhs, BBShiftLeftByVariable(x, amount), support);
+      return nf->CreateNode(NOT, BBEQ(x, rhs));
+    }
+
+    case MulLemma::MulRefN11:
+    {
+      // s != 1 + (s << (t - x))
+      BBNodeVec amount = t;
+      BBSub(amount, x, support);
+      return nf->CreateNode(
+          NOT, BBEQ(s, BBAdd(one, BBShiftLeftByVariable(s, amount))));
+    }
+
+    case MulLemma::MulRefN12:
+    {
+      // s != 1 - (s << (t - x))
+      BBNodeVec amount = t;
+      BBSub(amount, x, support);
+      BBNodeVec rhs = one;
+      BBSub(rhs, BBShiftLeftByVariable(s, amount), support);
+      return nf->CreateNode(NOT, BBEQ(s, rhs));
+    }
+
+    case MulLemma::MulRefN13:
+    {
+      // s != 1 + (s << (x - t))
+      BBNodeVec amount = x;
+      BBSub(amount, t, support);
+      return nf->CreateNode(
+          NOT, BBEQ(s, BBAdd(one, BBShiftLeftByVariable(s, amount))));
+    }
+
+    case MulLemma::MulRef13:
+      // t != (1 | (x + s))
+      return nf->CreateNode(NOT, BBEQ(t, BBOr(one, BBAdd(x, s))));
+
+    case MulLemma::MulRef12:
+      // x != ~(x << (s + t))
+      return nf->CreateNode(
+          NOT, BBEQ(x, BBNeg(BBShiftLeftByVariable(x, BBAdd(s, t)))));
+  }
+
+  FatalError("BBMulLemma: unknown lemma");
+  return BBFalse;
+}
+
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)
 {

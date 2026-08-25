@@ -95,8 +95,9 @@ struct BVEQAbstraction
 // the one in hand, and the candidate is read only to decide which of them
 // it contradicts.
 //
-// The five schemas cover low-bit parity, trailing-zero preservation,
-// zero-products with an odd operand, and positive and negative powers of two.
+// The hand-written schemas cover low-bit parity, trailing-zero preservation,
+// zero-products with an odd operand, and positive and negative powers of two;
+// Lemma carries the remainder of the upstream synthesised registry.
 enum class MulSchema
 {
   // Nothing the candidate contradicts. The round falls through to the
@@ -121,7 +122,9 @@ enum class MulSchema
   Pow2,
   // ... and an operand whose value is -2^k turns it into a shift of the
   // other one negated: a = -2^k -> t = (-b) << k.
-  NegPow2
+  NegPow2,
+  // One of the remaining synthesised facts, named by lemmaIndex.
+  Lemma
 };
 
 // Which fact to spend, over which operand. Multiplication is commutative,
@@ -132,6 +135,8 @@ struct MulSchemaChoice
   unsigned operand = 0;
   // log2 of the power of two, for the two schemas that have one.
   unsigned shift = 0;
+  // Set for Lemma: index in mulLemmaTable().
+  unsigned lemmaIndex = 0;
 };
 
 // Bits of BVTermAbstraction::installedSchemas. Only the unconditional facts
@@ -146,8 +151,16 @@ enum : uint64_t
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2ull,
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4ull,
   MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8ull,
-  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull
+  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull,
+  MUL_LEMMA_INSTALLED_FIRST = 32ull
 };
+
+inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
+{
+  return MUL_LEMMA_INSTALLED_FIRST << (2 * index + operand);
+}
+
+DLL_PUBLIC const MulLemma* mulLemmaTable(unsigned& count);
 
 // The first of the five facts above that this candidate contradicts, or
 // None. Pure: the caller has already read the model, and what comes back
