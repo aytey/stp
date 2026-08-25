@@ -249,6 +249,34 @@ enum
   LEMMA_INSTALLED_FIRST = 64u
 };
 
+// The shift bound's allowance, which is the one thing here that needs one.
+//
+// Everything else is installed at most once, or is guarded on a value the
+// candidate fixed and so settles that value for good. The shift bound is
+// guarded on a *magnitude*, and a search told about one magnitude answers
+// with another: left alone it fired 45 times on a single spear query and
+// took it from 0.59s to 7.06s, which was that corpus's whole regression.
+// Two instances per abstraction, in two bits of their own well clear of the
+// table's.
+enum : uint64_t
+{
+  DIV_SCHEMA_SHIFT_BOUND_FIRST = 1ull << 60,
+  DIV_SCHEMA_SHIFT_BOUND_ALLOWANCE = 2
+};
+
+inline uint64_t divShiftBoundBit(unsigned index)
+{
+  return DIV_SCHEMA_SHIFT_BOUND_FIRST << index;
+}
+
+inline bool divShiftBoundsLeft(uint64_t installedSchemas)
+{
+  for (unsigned i = 0; i < DIV_SCHEMA_SHIFT_BOUND_ALLOWANCE; ++i)
+    if ((installedSchemas & divShiftBoundBit(i)) == 0)
+      return true;
+  return false;
+}
+
 // Sixty-four bits and not thirty-two. The field is nowhere near full, but
 // the shift below is what would overflow -- silently, and only once a table
 // grew past twenty-six entries, which is a thing a later commit does

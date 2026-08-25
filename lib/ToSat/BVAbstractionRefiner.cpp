@@ -1092,7 +1092,7 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     //
     // A zero divisor has no top bit and the fact says nothing about it.
     const int top = divisorZero ? -1 : topSetBit(bBits);
-    if (top >= 1 &&
+    if (top >= 1 && divShiftBoundsLeft(installedSchemas) &&
         !valueLessOrEqual(tBits, shiftedRight(aBits, (unsigned)top)))
       return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0};
   }
@@ -1971,6 +1971,12 @@ unsigned BVAbstractionRefiner::refineTerms(
         case DivSchema::DivisorAtLeastPow2:
           encodeDivShiftBound(solver, aVars, bVars, resultVars, W,
                               inc.divSchema.shift);
+          for (unsigned i = 0; i < DIV_SCHEMA_SHIFT_BOUND_ALLOWANCE; ++i)
+            if ((abs.installedSchemas & divShiftBoundBit(i)) == 0)
+            {
+              abs.installedSchemas |= divShiftBoundBit(i);
+              break;
+            }
           break;
 
         case DivSchema::RemainderAtMostDividend:
