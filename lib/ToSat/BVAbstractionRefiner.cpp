@@ -1025,6 +1025,21 @@ static bool valueIsZero(const std::vector<bool>& bits)
   return true;
 }
 
+static std::vector<bool> valueSubtract(const std::vector<bool>& left,
+                                       const std::vector<bool>& right)
+{
+  assert(left.size() == right.size());
+  std::vector<bool> difference(left.size());
+  bool borrow = false;
+  for (unsigned i = 0; i < left.size(); ++i)
+  {
+    difference[i] = (left[i] != right[i]) != borrow;
+    borrow = (!left[i] && right[i]) || (!left[i] && borrow) ||
+             (right[i] && borrow);
+  }
+  return difference;
+}
+
 // The DivLemma facts, in the order the chooser offers them: by how often
 // they fired in the solver they come from, measured over the queries this
 // is for. A candidate usually breaks more than one, so the order decides
@@ -1144,6 +1159,19 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
 
+    // Exactly one subtraction fits: b <= a and a-b < b. The first condition
+    // makes the modular subtraction the natural one; spelling the upper
+    // edge this way avoids the overflow in a < 2*b. Once installed, this
+    // single implication covers the entire band for every nonzero divisor.
+    if ((installedSchemas &
+         DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE) == 0)
+    {
+      const std::vector<bool> difference = valueSubtract(aBits, bBits);
+      if (valueLessOrEqual(bBits, aBits) &&
+          !valueLessOrEqual(bBits, difference) && difference != tBits)
+        return {DivSchema::RemainderQuotientOne, 0};
+    }
+
     for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
     {
       if (!remLemmaEnabled(REM_LEMMAS[i]) ||
@@ -1229,6 +1257,7 @@ static const char* divSchemaName(DivSchema schema)
     case DivSchema::Pow2Divisor: return "power-of-two-divisor";
     case DivSchema::RemainderAtMostDividend: return "remainder-at-most-dividend";
     case DivSchema::RemainderBelowDivisor: return "remainder-below-divisor";
+    case DivSchema::RemainderQuotientOne: return "quotient-one-remainder";
     case DivSchema::QuotientAtMostDividend: return "quotient-at-most-dividend";
     case DivSchema::QuotientPow2Threshold:
       return "power-of-two-quotient-threshold";
@@ -1665,6 +1694,48 @@ void encodeDivPow2Threshold(SATSolver& solver,
     cl.clear();
     cl.push(SATSolver::mkLit(quotientVars[i], true));
     cl.push(SATSolver::mkLit(divisorBelowShiftedDividend, false));
+    solver.addClause(cl);
+  }
+}
+
+void encodeRemQuotientOne(SATSolver& solver,
+                          const std::vector<unsigned>& dividendVars,
+                          const std::vector<unsigned>& divisorVars,
+                          const std::vector<unsigned>& remainderVars,
+                          unsigned width)
+{
+  assert(width > 0);
+  assert(dividendVars.size() >= width);
+  assert(divisorVars.size() >= width);
+  assert(remainderVars.size() >= width);
+
+  std::vector<unsigned> difference(width);
+  for (unsigned i = 0; i < width; ++i)
+    difference[i] = freshVar(solver);
+  encodeAddLowPrefix(solver, dividendVars, divisorVars, difference, width,
+                     width, false, true);
+
+  const unsigned divisorBelowDividend = encodeLessOrEqual(
+      solver, divisorVars, dividendVars, width, false);
+  const unsigned divisorBelowDifference = encodeLessOrEqual(
+      solver, divisorVars, difference, width, false);
+
+  // (b <= a && !(b <= a-b)) -> r = a-b. The second comparison is the
+  // strict (a-b) < b edge, and makes the premise false when b is zero.
+  for (unsigned i = 0; i < width; ++i)
+  {
+    SATSolver::vec_literals cl;
+    cl.push(SATSolver::mkLit(divisorBelowDividend, true));
+    cl.push(SATSolver::mkLit(divisorBelowDifference, false));
+    cl.push(SATSolver::mkLit(remainderVars[i], true));
+    cl.push(SATSolver::mkLit(difference[i], false));
+    solver.addClause(cl);
+
+    cl.clear();
+    cl.push(SATSolver::mkLit(divisorBelowDividend, true));
+    cl.push(SATSolver::mkLit(divisorBelowDifference, false));
+    cl.push(SATSolver::mkLit(remainderVars[i], false));
+    cl.push(SATSolver::mkLit(difference[i], true));
     solver.addClause(cl);
   }
 }
@@ -2138,6 +2209,13 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodeDivBound(solver, inc.divSchema.schema, aVars, bVars, resultVars,
                          W);
           abs.installedSchemas |= DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR;
+          break;
+
+        case DivSchema::RemainderQuotientOne:
+          assert(abs.opKind == BVMOD);
+          encodeRemQuotientOne(solver, aVars, bVars, resultVars, W);
+          abs.installedSchemas |=
+              DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE;
           break;
 
         case DivSchema::QuotientAtMostDividend:

@@ -159,6 +159,12 @@ bool quotientThresholdHolds(unsigned a, unsigned b, unsigned q, unsigned k)
   return (q >= (1u << k)) == (b <= (a >> k));
 }
 
+bool remainderQuotientOneHolds(unsigned a, unsigned b, unsigned r)
+{
+  const bool premise = b <= a && ((a - b) & (VALUES - 1)) < b;
+  return !premise || r == a - b;
+}
+
 } // namespace
 
 // Every lemma this can install is true of the operation it is installed
@@ -240,6 +246,15 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
                 << "threshold k=" << choice.shift << " at a=" << a
                 << " b=" << b << " q=" << t
                 << " is already satisfied by the candidate";
+            continue;
+          }
+
+          if (choice.schema == DivSchema::RemainderQuotientOne)
+          {
+            ASSERT_EQ(opKind, BVMOD);
+            ASSERT_FALSE(remainderQuotientOneHolds(a, b, t))
+                << "quotient-one band at a=" << a << " b=" << b
+                << " r=" << t << " is already satisfied by the candidate";
             continue;
           }
 
@@ -331,6 +346,10 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
           }
           else
           {
+            ASSERT_TRUE(remainderQuotientOneHolds(a, b, t))
+                << "the quotient-one band was available at a=" << a
+                << " b=" << b << " r=" << t << " and was not offered";
+
             unsigned n = 0;
             const RemLemma* table = remLemmaTable(n);
             for (unsigned i = 0; i < n; ++i)
@@ -529,7 +548,8 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
   divLemmaTable(lemmaCount);
   uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
                  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
-                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
+                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND |
+                 DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE;
   for (unsigned i = 0; i < lemmaCount; ++i)
     all |= divLemmaInstalledBit(i);
 
@@ -722,4 +742,47 @@ TEST(BVDivSchemaThreshold, every_real_quotient_satisfies_every_threshold)
       for (unsigned k = 1; k < WIDTH; ++k)
         ASSERT_TRUE(quotientThresholdHolds(a, b, referenceDiv(a, b), k))
             << "k=" << k << " a=" << a << " b=" << b;
+}
+
+TEST(BVDivSchemaQuotientOne,
+     every_real_remainder_satisfies_the_quotient_one_band)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      ASSERT_TRUE(remainderQuotientOneHolds(a, b, referenceRem(a, b)))
+          << "a=" << a << " b=" << b;
+}
+
+TEST_F(BVDivBoundEncodingTest,
+       quotient_one_clauses_match_the_conditional_remainder)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      for (unsigned r = 0; r < VALUES; ++r)
+      {
+        std::unique_ptr<SATSolver> solver = makeSolver();
+        ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+        std::vector<unsigned> aVars(WIDTH), bVars(WIDTH), rVars(WIDTH);
+        for (unsigned i = 0; i < WIDTH; ++i)
+        {
+          aVars[i] = solver->newVar();
+          bVars[i] = solver->newVar();
+          rVars[i] = solver->newVar();
+          solver->setFrozen(aVars[i]);
+          solver->setFrozen(bVars[i]);
+          solver->setFrozen(rVars[i]);
+        }
+
+        encodeRemQuotientOne(*solver, aVars, bVars, rVars, WIDTH);
+        pin(*solver, aVars, a);
+        pin(*solver, bVars, b);
+        pin(*solver, rVars, r);
+
+        bool timedOut = false;
+        const bool satisfiable = solver->solve(timedOut);
+        ASSERT_FALSE(timedOut);
+        ASSERT_EQ(remainderQuotientOneHolds(a, b, r), satisfiable)
+            << "a=" << a << " b=" << b << " r=" << r;
+      }
 }

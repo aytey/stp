@@ -259,8 +259,8 @@ enum class DivSchema
   // the useful degenerate reading: dividing by one is the dividend, and the
   // remainder over one is zero.
   Pow2Divisor,
-  // The three below name no divisor at all, which is what makes them the
-  // ones that fire. A candidate handed a 256-bit divisor is almost never
+  // The facts below name no particular divisor, which is what makes them
+  // fire. A candidate handed a 256-bit divisor is almost never
   // handed zero or a power of two, so the two schemas above sit idle on
   // exactly the queries the abstraction exists for -- while a bound is
   // contradicted by any candidate that overshoots, whatever the divisor is.
@@ -273,6 +273,11 @@ enum class DivSchema
   RemainderAtMostDividend,
   // b != 0 -> r <u b, which is what a remainder is.
   RemainderBelowDivisor,
+  // The quotient-one band, stated without doubling the divisor (which could
+  // overflow): b <=u a and (a - b) <u b -> r = a - b. The two comparisons
+  // make the premise false for b = 0, so SMT-LIB's totalised zero-divisor
+  // result needs no separate case.
+  RemainderQuotientOne,
   // b != 0 -> t <=u a. Dividing by one leaves the dividend and dividing by
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
@@ -298,6 +303,7 @@ enum class DivSchema
 // addition flags, which is safe because an abstraction has only one kind.
 enum : uint64_t
 {
+  DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE = 4ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16ull,
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32ull,
@@ -384,6 +390,12 @@ DLL_PUBLIC void encodeDivPow2Threshold(
     const std::vector<unsigned>& divisorVars,
     const std::vector<unsigned>& quotientVars, unsigned width,
     unsigned shift);
+
+// b <=u a and (a - b) <u b -> r = a - b.
+DLL_PUBLIC void encodeRemQuotientOne(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& remainderVars, unsigned width);
 
 // divisor = divisorBits -> every result bit is a constant or a bit of the
 // dividend, as `source` says. Exposed for the tests: what the schema claims
