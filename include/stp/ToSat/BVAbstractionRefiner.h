@@ -187,6 +187,24 @@ enum class DivSchema
   // the useful degenerate reading: dividing by one is the dividend, and the
   // remainder over one is zero.
   Pow2Divisor,
+  // b >=u 2^k -> t <=u (a >> k), for a quotient.
+  //
+  // The schema above with its equality guard loosened to an inequality, and
+  // that is the whole idea: `b = 2^k` names one divisor out of 2^W, while
+  // `b >=u 2^k` names half of them. Take k from where the candidate
+  // divisor's top bit is and the bound is within a factor of two of the
+  // quotient, which is far tighter than `t <=u a` and is the only thing here
+  // that says anything sharp about a divisor that is neither zero nor a
+  // power of two.
+  //
+  // Cheap, too: the guard is a disjunction over the divisor's bits at or
+  // above k -- so one binary clause per bit, no premise variable -- and the
+  // conclusion shifts by a constant, so there is no barrel shifter under it.
+  //
+  // No installed-flag, for the reason Pow2Divisor has none: installing it
+  // for one k settles that k for good, and there are only as many k as
+  // there are bits.
+  DivisorAtLeastPow2,
   // The three below name no divisor at all, which is what makes them the
   // ones that fire. A candidate handed a 256-bit divisor is almost never
   // handed zero or a power of two, so the two schemas above sit idle on
@@ -312,6 +330,15 @@ DLL_PUBLIC void encodeDivBound(SATSolver& solver, DivSchema schema,
                                const std::vector<unsigned>& divisorVars,
                                const std::vector<unsigned>& resultVars,
                                unsigned width);
+
+// b >=u 2^shift -> t <=u (a >> shift). Exposed for the same reason as the
+// bounds above: whether the clauses say what the schema claims is a question
+// only a solver can answer.
+DLL_PUBLIC void encodeDivShiftBound(SATSolver& solver,
+                                    const std::vector<unsigned>& dividendVars,
+                                    const std::vector<unsigned>& divisorVars,
+                                    const std::vector<unsigned>& resultVars,
+                                    unsigned width, unsigned shift);
 
 // divisor = divisorBits -> every result bit is a constant or a bit of the
 // dividend, as `source` says. Exposed for the tests: what the schema claims

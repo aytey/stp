@@ -138,6 +138,23 @@ bool boundApplies(Kind opKind, DivSchema schema)
   return schema == DivSchema::QuotientAtMostDividend;
 }
 
+// b >=u 2^k -> t <=u (a >> k), written out here for the same reason.
+bool shiftBoundHolds(unsigned a, unsigned b, unsigned t, unsigned k)
+{
+  return b < (1u << k) || t <= (a >> k);
+}
+
+// The largest k the shift bound can be offered at over this divisor, which
+// is where its top bit sits. -1 for a zero divisor, which the bound says
+// nothing about.
+int topBit(unsigned b)
+{
+  for (int i = (int)WIDTH - 1; i >= 0; --i)
+    if ((b >> i) & 1u)
+      return i;
+  return -1;
+}
+
 // What each bound asserts, written out here rather than shared with the
 // refiner for the same reason the reference operations are.
 bool boundHolds(DivSchema schema, unsigned a, unsigned b, unsigned t)
@@ -226,6 +243,15 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
             continue;
           }
 
+          if (choice.schema == DivSchema::DivisorAtLeastPow2)
+          {
+            ASSERT_FALSE(shiftBoundHolds(a, b, t, choice.shift))
+                << "the shift bound at k=" << choice.shift << " over "
+                << _kind_names[opKind] << " at a=" << a << " b=" << b
+                << " t=" << t << " is already satisfied by the candidate";
+            continue;
+          }
+
           if (!namesADivisor(choice.schema))
           {
             ASSERT_FALSE(boundHolds(choice.schema, a, b, t))
@@ -294,6 +320,13 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
                   << " t=" << t << " and was not offered";
             }
           }
+
+          // ... and, for a quotient, the shift bound at every k.
+          if (opKind == BVDIV)
+            for (unsigned k = 0; k < WIDTH; ++k)
+              ASSERT_TRUE(shiftBoundHolds(a, b, t, k))
+                  << "the shift bound at k=" << k << " was available at a=" << a
+                  << " b=" << b << " t=" << t << " and was not offered";
 
           // ... and every wider fact its kind carries too.
           unsigned n = 0;
@@ -515,7 +548,8 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
           const DivSchemaChoice choice =
               chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), all);
           ASSERT_TRUE(choice.schema == DivSchema::None ||
-                      namesADivisor(choice.schema))
+                      namesADivisor(choice.schema) ||
+                      choice.schema == DivSchema::DivisorAtLeastPow2)
               << "a bound was offered again over " << _kind_names[opKind]
               << " at a=" << a << " b=" << b << " t=" << t;
         }
@@ -651,4 +685,72 @@ TEST_F(BVDivBoundEncodingTest, bounds_forbid_what_they_should_and_nothing_more)
                 << " at a=" << a << " b=" << b << " t=" << t;
           }
     }
+}
+
+// The shift bound is true of division at every pair of operands and every
+// exponent, not only the exponent the candidate chose. It goes into the
+// solver under a guard the candidate happens to meet and is never taken back,
+// so one that was merely usually true would turn a satisfiable query unsat.
+TEST(BVDivSchemaBounds, the_shift_bound_is_true_of_division_at_every_exponent)
+{
+  for (unsigned k = 0; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; a++)
+      for (unsigned b = 0; b < VALUES; b++)
+        ASSERT_TRUE(shiftBoundHolds(a, b, referenceDiv(a, b), k))
+            << "the shift bound at k=" << k << " is false of division at a="
+            << a << " b=" << b;
+}
+
+// ... and it is the tightest reading available for the divisor it is chosen
+// over: the exponent handed back is where that divisor's top bit is, so no
+// larger one would have applied.
+TEST(BVDivSchemaBounds, the_shift_bound_is_chosen_at_the_divisors_top_bit)
+{
+  for (unsigned a = 0; a < VALUES; a++)
+    for (unsigned b = 0; b < VALUES; b++)
+      for (unsigned t = 0; t < VALUES; t++)
+      {
+        const DivSchemaChoice choice =
+            chooseDivSchema(BVDIV, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+        if (choice.schema != DivSchema::DivisorAtLeastPow2)
+          continue;
+        ASSERT_EQ((int)choice.shift, topBit(b))
+            << "a=" << a << " b=" << b << " t=" << t;
+      }
+}
+
+// The clauses forbid what the schema claims and nothing more: every triple
+// the bound admits is still reachable, and every triple it forbids is gone.
+TEST_F(BVDivBoundEncodingTest, the_shift_bound_forbids_exactly_what_it_claims)
+{
+  for (unsigned k = 0; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; a++)
+      for (unsigned b = 0; b < VALUES; b++)
+        for (unsigned t = 0; t < VALUES; t++)
+        {
+          std::unique_ptr<SATSolver> solver = makeSolver();
+          ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+          std::vector<unsigned> av(WIDTH), bv(WIDTH), tv(WIDTH);
+          for (unsigned i = 0; i < WIDTH; ++i)
+          {
+            av[i] = solver->newVar();
+            bv[i] = solver->newVar();
+            tv[i] = solver->newVar();
+            solver->setFrozen(av[i]);
+            solver->setFrozen(bv[i]);
+            solver->setFrozen(tv[i]);
+          }
+
+          encodeDivShiftBound(*solver, av, bv, tv, WIDTH, k);
+          pin(*solver, av, a);
+          pin(*solver, bv, b);
+          pin(*solver, tv, t);
+
+          bool timedOut = false;
+          const bool sat = solver->solve(timedOut);
+          ASSERT_FALSE(timedOut);
+          ASSERT_EQ(shiftBoundHolds(a, b, t, k), sat)
+              << "k=" << k << " a=" << a << " b=" << b << " t=" << t;
+        }
 }

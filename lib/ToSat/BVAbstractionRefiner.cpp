@@ -665,6 +665,16 @@ static std::vector<unsigned> encodeNegate(SATSolver& solver,
   return neg;
 }
 
+// Where the highest set bit is, or -1 for zero. `2^topSetBit(v) <=u v`, and
+// it is the largest exponent for which that holds.
+static int topSetBit(const std::vector<bool>& bits)
+{
+  for (int i = (int)bits.size() - 1; i >= 0; --i)
+    if (bits[i])
+      return i;
+  return -1;
+}
+
 // The exponent of a power of two, or -1 for anything else. Exactly one bit
 // set: zero has none and is not one.
 static int powerOfTwoExponent(const std::vector<bool>& bits)
@@ -878,6 +888,18 @@ static bool valueLessOrEqual(const std::vector<bool>& left,
   return true;
 }
 
+// `bits >> by`, zeros arriving at the top: the value the shift bound holds
+// the quotient under.
+static std::vector<bool> shiftedRight(const std::vector<bool>& bits,
+                                      unsigned by)
+{
+  const unsigned W = (unsigned)bits.size();
+  std::vector<bool> out(W, false);
+  for (unsigned i = 0; i + by < W; ++i)
+    out[i] = bits[i + by];
+  return out;
+}
+
 static bool valueIsZero(const std::vector<bool>& bits)
 {
   for (unsigned i = 0; i < bits.size(); ++i)
@@ -1013,11 +1035,13 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   }
   else if (opKind == BVDIV)
   {
-    // b != 0 -> t <=u a.
+    // b != 0 -> t <=u a, which is the shift bound below at k = 0 and is kept
+    // separate because it is the one reading of it that needs no shift.
     if ((installedSchemas &
          DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND) == 0 &&
         !divisorZero && !valueLessOrEqual(tBits, aBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
+
 
     // Then the wider facts, first one the candidate breaks. Quotients only:
     // every one of them is about `t = a udiv b`.
@@ -1034,6 +1058,34 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i};
     }
+
+    // Last of all, b >=u 2^k -> t <=u (a >> k), at the largest k the guard
+    // allows, which is where the candidate divisor's top bit sits.
+    //
+    // Last because it is the one fact here that a candidate can break over
+    // and over: the guard names a magnitude, and a search that has been told
+    // about one magnitude answers with another. Offered ahead of the wider
+    // facts it fired 28 times on a query those facts settle in six rounds,
+    // and they never got a turn. Behind them it is what it should be -- the
+    // thing that is tried when nothing sharper applies.
+    //
+    // `a >> k` only falls as k rises, so a candidate that breaks the bound at
+    // any k breaks it at every k above, and the smallest of those has the
+    // broadest guard -- which looks like the better buy and measures as the
+    // worse one. Each round installs one k, and a search that has been told
+    // `b >=u 2` moves to a quotient that only breaks the bound at k = 2, then
+    // at k = 3: it walks the exponent upward one round at a time and wants k
+    // rounds to settle a query about 2^k. At 64 bits that converges in 23
+    // rounds; at 128 it does not, because the round allowance runs out first.
+    //
+    // The top bit costs one round for a divisor whose magnitude the query
+    // pins, which is the case this is for.
+    //
+    // A zero divisor has no top bit and the fact says nothing about it.
+    const int top = divisorZero ? -1 : topSetBit(bBits);
+    if (top >= 1 &&
+        !valueLessOrEqual(tBits, shiftedRight(aBits, (unsigned)top)))
+      return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0};
   }
 
   return DivSchemaChoice();
@@ -1045,6 +1097,8 @@ static const char* divSchemaName(DivSchema schema)
   {
     case DivSchema::DivisorZero: return "zero-divisor";
     case DivSchema::Pow2Divisor: return "power-of-two-divisor";
+    case DivSchema::DivisorAtLeastPow2:
+      return "divisor-at-least-power-of-two";
     case DivSchema::RemainderAtMostDividend: return "remainder-at-most-dividend";
     case DivSchema::RemainderBelowDivisor: return "remainder-below-divisor";
     case DivSchema::QuotientAtMostDividend: return "quotient-at-most-dividend";
@@ -1320,6 +1374,42 @@ void encodeDivBound(SATSolver& solver, DivSchema schema,
   {
     cl.clear();
     cl.push(SATSolver::mkLit(bLeR, true));
+    cl.push(SATSolver::mkLit(divisorVars[i], true));
+    solver.addClause(cl);
+  }
+}
+
+// b >=u 2^shift -> t <=u (a >> shift).
+//
+// The shift is a constant, so `a >> shift` is the dividend's own variables
+// read from an offset with a pinned zero above it -- no gates, and no new
+// variable beyond the one the comparison chain needs. The premise
+// `b >=u 2^shift` is "some bit of b at or above shift is set", which is a
+// disjunction, so its contrapositive is one binary clause per such bit: no
+// premise variable, and the solver sees the guard on every bit of the divisor
+// rather than behind a literal it has to reason through. That is the shape
+// encodeDivBound uses for `b != 0`, and for the same reason.
+void encodeDivShiftBound(SATSolver& solver,
+                         const std::vector<unsigned>& dividendVars,
+                         const std::vector<unsigned>& divisorVars,
+                         const std::vector<unsigned>& resultVars,
+                         unsigned width, unsigned shift)
+{
+  assert(shift < width);
+
+  const unsigned zero = pinnedVar(solver, false);
+  std::vector<unsigned> shifted(width);
+  for (unsigned i = 0; i < width; ++i)
+    shifted[i] = (i + shift < width) ? dividendVars[i + shift] : zero;
+
+  const unsigned le =
+      encodeLessOrEqual(solver, resultVars, shifted, width, false);
+
+  SATSolver::vec_literals cl;
+  for (unsigned i = shift; i < width; ++i)
+  {
+    cl.clear();
+    cl.push(SATSolver::mkLit(le, false));
     cl.push(SATSolver::mkLit(divisorVars[i], true));
     solver.addClause(cl);
   }
@@ -1867,6 +1957,11 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodeDivUnderDivisorValue(
               solver, bVars, inc.bBits, aVars, resultVars, W,
               divSchemaSources(abs.opKind, W, inc.divSchema));
+          break;
+
+        case DivSchema::DivisorAtLeastPow2:
+          encodeDivShiftBound(solver, aVars, bVars, resultVars, W,
+                              inc.divSchema.shift);
           break;
 
         case DivSchema::RemainderAtMostDividend:
