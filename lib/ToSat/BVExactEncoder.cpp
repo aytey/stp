@@ -486,6 +486,46 @@ const char* remLemmaName(RemLemma lemma)
   return "unknown";
 }
 
+bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
+                   const std::vector<bool>& s, const std::vector<bool>& t)
+{
+  const unsigned W = (unsigned)x.size();
+  std::vector<bool> one(W, false);
+  one[0] = true;
+
+  switch (lemma)
+  {
+    case MulLemma::FactorUnchangedByMaskedShift:
+      // s = s << (x & (1 >> t))
+      return s == shlOf(s, andOf(x, shrOf(one, t)));
+
+    case MulLemma::FactorAndProductNotOr:
+      // (x & t) != (s | ~t)
+      return andOf(x, t) != orOf(s, notOf(t));
+  }
+  return true;
+}
+
+unsigned mulLemmaMinWidth(MulLemma lemma)
+{
+  // `(x & t) != (s | ~t)` is false at one bit, where the product is the
+  // conjunction and x = s = t = 1 satisfies both sides. It is true at every
+  // width above, checked exhaustively to eight bits.
+  return (lemma == MulLemma::FactorAndProductNotOr) ? 2 : 1;
+}
+
+const char* mulLemmaName(MulLemma lemma)
+{
+  switch (lemma)
+  {
+    case MulLemma::FactorUnchangedByMaskedShift:
+      return "factor-unchanged-by-masked-shift";
+    case MulLemma::FactorAndProductNotOr:
+      return "factor-and-product-not-or";
+  }
+  return "unknown";
+}
+
 namespace
 {
 
@@ -609,6 +649,19 @@ void BVExactEncoder::encodeRemLemma(SATSolver& solver, RemLemma lemma,
               [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
                       const BBNodeVec& t, BBNodeSet& support) {
                 return bb.BBRemLemma(lemma, x, s, t, support);
+              });
+}
+
+void BVExactEncoder::encodeMulLemma(SATSolver& solver, MulLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& xVars,
+                                    const std::vector<unsigned>& sVars,
+                                    const std::vector<unsigned>& resultVars)
+{
+  spliceLemma(bm, solver, width, xVars, sVars, resultVars,
+              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
+                      const BBNodeVec& t, BBNodeSet& support) {
+                return bb.BBMulLemma(lemma, x, s, t, support);
               });
 }
 

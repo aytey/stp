@@ -115,7 +115,12 @@ enum class MulSchema
   Pow2,
   // ... and an operand whose value is -2^k turns it into a shift of the
   // other one negated: a = -2^k -> t = (-b) << k.
-  NegPow2
+  NegPow2,
+  // One of the MulLemma facts, named by MulSchemaChoice::lemmaIndex. Like
+  // the division facts they are mostly synthesised inequalities, and two of
+  // the three shift by a variable amount, so they are built by the
+  // bit-blaster rather than written a clause at a time.
+  Lemma
 };
 
 // Which fact to spend, over which operand. Multiplication is commutative,
@@ -126,6 +131,10 @@ struct MulSchemaChoice
   unsigned operand = 0;
   // log2 of the power of two, for the two schemas that have one.
   unsigned shift = 0;
+  // Set when `schema` is Lemma: which of the MulLemma facts to install, as
+  // an index into the table the refiner keeps. `operand` says which of the
+  // multiplication's operands plays the `x` of the fact.
+  unsigned lemmaIndex = 0;
 };
 
 // Bits of BVTermAbstraction::installedSchemas. Only the two unconditional
@@ -141,9 +150,9 @@ enum
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4u
 };
 
-// The first of the four facts above that this candidate contradicts, or
-// None. Pure: the caller has already read the model, and what comes back
-// depends on nothing else.
+// The first of the facts above that this candidate contradicts, or None.
+// Pure: the caller has already read the model, and what comes back depends
+// on nothing else.
 //
 // `tBits` is the product bits the candidate holds, NOT the product of
 // `aBits` and `bBits` -- the whole point is that the two disagree. Called
@@ -215,27 +224,38 @@ enum
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32u,
   // ... and one apiece for the wider facts, which are unconditional for the
   // same reason and tracked the same way. The first of them is 64;
-  // `divLemmaInstalledBit(i)` is the bit for the i'th. The quotient and the
-  // remainder facts share the range: a record is a BVDIV or a BVMOD and
-  // never both, so only one of the two tables is ever indexed into it.
-  DIV_LEMMA_INSTALLED_FIRST = 64u
+  // `divLemmaInstalledBit(i)` is the bit for the i'th. All three tables --
+  // quotient, remainder, product -- share the range, which is safe because
+  // a record is exactly one of BVDIV, BVMOD and BVMULT, so only one of them
+  // is ever indexed into it.
+  LEMMA_INSTALLED_FIRST = 64u
 };
 
 // Sixty-four bits and not thirty-two. The field is nowhere near full, but
-// the shift below is what would overflow -- silently, and only once the
-// table grew past twenty-six entries, which is a thing a later commit does
+// the shift below is what would overflow -- silently, and only once a table
+// grew past twenty-six entries, which is a thing a later commit does
 // without ever looking here.
 inline uint64_t divLemmaInstalledBit(unsigned index)
 {
-  return (uint64_t)DIV_LEMMA_INSTALLED_FIRST << index;
+  return (uint64_t)LEMMA_INSTALLED_FIRST << index;
 }
 
-// The facts the chooser offers, in the order it offers them, and how many
-// there are: the quotient facts over a BVDIV and the remainder facts over a
-// BVMOD. Exposed so a test can walk the same tables the refiner does rather
-// than keeping a second copy of them in step with these.
+// Two bits apiece for the product facts: multiplication is commutative, so
+// each fact has two readings, and installing one says nothing at all about
+// the other.
+inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
+{
+  return (uint64_t)LEMMA_INSTALLED_FIRST << (2 * index + operand);
+}
+
+// The facts the choosers offer, in the order they offer them, and how many
+// there are: the quotient facts over a BVDIV, the remainder facts over a
+// BVMOD, the product facts over a BVMULT. Exposed so a test can walk the
+// same tables the refiner does rather than keeping a second copy of them in
+// step with these.
 DLL_PUBLIC const DivLemma* divLemmaTable(unsigned& count);
 DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
+DLL_PUBLIC const MulLemma* mulLemmaTable(unsigned& count);
 
 struct DivSchemaChoice
 {

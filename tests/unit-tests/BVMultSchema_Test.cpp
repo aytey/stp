@@ -131,6 +131,16 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
       return shiftHolds(other, choice.shift, t);
     case MulSchema::NegPow2:
       return shiftHolds(negated(other), choice.shift, t);
+    case MulSchema::Lemma:
+    {
+      // The wider facts, which are their own predicate: `operand` says
+      // which of the two plays the fact's `x`.
+      unsigned count = 0;
+      const MulLemma* table = mulLemmaTable(count);
+      EXPECT_LT(choice.lemmaIndex, count);
+      return mulLemmaHolds(table[choice.lemmaIndex], bitsOf(ops[choice.operand]),
+                           bitsOf(ops[1 - choice.operand]), bitsOf(t));
+    }
     case MulSchema::None:
       break;
   }

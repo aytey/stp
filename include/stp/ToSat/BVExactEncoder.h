@@ -197,6 +197,38 @@ DLL_PUBLIC unsigned remLemmaMinWidth(RemLemma lemma);
 
 DLL_PUBLIC const char* remLemmaName(RemLemma lemma);
 
+// ... and for `t = x * s`, which had four schemas and no wider facts.
+//
+// The schemas are guarded on an operand's value or read off the product's
+// low bits; these two are the same shape as the division facts. Three MUL
+// facts fired on the queries that motivated this and the third is not here:
+// `t != ((s | 1) << (t << x))` fired four times upstream, and on the query
+// written to need it -- where it does fire -- it cost 1.6s of 7.1s and
+// bought nothing, the other facts having settled the query without it. The
+// twelve that fired nothing are not here either.
+//
+// Multiplication is commutative, so each of these has two readings and the
+// two are separate lemmas -- installing one says nothing about the other,
+// and the chooser offers both.
+enum class MulLemma
+{
+  // s = s << (x & (1 >> t)). Reads oddly and says something simple: the
+  // shift amount is one exactly when the product is zero and x is odd, and
+  // then `s = s << 1` forces s to zero, which is what an odd factor and a
+  // zero product mean.
+  FactorUnchangedByMaskedShift,
+  // (x & t) != (s | ~t). Restricted; see mulLemmaMinWidth().
+  FactorAndProductNotOr
+};
+
+DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+
+DLL_PUBLIC unsigned mulLemmaMinWidth(MulLemma lemma);
+
+DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
+
 class DLL_PUBLIC BVExactEncoder
 {
   STPMgr* bm;
@@ -241,6 +273,15 @@ public:
   void encodeRemLemma(SATSolver& solver, RemLemma lemma, unsigned width,
                       const std::vector<unsigned>& dividendVars,
                       const std::vector<unsigned>& divisorVars,
+                      const std::vector<unsigned>& resultVars);
+
+  // ... and one about `t = x * s`. The two operands are not
+  // interchangeable here even though the operation is: the fact is written
+  // over `x` and `s` in that order, and the caller decides which way round
+  // to read the multiplication's own operands into them.
+  void encodeMulLemma(SATSolver& solver, MulLemma lemma, unsigned width,
+                      const std::vector<unsigned>& xVars,
+                      const std::vector<unsigned>& sVars,
                       const std::vector<unsigned>& resultVars);
 };
 

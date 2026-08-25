@@ -18,8 +18,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 **********************/
 
-// The algebraic facts an abstracted BVDIV or BVMOD is refined with, beyond
-// the ones that name a divisor.
+// The algebraic facts an abstracted BVDIV, BVMOD or BVMULT is refined with,
+// beyond the schemas that name an operand's value.
 //
 // These are transcribed from another solver, and most of them are not facts
 // anyone would arrive at by reasoning about division -- `x >=u -((-s) & (-t))`
@@ -34,7 +34,7 @@ THE SOFTWARE.
 //
 //   * The predicate the refiner uses to decide whether a candidate breaks a
 //     lemma is evaluated at the *true* result, over every pair of operands.
-//     A lemma false of real division is caught here, whatever the circuit
+//     A lemma false of the operation is caught here, whatever the circuit
 //     does.
 //
 //   * ... at every width from one bit up, not only the width the circuit is
@@ -45,7 +45,7 @@ THE SOFTWARE.
 //     whether it permits that triple -- and it must permit exactly the ones
 //     the predicate calls true. That catches a circuit that says something
 //     other than its predicate, including the barrel shifters underneath the
-//     seven that shift by a variable amount.
+//     nine that shift by a variable amount.
 //
 // Four bits for the circuit, exhaustively, which is 4096 triples per fact;
 // and three as well, because a width that is not a power of two is where a
@@ -58,7 +58,7 @@ THE SOFTWARE.
 // so a fact that is added to one and not to the other is not a fact that goes
 // untested; and the circuit is built once per fact, with the triple asked for
 // by assumption, because encoding is the expensive half by a wide margin and
-// there are twenty-nine of them.
+// there are thirty-one of them.
 #include "stp/ToSat/BVAbstractionRefiner.h"
 #include "stp/ToSat/BVExactEncoder.h"
 
@@ -114,6 +114,11 @@ unsigned referenceRem(unsigned x, unsigned s, unsigned /*width*/)
   return (s == 0) ? x : (x % s);
 }
 
+unsigned referenceMul(unsigned x, unsigned s, unsigned width)
+{
+  return (x * s) & ((1u << width) - 1);
+}
+
 struct Family
 {
   const char* what;
@@ -162,7 +167,26 @@ std::vector<Family> families()
          }});
   }
 
-  return {quotients, remainders};
+  Family products{"BVMULT", referenceMul, {}};
+  const MulLemma* mulTable = mulLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const MulLemma lemma = mulTable[i];
+    products.facts.push_back(
+        {mulLemmaName(lemma), mulLemmaMinWidth(lemma),
+         [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
+                 const std::vector<bool>& t) {
+           return mulLemmaHolds(lemma, x, s, t);
+         },
+         [lemma](BVExactEncoder& enc, SATSolver& solver, unsigned width,
+                 const std::vector<unsigned>& xv,
+                 const std::vector<unsigned>& sv,
+                 const std::vector<unsigned>& tv) {
+           enc.encodeMulLemma(solver, lemma, width, xv, sv, tv);
+         }});
+  }
+
+  return {quotients, remainders, products};
 }
 
 std::vector<bool> bitsOf(unsigned value, unsigned width)
@@ -173,7 +197,7 @@ std::vector<bool> bitsOf(unsigned value, unsigned width)
   return bits;
 }
 
-class BVDivLemmaTest : public ::testing::Test
+class BVAbstractionLemmaTest : public ::testing::Test
 {
 protected:
   STPMgr mgr;
@@ -234,8 +258,10 @@ protected:
 
 // Every fact is true of the operation itself, at every pair of operands and
 // at every width it declares itself good for. This is the soundness claim:
-// they are asserted unconditionally and never retracted.
-TEST(BVDivLemma, every_lemma_is_true_of_the_operation)
+// they are asserted unconditionally and never retracted. A product fact is
+// written over an `x` and an `s` the operation does not distinguish, and
+// sweeping every pair covers both readings of it for free.
+TEST(BVAbstractionLemma, every_lemma_is_true_of_the_operation)
 {
   for (const Family& family : families())
     for (const Fact& fact : family.facts)
@@ -258,7 +284,7 @@ TEST(BVDivLemma, every_lemma_is_true_of_the_operation)
 // margin someone rounded up. A minimum that is too high costs a fact on
 // narrow abstractions for nothing; one that is too low is unsoundness, and
 // the sweep above would not see it.
-TEST(BVDivLemma, a_declared_minimum_width_is_the_narrowest_that_works)
+TEST(BVAbstractionLemma, a_declared_minimum_width_is_the_narrowest_that_works)
 {
   for (const Family& family : families())
     for (const Fact& fact : family.facts)
@@ -283,7 +309,7 @@ TEST(BVDivLemma, a_declared_minimum_width_is_the_narrowest_that_works)
 // Each fact rules something out. One true of every triple would be sound and
 // useless: the refiner would spend a round on it and the search would be free
 // to offer the same candidate again.
-TEST(BVDivLemma, every_lemma_rules_something_out)
+TEST(BVAbstractionLemma, every_lemma_rules_something_out)
 {
   const unsigned width = 4;
   const unsigned values = 1u << width;
@@ -304,7 +330,7 @@ TEST(BVDivLemma, every_lemma_rules_something_out)
 
 // The circuit that goes into the solver says what its predicate says --
 // permitting exactly the triples the predicate calls true.
-TEST_F(BVDivLemmaTest, the_circuit_agrees_with_the_predicate)
+TEST_F(BVAbstractionLemmaTest, the_circuit_agrees_with_the_predicate)
 {
   for (unsigned width : CIRCUIT_WIDTHS)
   {

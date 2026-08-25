@@ -717,6 +717,21 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
   return true;
 }
 
+// The MulLemma facts, in the order the chooser offers them: by how often
+// they fired in the solver they come from, as with the quotient facts.
+static const MulLemma MUL_LEMMAS[] = {
+    MulLemma::FactorUnchangedByMaskedShift, // 75 firings
+    MulLemma::FactorAndProductNotOr};       // 5
+
+static const unsigned MUL_LEMMA_COUNT =
+    sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
+
+const MulLemma* mulLemmaTable(unsigned& count)
+{
+  count = MUL_LEMMA_COUNT;
+  return MUL_LEMMAS;
+}
+
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -735,7 +750,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   {
     const int k = powerOfTwoExponent(*ops[i]);
     if (k >= 0 && !productIsShift(*ops[1 - i], (unsigned)k, tBits))
-      return {MulSchema::Pow2, i, (unsigned)k};
+      return {MulSchema::Pow2, i, (unsigned)k, 0};
   }
 
   // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
@@ -748,7 +763,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
     const int k = powerOfTwoExponent(negatedValue(*ops[i]));
     if (k >= 0 &&
         !productIsShift(negatedValue(*ops[1 - i]), (unsigned)k, tBits))
-      return {MulSchema::NegPow2, i, (unsigned)k};
+      return {MulSchema::NegPow2, i, (unsigned)k, 0};
   }
 
   // The product carries at least as many trailing zeros as either operand.
@@ -765,13 +780,30 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
     const unsigned zeros = trailingZeros(*ops[i]);
     for (unsigned bit = 0; bit < zeros; ++bit)
       if (tBits[bit])
-        return {MulSchema::TrailingZeros, i, 0};
+        return {MulSchema::TrailingZeros, i, 0, 0};
   }
 
   // t[0] = a[0] & b[0].
   if ((installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
       tBits[0] != (aBits[0] && bBits[0]))
-    return {MulSchema::Odd, 0, 0};
+    return {MulSchema::Odd, 0, 0, 0};
+
+  // Then the wider facts, first one the candidate breaks. Each is written
+  // over an `x` and an `s` the operation does not distinguish, so both
+  // readings are offered and each carries its own installed-flag.
+  const unsigned width = (unsigned)tBits.size();
+  for (unsigned i = 0; i < MUL_LEMMA_COUNT; ++i)
+  {
+    if (width < mulLemmaMinWidth(MUL_LEMMAS[i]))
+      continue;
+    for (unsigned op = 0; op < 2; ++op)
+    {
+      if ((installedSchemas & mulLemmaInstalledBit(i, op)) != 0)
+        continue;
+      if (!mulLemmaHolds(MUL_LEMMAS[i], *ops[op], *ops[1 - op], tBits))
+        return {MulSchema::Lemma, op, 0, i};
+    }
+  }
 
   return MulSchemaChoice();
 }
@@ -1087,6 +1119,8 @@ static const char* mulSchemaName(MulSchema schema)
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
+    // Named by mulLemmaName instead; the caller asks that when it has one.
+    case MulSchema::Lemma:
     case MulSchema::None: break;
   }
   return "none";
@@ -1836,6 +1870,18 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
         }
 
+        case MulSchema::Lemma:
+        {
+          // `chosen` says which operand plays the fact's `x`; the other
+          // plays its `s`.
+          BVExactEncoder(bm).encodeMulLemma(
+              solver, MUL_LEMMAS[inc.schema.lemmaIndex], W, *opVars[chosen],
+              *opVars[1 - chosen], resultVars);
+          abs.installedSchemas |=
+              mulLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+          break;
+        }
+
         case MulSchema::None:
           break;
       }
@@ -1844,8 +1890,10 @@ unsigned BVAbstractionRefiner::refineTerms(
       bm->UserFlags.coverage.bv_schema_lemmas++;
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVMULT "
-                  << mulSchemaName(inc.schema.schema) << " lemma over operand "
-                  << chosen << std::endl;
+                  << (inc.schema.schema == MulSchema::Lemma
+                          ? mulLemmaName(MUL_LEMMAS[inc.schema.lemmaIndex])
+                          : mulSchemaName(inc.schema.schema))
+                  << " lemma over operand " << chosen << std::endl;
       refined++;
       continue;
     }

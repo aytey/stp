@@ -3373,6 +3373,47 @@ BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
+                              const BBNodeVec& s, const BBNodeVec& t,
+                              BBNodeSet& /*support*/)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(t.size() == width);
+
+  BBNodeVec one = BBfill(width, BBFalse);
+  one[0] = BBTrue;
+
+  switch (lemma)
+  {
+    case MulLemma::FactorUnchangedByMaskedShift:
+    {
+      // s = s << (x & (1 >> t))
+      const BBNodeVec masked = BBShiftRightByVariable(one, t, width);
+      BBNodeVec amount(width);
+      for (unsigned i = 0; i < width; i++)
+        amount[i] = nf->CreateNode(AND, x[i], masked[i]);
+      return BBEQ(s, BBShiftLeftByVariable(s, amount, width));
+    }
+
+    case MulLemma::FactorAndProductNotOr:
+    {
+      // (x & t) != (s | ~t)
+      BBNodeVec lhs(width), rhs(width);
+      for (unsigned i = 0; i < width; i++)
+      {
+        lhs[i] = nf->CreateNode(AND, x[i], t[i]);
+        rhs[i] = nf->CreateNode(OR, s[i], nf->CreateNode(NOT, t[i]));
+      }
+      return nf->CreateNode(NOT, BBEQ(lhs, rhs));
+    }
+
+  }
+
+  FatalError("BBMulLemma: unknown lemma");
+  return BBFalse;
+}
+
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)
 {
