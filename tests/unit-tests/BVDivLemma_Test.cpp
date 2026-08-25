@@ -226,7 +226,14 @@ TEST_F(BVDivLemmaTest, the_circuit_agrees_with_the_predicate)
 
 TEST(BVDivLemma, width_restrictions_are_explicit)
 {
+  EXPECT_FALSE(divLemmaApplicable(DivLemma::UdivRef21, 1));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef21, 2));
   EXPECT_FALSE(divLemmaApplicable(DivLemma::UdivRef33, 1));
   EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef33, 2));
+  EXPECT_FALSE(divLemmaApplicable(DivLemma::UdivRef31, 2));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef31, 3));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef38, 1));
+  EXPECT_FALSE(divLemmaApplicable(DivLemma::UdivRef38, 2));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef38, 3));
   EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef9, 1));
 }

@@ -73,13 +73,12 @@ namespace stp
 // synthesis that paper describes -- which is the argument for porting them
 // rather than inventing a set.
 //
-// Which eight: the original seven are the highest-firing ones measured on the
-// queries that motivated this, 1161 firings between them over the 73 files STP
-// could not decide. The eighth was the largest measured omission, at another
-// 125 firings. Thirteen more UDIV facts and sixteen UREM ones remain. They were
-// not skipped on principle and the tail is not exhausted -- the original
-// seven were a wash on that family, so this last evidence-driven extension is
-// kept separate and measured rather than taken as proof that firing pays.
+// The semantic names are the original high-firing subset; the UdivRef names
+// complete Bitwuzla's enabled UDIV registry after excluding facts already
+// subsumed by STP's divisor-value schemas and bounds. The table in the refiner
+// keeps measured entries in firing order and the unobserved tail in source
+// order. Completeness is useful for controlled ablations, not evidence that
+// every fact should eventually be enabled by default.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -112,7 +111,22 @@ enum class DivLemma
   UdivRef19,
   UdivRef26,
   UdivRef27,
-  UdivRef33
+  UdivRef33,
+  UdivRef10,
+  UdivRef11,
+  UdivRef20,
+  UdivRef21,
+  UdivRef23,
+  UdivRef24,
+  UdivRef25,
+  UdivRef28,
+  UdivRef29,
+  UdivRef30,
+  UdivRef31,
+  UdivRef32,
+  UdivRef34,
+  UdivRef36,
+  UdivRef38
 };
 
 // Whether one of them holds of these three values. The refiner asks before

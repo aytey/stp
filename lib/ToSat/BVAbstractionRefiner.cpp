@@ -896,7 +896,26 @@ static const DivLemma DIV_LEMMAS[] = {
     DivLemma::UdivRef26,                          // 3
     DivLemma::UdivRef19,                          // 3
     DivLemma::UdivRef18,                          // 2
-    DivLemma::UdivRef27};                         // 2
+    DivLemma::UdivRef27,                          // 2
+
+    // The remainder of Bitwuzla's enabled UDIV registry did not fire in the
+    // profile used to rank the entries above. Keep source order for this
+    // unranked tail so reconciliation against that registry stays mechanical.
+    DivLemma::UdivRef10,
+    DivLemma::UdivRef11,
+    DivLemma::UdivRef20,
+    DivLemma::UdivRef21,
+    DivLemma::UdivRef23,
+    DivLemma::UdivRef24,
+    DivLemma::UdivRef25,
+    DivLemma::UdivRef28,
+    DivLemma::UdivRef29,
+    DivLemma::UdivRef30,
+    DivLemma::UdivRef31,
+    DivLemma::UdivRef32,
+    DivLemma::UdivRef34,
+    DivLemma::UdivRef36,
+    DivLemma::UdivRef38};
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);

@@ -222,6 +222,11 @@ std::vector<bool> addOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
+std::vector<bool> subOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  return addOf(a, negOf(b));
+}
+
 // The unsigned value of a shift amount, saturated at the value width. Once
 // the represented amount reaches that width both SMT-LIB logical shifts are
 // all zero, so there is no reason to risk overflowing a host integer while
@@ -275,7 +280,10 @@ bool divLemmaApplicable(DivLemma lemma, unsigned width)
 {
   switch (lemma)
   {
+    case DivLemma::UdivRef21:
     case DivLemma::UdivRef33: return width > 1;
+    case DivLemma::UdivRef31: return width > 2;
+    case DivLemma::UdivRef38: return width != 2;
     default: return width > 0;
   }
 }
@@ -362,6 +370,70 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
     case DivLemma::UdivRef33:
       // x != t + t + (x | s)
       return x != addOf(t, addOf(t, orOf(x, s)));
+
+    case DivLemma::UdivRef10:
+      // (s | t) != (x & ~1)
+      return orOf(s, t) != andOf(x, notOf(one));
+
+    case DivLemma::UdivRef11:
+      // (s | 1) != (x & ~t)
+    {
+      std::vector<bool> sOrOne = s;
+      sOrOne[0] = true;
+      return sOrOne != andOf(x, notOf(t));
+    }
+
+    case DivLemma::UdivRef20:
+      // s != ~(s >> (t >> 1))
+      return s != notOf(shrOf(s, shrOf(t, one)));
+
+    case DivLemma::UdivRef21:
+      // x != ~(x & (t << 1))
+      return x != notOf(andOf(x, shlOf(t, one)));
+
+    case DivLemma::UdivRef23:
+      // t >=u ((x << 1) >> s)
+      return ule(shrOf(shlOf(x, one), s), t);
+
+    case DivLemma::UdivRef24:
+      // x >=u (s << ~(x | t))
+      return ule(shlOf(s, notOf(orOf(x, t))), x);
+
+    case DivLemma::UdivRef25:
+      // x >=u (t << ~(x | s))
+      return ule(shlOf(t, notOf(orOf(x, s))), x);
+
+    case DivLemma::UdivRef28:
+      // x >=u (s << ~(x xor t))
+      return ule(shlOf(s, notOf(xorOf(x, t))), x);
+
+    case DivLemma::UdivRef29:
+      // x >=u (t << ~(x xor s))
+      return ule(shlOf(t, notOf(xorOf(x, s))), x);
+
+    case DivLemma::UdivRef30:
+      // x != t + (s | (x + s))
+      return x != addOf(t, orOf(s, addOf(x, s)));
+
+    case DivLemma::UdivRef31:
+      // x != t + (1 + (1 << x))
+      return x != addOf(t, addOf(one, shlOf(one, x)));
+
+    case DivLemma::UdivRef32:
+      // s >=u ((x + t) >> t)
+      return ule(shrOf(addOf(x, t), t), s);
+
+    case DivLemma::UdivRef34:
+      // (s xor (x | t)) >=u (t xor 1)
+      return ule(xorOf(t, one), xorOf(s, orOf(x, t)));
+
+    case DivLemma::UdivRef36:
+      // t >=u (x >> (s - 1))
+      return ule(shrOf(x, decOf(s)), t);
+
+    case DivLemma::UdivRef38:
+      // x != 1 - (x << (x - t))
+      return x != subOf(one, shlOf(x, subOf(x, t)));
   }
   return true;
 }
@@ -393,6 +465,21 @@ const char* divLemmaName(DivLemma lemma)
     case DivLemma::UdivRef26: return "udiv-ref26";
     case DivLemma::UdivRef27: return "udiv-ref27";
     case DivLemma::UdivRef33: return "udiv-ref33";
+    case DivLemma::UdivRef10: return "udiv-ref10";
+    case DivLemma::UdivRef11: return "udiv-ref11";
+    case DivLemma::UdivRef20: return "udiv-ref20";
+    case DivLemma::UdivRef21: return "udiv-ref21";
+    case DivLemma::UdivRef23: return "udiv-ref23";
+    case DivLemma::UdivRef24: return "udiv-ref24";
+    case DivLemma::UdivRef25: return "udiv-ref25";
+    case DivLemma::UdivRef28: return "udiv-ref28";
+    case DivLemma::UdivRef29: return "udiv-ref29";
+    case DivLemma::UdivRef30: return "udiv-ref30";
+    case DivLemma::UdivRef31: return "udiv-ref31";
+    case DivLemma::UdivRef32: return "udiv-ref32";
+    case DivLemma::UdivRef34: return "udiv-ref34";
+    case DivLemma::UdivRef36: return "udiv-ref36";
+    case DivLemma::UdivRef38: return "udiv-ref38";
   }
   return "unknown";
 }
