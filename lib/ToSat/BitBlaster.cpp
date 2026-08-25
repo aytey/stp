@@ -3414,6 +3414,25 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBDivModIdentity(const ASTNode& product, const BBNodeVec& x,
+                                    const BBNodeVec& s, const BBNodeVec& t,
+                                    const BBNodeVec& r, BBNodeSet& support)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(t.size() == width);
+  assert(r.size() == width);
+  assert(product.GetValueWidth() == width);
+
+  // x = t*s + r. Truncated throughout, which is what makes this a fact about
+  // the abstraction rather than a definition of it: the true quotient never
+  // overflows the product, but a candidate quotient may, and then the
+  // identity can hold of a triple division does not produce.
+  BBNodeVec sum = BBMult(t, s, support, product);
+  BBPlus2(sum, r, BBFalse);
+  return BBEQ(x, sum);
+}
+
 BBNodeVec BitBlaster::BBExactBinaryOp(const ASTNode& term, const BBNodeVec& x,
                                       const BBNodeVec& y, BBNodeSet& support)
 {

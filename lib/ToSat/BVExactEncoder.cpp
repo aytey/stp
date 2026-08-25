@@ -221,6 +221,27 @@ std::vector<bool> addOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
+// The truncated product, as the abstraction's own result would hold it.
+std::vector<bool> mulOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  const unsigned W = (unsigned)a.size();
+  std::vector<bool> r(W, false);
+  for (unsigned i = 0; i < W; ++i)
+  {
+    if (!a[i])
+      continue;
+    bool carry = false;
+    for (unsigned j = 0; i + j < W; ++j)
+    {
+      const bool add = b[j];
+      const bool sum = (r[i + j] != add) != carry;
+      carry = (r[i + j] && add) || (carry && (r[i + j] || add));
+      r[i + j] = sum;
+    }
+  }
+  return r;
+}
+
 // How far a shift by the value `amt` actually moves, saturated at the width.
 // Anything at or above the width clears the vector, which is what SMT-LIB
 // says of both bvlshr and bvshl and what the circuits are built to match, so
@@ -514,6 +535,15 @@ unsigned mulLemmaMinWidth(MulLemma lemma)
   return (lemma == MulLemma::FactorAndProductNotOr) ? 2 : 1;
 }
 
+bool divModIdentityHolds(const std::vector<bool>& x,
+                         const std::vector<bool>& s,
+                         const std::vector<bool>& t,
+                         const std::vector<bool>& r)
+{
+  // x = t*s + r
+  return x == addOf(mulOf(t, s), r);
+}
+
 const char* mulLemmaName(MulLemma lemma)
 {
   switch (lemma)
@@ -536,13 +566,14 @@ namespace
 // one fact and the next is `build`, and only that.
 template <typename Build>
 void spliceLemma(STPMgr* bm, SATSolver& solver, unsigned width,
-                 const std::vector<unsigned>& dividendVars,
-                 const std::vector<unsigned>& divisorVars,
-                 const std::vector<unsigned>& resultVars, Build build)
+                 const std::vector<const std::vector<unsigned>*>& groups,
+                 Build build)
 {
-  assert(dividendVars.size() >= width);
-  assert(divisorVars.size() >= width);
-  assert(resultVars.size() >= width);
+  for (const std::vector<unsigned>* g : groups)
+  {
+    (void)g;
+    assert(g->size() >= width);
+  }
 
   AbstractionOff scope(bm->UserFlags);
 
@@ -552,21 +583,20 @@ void spliceLemma(STPMgr* bm, SATSolver& solver, unsigned width,
   Simplifier simp(bm, &sm);
   BitBlaster bb(&mgr, &simp, bm->defaultNodeFactory, &bm->UserFlags);
 
-  // Three input vectors this time, in the order the splice reads them back:
-  // the first operand, the second, then the abstraction's own result bits.
-  // The result is an input here and not an output -- the lemma constrains it
-  // without defining it, which is the whole difference from `encode`.
-  BBNodeVec x(width), s(width), t(width);
-  BBNodeVec* const ins[3] = {&x, &s, &t};
-  for (unsigned v = 0; v < 3; v++)
+  // The input vectors, in the order the splice reads them back: the two
+  // operands, then whichever abstracted results the fact is about. A result
+  // is an input here and not an output -- the fact constrains it without
+  // defining it, which is the whole difference from `encode`.
+  std::vector<BBNodeVec> ins(groups.size(), BBNodeVec(width));
+  for (unsigned v = 0; v < ins.size(); v++)
     for (unsigned i = 0; i < width; i++)
     {
-      (*ins[v])[i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
-      (*ins[v])[i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
+      ins[v][i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
+      ins[v][i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
     }
 
   BBNodeSet support;
-  const BBNodeAIG claim = build(bb, x, s, t, support);
+  const BBNodeAIG claim = build(bb, ins, support);
 
   Aig_ObjCreateCo(mgr.aigMgr, claim.n);
   for (const BBNodeAIG& c : support)
@@ -582,14 +612,14 @@ void spliceLemma(STPMgr* bm, SATSolver& solver, unsigned width,
   assert(cnf != NULL);
 
   std::vector<unsigned> cnfToSolver(cnf->nVars, ~((unsigned)0));
-  for (unsigned i = 0; i < 3 * width; i++)
+  for (unsigned i = 0; i < groups.size() * width; i++)
   {
     const int var = cnf->pVarNums[Aig_ManCi(mgr.aigMgr, (int)i)->Id];
+    // An input the circuit never reads is given no variable, and needs
+    // none: nothing the CNF says mentions it.
     if (var < 0)
       continue;
-    cnfToSolver[var] = (i < width)         ? dividendVars[i]
-                       : (i < 2 * width)   ? divisorVars[i - width]
-                                           : resultVars[i - 2 * width];
+    cnfToSolver[var] = (*groups[i / width])[i % width];
   }
 
   for (int var = 0; var < cnf->nVars; var++)
@@ -632,10 +662,10 @@ void BVExactEncoder::encodeDivLemma(SATSolver& solver, DivLemma lemma,
                                     const std::vector<unsigned>& divisorVars,
                                     const std::vector<unsigned>& resultVars)
 {
-  spliceLemma(bm, solver, width, dividendVars, divisorVars, resultVars,
-              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
-                      const BBNodeVec& t, BBNodeSet& support) {
-                return bb.BBDivLemma(lemma, x, s, t, support);
+  spliceLemma(bm, solver, width, {&dividendVars, &divisorVars, &resultVars},
+              [lemma](BitBlaster& bb, const std::vector<BBNodeVec>& in,
+                      BBNodeSet& support) {
+                return bb.BBDivLemma(lemma, in[0], in[1], in[2], support);
               });
 }
 
@@ -645,10 +675,10 @@ void BVExactEncoder::encodeRemLemma(SATSolver& solver, RemLemma lemma,
                                     const std::vector<unsigned>& divisorVars,
                                     const std::vector<unsigned>& resultVars)
 {
-  spliceLemma(bm, solver, width, dividendVars, divisorVars, resultVars,
-              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
-                      const BBNodeVec& t, BBNodeSet& support) {
-                return bb.BBRemLemma(lemma, x, s, t, support);
+  spliceLemma(bm, solver, width, {&dividendVars, &divisorVars, &resultVars},
+              [lemma](BitBlaster& bb, const std::vector<BBNodeVec>& in,
+                      BBNodeSet& support) {
+                return bb.BBRemLemma(lemma, in[0], in[1], in[2], support);
               });
 }
 
@@ -658,10 +688,26 @@ void BVExactEncoder::encodeMulLemma(SATSolver& solver, MulLemma lemma,
                                     const std::vector<unsigned>& sVars,
                                     const std::vector<unsigned>& resultVars)
 {
-  spliceLemma(bm, solver, width, xVars, sVars, resultVars,
-              [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
-                      const BBNodeVec& t, BBNodeSet& support) {
-                return bb.BBMulLemma(lemma, x, s, t, support);
+  spliceLemma(bm, solver, width, {&xVars, &sVars, &resultVars},
+              [lemma](BitBlaster& bb, const std::vector<BBNodeVec>& in,
+                      BBNodeSet& support) {
+                return bb.BBMulLemma(lemma, in[0], in[1], in[2], support);
+              });
+}
+
+void BVExactEncoder::encodeDivModIdentity(
+    SATSolver& solver, const ASTNode& product, unsigned width,
+    const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars,
+    const std::vector<unsigned>& remainderVars)
+{
+  spliceLemma(bm, solver, width,
+              {&dividendVars, &divisorVars, &quotientVars, &remainderVars},
+              [&product](BitBlaster& bb, const std::vector<BBNodeVec>& in,
+                         BBNodeSet& support) {
+                return bb.BBDivModIdentity(product, in[0], in[1], in[2], in[3],
+                                           support);
               });
 }
 

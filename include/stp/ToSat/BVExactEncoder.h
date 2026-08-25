@@ -229,6 +229,28 @@ DLL_PUBLIC unsigned mulLemmaMinWidth(MulLemma lemma);
 
 DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
 
+// The division identity, which is the one fact here that is not about a
+// single abstraction.
+//
+// Everything above relates one operation's own dividend, divisor and result.
+// This relates two: where a query holds both `a bvudiv b` and `a bvurem b`
+// over the same operands, and the abstraction has taken both,
+//
+//   x = t*s + r
+//
+// ties the quotient the one is guessing to the remainder the other is. It
+// needs no premise -- over a zero divisor the totalised quotient is all ones,
+// `t*s` is zero and `r` is `x`, so it holds there too.
+//
+// It is the definition, so it says more than any of the facts above: at five
+// bits it rules out nine in ten of the (quotient, remainder) pairs that both
+// records' own facts admit. What it costs is a multiplier, which is why it
+// goes through the bit-blaster like the rest.
+DLL_PUBLIC bool divModIdentityHolds(const std::vector<bool>& xBits,
+                                    const std::vector<bool>& sBits,
+                                    const std::vector<bool>& tBits,
+                                    const std::vector<bool>& rBits);
+
 class DLL_PUBLIC BVExactEncoder
 {
   STPMgr* bm;
@@ -283,6 +305,21 @@ public:
                       const std::vector<unsigned>& xVars,
                       const std::vector<unsigned>& sVars,
                       const std::vector<unsigned>& resultVars);
+
+  // `x = t*s + r`, over four sets of variables rather than three: the two
+  // operands, the abstracted quotient and the abstracted remainder.
+  //
+  // `product` is a BVMULT node standing for `t*s`, which the multiplier
+  // reads for constant detection and Booth recoding the way `encode` reads
+  // the operation's own node. Its children are the quotient's term and the
+  // divisor, so it is a node the query could have held rather than a
+  // fabrication.
+  void encodeDivModIdentity(SATSolver& solver, const ASTNode& product,
+                            unsigned width,
+                            const std::vector<unsigned>& dividendVars,
+                            const std::vector<unsigned>& divisorVars,
+                            const std::vector<unsigned>& quotientVars,
+                            const std::vector<unsigned>& remainderVars);
 };
 
 } // namespace stp

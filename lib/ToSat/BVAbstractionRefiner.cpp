@@ -1392,6 +1392,17 @@ unsigned BVAbstractionRefiner::refineTerms(
     unsigned lowestWrongBit;
   };
 
+  // What every abstracted division and remainder holds in this candidate,
+  // kept whether the record turned out wrong or not. The identity below is
+  // about a pair, and a pair is broken as easily by one half being wrong as
+  // by both; the half that is right still has to be read.
+  struct CandidateDivMod
+  {
+    bool seen = false;
+    std::vector<bool> aBits, bBits, actual;
+  };
+  std::vector<CandidateDivMod> divMods(terms_.size());
+
   std::vector<InconsistentCmp> incCmps;
   std::vector<InconsistentPlus> incPlus;
   std::vector<InconsistentITE> incITE;
@@ -1577,6 +1588,14 @@ unsigned BVAbstractionRefiner::refineTerms(
         actual[bit] =
             (solver.modelValue(resultVars[bit]) == solver.true_literal());
 
+      if (abs.opKind != BVMULT)
+      {
+        divMods[idx].seen = true;
+        divMods[idx].aBits = aBits;
+        divMods[idx].bBits = bBits;
+        divMods[idx].actual = actual;
+      }
+
       unsigned lowestWrongBit = W;
       for (unsigned bit = 0; bit < W; ++bit)
         if (actual[bit] != expected[bit]) { lowestWrongBit = bit; break; }
@@ -1620,6 +1639,80 @@ unsigned BVAbstractionRefiner::refineTerms(
 
   // Phase 2: Add refinement clauses (no model reads needed).
   unsigned refined = 0;
+
+  // The division identity, first, because it says more than anything below
+  // it: `x = t*s + r` over a quotient and a remainder the query takes of the
+  // same operands. It is the definition rather than a consequence of one, so
+  // at five bits it rules out nine in ten of the pairs the two records'
+  // own facts admit between them.
+  //
+  // The partner is found by building the node it would be -- a BVMOD over
+  // the same two operands -- and asking the blast whether it encoded one.
+  // Nodes are hash-consed, so a query that holds both operations hands back
+  // the very node the other record was minted from, and a query that holds
+  // only the division finds nothing.
+  //
+  // Installed once per pair and never revisited: it is unconditional, so no
+  // later candidate can contradict it.
+  if (bm->UserFlags.bv_term_abstraction_schemas)
+  {
+    std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
+                       ASTNode::ASTNodeEqual>
+        remainders;
+    for (size_t idx = 0; idx < terms_.size(); ++idx)
+      if (terms_[idx].opKind == BVMOD && divMods[idx].seen)
+        remainders[terms_[idx].termNode] = idx;
+
+    for (size_t idx = 0; idx < terms_.size() && !remainders.empty(); ++idx)
+    {
+      BVTermAbstraction& q = terms_[idx];
+      if (q.opKind != BVDIV || q.defined || q.divModIdentity ||
+          !divMods[idx].seen)
+        continue;
+
+      NodeFactory* nf = bm->defaultNodeFactory;
+      const ASTNode partner =
+          nf->CreateTerm(BVMOD, q.width, q.operands[0], q.operands[1]);
+      const auto found = remainders.find(partner);
+      if (found == remainders.end())
+        continue;
+
+      BVTermAbstraction& r = terms_[found->second];
+      if (r.defined || r.divModIdentity || r.width != q.width)
+        continue;
+
+      // Only where the candidate breaks it. A round spent on a fact the
+      // candidate already satisfies rules nothing out.
+      if (divModIdentityHolds(divMods[idx].aBits, divMods[idx].bBits,
+                              divMods[idx].actual,
+                              divMods[found->second].actual))
+        continue;
+
+      // `t*s` needs a node for the multiplier to read, and the honest one
+      // is the product of the quotient's own term and the divisor. The
+      // factory may fold it -- a divisor of one leaves no multiplication
+      // standing -- and then there is nothing here worth splicing.
+      const ASTNode product =
+          nf->CreateTerm(BVMULT, q.width, q.termNode, q.operands[1]);
+      if (product.GetKind() != BVMULT)
+        continue;
+
+      std::vector<unsigned> aVars, bVars;
+      getOperandVars(q.operands[0], q.width, nodeToSATVar, solver, aVars);
+      getOperandVars(q.operands[1], q.width, nodeToSATVar, solver, bVars);
+      BVExactEncoder(bm).encodeDivModIdentity(
+          solver, product, q.width, aVars, bVars,
+          encodedBitsOf(q.termNode, q.width, nodeToSATVar),
+          encodedBitsOf(r.termNode, r.width, nodeToSATVar));
+
+      q.divModIdentity = r.divModIdentity = true;
+      bm->UserFlags.coverage.bv_schema_lemmas++;
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "BV abstraction: BVDIV/BVMOD division-identity lemma"
+                  << std::endl;
+      refined++;
+    }
+  }
 
   for (auto& inc : incCmps)
   {

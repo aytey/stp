@@ -364,6 +364,10 @@ struct BVTermAbstraction
   unsigned schemaRounds = 0;
   // Which of the unconditional schemas are already in the solver.
   uint64_t installedSchemas = 0;
+  // ... and whether the division identity is, which is tracked apart from
+  // the rest because it belongs to a pair of records rather than to one:
+  // both halves carry the flag and either half setting it settles both.
+  bool divModIdentity = false;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.

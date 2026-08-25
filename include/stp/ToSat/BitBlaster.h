@@ -530,6 +530,13 @@ public:
   BBNode BBMulLemma(MulLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
 
+  // The division identity `x = t*s + r`, which is about two abstractions at
+  // once. `product` is the BVMULT node standing for `t*s`, read the way
+  // BBMult reads any multiplication's node.
+  BBNode BBDivModIdentity(const ASTNode& product, const BBNodeVec& x,
+                          const BBNodeVec& s, const BBNodeVec& t,
+                          const BBNodeVec& r, BBNodeSet& support);
+
   // A logical right shift by a variable amount; several of the facts above
   // are inequalities over one.
   BBNodeVec BBShiftRightByVariable(const BBNodeVec& value,
