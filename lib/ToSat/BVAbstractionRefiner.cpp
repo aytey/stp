@@ -1088,8 +1088,11 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         !divisorZero && !valueLessOrEqual(tBits, aBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
 
-    // Then the wider facts, first one the candidate breaks. Quotients only:
-    // every one of them is about `t = a udiv b`.
+    // Try the ranked, fixed family before the synthesised thresholds below.
+    // A W-bit quotient has W-1 distinct threshold facts, so putting that
+    // open-ended family first can consume the complete schema-round budget
+    // and starve a single stronger fact that would decide the query.
+    // Quotients only: every one is about `t = a udiv b`.
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
@@ -1099,6 +1102,45 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i};
     }
+
+    // q >= 2^k iff b <= (a >> k). The right side is just a comparison over
+    // wires from the dividend; the left side is the OR of q[k..W-1]. Start
+    // at one because k=0 is the already-covered q != 0 boundary. No
+    // installed bit is needed: once one threshold is in the permanent
+    // solver clauses, no later candidate can contradict that same k.
+    const auto thresholdMismatch = [&](unsigned k) {
+      std::vector<bool> shiftedDividend(width, false);
+      for (unsigned i = 0; i + k < width; ++i)
+        shiftedDividend[i] = aBits[i + k];
+      const bool divisorBelowShiftedDividend =
+          valueLessOrEqual(bBits, shiftedDividend);
+      // The caller chooses only the two boundaries around the candidate's
+      // highest set bit, so whether q >= 2^k is known from which one it is.
+      bool quotientAboveThreshold = false;
+      for (unsigned i = k; i < width; ++i)
+        quotientAboveThreshold = quotientAboveThreshold || tBits[i];
+      return quotientAboveThreshold != divisorBelowShiftedDividend;
+    };
+
+    // Every threshold below or at q's highest set bit has a true left side;
+    // every one above it has a false left side. The real quotient has the
+    // same shape, so if their magnitude bands differ, one of the two
+    // boundaries around the candidate's band must witness it. Checking only
+    // those two keeps schema selection linear in the width rather than
+    // comparing W shifted dividends at O(W) apiece.
+    int quotientTop = -1;
+    for (int i = (int)width - 1; i >= 0; --i)
+      if (tBits[i])
+      {
+        quotientTop = i;
+        break;
+      }
+    if (quotientTop > 0 && thresholdMismatch((unsigned)quotientTop))
+      return {DivSchema::QuotientPow2Threshold, (unsigned)quotientTop, 0};
+    const unsigned above = (quotientTop < 1) ? 1u
+                                             : (unsigned)quotientTop + 1;
+    if (above < width && thresholdMismatch(above))
+      return {DivSchema::QuotientPow2Threshold, above, 0};
   }
 
   return DivSchemaChoice();
@@ -1113,6 +1155,8 @@ static const char* divSchemaName(DivSchema schema)
     case DivSchema::RemainderAtMostDividend: return "remainder-at-most-dividend";
     case DivSchema::RemainderBelowDivisor: return "remainder-below-divisor";
     case DivSchema::QuotientAtMostDividend: return "quotient-at-most-dividend";
+    case DivSchema::QuotientPow2Threshold:
+      return "power-of-two-quotient-threshold";
     case DivSchema::Lemma: return "lemma";
     case DivSchema::None: break;
   }
@@ -1418,6 +1462,48 @@ void encodeDivBound(SATSolver& solver, DivSchema schema,
     cl.clear();
     cl.push(SATSolver::mkLit(bLeR, true));
     cl.push(SATSolver::mkLit(divisorVars[i], true));
+    solver.addClause(cl);
+  }
+}
+
+void encodeDivPow2Threshold(SATSolver& solver,
+                            const std::vector<unsigned>& dividendVars,
+                            const std::vector<unsigned>& divisorVars,
+                            const std::vector<unsigned>& quotientVars,
+                            unsigned width, unsigned shift)
+{
+  assert(width > 1);
+  assert(shift > 0 && shift < width);
+  assert(dividendVars.size() >= width);
+  assert(divisorVars.size() >= width);
+  assert(quotientVars.size() >= width);
+
+  // Keep the comparison width unchanged: a divisor with any bit at or above
+  // W-k cannot be <= the shifted dividend. The high zero is shared by all
+  // of those positions.
+  const unsigned zero = pinnedVar(solver, false);
+  std::vector<unsigned> shiftedDividend(width, zero);
+  for (unsigned i = 0; i + shift < width; ++i)
+    shiftedDividend[i] = dividendVars[i + shift];
+
+  const unsigned divisorBelowShiftedDividend = encodeLessOrEqual(
+      solver, divisorVars, shiftedDividend, width, false);
+
+  SATSolver::vec_literals cl;
+  // comparison -> OR(quotient[shift..W-1])
+  cl.push(SATSolver::mkLit(divisorBelowShiftedDividend, true));
+  for (unsigned i = shift; i < width; ++i)
+    cl.push(SATSolver::mkLit(quotientVars[i], false));
+  solver.addClause(cl);
+
+  // Each high quotient bit -> comparison. Together with the clause above,
+  // these make the reduction-OR and the comparison equivalent without an
+  // extra variable for the OR.
+  for (unsigned i = shift; i < width; ++i)
+  {
+    cl.clear();
+    cl.push(SATSolver::mkLit(quotientVars[i], true));
+    cl.push(SATSolver::mkLit(divisorBelowShiftedDividend, false));
     solver.addClause(cl);
   }
 }
@@ -1937,6 +2023,12 @@ unsigned BVAbstractionRefiner::refineTerms(
                          W);
           abs.installedSchemas |=
               DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
+          break;
+
+        case DivSchema::QuotientPow2Threshold:
+          assert(abs.opKind == BVDIV);
+          encodeDivPow2Threshold(solver, aVars, bVars, resultVars, W,
+                                 inc.divSchema.shift);
           break;
 
         case DivSchema::Lemma:

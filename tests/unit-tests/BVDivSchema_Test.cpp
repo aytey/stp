@@ -154,6 +154,11 @@ bool boundHolds(DivSchema schema, unsigned a, unsigned b, unsigned t)
   }
 }
 
+bool quotientThresholdHolds(unsigned a, unsigned b, unsigned q, unsigned k)
+{
+  return (q >= (1u << k)) == (b <= (a >> k));
+}
+
 } // namespace
 
 // Every lemma this can install is true of the operation it is installed
@@ -223,6 +228,18 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
                   << " at a=" << a << " b=" << b << " t=" << t
                   << " is already satisfied by the candidate";
             }
+            continue;
+          }
+
+          if (choice.schema == DivSchema::QuotientPow2Threshold)
+          {
+            ASSERT_EQ(opKind, BVDIV);
+            ASSERT_GT(choice.shift, 0u);
+            ASSERT_LT(choice.shift, WIDTH);
+            ASSERT_FALSE(quotientThresholdHolds(a, b, t, choice.shift))
+                << "threshold k=" << choice.shift << " at a=" << a
+                << " b=" << b << " q=" << t
+                << " is already satisfied by the candidate";
             continue;
           }
 
@@ -298,6 +315,11 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
           // ... and every operation-specific wider fact too.
           if (opKind == BVDIV)
           {
+            for (unsigned k = 1; k < WIDTH; ++k)
+              ASSERT_TRUE(quotientThresholdHolds(a, b, t, k))
+                  << "threshold k=" << k << " was available at a=" << a
+                  << " b=" << b << " q=" << t << " and was not offered";
+
             unsigned n = 0;
             const DivLemma* table = divLemmaTable(n);
             for (unsigned i = 0; i < n; ++i)
@@ -519,7 +541,8 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
           const DivSchemaChoice choice =
               chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), all);
           ASSERT_TRUE(choice.schema == DivSchema::None ||
-                      namesADivisor(choice.schema))
+                      namesADivisor(choice.schema) ||
+                      choice.schema == DivSchema::QuotientPow2Threshold)
               << "a bound was offered again over " << _kind_names[opKind]
               << " at a=" << a << " b=" << b << " t=" << t;
         }
@@ -655,4 +678,48 @@ TEST_F(BVDivBoundEncodingTest, bounds_forbid_what_they_should_and_nothing_more)
                 << " at a=" << a << " b=" << b << " t=" << t;
           }
     }
+}
+
+TEST_F(BVDivBoundEncodingTest,
+       quotient_threshold_clauses_match_the_equivalence)
+{
+  for (unsigned k = 1; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; ++a)
+      for (unsigned b = 0; b < VALUES; ++b)
+        for (unsigned q = 0; q < VALUES; ++q)
+        {
+          std::unique_ptr<SATSolver> solver = makeSolver();
+          ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+          std::vector<unsigned> aVars(WIDTH), bVars(WIDTH), qVars(WIDTH);
+          for (unsigned i = 0; i < WIDTH; ++i)
+          {
+            aVars[i] = solver->newVar();
+            bVars[i] = solver->newVar();
+            qVars[i] = solver->newVar();
+            solver->setFrozen(aVars[i]);
+            solver->setFrozen(bVars[i]);
+            solver->setFrozen(qVars[i]);
+          }
+
+          encodeDivPow2Threshold(*solver, aVars, bVars, qVars, WIDTH, k);
+          pin(*solver, aVars, a);
+          pin(*solver, bVars, b);
+          pin(*solver, qVars, q);
+
+          bool timedOut = false;
+          const bool satisfiable = solver->solve(timedOut);
+          ASSERT_FALSE(timedOut);
+          ASSERT_EQ(quotientThresholdHolds(a, b, q, k), satisfiable)
+              << "k=" << k << " a=" << a << " b=" << b << " q=" << q;
+        }
+}
+
+TEST(BVDivSchemaThreshold, every_real_quotient_satisfies_every_threshold)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      for (unsigned k = 1; k < WIDTH; ++k)
+        ASSERT_TRUE(quotientThresholdHolds(a, b, referenceDiv(a, b), k))
+            << "k=" << k << " a=" << a << " b=" << b;
 }

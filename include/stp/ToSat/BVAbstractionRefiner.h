@@ -243,6 +243,14 @@ enum class DivSchema
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
   QuotientAtMostDividend,
+  // For q = a udiv b and every 0 < k < W:
+  //   q >= 2^k <-> b <=u (a >> k).
+  // For a nonzero divisor this is the definition of floor division, moved
+  // across the fixed power of two. For a zero divisor both sides are true:
+  // SMT-LIB gives q the all-ones value, and zero is at most every shift.
+  // One violated threshold rules out a whole quotient-magnitude band with a
+  // fixed shift and one comparison, rather than constructing a divider.
+  QuotientPow2Threshold,
   // One of the DivLemma facts, named by DivSchemaChoice::lemmaIndex. They
   // are inequalities over the quotient rather than statements of what it
   // is, and several shift by a variable amount, so unlike everything above
@@ -282,7 +290,8 @@ DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
 struct DivSchemaChoice
 {
   DivSchema schema = DivSchema::None;
-  // log2 of the divisor, for the schema that has one.
+  // log2 of the divisor for Pow2Divisor, or the quotient threshold exponent
+  // for QuotientPow2Threshold.
   unsigned shift = 0;
   // Set when `schema` is Lemma: which DivLemma or RemLemma fact to install,
   // as an index into the operation's table.
@@ -333,6 +342,14 @@ DLL_PUBLIC void encodeDivBound(SATSolver& solver, DivSchema schema,
                                const std::vector<unsigned>& divisorVars,
                                const std::vector<unsigned>& resultVars,
                                unsigned width);
+
+// q >= 2^shift <-> divisor <=u (dividend >> shift), written over an
+// abstracted BVDIV's operand proxies and result bits.
+DLL_PUBLIC void encodeDivPow2Threshold(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars, unsigned width,
+    unsigned shift);
 
 // divisor = divisorBits -> every result bit is a constant or a bit of the
 // dividend, as `source` says. Exposed for the tests: what the schema claims
