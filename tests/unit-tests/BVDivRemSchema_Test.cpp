@@ -173,6 +173,11 @@ TEST_F(BVDivRemSchemaTest, clauses_match_modular_recomposition)
 
 TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
 {
+  // This family is deliberately outside the qualified default profile; the
+  // test selects it alone so a pass caused by an individual division schema
+  // cannot masquerade as coverage of the pair gate.
+  mgr.UserFlags.bv_term_abstraction_schema_groups =
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
   NodeFactory* factory = mgr.defaultNodeFactory;
   const ASTNode dividend = mgr.CreateSymbol("dr_dividend", 0, WIDTH);
   const ASTNode divisor = mgr.CreateSymbol("dr_divisor", 0, WIDTH);
@@ -229,6 +234,16 @@ TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
   EXPECT_EQ(1u, refiner.terms()[1].schemaRounds);
   EXPECT_EQ(0u, refiner.terms()[0].blockedRounds);
   EXPECT_EQ(0u, refiner.terms()[1].blockedRounds);
+  EXPECT_EQ(1u, mgr.UserFlags.coverage.bv_schema_lemmas);
+  EXPECT_EQ(1u,
+            mgr.UserFlags.coverage.bv_schema_group_lemmas[static_cast<unsigned>(
+                BVSchemaGroup::DIVREM_PAIR)]);
+  for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    if (i == static_cast<unsigned>(BVSchemaGroup::DIVREM_PAIR))
+      continue;
+    EXPECT_EQ(0u, mgr.UserFlags.coverage.bv_schema_group_lemmas[i]);
+  }
 
   EXPECT_FALSE(solver->solve(timedOut));
   EXPECT_FALSE(timedOut);

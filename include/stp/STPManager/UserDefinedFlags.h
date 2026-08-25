@@ -25,10 +25,67 @@ THE SOFTWARE.
 #define UDEFFLAGS_H
 
 #include "stp/Sat/SearchBias.h"
+#include "stp/Util/Attributes.h"
 #include <cstdint>
+#include <string>
 
 namespace stp
 {
+
+// Independently selectable families of algebraic facts used by BV term
+// abstraction.  The ordinal is also the coverage-counter index; the mask
+// spelling keeps the command-line and C interfaces compact without turning
+// every individual lemma into a permanent public option.
+enum class BVSchemaGroup : unsigned
+{
+  BASE = 0,
+  UDIV15,
+  UDIV_EXTRA,
+  UREM,
+  MUL8,
+  MUL_REF3,
+  MUL_EXTRA,
+  ADD,
+  QUOTIENT_THRESHOLDS,
+  LOW_PREFIX,
+  QUOTIENT_ONE_REM,
+  DIVREM_PAIR,
+  COUNT
+};
+
+constexpr unsigned BV_SCHEMA_GROUP_COUNT =
+    static_cast<unsigned>(BVSchemaGroup::COUNT);
+
+constexpr uint32_t bvSchemaGroupBit(BVSchemaGroup group)
+{
+  return uint32_t{1} << static_cast<unsigned>(group);
+}
+
+constexpr uint32_t BV_SCHEMA_GROUP_ALL =
+    (uint32_t{1} << BV_SCHEMA_GROUP_COUNT) - 1;
+
+// The profile justified by the corpus qualification: retain the established
+// schemas, the UREM registry that decides the wide ecrw cases, and MulRef3.
+// BV term abstraction itself remains off by default, so this profile only
+// matters when a caller explicitly enables that experiment.
+constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
+    bvSchemaGroupBit(BVSchemaGroup::BASE) |
+    bvSchemaGroupBit(BVSchemaGroup::UREM) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
+
+constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
+{
+  return (mask & bvSchemaGroupBit(group)) != 0;
+}
+
+DLL_PUBLIC const char* bvSchemaGroupName(BVSchemaGroup group);
+
+// Parse the comma-separated CLI spelling. `all` and `none` are aliases for
+// the complete and empty masks and must stand alone. The output mask is left
+// unchanged on error, with a diagnostic returned through `error`.
+DLL_PUBLIC bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
+                                    std::string& error);
+DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
 
 /******************************************************************
  * Struct UserDefFlags:
@@ -571,6 +628,12 @@ public:
   // division and remainder.
   bool bv_term_abstraction_schemas = true;
 
+  // Which schema families the master switch above may offer. The default is
+  // the qualified subset; `all` at the CLI reproduces the complete
+  // experimental stack kept in this branch, while an empty mask leaves the
+  // operation-specific fallback exactly as the master switch being off does.
+  uint32_t bv_term_abstraction_schema_groups = BV_SCHEMA_GROUP_DEFAULT;
+
   // You can select these with any combination you want of true & false.
   bool division_variant_1 = true;
   bool division_variant_2 = true;
@@ -875,6 +938,10 @@ public:
     // interchangeable: the same number of each says very different things
     // about how a query was decided.
     uint64_t bv_schema_lemmas = 0;
+    // The same total partitioned by BVSchemaGroup, so a mixed run can be
+    // attributed without parsing diagnostic text. Every schema increment
+    // must increment exactly one entry here as well.
+    uint64_t bv_schema_group_lemmas[BV_SCHEMA_GROUP_COUNT] = {};
     // Uninterpreted-function applications the lowering decided, and the
     // constraints it installed for them.
     uint64_t uf_applications_lowered = 0;

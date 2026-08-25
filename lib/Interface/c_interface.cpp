@@ -545,6 +545,16 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_INC_BITBLAST:
       b->UserFlags.bv_term_abstraction_inc_bitblast = param_value != 0;
       break;
+    case BV_TERM_ABSTRACTION_SCHEMA_GROUPS:
+      if (param_value < 0 ||
+          (static_cast<unsigned>(param_value) &
+           ~static_cast<unsigned>(STP_BV_SCHEMA_GROUP_ALL)) != 0)
+        reportCAPIError("BV_TERM_ABSTRACTION_SCHEMA_GROUPS contains an "
+                        "unknown schema-group bit");
+      else
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            static_cast<uint32_t>(param_value);
+      break;
     case INCREMENTAL_PIECE_REWRITING:
       b->UserFlags.incremental_piece_rewriting = param_value != 0;
       break;
@@ -922,6 +932,21 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_REFINEMENT_ROUNDS: return c.bv_refinement_rounds;
     case STP_COUNTER_BV_BLOCKING_LEMMAS: return c.bv_blocking_lemmas;
     case STP_COUNTER_BV_SCHEMA_LEMMAS: return c.bv_schema_lemmas;
+    case STP_COUNTER_BV_SCHEMA_GROUP_BASE:
+    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV15:
+    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV_EXTRA:
+    case STP_COUNTER_BV_SCHEMA_GROUP_UREM:
+    case STP_COUNTER_BV_SCHEMA_GROUP_MUL8:
+    case STP_COUNTER_BV_SCHEMA_GROUP_MUL_REF3:
+    case STP_COUNTER_BV_SCHEMA_GROUP_MUL_EXTRA:
+    case STP_COUNTER_BV_SCHEMA_GROUP_ADD:
+    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS:
+    case STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX:
+    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM:
+    case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR:
+      return c.bv_schema_group_lemmas[static_cast<unsigned>(counter) -
+                                      static_cast<unsigned>(
+                                          STP_COUNTER_BV_SCHEMA_GROUP_BASE)];
     case STP_COUNTER_UF_APPLICATIONS_LOWERED:
       return c.uf_applications_lowered;
     case STP_COUNTER_UF_CONSTRAINTS_INSTALLED:

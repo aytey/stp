@@ -53,6 +53,11 @@ const stp::UserDefinedFlags& flags(VC vc)
   return ((stp::STP*)vc)->bm->UserFlags;
 }
 
+stp::UserDefinedFlags& mutableFlags(VC vc)
+{
+  return ((stp::STP*)vc)->bm->UserFlags;
+}
+
 int errors = 0;
 void countError(const char*)
 {
@@ -81,6 +86,8 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
   EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
+  EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT),
+            flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_inc_bitblast);
   vc_Destroy(vc);
@@ -155,6 +162,18 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMAS, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
 
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
+                       STP_BV_SCHEMA_GROUP_ALL);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_ALL,
+            flags(vc).bv_term_abstraction_schema_groups);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
+                       STP_BV_SCHEMA_GROUP_UREM | STP_BV_SCHEMA_GROUP_MUL_REF3);
+  EXPECT_EQ(stp::bvSchemaGroupBit(stp::BVSchemaGroup::UREM) |
+                stp::bvSchemaGroupBit(stp::BVSchemaGroup::MUL_REF3),
+            flags(vc).bv_term_abstraction_schema_groups);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, 0);
+  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups);
+
   // Zero is a meaning of its own here too: do not scale, and leave the flat
   // ceiling above as the allowance.
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_VALUE_DIVISOR, 0);
@@ -196,6 +215,40 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_setInterfaceFlags(vc, UF_ACKERMANN, 0);
   EXPECT_EQ(Mode::AUTO, flags(vc).uf_eager_mode);
 
+  vc_Destroy(vc);
+}
+
+TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
+                       STP_BV_SCHEMA_GROUP_BASE);
+  const int invalid[] = {-1, 1 << 12, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
+  for (const int value : invalid)
+  {
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, value);
+    EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BASE),
+              flags(vc).bv_term_abstraction_schema_groups);
+  }
+  EXPECT_EQ(3, errors);
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+TEST(refinement_flags, SchemaGroupCountersFollowThePublicOrdinalBlock)
+{
+  VC vc = vc_createValidityChecker();
+  for (unsigned i = 0; i < stp::BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    mutableFlags(vc).coverage.bv_schema_group_lemmas[i] = 100 + i;
+    const enum stp_counter_t counter =
+        static_cast<enum stp_counter_t>(STP_COUNTER_BV_SCHEMA_GROUP_BASE + i);
+    EXPECT_EQ(100u + i, vc_getCounter(vc, counter));
+  }
   vc_Destroy(vc);
 }
 

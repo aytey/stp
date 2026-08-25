@@ -1160,6 +1160,11 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
                 << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
                 << " blocking=" << c.bv_blocking_lemmas
                 << " schema=" << c.bv_schema_lemmas << std::endl;
+      std::cerr << "Abstraction schemas by group:";
+      for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
+        std::cerr << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i))
+                  << "=" << c.bv_schema_group_lemmas[i];
+      std::cerr << std::endl;
     }
   }
 

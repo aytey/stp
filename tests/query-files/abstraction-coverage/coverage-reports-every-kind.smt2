@@ -13,5 +13,6 @@
 (assert (= (bvadd a b) (bvnot c)))
 (assert (= (ite (bvult b c) a b) c))
 ; CHECK: Abstraction coverage \(candidates -> abstracted\): eq=2->0 compare=2->2 ite=1->1 plus=1->1 mult=1->1 divmod=0->0
+; CHECK: Abstraction schemas by group: base=[0-9]+ udiv15=0 udiv-extra=0 urem=[0-9]+ mul8=0 mul-ref3=[0-9]+ mul-extra=0 add=0 quotient-thresholds=0 low-prefix=0 quotient-one-rem=0 divrem-pair=0
 (check-sat)
 (exit)

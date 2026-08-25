@@ -292,6 +292,59 @@ TEST(BVDivSchema, correct_candidates_choose_nothing)
       }
 }
 
+TEST(BVDivSchema, schema_groups_gate_division_before_selection)
+{
+  struct GroupCase
+  {
+    BVSchemaGroup group;
+    Kind kind;
+  };
+  const GroupCase cases[] = {{BVSchemaGroup::BASE, BVDIV},
+                             {BVSchemaGroup::UDIV15, BVDIV},
+                             {BVSchemaGroup::UDIV_EXTRA, BVDIV},
+                             {BVSchemaGroup::UREM, BVMOD},
+                             {BVSchemaGroup::QUOTIENT_THRESHOLDS, BVDIV},
+                             {BVSchemaGroup::QUOTIENT_ONE_REM, BVMOD}};
+
+  for (const GroupCase& groupCase : cases)
+  {
+    bool sawChoice = false;
+    const uint32_t only = bvSchemaGroupBit(groupCase.group);
+    for (unsigned a = 0; a < VALUES; ++a)
+      for (unsigned b = 0; b < VALUES; ++b)
+        for (unsigned t = 0; t < VALUES; ++t)
+        {
+          const DivSchemaChoice choice = chooseDivSchema(
+              groupCase.kind, bitsOf(a), bitsOf(b), bitsOf(t), 0, only);
+          if (choice.schema == DivSchema::None)
+            continue;
+          sawChoice = true;
+          EXPECT_EQ(groupCase.group, choice.group)
+              << "a=" << a << " b=" << b << " t=" << t;
+        }
+    EXPECT_TRUE(sawChoice) << bvSchemaGroupName(groupCase.group);
+  }
+
+  for (Kind kind : KINDS)
+    for (unsigned a = 0; a < VALUES; ++a)
+      for (unsigned b = 0; b < VALUES; ++b)
+        for (unsigned t = 0; t < VALUES; ++t)
+        {
+          EXPECT_EQ(DivSchema::None,
+                    chooseDivSchema(kind, bitsOf(a), bitsOf(b), bitsOf(t), 0, 0)
+                        .schema);
+
+          const DivSchemaChoice implicitAll =
+              chooseDivSchema(kind, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+          const DivSchemaChoice explicitAll = chooseDivSchema(
+              kind, bitsOf(a), bitsOf(b), bitsOf(t), 0, BV_SCHEMA_GROUP_ALL);
+          EXPECT_EQ(implicitAll.schema, explicitAll.schema);
+          EXPECT_EQ(implicitAll.shift, explicitAll.shift);
+          EXPECT_EQ(implicitAll.lemmaIndex, explicitAll.lemmaIndex);
+          EXPECT_EQ(implicitAll.group, explicitAll.group);
+        }
+}
+
 // Where a wrong candidate is turned away, it is because the divisor is one
 // the schemas have nothing to say about -- neither zero nor a power of two.
 // This is the coverage claim: everything else is caught.

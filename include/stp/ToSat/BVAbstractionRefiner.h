@@ -142,6 +142,9 @@ struct MulSchemaChoice
   unsigned shift = 0;
   // Set for Lemma: index in mulLemmaTable().
   unsigned lemmaIndex = 0;
+  // The option family that admitted this choice. BASE is also the harmless
+  // default for None and for the established schemas' aggregate initialisers.
+  BVSchemaGroup group = BVSchemaGroup::BASE;
 };
 
 // Bits of BVTermAbstraction::installedSchemas. Only the unconditional facts
@@ -176,6 +179,7 @@ struct AddSchemaChoice
   unsigned lemmaIndex = 0;
   // Nonzero selects the exact low-prefix schema instead of lemmaIndex.
   unsigned prefixBits = 0;
+  BVSchemaGroup group = BVSchemaGroup::BASE;
 };
 
 // Thirteen lemmas in two operand readings occupy bits 0 through 25.
@@ -187,10 +191,10 @@ inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
 }
 
 DLL_PUBLIC const AddLemma* addLemmaTable(unsigned& count);
-DLL_PUBLIC AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
-                                           const std::vector<bool>& bBits,
-                                           const std::vector<bool>& tBits,
-                                           uint64_t installedSchemas);
+DLL_PUBLIC AddSchemaChoice
+chooseAddSchema(const std::vector<bool>& aBits, const std::vector<bool>& bBits,
+                const std::vector<bool>& tBits, uint64_t installedSchemas,
+                uint32_t enabledGroups = BV_SCHEMA_GROUP_ALL);
 
 // The first fact above that this candidate contradicts, or None. Pure: the
 // caller has already read the model, and what comes back depends on nothing
@@ -199,10 +203,10 @@ DLL_PUBLIC AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
 // `tBits` is the product bits the candidate holds, NOT the product of
 // `aBits` and `bBits` -- the whole point is that the two disagree. Called
 // only once they do.
-DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
-                                           const std::vector<bool>& bBits,
-                                           const std::vector<bool>& tBits,
-                                           uint64_t installedSchemas);
+DLL_PUBLIC MulSchemaChoice
+chooseMulSchema(const std::vector<bool>& aBits, const std::vector<bool>& bBits,
+                const std::vector<bool>& tBits, uint64_t installedSchemas,
+                uint32_t enabledGroups = BV_SCHEMA_GROUP_ALL);
 
 // Whether the candidate result agrees with the exact low `prefixBits` of an
 // addition or multiplication. All vectors are least-significant-bit first.
@@ -336,6 +340,7 @@ struct DivSchemaChoice
   // Set when `schema` is Lemma: which DivLemma or RemLemma fact to install,
   // as an index into the operation's table.
   unsigned lemmaIndex = 0;
+  BVSchemaGroup group = BVSchemaGroup::BASE;
 };
 
 // Where each bit of the result comes from once a schema has fixed the
@@ -359,11 +364,10 @@ DLL_PUBLIC std::vector<int> divSchemaSources(Kind opKind, unsigned width,
 //
 // `opKind` is BVDIV or BVMOD. The two share both schemas and differ only in
 // what each one concludes.
-DLL_PUBLIC DivSchemaChoice chooseDivSchema(Kind opKind,
-                                           const std::vector<bool>& aBits,
-                                           const std::vector<bool>& bBits,
-                                           const std::vector<bool>& tBits,
-                                           uint64_t installedSchemas);
+DLL_PUBLIC DivSchemaChoice chooseDivSchema(
+    Kind opKind, const std::vector<bool>& aBits, const std::vector<bool>& bBits,
+    const std::vector<bool>& tBits, uint64_t installedSchemas,
+    uint32_t enabledGroups = BV_SCHEMA_GROUP_ALL);
 
 // A variable that holds exactly when `lv <= rv`. Shared by the comparison
 // refinement, which is where it comes from, and by the division bounds,

@@ -34,10 +34,16 @@ static_assert(STP_COUNTER_UF_CONSTRAINTS_INSTALLED == 16,
               "the published UF constraint counter ordinal changed");
 static_assert(STP_COUNTER_BV_SCHEMA_LEMMAS == 17,
               "new counters must follow the published counter prefix");
+static_assert(STP_COUNTER_BV_SCHEMA_GROUP_BASE == 18,
+              "schema-group counters must follow the aggregate");
+static_assert(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR == 29,
+              "schema-group counter block must remain contiguous");
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {
   EXPECT_EQ(15, static_cast<int>(STP_COUNTER_UF_APPLICATIONS_LOWERED));
   EXPECT_EQ(16, static_cast<int>(STP_COUNTER_UF_CONSTRAINTS_INSTALLED));
   EXPECT_EQ(17, static_cast<int>(STP_COUNTER_BV_SCHEMA_LEMMAS));
+  EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_BASE));
+  EXPECT_EQ(29, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR));
 }

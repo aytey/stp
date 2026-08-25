@@ -274,6 +274,51 @@ TEST(bv_mult_schema, NothingIsChosenWhenTheProductIsCorrect)
           << "a=" << a << " b=" << b;
 }
 
+TEST(bv_mult_schema, schema_groups_gate_multiplication_before_selection)
+{
+  const BVSchemaGroup groups[] = {
+      BVSchemaGroup::BASE, BVSchemaGroup::MUL8, BVSchemaGroup::MUL_REF3,
+      BVSchemaGroup::MUL_EXTRA, BVSchemaGroup::LOW_PREFIX};
+
+  for (const BVSchemaGroup group : groups)
+  {
+    bool sawChoice = false;
+    const uint32_t only = bvSchemaGroupBit(group);
+    for (unsigned a = 0; a < VALUES; ++a)
+      for (unsigned b = 0; b < VALUES; ++b)
+        for (unsigned t = 0; t < VALUES; ++t)
+        {
+          const MulSchemaChoice choice =
+              chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), 0, only);
+          if (choice.schema == MulSchema::None)
+            continue;
+          sawChoice = true;
+          EXPECT_EQ(group, choice.group)
+              << "a=" << a << " b=" << b << " t=" << t;
+        }
+    EXPECT_TRUE(sawChoice) << bvSchemaGroupName(group);
+  }
+
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      for (unsigned t = 0; t < VALUES; ++t)
+      {
+        const MulSchemaChoice none =
+            chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), 0, 0);
+        EXPECT_EQ(MulSchema::None, none.schema);
+
+        const MulSchemaChoice implicitAll =
+            chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), 0);
+        const MulSchemaChoice explicitAll = chooseMulSchema(
+            bitsOf(a), bitsOf(b), bitsOf(t), 0, BV_SCHEMA_GROUP_ALL);
+        EXPECT_EQ(implicitAll.schema, explicitAll.schema);
+        EXPECT_EQ(implicitAll.operand, explicitAll.operand);
+        EXPECT_EQ(implicitAll.shift, explicitAll.shift);
+        EXPECT_EQ(implicitAll.lemmaIndex, explicitAll.lemmaIndex);
+        EXPECT_EQ(implicitAll.group, explicitAll.group);
+      }
+}
+
 // Violated: whatever is chosen, the candidate contradicts it. This is what
 // makes the round progress -- the clauses rule this candidate out, so the
 // search cannot offer it again.

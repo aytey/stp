@@ -294,3 +294,43 @@ TEST(BVAddLemma, small_width_restrictions_are_explicit)
   EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef12, 3));
   EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef9, 1));
 }
+
+TEST(BVAddLemma, schema_groups_gate_addition_before_selection)
+{
+  bool sawAdd = false;
+  bool sawLowPrefix = false;
+  const uint32_t addOnly = bvSchemaGroupBit(BVSchemaGroup::ADD);
+  const uint32_t prefixOnly = bvSchemaGroupBit(BVSchemaGroup::LOW_PREFIX);
+
+  for (unsigned x = 0; x < VALUES; ++x)
+    for (unsigned s = 0; s < VALUES; ++s)
+      for (unsigned t = 0; t < VALUES; ++t)
+      {
+        if (t == referenceAdd(x, s))
+          continue;
+
+        EXPECT_FALSE(
+            chooseAddSchema(bitsOf(x), bitsOf(s), bitsOf(t), 0, 0).found);
+
+        const AddSchemaChoice add =
+            chooseAddSchema(bitsOf(x), bitsOf(s), bitsOf(t), 0, addOnly);
+        if (add.found)
+        {
+          sawAdd = true;
+          EXPECT_EQ(0u, add.prefixBits);
+          EXPECT_EQ(BVSchemaGroup::ADD, add.group);
+        }
+
+        const AddSchemaChoice prefix =
+            chooseAddSchema(bitsOf(x), bitsOf(s), bitsOf(t), 0, prefixOnly);
+        if (prefix.found)
+        {
+          sawLowPrefix = true;
+          EXPECT_NE(0u, prefix.prefixBits);
+          EXPECT_EQ(BVSchemaGroup::LOW_PREFIX, prefix.group);
+        }
+      }
+
+  EXPECT_TRUE(sawAdd);
+  EXPECT_TRUE(sawLowPrefix);
+}

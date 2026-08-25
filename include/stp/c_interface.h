@@ -172,6 +172,30 @@ DLL_PUBLIC void vc_setFlags(VC vc, char c,
 //!
 DLL_PUBLIC void vc_setFlag(VC vc, char c);
 
+//! Named bits accepted by BV_TERM_ABSTRACTION_SCHEMA_GROUPS. They mirror the
+//! command-line names in ordinal order; combine any of them with bitwise OR.
+//! The default is the qualified base/UREM/MulRef3 subset, while ALL retains
+//! every experimental schema implemented by the library.
+enum bv_schema_group_t
+{
+  STP_BV_SCHEMA_GROUP_BASE = 1 << 0,
+  STP_BV_SCHEMA_GROUP_UDIV15 = 1 << 1,
+  STP_BV_SCHEMA_GROUP_UDIV_EXTRA = 1 << 2,
+  STP_BV_SCHEMA_GROUP_UREM = 1 << 3,
+  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 4,
+  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 5,
+  STP_BV_SCHEMA_GROUP_MUL_EXTRA = 1 << 6,
+  STP_BV_SCHEMA_GROUP_ADD = 1 << 7,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 8,
+  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 9,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 10,
+  STP_BV_SCHEMA_GROUP_DIVREM_PAIR = 1 << 11,
+  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_BASE |
+                                STP_BV_SCHEMA_GROUP_UREM |
+                                STP_BV_SCHEMA_GROUP_MUL_REF3,
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 12) - 1
+};
+
 //! Interface-only flags.
 //!
 enum ifaceflag_t
@@ -521,7 +545,16 @@ enum ifaceflag_t
   //! libstp, so the published prefix has to stay put -- the same rule
   //! tests/api/C/counter-enum-abi.cpp keeps for stp_counter_t.
   //!
-  CNF_AUTO_THRESHOLD
+  CNF_AUTO_THRESHOLD,
+
+  //! Selects which families of algebraic facts
+  //! BV_TERM_ABSTRACTION_SCHEMAS may offer. `param_value` is a bitwise OR of
+  //! bv_schema_group_t values; zero selects none. Unknown or negative bits
+  //! are refused and leave the current mask unchanged. Appended here to keep
+  //! the published ordinals of every older interface flag stable. This is
+  //! the C API's way to reach --bv-term-abstraction-schema-groups.
+  //!
+  BV_TERM_ABSTRACTION_SCHEMA_GROUPS
 
 };
 
@@ -791,7 +824,22 @@ enum stp_counter_t
   //! kinds increment the pass counter without incrementing either lemma
   //! counter, so the two lemma counts do not partition
   //! STP_COUNTER_BV_REFINEMENT_ROUNDS.
-  STP_COUNTER_BV_SCHEMA_LEMMAS = 17
+  STP_COUNTER_BV_SCHEMA_LEMMAS = 17,
+
+  //! The schema total above, partitioned by bv_schema_group_t. These follow
+  //! the same order as that mask so profiling can attribute a mixed run.
+  STP_COUNTER_BV_SCHEMA_GROUP_BASE,
+  STP_COUNTER_BV_SCHEMA_GROUP_UDIV15,
+  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_EXTRA,
+  STP_COUNTER_BV_SCHEMA_GROUP_UREM,
+  STP_COUNTER_BV_SCHEMA_GROUP_MUL8,
+  STP_COUNTER_BV_SCHEMA_GROUP_MUL_REF3,
+  STP_COUNTER_BV_SCHEMA_GROUP_MUL_EXTRA,
+  STP_COUNTER_BV_SCHEMA_GROUP_ADD,
+  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
+  STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX,
+  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
+  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR
 };
 
 //! \brief Reads one of the counters above.

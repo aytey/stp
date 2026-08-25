@@ -35,6 +35,14 @@ THE SOFTWARE.
 namespace stp
 {
 
+static void countSchemaLemma(UserDefinedFlags& flags, BVSchemaGroup group)
+{
+  const unsigned index = static_cast<unsigned>(group);
+  assert(index < BV_SCHEMA_GROUP_COUNT);
+  flags.coverage.bv_schema_lemmas++;
+  flags.coverage.bv_schema_group_lemmas[index]++;
+}
+
 // Both families in one call, equalities first: theirs is the cheaper scan,
 // and the congruence phase inside it can refute a candidate at word level
 // without reading a single bit. A round that refined an equality stops
@@ -840,6 +848,12 @@ static const MulLemma MUL_LEMMAS[] = {
 static const unsigned MUL_LEMMA_COUNT =
     sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
 
+static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
+{
+  return lemma == MulLemma::MulRef3 ? BVSchemaGroup::MUL_REF3
+                                    : BVSchemaGroup::MUL_EXTRA;
+}
+
 const MulLemma* mulLemmaTable(unsigned& count)
 {
   count = MUL_LEMMA_COUNT;
@@ -865,38 +879,41 @@ const AddLemma* addLemmaTable(unsigned& count)
 AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                uint64_t installedSchemas)
+                                uint64_t installedSchemas,
+                                uint32_t enabledGroups)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
-  for (unsigned lemmaIndex = 0; lemmaIndex < ADD_LEMMA_COUNT; ++lemmaIndex)
-  {
-    if (!addLemmaApplicable(ADD_LEMMAS[lemmaIndex],
-                            (unsigned)tBits.size()))
-      continue;
-    for (unsigned operand = 0; operand < 2; ++operand)
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::ADD))
+    for (unsigned lemmaIndex = 0; lemmaIndex < ADD_LEMMA_COUNT; ++lemmaIndex)
     {
-      if ((installedSchemas &
-           addLemmaInstalledBit(lemmaIndex, operand)) != 0)
+      if (!addLemmaApplicable(ADD_LEMMAS[lemmaIndex], (unsigned)tBits.size()))
         continue;
-      if (!addLemmaHolds(ADD_LEMMAS[lemmaIndex], *ops[operand],
-                         *ops[1 - operand], tBits))
-        return {true, operand, lemmaIndex};
+      for (unsigned operand = 0; operand < 2; ++operand)
+      {
+        if ((installedSchemas & addLemmaInstalledBit(lemmaIndex, operand)) != 0)
+          continue;
+        if (!addLemmaHolds(ADD_LEMMAS[lemmaIndex], *ops[operand],
+                           *ops[1 - operand], tBits))
+          return {true, operand, lemmaIndex, 0, BVSchemaGroup::ADD};
+      }
     }
-  }
 
   const unsigned prefix = std::min(3u, (unsigned)tBits.size());
-  if ((installedSchemas & ADD_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
+      (installedSchemas & ADD_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
       !exactLowPrefixHolds(BVPLUS, aBits, bBits, tBits, prefix))
-    return {true, 0, 0, prefix};
+    return {true, 0, 0, prefix, BVSchemaGroup::LOW_PREFIX};
   return AddSchemaChoice();
 }
 
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                uint64_t installedSchemas)
+                                uint64_t installedSchemas,
+                                uint32_t enabledGroups)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
+  const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
 
   // a = 2^k -> t = b << k, and the same read the other way round. Where it
   // applies it says the most of the four: the shift *is* the product for
@@ -905,25 +922,27 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // applies -- this is only ever called over a candidate whose product is
   // already known wrong, and for a power-of-two operand "wrong" and
   // "disagrees with the shift" are the same statement.
-  for (unsigned i = 0; i < 2; ++i)
-  {
-    const int k = powerOfTwoExponent(*ops[i]);
-    if (k >= 0 && !productIsShift(*ops[1 - i], (unsigned)k, tBits))
-      return {MulSchema::Pow2, i, (unsigned)k};
-  }
+  if (base)
+    for (unsigned i = 0; i < 2; ++i)
+    {
+      const int k = powerOfTwoExponent(*ops[i]);
+      if (k >= 0 && !productIsShift(*ops[1 - i], (unsigned)k, tBits))
+        return {MulSchema::Pow2, i, (unsigned)k};
+    }
 
   // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
   // excluded by name: that covers the minimum signed value, which is its own
   // negation and which the schema above has already taken.
-  for (unsigned i = 0; i < 2; ++i)
-  {
-    if (powerOfTwoExponent(*ops[i]) >= 0)
-      continue;
-    const int k = powerOfTwoExponent(negatedValue(*ops[i]));
-    if (k >= 0 &&
-        !productIsShift(negatedValue(*ops[1 - i]), (unsigned)k, tBits))
-      return {MulSchema::NegPow2, i, (unsigned)k};
-  }
+  if (base)
+    for (unsigned i = 0; i < 2; ++i)
+    {
+      if (powerOfTwoExponent(*ops[i]) >= 0)
+        continue;
+      const int k = powerOfTwoExponent(negatedValue(*ops[i]));
+      if (k >= 0 &&
+          !productIsShift(negatedValue(*ops[1 - i]), (unsigned)k, tBits))
+        return {MulSchema::NegPow2, i, (unsigned)k};
+    }
 
   // The product carries at least as many trailing zeros as either operand.
   // Check operand 1 before operand 0 so schema selection remains
@@ -931,19 +950,20 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   static const unsigned tzInstalled[2] = {
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0,
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1};
-  for (unsigned pass = 0; pass < 2; ++pass)
-  {
-    const unsigned i = 1 - pass;
-    if ((installedSchemas & tzInstalled[i]) != 0)
-      continue;
-    const unsigned zeros = trailingZeros(*ops[i]);
-    for (unsigned bit = 0; bit < zeros; ++bit)
-      if (tBits[bit])
-        return {MulSchema::TrailingZeros, i, 0};
-  }
+  if (base)
+    for (unsigned pass = 0; pass < 2; ++pass)
+    {
+      const unsigned i = 1 - pass;
+      if ((installedSchemas & tzInstalled[i]) != 0)
+        continue;
+      const unsigned zeros = trailingZeros(*ops[i]);
+      for (unsigned bit = 0; bit < zeros; ++bit)
+        if (tBits[bit])
+          return {MulSchema::TrailingZeros, i, 0};
+    }
 
   // t[0] = a[0] & b[0].
-  if ((installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
+  if (base && (installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
       tBits[0] != (aBits[0] && bBits[0]))
     return {MulSchema::Odd, 0, 0};
 
@@ -955,11 +975,12 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   static const unsigned zeroProductInstalled[2] = {
       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1};
-  if (!anyBitSet(tBits))
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::MUL8) &&
+      !anyBitSet(tBits))
     for (unsigned i = 0; i < 2; ++i)
       if ((installedSchemas & zeroProductInstalled[i]) == 0 && (*ops[i])[0] &&
           anyBitSet(*ops[1 - i]))
-        return {MulSchema::ZeroProductOddOperand, i, 0};
+        return {MulSchema::ZeroProductOddOperand, i, 0, 0, BVSchemaGroup::MUL8};
 
   // The remaining facts are unconditional but asymmetric expressions over a
   // commutative operation. Offer each source fact in both readings, exactly
@@ -967,6 +988,9 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   for (unsigned lemmaIndex = 0; lemmaIndex < MUL_LEMMA_COUNT; ++lemmaIndex)
   {
     const MulLemma lemma = MUL_LEMMAS[lemmaIndex];
+    const BVSchemaGroup group = mulLemmaGroup(lemma);
+    if (!bvSchemaGroupEnabled(enabledGroups, group))
+      continue;
     if (!mulLemmaApplicable(lemma, (unsigned)tBits.size()))
       continue;
     for (unsigned operand = 0; operand < 2; ++operand)
@@ -975,14 +999,15 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
            mulLemmaInstalledBit(lemmaIndex, operand)) != 0)
         continue;
       if (!mulLemmaHolds(lemma, *ops[operand], *ops[1 - operand], tBits))
-        return {MulSchema::Lemma, operand, 0, lemmaIndex};
+        return {MulSchema::Lemma, operand, 0, lemmaIndex, group};
     }
   }
 
   const unsigned prefix = std::min(3u, (unsigned)tBits.size());
-  if ((installedSchemas & MUL_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
+      (installedSchemas & MUL_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
       !exactLowPrefixHolds(BVMULT, aBits, bBits, tBits, prefix))
-    return {MulSchema::LowPrefix, 0, prefix, 0};
+    return {MulSchema::LowPrefix, 0, prefix, 0, BVSchemaGroup::LOW_PREFIX};
 
   return MulSchemaChoice();
 }
@@ -1127,6 +1152,27 @@ static const DivLemma DIV_LEMMAS[] = {
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
 
+static BVSchemaGroup divLemmaGroup(DivLemma lemma)
+{
+  switch (lemma)
+  {
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+      return BVSchemaGroup::UDIV15;
+
+    case DivLemma::DividendZero:
+    case DivLemma::DivisorEqualsDividend:
+    case DivLemma::DivisorAllOnes:
+    case DivLemma::QuotientBelowNegatedDivisor:
+    case DivLemma::DividendAboveNegatedAnd:
+    case DivLemma::DivisorAboveShiftedDividend:
+    case DivLemma::DivisorLessOneAboveShiftedDividend:
+      return BVSchemaGroup::BASE;
+
+    default:
+      return BVSchemaGroup::UDIV_EXTRA;
+  }
+}
+
 static const RemLemma REM_LEMMAS[] = {
     RemLemma::UremRef2,  RemLemma::UremRef4,  RemLemma::UremRef5,
     RemLemma::UremRef6,  RemLemma::UremRef7,  RemLemma::UremRef8,
@@ -1151,23 +1197,25 @@ const RemLemma* remLemmaTable(unsigned& count)
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                uint64_t installedSchemas)
+                                uint64_t installedSchemas,
+                                uint32_t enabledGroups)
 {
   const unsigned width = (unsigned)tBits.size();
   const bool divisorZero = valueIsZero(bBits);
+  const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
 
   // The divisor-guarded facts first, where they apply: each says what the
   // operation *is* for that divisor, which is more than any bound can say.
   // Zero is not a power of two, so the two never contend and the order
   // between them is a formality.
-  if (divisorZero)
+  if (base && divisorZero)
   {
     const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
     if (!resultMatchesSources(divSchemaSources(opKind, width, choice), aBits,
                               tBits))
       return choice;
   }
-  else
+  else if (base)
   {
     const int k = powerOfTwoExponent(bBits);
     if (k >= 0)
@@ -1188,13 +1236,15 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   {
     // r <=u a, with no premise at all -- it holds over a zero divisor too,
     // where the remainder is the dividend.
-    if ((installedSchemas &
-         DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND) == 0 &&
+    if (base &&
+        (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND) ==
+            0 &&
         !valueLessOrEqual(tBits, aBits))
       return {DivSchema::RemainderAtMostDividend, 0};
 
     // b != 0 -> r <u b.
-    if ((installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR) ==
+    if (base &&
+        (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR) ==
             0 &&
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
@@ -1203,31 +1253,34 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // makes the modular subtraction the natural one; spelling the upper
     // edge this way avoids the overflow in a < 2*b. Once installed, this
     // single implication covers the entire band for every nonzero divisor.
-    if ((installedSchemas &
-         DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE) == 0)
+    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::QUOTIENT_ONE_REM) &&
+        (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE) == 0)
     {
       const std::vector<bool> difference = valueSubtract(aBits, bBits);
       if (valueLessOrEqual(bBits, aBits) &&
           !valueLessOrEqual(bBits, difference) && difference != tBits)
-        return {DivSchema::RemainderQuotientOne, 0};
+        return {DivSchema::RemainderQuotientOne, 0, 0,
+                BVSchemaGroup::QUOTIENT_ONE_REM};
     }
 
-    for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
-    {
-      if (!remLemmaEnabled(REM_LEMMAS[i]) ||
-          !remLemmaApplicable(REM_LEMMAS[i], width))
-        continue;
-      if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
-        continue;
-      if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i};
-    }
+    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::UREM))
+      for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
+      {
+        if (!remLemmaEnabled(REM_LEMMAS[i]) ||
+            !remLemmaApplicable(REM_LEMMAS[i], width))
+          continue;
+        if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+          continue;
+        if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
+          return {DivSchema::Lemma, 0, i, BVSchemaGroup::UREM};
+      }
   }
   else if (opKind == BVDIV)
   {
     // b != 0 -> t <=u a.
-    if ((installedSchemas &
-         DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND) == 0 &&
+    if (base &&
+        (installedSchemas & DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND) ==
+            0 &&
         !divisorZero && !valueLessOrEqual(tBits, aBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
 
@@ -1238,12 +1291,15 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // Quotients only: every one is about `t = a udiv b`.
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
+      const BVSchemaGroup group = divLemmaGroup(DIV_LEMMAS[i]);
+      if (!bvSchemaGroupEnabled(enabledGroups, group))
+        continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
       if (!divLemmaApplicable(DIV_LEMMAS[i], width))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i};
+        return {DivSchema::Lemma, 0, i, group};
     }
 
     // q >= 2^k iff b <= (a >> k). The right side is just a comparison over
@@ -1278,12 +1334,16 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         quotientTop = i;
         break;
       }
-    if (quotientTop > 0 && thresholdMismatch((unsigned)quotientTop))
-      return {DivSchema::QuotientPow2Threshold, (unsigned)quotientTop, 0};
-    const unsigned above = (quotientTop < 1) ? 1u
-                                             : (unsigned)quotientTop + 1;
-    if (above < width && thresholdMismatch(above))
-      return {DivSchema::QuotientPow2Threshold, above, 0};
+    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::QUOTIENT_THRESHOLDS))
+    {
+      if (quotientTop > 0 && thresholdMismatch((unsigned)quotientTop))
+        return {DivSchema::QuotientPow2Threshold, (unsigned)quotientTop, 0,
+                BVSchemaGroup::QUOTIENT_THRESHOLDS};
+      const unsigned above = (quotientTop < 1) ? 1u : (unsigned)quotientTop + 1;
+      if (above < width && thresholdMismatch(above))
+        return {DivSchema::QuotientPow2Threshold, above, 0,
+                BVSchemaGroup::QUOTIENT_THRESHOLDS};
+    }
   }
 
   return DivSchemaChoice();
@@ -1891,7 +1951,9 @@ unsigned BVAbstractionRefiner::refineTerms(
   // per-record scan, and give a violated recomposition fact first refusal for
   // this round. Node numbers are unique within the manager and the width is
   // part of the key, so only genuinely identical operations meet here.
-  if (bm->UserFlags.bv_term_abstraction_schemas)
+  if (bm->UserFlags.bv_term_abstraction_schemas &&
+      bvSchemaGroupEnabled(bm->UserFlags.bv_term_abstraction_schema_groups,
+                           BVSchemaGroup::DIVREM_PAIR))
   {
     struct DivRemKey {
       uint64_t dividend;
@@ -2042,8 +2104,9 @@ unsigned BVAbstractionRefiner::refineTerms(
       const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
       if (bm->UserFlags.bv_term_abstraction_schemas &&
           (schemaLimit == 0 || abs.schemaRounds < schemaLimit))
-        schema = chooseAddSchema(leftBits, rightBits, actual,
-                                 abs.installedSchemas);
+        schema =
+            chooseAddSchema(leftBits, rightBits, actual, abs.installedSchemas,
+                            bm->UserFlags.bv_term_abstraction_schema_groups);
 
       incPlus.push_back({idx, schema});
     }
@@ -2198,10 +2261,13 @@ unsigned BVAbstractionRefiner::refineTerms(
       if (schemaAllowance)
       {
         if (abs.opKind == BVMULT)
-          schema = chooseMulSchema(aBits, bBits, actual, abs.installedSchemas);
+          schema =
+              chooseMulSchema(aBits, bBits, actual, abs.installedSchemas,
+                              bm->UserFlags.bv_term_abstraction_schema_groups);
         else
-          divSchema = chooseDivSchema(abs.opKind, aBits, bBits, actual,
-                                      abs.installedSchemas);
+          divSchema = chooseDivSchema(
+              abs.opKind, aBits, bBits, actual, abs.installedSchemas,
+              bm->UserFlags.bv_term_abstraction_schema_groups);
       }
 
       incDivMul.push_back({idx, std::move(aBits), std::move(bBits),
@@ -2233,7 +2299,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     rem.divRemLowPrefixInstalled = true;
     div.schemaRounds++;
     rem.schemaRounds++;
-    bm->UserFlags.coverage.bv_schema_lemmas++;
+    countSchemaLemma(bm->UserFlags, BVSchemaGroup::DIVREM_PAIR);
     if (bm->UserFlags.stats_flag)
       std::cerr << "BV abstraction: paired BVDIV/BVMOD recomposition lemma "
                 << "over " << inc.prefixBits << " bits" << std::endl;
@@ -2283,7 +2349,7 @@ unsigned BVAbstractionRefiner::refineTerms(
         abs.blastedBits = inc.schema.prefixBits;
         abs.defined = (inc.schema.prefixBits == abs.width);
         abs.schemaRounds++;
-        bm->UserFlags.coverage.bv_schema_lemmas++;
+        countSchemaLemma(bm->UserFlags, inc.schema.group);
         if (bm->UserFlags.stats_flag)
           std::cerr << "BV abstraction: BVPLUS exact-low-prefix lemma over "
                     << inc.schema.prefixBits << " bits" << std::endl;
@@ -2309,7 +2375,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       abs.installedSchemas |=
           addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
       abs.schemaRounds++;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm->UserFlags, inc.schema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVPLUS "
                   << addLemmaName(ADD_LEMMAS[inc.schema.lemmaIndex])
@@ -2440,7 +2506,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm->UserFlags, inc.divSchema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
                   << (inc.divSchema.schema == DivSchema::Lemma
@@ -2527,7 +2593,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm->UserFlags, inc.schema.group);
       if (bm->UserFlags.stats_flag)
       {
         std::cerr << "BV abstraction: BVMULT "

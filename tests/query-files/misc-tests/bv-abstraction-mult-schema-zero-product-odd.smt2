@@ -8,7 +8,7 @@
 ; case s = s << 1 has only the all-zero solution. The refiner installs that
 ; compact implication rather than constructing the two variable shifts.
 ;
-; RUN: %solver --incremental=off -s --bv-term-abstraction=1 %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-schema-groups=mul8 %s 2>&1 | %OutputCheck %s
 ; CHECK: BV abstraction: BVMULT zero-product-odd-operand lemma over operand [01]
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$

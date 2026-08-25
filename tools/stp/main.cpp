@@ -109,6 +109,9 @@ public:
   // default spelling.
   std::string cnf_effort = "auto";
 
+  // Likewise for the named mask of BV abstraction schema families.
+  std::string bv_schema_groups = formatBVSchemaGroups(BV_SCHEMA_GROUP_DEFAULT);
+
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
   bool interactive = false;
@@ -376,6 +379,15 @@ void ExtraMain::create_options()
            "with algebraic facts that hold for every pair of operands before "
            "their operation-specific fallback",
            refinement_group);
+  app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
+                 "comma-separated schema families allowed by "
+                 "--bv-term-abstraction-schemas: base, udiv15, udiv-extra, "
+                 "urem, mul8, mul-ref3, mul-extra, add, "
+                 "quotient-thresholds, low-prefix, quotient-one-rem, or "
+                 "divrem-pair; 'all' selects the complete experimental "
+                 "stack and 'none' selects no schemas")
+      ->group(refinement_group)
+      ->capture_default_str();
   app.add_option("--bv-term-abstraction-rounds",
                  bm->UserFlags.bv_term_abstraction_rounds,
                  "ceiling on the blocking lemmas one abstracted "
@@ -924,6 +936,17 @@ int ExtraMain::parse_options(int argc, char** argv)
     cerr << "Error: " << e.what() << endl;
     cerr << "Please give '--help' to get help" << endl;
     exit(-1);
+  }
+
+  {
+    std::string error;
+    if (!parseBVSchemaGroups(bv_schema_groups,
+                             bm->UserFlags.bv_term_abstraction_schema_groups,
+                             error))
+    {
+      cerr << "ERROR: --bv-term-abstraction-schema-groups: " << error << endl;
+      return -1;
+    }
   }
 
   onePrintBack = bm->UserFlags.get_print_output_at_all();

@@ -9,8 +9,8 @@
 ; accidentally spliced over raw x instead, it would instead force result[1]
 ; to zero and turn this satisfiable query unsat.
 ;
-; RUN: %solver --incremental=off --disable-simplifications -s --bv-abstraction-width=1 --bv-term-abstraction=1 %s 2>&1 | %OutputCheck --check-prefix=SCHEMAS %s
-; RUN: %solver --incremental=off --disable-simplifications -s --bv-abstraction-width=1 --bv-term-abstraction=1 --bv-term-abstraction-schemas=0 %s 2>&1 | %OutputCheck --check-prefix=NOSCHEMAS %s
+; RUN: %solver --incremental=off --disable-simplifications -s --bv-abstraction-width=1 --bv-term-abstraction=1 --bv-term-abstraction-schema-groups=add %s 2>&1 | %OutputCheck --check-prefix=SCHEMAS %s
+; RUN: %solver --incremental=off --disable-simplifications -s --bv-abstraction-width=1 --bv-term-abstraction=1 --bv-term-abstraction-schemas=0 --bv-term-abstraction-schema-groups=add %s 2>&1 | %OutputCheck --check-prefix=NOSCHEMAS %s
 ; RUN: %solver --incremental=off --disable-simplifications %s 2>&1 | %OutputCheck --check-prefix=PLAIN %s
 ;
 ; SCHEMAS-NOT: Fatal Error

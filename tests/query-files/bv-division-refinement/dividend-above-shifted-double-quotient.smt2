@@ -6,7 +6,7 @@
 ; The assertion is exactly the negation of the fact. With a 256-bit quotient
 ; abstraction, installing that fact should decide the query without falling
 ; through to an exact divider.
-; RUN: %solver -s --uninterpreted-functions --array-equality --uf-ackermann=auto --bv-term-abstraction=1 %s 2>&1 | %OutputCheck %s
+; RUN: %solver -s --uninterpreted-functions --array-equality --uf-ackermann=auto --bv-term-abstraction=1 --bv-term-abstraction-schema-groups=udiv15 %s 2>&1 | %OutputCheck %s
 ; CHECK: BV abstraction: BVDIV dividend-above-shifted-double-quotient lemma
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$
