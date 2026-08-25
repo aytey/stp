@@ -645,6 +645,24 @@ static unsigned mkXor(SATSolver& solver, unsigned x, unsigned y)
   return z;
 }
 
+// z <-> x & y
+static unsigned mkAnd(SATSolver& solver, unsigned x, unsigned y)
+{
+  const unsigned z = freshVar(solver);
+  SATSolver::vec_literals cl;
+  cl.clear(); cl.push(SATSolver::mkLit(z, true));  cl.push(SATSolver::mkLit(x, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(z, true));  cl.push(SATSolver::mkLit(y, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(z, false)); cl.push(SATSolver::mkLit(x, true)); cl.push(SATSolver::mkLit(y, true)); solver.addClause(cl);
+  return z;
+}
+
+static void addEquivalence(SATSolver& solver, unsigned x, unsigned y)
+{
+  SATSolver::vec_literals cl;
+  cl.clear(); cl.push(SATSolver::mkLit(x, true));  cl.push(SATSolver::mkLit(y, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(x, false)); cl.push(SATSolver::mkLit(y, true));  solver.addClause(cl);
+}
+
 // The bits of -x. Two's complement negation is ~x + 1, and the whole of that
 // carry is a prefix OR: bit j comes out flipped exactly when some bit below
 // j is set. Below the lowest set bit nothing flips, at it the 1 survives,
@@ -722,6 +740,53 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
   return true;
 }
 
+bool exactLowPrefixHolds(Kind opKind, const std::vector<bool>& aBits,
+                         const std::vector<bool>& bBits,
+                         const std::vector<bool>& resultBits,
+                         unsigned prefixBits)
+{
+  assert(opKind == BVPLUS || opKind == BVMULT);
+  assert(aBits.size() == bBits.size());
+  assert(aBits.size() == resultBits.size());
+  assert(prefixBits > 0 && prefixBits <= resultBits.size());
+
+  std::vector<bool> expected(prefixBits, false);
+  if (opKind == BVPLUS)
+  {
+    bool carry = false;
+    for (unsigned i = 0; i < prefixBits; ++i)
+    {
+      expected[i] = (aBits[i] != bBits[i]) != carry;
+      carry = (aBits[i] && bBits[i]) || (aBits[i] && carry) ||
+              (bBits[i] && carry);
+    }
+  }
+  else
+  {
+    // Add each low shifted copy of b into the prefix. No operand bit at or
+    // above prefixBits can affect a lower product bit.
+    for (unsigned i = 0; i < prefixBits; ++i)
+      if (aBits[i])
+      {
+        bool carry = false;
+        for (unsigned j = 0; i + j < prefixBits; ++j)
+        {
+          const unsigned bit = i + j;
+          const bool addend = bBits[j];
+          const bool sum = (expected[bit] != addend) != carry;
+          carry = (expected[bit] && addend) || (expected[bit] && carry) ||
+                  (addend && carry);
+          expected[bit] = sum;
+        }
+      }
+  }
+
+  for (unsigned i = 0; i < prefixBits; ++i)
+    if (expected[i] != resultBits[i])
+      return false;
+  return true;
+}
+
 static const MulLemma MUL_LEMMAS[] = {
     MulLemma::MulRef3,  // 5 firings in the ranking corpus
     MulLemma::MulRefN3, // 4
@@ -778,6 +843,11 @@ AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
         return {true, operand, lemmaIndex};
     }
   }
+
+  const unsigned prefix = std::min(3u, (unsigned)tBits.size());
+  if ((installedSchemas & ADD_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+      !exactLowPrefixHolds(BVPLUS, aBits, bBits, tBits, prefix))
+    return {true, 0, 0, prefix};
   return AddSchemaChoice();
 }
 
@@ -868,6 +938,11 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
         return {MulSchema::Lemma, operand, 0, lemmaIndex};
     }
   }
+
+  const unsigned prefix = std::min(3u, (unsigned)tBits.size());
+  if ((installedSchemas & MUL_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+      !exactLowPrefixHolds(BVMULT, aBits, bBits, tBits, prefix))
+    return {MulSchema::LowPrefix, 0, prefix, 0};
 
   return MulSchemaChoice();
 }
@@ -1230,6 +1305,7 @@ static const char* mulSchemaName(MulSchema schema)
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
+    case MulSchema::LowPrefix: return "exact-low-prefix";
     case MulSchema::Lemma: return "lemma";
     case MulSchema::None: break;
   }
@@ -1245,6 +1321,91 @@ static void encodeMulOdd(SATSolver& solver, const std::vector<unsigned>& a,
   cl.clear(); cl.push(SATSolver::mkLit(result[0], true));  cl.push(SATSolver::mkLit(a[0], false)); solver.addClause(cl);
   cl.clear(); cl.push(SATSolver::mkLit(result[0], true));  cl.push(SATSolver::mkLit(b[0], false)); solver.addClause(cl);
   cl.clear(); cl.push(SATSolver::mkLit(result[0], false)); cl.push(SATSolver::mkLit(a[0], true)); cl.push(SATSolver::mkLit(b[0], true)); solver.addClause(cl);
+}
+
+void encodeAddLowPrefix(SATSolver& solver,
+                        const std::vector<unsigned>& aVars,
+                        const std::vector<unsigned>& bVars,
+                        const std::vector<unsigned>& resultVars,
+                        unsigned width, unsigned prefixBits, bool aNegated,
+                        bool bNegated)
+{
+  assert(width > 0);
+  assert(prefixBits > 0 && prefixBits <= width);
+  assert(aVars.size() >= width);
+  assert(bVars.size() >= width);
+  assert(resultVars.size() >= width);
+  assert(!(aNegated && bNegated));
+
+  unsigned carryVar = pinnedVar(solver, aNegated != bNegated);
+  for (unsigned bit = 0; bit < prefixBits; ++bit)
+  {
+    const unsigned a = aVars[bit];
+    const unsigned b = bVars[bit];
+    const unsigned result = resultVars[bit];
+    const unsigned carry = carryVar;
+    SATSolver::vec_literals cl;
+
+    for (unsigned row = 0; row < 8; ++row)
+    {
+      const bool aBit = (row & 1) != 0;
+      const bool bBit = (row & 2) != 0;
+      const bool carryBit = (row & 4) != 0;
+      const bool sum = (aBit != bBit) != carryBit;
+      cl.clear();
+      cl.push(SATSolver::mkLit(a, aBit != aNegated));
+      cl.push(SATSolver::mkLit(b, bBit != bNegated));
+      cl.push(SATSolver::mkLit(carry, carryBit));
+      cl.push(SATSolver::mkLit(result, !sum));
+      solver.addClause(cl);
+    }
+
+    if (bit + 1 < prefixBits)
+    {
+      const unsigned nextCarry = freshVar(solver);
+      cl.clear(); cl.push(SATSolver::mkLit(a,aNegated));   cl.push(SATSolver::mkLit(b,bNegated));   cl.push(SATSolver::mkLit(nextCarry,true)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(a,aNegated));   cl.push(SATSolver::mkLit(carry,false));  cl.push(SATSolver::mkLit(nextCarry,true)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(b,bNegated));   cl.push(SATSolver::mkLit(carry,false));  cl.push(SATSolver::mkLit(nextCarry,true)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(a,!aNegated));  cl.push(SATSolver::mkLit(b,!bNegated));  cl.push(SATSolver::mkLit(nextCarry,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(a,!aNegated));  cl.push(SATSolver::mkLit(carry,true));   cl.push(SATSolver::mkLit(nextCarry,false)); solver.addClause(cl);
+      cl.clear(); cl.push(SATSolver::mkLit(b,!bNegated));  cl.push(SATSolver::mkLit(carry,true));   cl.push(SATSolver::mkLit(nextCarry,false)); solver.addClause(cl);
+      carryVar = nextCarry;
+    }
+  }
+}
+
+void encodeMulLowPrefix(SATSolver& solver,
+                        const std::vector<unsigned>& aVars,
+                        const std::vector<unsigned>& bVars,
+                        const std::vector<unsigned>& resultVars,
+                        unsigned width, unsigned prefixBits)
+{
+  assert(width > 0);
+  assert(prefixBits > 0 && prefixBits <= width && prefixBits <= 3);
+  assert(aVars.size() >= width);
+  assert(bVars.size() >= width);
+  assert(resultVars.size() >= width);
+
+  const unsigned p00 = mkAnd(solver, aVars[0], bVars[0]);
+  addEquivalence(solver, resultVars[0], p00);
+  if (prefixBits == 1)
+    return;
+
+  const unsigned p10 = mkAnd(solver, aVars[1], bVars[0]);
+  const unsigned p01 = mkAnd(solver, aVars[0], bVars[1]);
+  addEquivalence(solver, resultVars[1], mkXor(solver, p10, p01));
+  if (prefixBits == 2)
+    return;
+
+  // Column two consists of its three partial products plus the carry from
+  // column one. Carries out of it are above the prefix and need not exist.
+  const unsigned carry1 = mkAnd(solver, p10, p01);
+  const unsigned p20 = mkAnd(solver, aVars[2], bVars[0]);
+  const unsigned p11 = mkAnd(solver, aVars[1], bVars[1]);
+  const unsigned p02 = mkAnd(solver, aVars[0], bVars[2]);
+  const unsigned x0 = mkXor(solver, p20, p11);
+  const unsigned x1 = mkXor(solver, p02, carry1);
+  addEquivalence(solver, resultVars[2], mkXor(solver, x0, x1));
 }
 
 // oddOperand[0] = 1 and otherOperand != 0 -> result != 0.
@@ -1855,6 +2016,22 @@ unsigned BVAbstractionRefiner::refineTerms(
 
     if (inc.schema.found)
     {
+      if (inc.schema.prefixBits != 0)
+      {
+        encodeAddLowPrefix(solver, leftVars, rightVars, resultVars, abs.width,
+                           inc.schema.prefixBits, lNeg, rNeg);
+        abs.installedSchemas |= ADD_SCHEMA_INSTALLED_LOW_PREFIX;
+        abs.blastedBits = inc.schema.prefixBits;
+        abs.defined = (inc.schema.prefixBits == abs.width);
+        abs.schemaRounds++;
+        bm->UserFlags.coverage.bv_schema_lemmas++;
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "BV abstraction: BVPLUS exact-low-prefix lemma over "
+                    << inc.schema.prefixBits << " bits" << std::endl;
+        refined++;
+        continue;
+      }
+
       const std::vector<unsigned>* rawVars[2] = {&leftVars, &rightVars};
       const bool negated[2] = {lNeg, rNeg};
       const std::vector<unsigned>* effectiveVars[2] = {rawVars[0], rawVars[1]};
@@ -1882,66 +2059,11 @@ unsigned BVAbstractionRefiner::refineTerms(
       continue;
     }
 
-    const bool carryInit = (lNeg != rNeg);
-
-    unsigned carryVar = solver.newVar();
-    solver.setFrozen(carryVar);
-    {
-      SATSolver::vec_literals cl;
-      cl.push(SATSolver::mkLit(carryVar, !carryInit));
-      solver.addClause(cl);
-    }
-
-    for (unsigned bit = 0; bit < abs.width; ++bit)
-    {
-      unsigned l = leftVars[bit];
-      unsigned r = rightVars[bit];
-      unsigned s = resultVars[bit];
-      unsigned c = carryVar;
-      SATSolver::vec_literals cl;
-
-      // s <-> l ^ r ^ c, one clause per row of the three inputs, each falsified
-      // only by that row paired with the wrong sum bit. Written out of the row
-      // rather than transcribed, because the transcription carried every s
-      // literal inverted: the lemma forced s = !(l ^ r ^ c), which is not a
-      // weaker constraint on the abstraction but the negation of the one the
-      // scan above had just checked. A refined addition was therefore still
-      // inconsistent on the next round, and `defined` below meant it was never
-      // looked at again.
-      //
-      // mkLit(v, sign) is false exactly when v equals sign, so a literal taken
-      // at `bit != negated` is false exactly when that operand's effective bit
-      // -- the variable read through the BVUMINUS that operandNegated records,
-      // whose +1 the carry above seeds -- is `bit`.
-      for (unsigned row = 0; row < 8; ++row)
-      {
-        const bool lBit = (row & 1) != 0;
-        const bool rBit = (row & 2) != 0;
-        const bool cBit = (row & 4) != 0;
-        const bool sum = lBit ^ rBit ^ cBit;
-        cl.clear();
-        cl.push(SATSolver::mkLit(l, lBit != lNeg));
-        cl.push(SATSolver::mkLit(r, rBit != rNeg));
-        cl.push(SATSolver::mkLit(c, cBit));
-        cl.push(SATSolver::mkLit(s, !sum));
-        solver.addClause(cl);
-      }
-
-      if (bit < abs.width - 1)
-      {
-        unsigned nc = solver.newVar();
-        solver.setFrozen(nc);
-
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,lNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(r,rNeg));   cl.push(SATSolver::mkLit(c,false));   cl.push(SATSolver::mkLit(nc,true)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(l,!lNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-        cl.clear(); cl.push(SATSolver::mkLit(r,!rNeg));  cl.push(SATSolver::mkLit(c,true));   cl.push(SATSolver::mkLit(nc,false)); solver.addClause(cl);
-
-        carryVar = nc;
-      }
-    }
+    // No schema remained: define the whole addition. The same encoder is
+    // used for the prefix above, so a polarity fix cannot make the two paths
+    // silently disagree.
+    encodeAddLowPrefix(solver, leftVars, rightVars, resultVars, abs.width,
+                       abs.width, lNeg, rNeg);
 
     abs.defined = true;
     refined++;
@@ -2118,6 +2240,14 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
         }
 
+        case MulSchema::LowPrefix:
+          encodeMulLowPrefix(solver, aVars, bVars, resultVars, W,
+                             inc.schema.shift);
+          abs.installedSchemas |= MUL_SCHEMA_INSTALLED_LOW_PREFIX;
+          abs.blastedBits = inc.schema.shift;
+          abs.defined = (inc.schema.shift == W);
+          break;
+
         case MulSchema::Lemma:
           BVExactEncoder(bm).encodeMulLemma(
               solver, MUL_LEMMAS[inc.schema.lemmaIndex], W, *opVars[chosen],
@@ -2133,12 +2263,18 @@ unsigned BVAbstractionRefiner::refineTerms(
       abs.schemaRounds++;
       bm->UserFlags.coverage.bv_schema_lemmas++;
       if (bm->UserFlags.stats_flag)
+      {
         std::cerr << "BV abstraction: BVMULT "
                   << (inc.schema.schema == MulSchema::Lemma
                           ? mulLemmaName(MUL_LEMMAS[inc.schema.lemmaIndex])
                           : mulSchemaName(inc.schema.schema))
-                  << " lemma over operand "
-                  << chosen << std::endl;
+                  << " lemma";
+        if (inc.schema.schema == MulSchema::LowPrefix)
+          std::cerr << " over " << inc.schema.shift << " bits";
+        else
+          std::cerr << " over operand " << chosen;
+        std::cerr << std::endl;
+      }
       refined++;
       continue;
     }

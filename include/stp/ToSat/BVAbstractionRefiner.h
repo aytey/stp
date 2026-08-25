@@ -123,6 +123,10 @@ enum class MulSchema
   // ... and an operand whose value is -2^k turns it into a shift of the
   // other one negated: a = -2^k -> t = (-b) << k.
   NegPow2,
+  // The exact low min(3, W) bits of the product. Unlike the later
+  // piece-at-a-time escalation, this is offered before any blocking lemma
+  // and is paid for only once.
+  LowPrefix,
   // One of the remaining synthesised facts, named by lemmaIndex.
   Lemma
 };
@@ -133,7 +137,8 @@ struct MulSchemaChoice
 {
   MulSchema schema = MulSchema::None;
   unsigned operand = 0;
-  // log2 of the power of two, for the two schemas that have one.
+  // log2 of the power of two for the two shift schemas, or the number of
+  // exact result bits for LowPrefix.
   unsigned shift = 0;
   // Set for Lemma: index in mulLemmaTable().
   unsigned lemmaIndex = 0;
@@ -152,7 +157,9 @@ enum : uint64_t
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4ull,
   MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8ull,
   MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull,
-  MUL_LEMMA_INSTALLED_FIRST = 32ull
+  MUL_LEMMA_INSTALLED_FIRST = 32ull,
+  // Fourteen lemmas in two operand readings occupy bits 5 through 32.
+  MUL_SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 33
 };
 
 inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
@@ -167,7 +174,12 @@ struct AddSchemaChoice
   bool found = false;
   unsigned operand = 0;
   unsigned lemmaIndex = 0;
+  // Nonzero selects the exact low-prefix schema instead of lemmaIndex.
+  unsigned prefixBits = 0;
 };
+
+// Thirteen lemmas in two operand readings occupy bits 0 through 25.
+const uint64_t ADD_SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 26;
 
 inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
 {
@@ -191,6 +203,28 @@ DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
                                            uint64_t installedSchemas);
+
+// Whether the candidate result agrees with the exact low `prefixBits` of an
+// addition or multiplication. All vectors are least-significant-bit first.
+DLL_PUBLIC bool exactLowPrefixHolds(Kind opKind,
+                                    const std::vector<bool>& aBits,
+                                    const std::vector<bool>& bBits,
+                                    const std::vector<bool>& resultBits,
+                                    unsigned prefixBits);
+
+// Exact low-prefix circuits over the live abstraction variables. Addition
+// accepts the negated-operand spelling recorded by the bit-blaster; at most
+// one operand is negated on every abstracted addition.
+DLL_PUBLIC void encodeAddLowPrefix(
+    SATSolver& solver, const std::vector<unsigned>& aVars,
+    const std::vector<unsigned>& bVars,
+    const std::vector<unsigned>& resultVars, unsigned width,
+    unsigned prefixBits, bool aNegated = false, bool bNegated = false);
+DLL_PUBLIC void encodeMulLowPrefix(
+    SATSolver& solver, const std::vector<unsigned>& aVars,
+    const std::vector<unsigned>& bVars,
+    const std::vector<unsigned>& resultVars, unsigned width,
+    unsigned prefixBits);
 
 // x[0] = 1 and s != 0 -> t != 0. This is the compact CNF form of the
 // ZeroProductOddOperand schema above. Exposed so the exhaustive test can

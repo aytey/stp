@@ -230,6 +230,12 @@ TEST(BVAddLemma, chooser_only_returns_violated_facts)
         }
         if (!choice.found)
           continue;
+        if (choice.prefixBits != 0)
+        {
+          ASSERT_FALSE(exactLowPrefixHolds(BVPLUS, bitsOf(x), bitsOf(s),
+                                           bitsOf(t), choice.prefixBits));
+          continue;
+        }
         ASSERT_LT(choice.lemmaIndex, count);
         const unsigned ops[2] = {x, s};
         ASSERT_FALSE(addLemmaHolds(lemmas[choice.lemmaIndex],
@@ -248,12 +254,34 @@ TEST(BVAddLemma, installed_facts_are_not_offered_again)
   for (unsigned i = 0; i < count; ++i)
     for (unsigned operand = 0; operand < 2; ++operand)
       installed |= addLemmaInstalledBit(i, operand);
+  installed |= ADD_SCHEMA_INSTALLED_LOW_PREFIX;
 
   for (unsigned x = 0; x < VALUES; ++x)
     for (unsigned s = 0; s < VALUES; ++s)
       for (unsigned t = 0; t < VALUES; ++t)
         EXPECT_FALSE(
             chooseAddSchema(bitsOf(x), bitsOf(s), bitsOf(t), installed).found);
+}
+
+TEST(BVAddLemma, residual_low_bit_errors_take_the_exact_prefix)
+{
+  unsigned count = 0;
+  addLemmaTable(count);
+  uint64_t installed = 0;
+  for (unsigned i = 0; i < count; ++i)
+    for (unsigned operand = 0; operand < 2; ++operand)
+      installed |= addLemmaInstalledBit(i, operand);
+
+  const AddSchemaChoice choice =
+      chooseAddSchema(bitsOf(3), bitsOf(5), bitsOf(1), installed);
+  ASSERT_TRUE(choice.found);
+  EXPECT_EQ(3u, choice.prefixBits);
+  EXPECT_FALSE(exactLowPrefixHolds(BVPLUS, bitsOf(3), bitsOf(5), bitsOf(1),
+                                   choice.prefixBits));
+
+  EXPECT_FALSE(chooseAddSchema(bitsOf(3), bitsOf(5), bitsOf(1),
+                               installed | ADD_SCHEMA_INSTALLED_LOW_PREFIX)
+                   .found);
 }
 
 TEST(BVAddLemma, small_width_restrictions_are_explicit)
