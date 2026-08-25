@@ -564,12 +564,11 @@ public:
   // encoding because for this class of pass the trade is forced. Choosing
   // per session which side of it to be on is the remedy that works.
   bool incremental_piece_rewriting = false;
-  // Refine an abstracted BVMULT with an algebraic fact about every pair of
-  // operands -- see MulSchema -- whenever the candidate contradicts one,
-  // and only fall back on ruling out the pair it holds when none of them
-  // does. Off restores the blocking lemma as the only refinement there is,
-  // which is what this was; it is the comparison the schemas have to earn
-  // their keep against.
+  // Refine abstracted BVPLUS, BVMULT, BVDIV and BVMOD operations with
+  // algebraic facts about every pair of operands whenever the candidate
+  // contradicts one. Off restores the former operation-specific fallback:
+  // exact addition, or one value-pair blocking lemma for multiplication,
+  // division and remainder.
   bool bv_term_abstraction_schemas = true;
 
   // You can select these with any combination you want of true & false.
@@ -871,7 +870,7 @@ public:
     // lemmas they installed. A pass can install more than one lemma.
     uint64_t bv_refinement_rounds = 0;
     uint64_t bv_blocking_lemmas = 0;
-    // Algebraic schema lemmas installed over an abstracted BVMULT. Counted
+    // Algebraic schema lemmas installed over abstracted arithmetic. Counted
     // apart from the blocking lemmas above because the two are not
     // interchangeable: the same number of each says very different things
     // about how a query was decided.

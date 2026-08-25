@@ -372,12 +372,9 @@ void ExtraMain::create_options()
            refinement_group);
   bool_arg("--bv-term-abstraction-schemas",
            bm->UserFlags.bv_term_abstraction_schemas,
-           "refine an abstracted BVMULT with algebraic facts that hold for "
-           "every pair of operands -- the product's trailing zeros, its low "
-           "bit, zero products with an odd operand, and the shift a "
-           "power-of-two operand turns it into -- "
-           "before falling back on ruling out the one pair the candidate "
-           "holds",
+           "refine abstracted BVPLUS, BVMULT, BVDIV and BVMOD operations "
+           "with algebraic facts that hold for every pair of operands before "
+           "their operation-specific fallback",
            refinement_group);
   app.add_option("--bv-term-abstraction-rounds",
                  bm->UserFlags.bv_term_abstraction_rounds,

@@ -180,9 +180,9 @@ DLL_PUBLIC AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& tBits,
                                            uint64_t installedSchemas);
 
-// The first of the five facts above that this candidate contradicts, or
-// None. Pure: the caller has already read the model, and what comes back
-// depends on nothing else.
+// The first fact above that this candidate contradicts, or None. Pure: the
+// caller has already read the model, and what comes back depends on nothing
+// else.
 //
 // `tBits` is the product bits the candidate holds, NOT the product of
 // `aBits` and `bBits` -- the whole point is that the two disagree. Called
@@ -204,12 +204,12 @@ DLL_PUBLIC void encodeMulZeroProductOddOperand(
 //
 // Division is not commutative and has no cheap unconditional fact about its
 // low bits to match the multiplication schemas: the low bits of a quotient
-// depend on the whole of both operands. Both facts here are value-guarded on
-// the *divisor* instead. Each says what the operation is for one divisor and
+// depend on the whole of both operands. The first two facts are value-guarded
+// on the *divisor*. Each says what the operation is for one divisor and
 // leaves the dividend free, which rules out 2^W pairs where a blocking lemma
-// rules out one, and neither needs an installed-flag -- fixing a divisor
-// value settles that value for good, and there are only as many of them as
-// the schemas can name.
+// rules out one. They need no installed flag: fixing a divisor value settles
+// that value for good. The bounds and synthesised facts that follow apply to
+// whole candidate regions and are each installed once.
 enum class DivSchema
 {
   // Nothing the candidate contradicts. The round falls through to the
@@ -251,18 +251,17 @@ enum class DivSchema
   Lemma
 };
 
-// Bits of BVTermAbstraction::installedSchemas for the three unconditional
-// division facts. They share the field with the multiplication flags, which
-// is safe because an abstraction is a multiplication or a division and
-// never both.
+// Bits of BVTermAbstraction::installedSchemas for the unconditional division
+// or remainder facts. They share the field with the multiplication and
+// addition flags, which is safe because an abstraction has only one kind.
 enum : uint64_t
 {
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16ull,
   DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32ull,
-  // ... and one apiece for the DivLemma facts, which are
+  // ... and one apiece for the DivLemma or RemLemma facts, which are
   // unconditional for the same reason and tracked the same way. The first
-  // of them is 64; `DIV_LEMMA_INSTALLED(i)` is the bit for the i'th.
+  // of them is 64; divLemmaInstalledBit(i) is the bit for the i'th.
   DIV_LEMMA_INSTALLED_FIRST = 64ull
 };
 
@@ -285,9 +284,8 @@ struct DivSchemaChoice
   DivSchema schema = DivSchema::None;
   // log2 of the divisor, for the schema that has one.
   unsigned shift = 0;
-  // Set when `schema` is Lemma: which of the DivLemma facts to install, as
-  // an index into the table the refiner keeps. Held as an index rather than
-  // the enum so this header does not need the one that defines it.
+  // Set when `schema` is Lemma: which DivLemma or RemLemma fact to install,
+  // as an index into the operation's table.
   unsigned lemmaIndex = 0;
 };
 
@@ -391,9 +389,9 @@ struct BVTermAbstraction
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.
   unsigned blastedBits = 0;
-  // The bits of -operand[i], minted on first use by the NegPow2 schema and
-  // kept because that schema can fire once per power of two and would
-  // otherwise pay for the same negation circuit every time.
+  // The bits of -operand[i], minted on first use by a schema that needs the
+  // semantic operand and kept so later schemas do not pay for the same
+  // negation circuit again.
   std::vector<unsigned> negatedOperand[2];
 };
 

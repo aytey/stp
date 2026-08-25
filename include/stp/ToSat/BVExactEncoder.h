@@ -28,10 +28,13 @@ THE SOFTWARE.
 // Puts `result = a op b` into a SAT solver that is already running, over
 // variables it already has.
 //
-// This is how --bv-term-abstraction gives up. A BVMULT, BVDIV or BVMOD it
-// abstracted is refined by ruling out one pair of operand values at a time,
-// and after a bounded number of those the refinement stops enumerating and
-// says what the operation is. What it says has to be worth having: an
+// This is how --bv-term-abstraction gives up, and how its algebraic schemas
+// are inserted. A BVMULT, BVDIV or BVMOD it abstracted is refined by ruling
+// out one pair of operand values at a time, and after a bounded number of
+// those the refinement stops enumerating and says what the operation is.
+// Addition, multiplication, division and remainder schemas use the same
+// circuit-to-live-CNF splice to assert facts that rule out larger candidate
+// regions. What any of those encodings says has to be worth having: an
 // abstraction that is abandoned late should leave the solver no worse off
 // than one that was never taken, and the only way that holds is if the
 // encoding it falls back on is the one the query would have had anyway.

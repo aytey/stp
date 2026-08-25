@@ -426,13 +426,14 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION_ROUNDS,
 
-  //! Whether an abstracted BVMULT is refined with algebraic facts about
-  //! every pair of operands before falling back on ruling out the pair the
-  //! candidate holds.
+  //! Whether abstracted BVPLUS, BVMULT, BVDIV and BVMOD operations are
+  //! refined with algebraic facts about every pair of operands before their
+  //! operation-specific fallback.
   //!
-  //! `param_value` nonzero turns them on (the default), zero leaves the
-  //! blocking lemma as the only refinement. This is the C API's way to
-  //! reach --bv-term-abstraction-schemas.
+  //! `param_value` nonzero turns them on (the default). Zero makes an
+  //! inconsistent addition exact immediately and leaves value-pair blocking
+  //! as the only refinement for multiplication, division and remainder.
+  //! This is the C API's way to reach --bv-term-abstraction-schemas.
   //!
   BV_TERM_ABSTRACTION_SCHEMAS,
 
@@ -783,12 +784,13 @@ enum stp_counter_t
   STP_COUNTER_UF_APPLICATIONS_LOWERED = 15,
   STP_COUNTER_UF_CONSTRAINTS_INSTALLED = 16,
 
-  //! Individual algebraic schema lemmas installed over abstracted BVMULT
-  //! nodes. For one inconsistent multiplication a schema lemma replaces a
-  //! blocking lemma, but a pass may visit several operations and increment
-  //! both counters. Other abstraction kinds increment the pass counter
-  //! without incrementing either lemma counter, so the two lemma counts do
-  //! not partition STP_COUNTER_BV_REFINEMENT_ROUNDS.
+  //! Individual algebraic schema lemmas installed over abstracted BVPLUS,
+  //! BVMULT, BVDIV and BVMOD nodes. For one inconsistent operation a schema
+  //! lemma replaces that operation's usual fallback, but a pass may visit
+  //! several operations and increment both lemma counters. Other abstraction
+  //! kinds increment the pass counter without incrementing either lemma
+  //! counter, so the two lemma counts do not partition
+  //! STP_COUNTER_BV_REFINEMENT_ROUNDS.
   STP_COUNTER_BV_SCHEMA_LEMMAS = 17
 };
 

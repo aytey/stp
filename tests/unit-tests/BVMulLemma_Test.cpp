@@ -58,17 +58,19 @@ protected:
   STPMgr mgr;
   std::unique_ptr<SATSolver> solver;
   std::vector<unsigned> xVars, sVars, tVars;
+  unsigned circuitWidth = WIDTH;
 
-  void buildCircuit(MulLemma lemma)
+  void buildCircuit(MulLemma lemma, unsigned width = WIDTH)
   {
+    circuitWidth = width;
     solver.reset(createSATSolver(mgr.UserFlags));
     ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
     ASSERT_TRUE(solver->supportsAssumptions());
 
-    xVars.resize(WIDTH);
-    sVars.resize(WIDTH);
-    tVars.resize(WIDTH);
-    for (unsigned i = 0; i < WIDTH; ++i)
+    xVars.resize(width);
+    sVars.resize(width);
+    tVars.resize(width);
+    for (unsigned i = 0; i < width; ++i)
     {
       xVars[i] = solver->newVar();
       sVars[i] = solver->newVar();
@@ -78,7 +80,7 @@ protected:
       solver->setFrozen(tVars[i]);
     }
 
-    BVExactEncoder(&mgr).encodeMulLemma(*solver, lemma, WIDTH, xVars, sVars,
+    BVExactEncoder(&mgr).encodeMulLemma(*solver, lemma, width, xVars, sVars,
                                         tVars);
   }
 
@@ -88,7 +90,7 @@ protected:
     const unsigned vals[3] = {x, s, t};
     const std::vector<unsigned>* vars[3] = {&xVars, &sVars, &tVars};
     for (unsigned v = 0; v < 3; ++v)
-      for (unsigned i = 0; i < WIDTH; ++i)
+      for (unsigned i = 0; i < circuitWidth; ++i)
         assumptions.push(
             SATSolver::mkLit((*vars[v])[i], ((vals[v] >> i) & 1u) == 0));
 
@@ -100,6 +102,13 @@ protected:
 };
 
 } // namespace
+
+TEST(BVMulLemma, registry_is_complete)
+{
+  unsigned count = 0;
+  mulLemmaTable(count);
+  EXPECT_EQ(14u, count);
+}
 
 TEST(BVMulLemma, every_lemma_is_true_of_multiplication)
 {
@@ -180,6 +189,31 @@ TEST_F(BVMulLemmaTest, the_circuit_agrees_with_the_predicate)
               << mulLemmaName(lemma) << " at x=" << x << " s=" << s
               << " t=" << t;
         }
+  }
+}
+
+TEST_F(BVMulLemmaTest, the_circuit_agrees_at_each_smaller_applicable_width)
+{
+  unsigned count = 0;
+  const MulLemma* lemmas = mulLemmaTable(count);
+  for (unsigned width = 1; width < WIDTH; ++width)
+  {
+    const unsigned values = 1u << width;
+    for (unsigned i = 0; i < count; ++i)
+    {
+      const MulLemma lemma = lemmas[i];
+      if (!mulLemmaApplicable(lemma, width))
+        continue;
+      buildCircuit(lemma, width);
+      for (unsigned x = 0; x < values; ++x)
+        for (unsigned s = 0; s < values; ++s)
+          for (unsigned t = 0; t < values; ++t)
+            ASSERT_EQ(mulLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
+                                    bitsOf(t, width)),
+                      circuitPermits(x, s, t))
+                << mulLemmaName(lemma) << " at width " << width << " x=" << x
+                << " s=" << s << " t=" << t;
+    }
   }
 }
 

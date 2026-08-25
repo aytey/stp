@@ -59,17 +59,19 @@ protected:
   STPMgr mgr;
   std::unique_ptr<SATSolver> solver;
   std::vector<unsigned> xVars, sVars, tVars;
+  unsigned circuitWidth = WIDTH;
 
-  void buildCircuit(RemLemma lemma)
+  void buildCircuit(RemLemma lemma, unsigned width = WIDTH)
   {
+    circuitWidth = width;
     solver.reset(createSATSolver(mgr.UserFlags));
     ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
     ASSERT_TRUE(solver->supportsAssumptions());
 
-    xVars.resize(WIDTH);
-    sVars.resize(WIDTH);
-    tVars.resize(WIDTH);
-    for (unsigned i = 0; i < WIDTH; ++i)
+    xVars.resize(width);
+    sVars.resize(width);
+    tVars.resize(width);
+    for (unsigned i = 0; i < width; ++i)
     {
       xVars[i] = solver->newVar();
       sVars[i] = solver->newVar();
@@ -79,7 +81,7 @@ protected:
       solver->setFrozen(tVars[i]);
     }
 
-    BVExactEncoder(&mgr).encodeRemLemma(*solver, lemma, WIDTH, xVars, sVars,
+    BVExactEncoder(&mgr).encodeRemLemma(*solver, lemma, width, xVars, sVars,
                                         tVars);
   }
 
@@ -89,7 +91,7 @@ protected:
     const unsigned vals[3] = {x, s, t};
     const std::vector<unsigned>* vars[3] = {&xVars, &sVars, &tVars};
     for (unsigned v = 0; v < 3; ++v)
-      for (unsigned i = 0; i < WIDTH; ++i)
+      for (unsigned i = 0; i < circuitWidth; ++i)
         assumptions.push(
             SATSolver::mkLit((*vars[v])[i], ((vals[v] >> i) & 1u) == 0));
 
@@ -101,6 +103,19 @@ protected:
 };
 
 } // namespace
+
+TEST(BVRemLemma, registry_is_complete)
+{
+  unsigned count = 0;
+  const RemLemma* lemmas = remLemmaTable(count);
+  EXPECT_EQ(12u, count);
+
+  unsigned enabled = 0;
+  for (unsigned i = 0; i < count; ++i)
+    if (remLemmaEnabled(lemmas[i]))
+      ++enabled;
+  EXPECT_EQ(11u, enabled);
+}
 
 TEST(BVRemLemma, every_lemma_is_true_of_remainder)
 {
@@ -181,6 +196,31 @@ TEST_F(BVRemLemmaTest, the_circuit_agrees_with_the_predicate)
               << remLemmaName(lemma) << " at x=" << x << " s=" << s
               << " t=" << t;
         }
+  }
+}
+
+TEST_F(BVRemLemmaTest, the_circuit_agrees_at_each_smaller_applicable_width)
+{
+  unsigned count = 0;
+  const RemLemma* lemmas = remLemmaTable(count);
+  for (unsigned width = 1; width < WIDTH; ++width)
+  {
+    const unsigned values = 1u << width;
+    for (unsigned i = 0; i < count; ++i)
+    {
+      const RemLemma lemma = lemmas[i];
+      if (!remLemmaApplicable(lemma, width))
+        continue;
+      buildCircuit(lemma, width);
+      for (unsigned x = 0; x < values; ++x)
+        for (unsigned s = 0; s < values; ++s)
+          for (unsigned t = 0; t < values; ++t)
+            ASSERT_EQ(remLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
+                                    bitsOf(t, width)),
+                      circuitPermits(x, s, t))
+                << remLemmaName(lemma) << " at width " << width << " x=" << x
+                << " s=" << s << " t=" << t;
+    }
   }
 }
 

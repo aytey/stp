@@ -37,7 +37,7 @@ THE SOFTWARE.
 // query, not here, which is why it is pinned here.
 //
 // Four bits, exhaustively: 4096 triples of (a, b, t), each checked against
-// all five schemas. Enough width for the trailing-zero and power-of-two
+// every hand-written schema. Enough width for the trailing-zero and power-of-two
 // cases to be distinct from each other and from the odd-bit one, and small
 // enough that nothing has to be sampled.
 #include "stp/ToSat/BVAbstractionRefiner.h"
