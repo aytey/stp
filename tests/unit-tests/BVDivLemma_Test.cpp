@@ -48,6 +48,7 @@ THE SOFTWARE.
 // where a shifter's edge case lives -- and small enough that nothing is
 // sampled.
 #include "stp/ToSat/BVExactEncoder.h"
+#include "stp/ToSat/BVAbstractionRefiner.h"
 
 #include "stp/AST/AST.h"
 #include "stp/STPManager/STP.h"
@@ -67,19 +68,10 @@ namespace
 const unsigned WIDTH = 4;
 const unsigned VALUES = 1u << WIDTH;
 
-const DivLemma LEMMAS[] = {DivLemma::DividendZero,
-                           DivLemma::DivisorEqualsDividend,
-                           DivLemma::DivisorAllOnes,
-                           DivLemma::QuotientBelowNegatedDivisor,
-                           DivLemma::DividendAboveNegatedAnd,
-                           DivLemma::DivisorAboveShiftedDividend,
-                           DivLemma::DivisorLessOneAboveShiftedDividend,
-                           DivLemma::DividendAboveShiftedDoubleQuotient};
-
-std::vector<bool> bitsOf(unsigned value)
+std::vector<bool> bitsOf(unsigned value, unsigned width = WIDTH)
 {
-  std::vector<bool> bits(WIDTH);
-  for (unsigned i = 0; i < WIDTH; ++i)
+  std::vector<bool> bits(width);
+  for (unsigned i = 0; i < width; ++i)
     bits[i] = ((value >> i) & 1u) != 0;
   return bits;
 }
@@ -94,14 +86,18 @@ class BVDivLemmaTest : public ::testing::Test
 {
 protected:
   STPMgr mgr;
+  std::unique_ptr<SATSolver> solver;
+  std::vector<unsigned> xVars, sVars, tVars;
 
-  // Does the circuit for `lemma` permit this triple?
-  bool circuitPermits(DivLemma lemma, unsigned x, unsigned s, unsigned t)
+  void buildCircuit(DivLemma lemma)
   {
-    std::unique_ptr<SATSolver> solver(createSATSolver(mgr.UserFlags));
-    EXPECT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+    solver.reset(createSATSolver(mgr.UserFlags));
+    ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+    ASSERT_TRUE(solver->supportsAssumptions());
 
-    std::vector<unsigned> xVars(WIDTH), sVars(WIDTH), tVars(WIDTH);
+    xVars.resize(WIDTH);
+    sVars.resize(WIDTH);
+    tVars.resize(WIDTH);
     for (unsigned i = 0; i < WIDTH; ++i)
     {
       xVars[i] = solver->newVar();
@@ -114,20 +110,21 @@ protected:
 
     BVExactEncoder(&mgr).encodeDivLemma(*solver, lemma, WIDTH, xVars, sVars,
                                         tVars);
+  }
 
-    SATSolver::vec_literals unit;
+  // Does the circuit for `lemma` permit this triple?
+  bool circuitPermits(unsigned x, unsigned s, unsigned t)
+  {
+    SATSolver::vec_literals assumptions;
     const unsigned vals[3] = {x, s, t};
     const std::vector<unsigned>* vars[3] = {&xVars, &sVars, &tVars};
     for (unsigned v = 0; v < 3; ++v)
       for (unsigned i = 0; i < WIDTH; ++i)
-      {
-        unit.clear();
-        unit.push(SATSolver::mkLit((*vars[v])[i], ((vals[v] >> i) & 1u) == 0));
-        solver->addClause(unit);
-      }
+        assumptions.push(
+            SATSolver::mkLit((*vars[v])[i], ((vals[v] >> i) & 1u) == 0));
 
     bool timedOut = false;
-    const bool sat = solver->solve(timedOut);
+    const bool sat = solver->solveWithAssumptions(assumptions, timedOut);
     EXPECT_FALSE(timedOut);
     return sat;
   }
@@ -139,7 +136,12 @@ protected:
 // the soundness claim: they are asserted unconditionally and never retracted.
 TEST(BVDivLemma, every_lemma_is_true_of_division)
 {
-  for (DivLemma lemma : LEMMAS)
+  unsigned count = 0;
+  const DivLemma* lemmas = divLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const DivLemma lemma = lemmas[i];
+    ASSERT_TRUE(divLemmaApplicable(lemma, WIDTH));
     for (unsigned x = 0; x < VALUES; x++)
       for (unsigned s = 0; s < VALUES; s++)
       {
@@ -148,6 +150,36 @@ TEST(BVDivLemma, every_lemma_is_true_of_division)
             << divLemmaName(lemma) << " is false of x=" << x << " s=" << s
             << " (quotient " << t << ")";
       }
+  }
+}
+
+// Width restrictions are part of the theorem, not performance guards. Check
+// every supported small width so a fact that happens to hold at four bits
+// cannot hide a missing restriction.
+TEST(BVDivLemma, every_lemma_is_true_at_each_small_applicable_width)
+{
+  unsigned count = 0;
+  const DivLemma* lemmas = divLemmaTable(count);
+  for (unsigned width = 1; width <= 6; ++width)
+  {
+    const unsigned values = 1u << width;
+    for (unsigned i = 0; i < count; ++i)
+    {
+      const DivLemma lemma = lemmas[i];
+      if (!divLemmaApplicable(lemma, width))
+        continue;
+      for (unsigned x = 0; x < values; ++x)
+        for (unsigned s = 0; s < values; ++s)
+        {
+          const unsigned t = (s == 0) ? values - 1 : x / s;
+          ASSERT_TRUE(divLemmaHolds(lemma, bitsOf(x, width), bitsOf(s, width),
+                                    bitsOf(t, width)))
+              << divLemmaName(lemma) << " is false at width " << width
+              << " for x=" << x << " s=" << s << " (quotient " << t
+              << ")";
+        }
+    }
+  }
 }
 
 // Each lemma rules something out. One true of every triple would be sound and
@@ -155,8 +187,11 @@ TEST(BVDivLemma, every_lemma_is_true_of_division)
 // to offer the same candidate again.
 TEST(BVDivLemma, every_lemma_rules_something_out)
 {
-  for (DivLemma lemma : LEMMAS)
+  unsigned count = 0;
+  const DivLemma* lemmas = divLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
   {
+    const DivLemma lemma = lemmas[i];
     unsigned refuted = 0;
     for (unsigned x = 0; x < VALUES; x++)
       for (unsigned s = 0; s < VALUES; s++)
@@ -171,14 +206,27 @@ TEST(BVDivLemma, every_lemma_rules_something_out)
 // permitting exactly the triples the predicate calls true, over all 4096.
 TEST_F(BVDivLemmaTest, the_circuit_agrees_with_the_predicate)
 {
-  for (DivLemma lemma : LEMMAS)
+  unsigned count = 0;
+  const DivLemma* lemmas = divLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const DivLemma lemma = lemmas[i];
+    buildCircuit(lemma);
     for (unsigned x = 0; x < VALUES; x++)
       for (unsigned s = 0; s < VALUES; s++)
         for (unsigned t = 0; t < VALUES; t++)
         {
           const bool want = divLemmaHolds(lemma, bitsOf(x), bitsOf(s), bitsOf(t));
-          ASSERT_EQ(want, circuitPermits(lemma, x, s, t))
+          ASSERT_EQ(want, circuitPermits(x, s, t))
               << divLemmaName(lemma) << " at x=" << x << " s=" << s
               << " t=" << t;
         }
+  }
+}
+
+TEST(BVDivLemma, width_restrictions_are_explicit)
+{
+  EXPECT_FALSE(divLemmaApplicable(DivLemma::UdivRef33, 1));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef33, 2));
+  EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef9, 1));
 }

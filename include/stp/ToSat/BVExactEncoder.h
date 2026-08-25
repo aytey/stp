@@ -97,7 +97,22 @@ enum class DivLemma
   // (s - 1) >=u (x >> t)
   DivisorLessOneAboveShiftedDividend,
   // x >=u ((t << 1) >> (t << s))
-  DividendAboveShiftedDoubleQuotient
+  DividendAboveShiftedDoubleQuotient,
+
+  // The names below deliberately retain Bitwuzla's registry identifiers.
+  // Unlike the implication-style facts above, the synthesised expressions
+  // do not have concise semantic names that are less error-prone than their
+  // source IDs.
+  UdivRef9,
+  UdivRef12,
+  UdivRef14,
+  UdivRef16,
+  UdivRef17,
+  UdivRef18,
+  UdivRef19,
+  UdivRef26,
+  UdivRef27,
+  UdivRef33
 };
 
 // Whether one of them holds of these three values. The refiner asks before
@@ -108,6 +123,10 @@ enum class DivLemma
 DLL_PUBLIC bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& sBits,
                               const std::vector<bool>& tBits);
+
+// Some synthesised facts are theorems only above a stated bit width. A
+// caller must not evaluate or install one outside that domain.
+DLL_PUBLIC bool divLemmaApplicable(DivLemma lemma, unsigned width);
 
 DLL_PUBLIC const char* divLemmaName(DivLemma lemma);
 

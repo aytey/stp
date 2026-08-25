@@ -2183,6 +2183,41 @@ BBNodeVec BitBlaster::BBNeg(const BBNodeVec& x)
   return result;
 }
 
+BBNodeVec BitBlaster::BBAnd(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(AND, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBOr(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(OR, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBXor(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(XOR, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBAdd(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result = x;
+  BBPlus2(result, y, nf->getFalse());
+  return result;
+}
+
 // Compute unary minus
 BBNodeVec BitBlaster::BBUminus(const BBNodeVec& x)
 {
@@ -3065,6 +3100,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
   const unsigned width = (unsigned)x.size();
   assert(s.size() == width);
   assert(t.size() == width);
+  assert(divLemmaApplicable(lemma, width));
 
   const BBNodeVec zero = BBfill(width, BBFalse);
   const BBNodeVec ones = BBfill(width, BBTrue);
@@ -3127,6 +3163,76 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       const BBNodeVec amount = BBShiftLeftByVariable(t, s);
       return BBBVLE(BBShiftRightByVariable(tTwice, amount, width), x, false);
     }
+
+    case DivLemma::UdivRef9:
+      // t != -(s & ~x)
+      return nf->CreateNode(
+          NOT, BBEQ(t, BBUminus(BBAnd(s, BBNeg(x)))));
+
+    case DivLemma::UdivRef12:
+      // (x & -t) >=u (s & t)
+      return BBBVLE(BBAnd(s, t), BBAnd(x, BBUminus(t)), false);
+
+    case DivLemma::UdivRef14:
+    {
+      // x >=u ((s >> (s << t)) << 1)
+      BBNodeVec shifted = BBShiftRightByVariable(
+          s, BBShiftLeftByVariable(s, t), width);
+      BBLShift(shifted, 1);
+      return BBBVLE(shifted, x, false);
+    }
+
+    case DivLemma::UdivRef16:
+    {
+      // t >=u ((x >> s) << 1)
+      BBNodeVec shifted = BBShiftRightByVariable(x, s, width);
+      BBLShift(shifted, 1);
+      return BBBVLE(shifted, t, false);
+    }
+
+    case DivLemma::UdivRef17:
+    {
+      // x >=u ((x | t) & (s << 1))
+      BBNodeVec twiceS = s;
+      BBLShift(twiceS, 1);
+      return BBBVLE(BBAnd(BBOr(x, t), twiceS), x, false);
+    }
+
+    case DivLemma::UdivRef18:
+    {
+      // x >=u ((x | s) & (t << 1))
+      BBNodeVec twiceT = t;
+      BBLShift(twiceT, 1);
+      return BBBVLE(BBAnd(BBOr(x, s), twiceT), x, false);
+    }
+
+    case DivLemma::UdivRef19:
+      // (x >> t) != (s | t)
+      return nf->CreateNode(
+          NOT, BBEQ(BBShiftRightByVariable(x, t, width), BBOr(s, t)));
+
+    case DivLemma::UdivRef26:
+    {
+      // x >=u (t xor (t >> (s >> 1)))
+      BBNodeVec halfS = s;
+      BBRShift(halfS, 1);
+      return BBBVLE(
+          BBXor(t, BBShiftRightByVariable(t, halfS, width)), x, false);
+    }
+
+    case DivLemma::UdivRef27:
+    {
+      // x >=u (s xor (s >> (t >> 1)))
+      BBNodeVec halfT = t;
+      BBRShift(halfT, 1);
+      return BBBVLE(
+          BBXor(s, BBShiftRightByVariable(s, halfT, width)), x, false);
+    }
+
+    case DivLemma::UdivRef33:
+      // x != t + t + (x | s)
+      return nf->CreateNode(
+          NOT, BBEQ(x, BBAdd(t, BBAdd(t, BBOr(x, s)))));
   }
 
   FatalError("BBDivLemma: unknown lemma");

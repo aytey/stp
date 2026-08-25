@@ -886,7 +886,17 @@ static const DivLemma DIV_LEMMAS[] = {
     DivLemma::DivisorEqualsDividend,              // 162
     DivLemma::DivisorLessOneAboveShiftedDividend, // 161
     DivLemma::DividendAboveShiftedDoubleQuotient, // 125
-    DivLemma::DivisorAllOnes};                    // 59
+    DivLemma::UdivRef9,                            // 62
+    DivLemma::DivisorAllOnes,                     // 59
+    DivLemma::UdivRef14,                          // 54
+    DivLemma::UdivRef33,                          // 26
+    DivLemma::UdivRef16,                          // 14
+    DivLemma::UdivRef17,                          // 10
+    DivLemma::UdivRef12,                          // 9
+    DivLemma::UdivRef26,                          // 3
+    DivLemma::UdivRef19,                          // 3
+    DivLemma::UdivRef18,                          // 2
+    DivLemma::UdivRef27};                         // 2
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
@@ -961,6 +971,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+        continue;
+      if (!divLemmaApplicable(DIV_LEMMAS[i], width))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i};

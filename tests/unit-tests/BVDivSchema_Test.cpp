@@ -476,7 +476,7 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
 {
   unsigned lemmaCount = 0;
   divLemmaTable(lemmaCount);
-  unsigned all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
+  uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
                  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
                  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
   for (unsigned i = 0; i < lemmaCount; ++i)

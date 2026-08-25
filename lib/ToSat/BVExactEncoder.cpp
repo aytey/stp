@@ -194,6 +194,34 @@ std::vector<bool> andOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
+std::vector<bool> orOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  std::vector<bool> r(a.size());
+  for (unsigned i = 0; i < a.size(); ++i)
+    r[i] = a[i] || b[i];
+  return r;
+}
+
+std::vector<bool> xorOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  std::vector<bool> r(a.size());
+  for (unsigned i = 0; i < a.size(); ++i)
+    r[i] = a[i] != b[i];
+  return r;
+}
+
+std::vector<bool> addOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  std::vector<bool> r(a.size());
+  bool carry = false;
+  for (unsigned i = 0; i < a.size(); ++i)
+  {
+    r[i] = (a[i] != b[i]) != carry;
+    carry = (a[i] && b[i]) || (a[i] && carry) || (b[i] && carry);
+  }
+  return r;
+}
+
 // The unsigned value of a shift amount, saturated at the value width. Once
 // the represented amount reaches that width both SMT-LIB logical shifts are
 // all zero, so there is no reason to risk overflowing a host integer while
@@ -243,9 +271,22 @@ std::vector<bool> shlOf(const std::vector<bool>& v,
 
 } // namespace
 
+bool divLemmaApplicable(DivLemma lemma, unsigned width)
+{
+  switch (lemma)
+  {
+    case DivLemma::UdivRef33: return width > 1;
+    default: return width > 0;
+  }
+}
+
 bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
                    const std::vector<bool>& s, const std::vector<bool>& t)
 {
+  assert(x.size() == s.size());
+  assert(x.size() == t.size());
+  assert(divLemmaApplicable(lemma, (unsigned)x.size()));
+
   const unsigned W = (unsigned)x.size();
   const std::vector<bool> zero(W, false);
   std::vector<bool> one(W, false);
@@ -281,6 +322,46 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
     case DivLemma::DividendAboveShiftedDoubleQuotient:
       // x >=u ((t << 1) >> (t << s))
       return ule(shrOf(shlOf(t, one), shlOf(t, s)), x);
+
+    case DivLemma::UdivRef9:
+      // t != -(s & ~x)
+      return t != negOf(andOf(s, notOf(x)));
+
+    case DivLemma::UdivRef12:
+      // (x & -t) >=u (s & t)
+      return ule(andOf(s, t), andOf(x, negOf(t)));
+
+    case DivLemma::UdivRef14:
+      // x >=u ((s >> (s << t)) << 1)
+      return ule(shlOf(shrOf(s, shlOf(s, t)), one), x);
+
+    case DivLemma::UdivRef16:
+      // t >=u ((x >> s) << 1)
+      return ule(shlOf(shrOf(x, s), one), t);
+
+    case DivLemma::UdivRef17:
+      // x >=u ((x | t) & (s << 1))
+      return ule(andOf(orOf(x, t), shlOf(s, one)), x);
+
+    case DivLemma::UdivRef18:
+      // x >=u ((x | s) & (t << 1))
+      return ule(andOf(orOf(x, s), shlOf(t, one)), x);
+
+    case DivLemma::UdivRef19:
+      // (x >> t) != (s | t)
+      return shrOf(x, t) != orOf(s, t);
+
+    case DivLemma::UdivRef26:
+      // x >=u (t xor (t >> (s >> 1)))
+      return ule(xorOf(t, shrOf(t, shrOf(s, one))), x);
+
+    case DivLemma::UdivRef27:
+      // x >=u (s xor (s >> (t >> 1)))
+      return ule(xorOf(s, shrOf(s, shrOf(t, one))), x);
+
+    case DivLemma::UdivRef33:
+      // x != t + t + (x | s)
+      return x != addOf(t, addOf(t, orOf(x, s)));
   }
   return true;
 }
@@ -302,6 +383,16 @@ const char* divLemmaName(DivLemma lemma)
       return "divisor-less-one-above-shifted-dividend";
     case DivLemma::DividendAboveShiftedDoubleQuotient:
       return "dividend-above-shifted-double-quotient";
+    case DivLemma::UdivRef9: return "udiv-ref9";
+    case DivLemma::UdivRef12: return "udiv-ref12";
+    case DivLemma::UdivRef14: return "udiv-ref14";
+    case DivLemma::UdivRef16: return "udiv-ref16";
+    case DivLemma::UdivRef17: return "udiv-ref17";
+    case DivLemma::UdivRef18: return "udiv-ref18";
+    case DivLemma::UdivRef19: return "udiv-ref19";
+    case DivLemma::UdivRef26: return "udiv-ref26";
+    case DivLemma::UdivRef27: return "udiv-ref27";
+    case DivLemma::UdivRef33: return "udiv-ref33";
   }
   return "unknown";
 }

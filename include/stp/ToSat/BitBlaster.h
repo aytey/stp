@@ -93,6 +93,10 @@ class BitBlaster
 
   // Bitwise complement
   BBNodeVec BBNeg(const BBNodeVec& x);
+  BBNodeVec BBAnd(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBOr(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBXor(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBAdd(const BBNodeVec& x, const BBNodeVec& y);
 
   // Unary minus
   BBNodeVec BBUminus(const BBNodeVec& x);
