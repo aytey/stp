@@ -37,13 +37,17 @@ THE SOFTWARE.
 // query, not here, which is why it is pinned here.
 //
 // Four bits, exhaustively: 4096 triples of (a, b, t), each checked against
-// all four schemas. Enough width for the trailing-zero and power-of-two
+// all five schemas. Enough width for the trailing-zero and power-of-two
 // cases to be distinct from each other and from the odd-bit one, and small
 // enough that nothing has to be sampled.
 #include "stp/ToSat/BVAbstractionRefiner.h"
 
+#include "stp/STPManager/STPManager.h"
+#include "stp/Sat/SATSolverFactory.h"
+
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <vector>
 
 using namespace stp;
@@ -86,6 +90,14 @@ bool oddHolds(unsigned a, unsigned b, unsigned t)
   return (t & 1u) == ((a & 1u) & (b & 1u));
 }
 
+// t = 0 and oddOperand[0] = 1 -> otherOperand = 0. This is the
+// only nontrivial case of s = s << (x & (1 >> t)), the MUL8 spelling.
+bool zeroProductOddOperandHolds(unsigned oddOperand, unsigned otherOperand,
+                                unsigned t)
+{
+  return t != 0 || (oddOperand & 1u) == 0 || otherOperand == 0;
+}
+
 // t[i] -> some bit of `op` at or below i
 bool trailingZerosHolds(unsigned op, unsigned t)
 {
@@ -125,6 +137,8 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
   {
     case MulSchema::Odd:
       return oddHolds(a, b, t);
+    case MulSchema::ZeroProductOddOperand:
+      return zeroProductOddOperandHolds(ops[choice.operand], other, t);
     case MulSchema::TrailingZeros:
       return trailingZerosHolds(ops[choice.operand], t);
     case MulSchema::Pow2:
@@ -143,9 +157,52 @@ MulSchemaChoice choose(unsigned a, unsigned b, unsigned t,
   return chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), installed);
 }
 
+class BVMultSchemaTest : public ::testing::Test
+{
+protected:
+  STPMgr mgr;
+
+  bool zeroProductCircuitPermits(unsigned oddOperand, unsigned otherOperand,
+                                 unsigned t)
+  {
+    std::unique_ptr<SATSolver> solver(createSATSolver(mgr.UserFlags));
+    EXPECT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+    std::vector<unsigned> oddVars(WIDTH), otherVars(WIDTH), tVars(WIDTH);
+    for (unsigned i = 0; i < WIDTH; ++i)
+    {
+      oddVars[i] = solver->newVar();
+      otherVars[i] = solver->newVar();
+      tVars[i] = solver->newVar();
+      solver->setFrozen(oddVars[i]);
+      solver->setFrozen(otherVars[i]);
+      solver->setFrozen(tVars[i]);
+    }
+
+    encodeMulZeroProductOddOperand(*solver, oddVars, otherVars, tVars, WIDTH);
+
+    SATSolver::vec_literals unit;
+    const unsigned values[3] = {oddOperand, otherOperand, t};
+    const std::vector<unsigned>* vars[3] = {&oddVars, &otherVars, &tVars};
+    for (unsigned v = 0; v < 3; ++v)
+      for (unsigned i = 0; i < WIDTH; ++i)
+      {
+        unit.clear();
+        unit.push(
+            SATSolver::mkLit((*vars[v])[i], ((values[v] >> i) & 1u) == 0));
+        solver->addClause(unit);
+      }
+
+    bool timedOut = false;
+    const bool sat = solver->solve(timedOut);
+    EXPECT_FALSE(timedOut);
+    return sat;
+  }
+};
+
 } // namespace
 
-// Valid: every fact any of the four can assert is true of the real product,
+// Valid: every fact any of the five can assert is true of the real product,
 // whichever operand it is read over and whatever the schema was chosen for.
 // This is the property that keeps the clauses from removing a model the
 // query has.
@@ -157,6 +214,10 @@ TEST(bv_mult_schema, EveryFactHoldsOfTheRealProduct)
       const unsigned t = truncatedProduct(a, b);
 
       EXPECT_TRUE(oddHolds(a, b, t)) << "a=" << a << " b=" << b;
+      EXPECT_TRUE(zeroProductOddOperandHolds(a, b, t))
+          << "a=" << a << " b=" << b;
+      EXPECT_TRUE(zeroProductOddOperandHolds(b, a, t))
+          << "a=" << a << " b=" << b;
       EXPECT_TRUE(trailingZerosHolds(a, t)) << "a=" << a << " b=" << b;
       EXPECT_TRUE(trailingZerosHolds(b, t)) << "a=" << a << " b=" << b;
 
@@ -307,7 +368,9 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
 {
   const unsigned all = MUL_SCHEMA_INSTALLED_ODD |
                        MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
-                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1;
+                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
+                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 |
+                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1;
 
   for (unsigned a = 0; a < VALUES; ++a)
     for (unsigned b = 0; b < VALUES; ++b)
@@ -316,6 +379,7 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
         const MulSchema schema = choose(a, b, t, all).schema;
         EXPECT_NE(MulSchema::Odd, schema);
         EXPECT_NE(MulSchema::TrailingZeros, schema);
+        EXPECT_NE(MulSchema::ZeroProductOddOperand, schema);
       }
 
   // One at a time: the two readings of the trailing-zero fact are separate
@@ -326,16 +390,53 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
   EXPECT_EQ(0u, stillFirst.operand);
 }
 
-// The odd-bit fact is the last resort of the four, and it is reached: a
-// candidate whose product has the wrong low bit while both operands are odd
+// The odd-bit fact remains ahead of the zero-product fact, and it is reached:
+// a candidate whose product has the wrong low bit while both operands are odd
 // contradicts nothing above it.
-TEST(bv_mult_schema, TheOddBitIsTheLastOfTheFour)
+TEST(bv_mult_schema, TheOddBitFactPrecedesTheZeroProductFact)
 {
   // 3 * 5 = 15; a candidate of 14 is even where the product is odd, and
   // neither operand is a power of two or the negation of one at this width.
   const MulSchemaChoice choice = choose(3, 5, 14);
   EXPECT_EQ(MulSchema::Odd, choice.schema);
   EXPECT_FALSE(oddHolds(3, 5, 14));
+}
+
+// Once the four earlier facts all agree with a wrong zero product, an odd
+// operand still proves that a nonzero other operand cannot have produced it.
+// The two readings are installed independently because multiplication is
+// commutative but the implication names which operand is odd.
+TEST(bv_mult_schema, AnOddOperandRefusesAWrongZeroProduct)
+{
+  const MulSchemaChoice first = choose(3, 6, 0);
+  EXPECT_EQ(MulSchema::ZeroProductOddOperand, first.schema);
+  EXPECT_EQ(0u, first.operand);
+  EXPECT_FALSE(chosenSchemaHolds(first, 3, 6, 0));
+
+  const MulSchemaChoice second = choose(6, 3, 0);
+  EXPECT_EQ(MulSchema::ZeroProductOddOperand, second.schema);
+  EXPECT_EQ(1u, second.operand);
+  EXPECT_FALSE(chosenSchemaHolds(second, 6, 3, 0));
+
+  const MulSchemaChoice firstInstalled =
+      choose(3, 6, 0, MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0);
+  EXPECT_EQ(MulSchema::None, firstInstalled.schema);
+}
+
+// The compact implication circuit used by the refiner is equivalent to the
+// published shift expression's only nontrivial case, over every triple.
+TEST_F(BVMultSchemaTest, TheZeroProductCircuitAgreesWithThePredicate)
+{
+  for (unsigned oddOperand = 0; oddOperand < VALUES; ++oddOperand)
+    for (unsigned otherOperand = 0; otherOperand < VALUES; ++otherOperand)
+      for (unsigned t = 0; t < VALUES; ++t)
+      {
+        const bool want =
+            zeroProductOddOperandHolds(oddOperand, otherOperand, t);
+        ASSERT_EQ(want, zeroProductCircuitPermits(oddOperand, otherOperand, t))
+            << "oddOperand=" << oddOperand << " otherOperand=" << otherOperand
+            << " t=" << t;
+      }
 }
 
 // Round trip through the bit vectors the refiner passes, so that a change to

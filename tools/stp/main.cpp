@@ -374,7 +374,8 @@ void ExtraMain::create_options()
            bm->UserFlags.bv_term_abstraction_schemas,
            "refine an abstracted BVMULT with algebraic facts that hold for "
            "every pair of operands -- the product's trailing zeros, its low "
-           "bit, and the shift a power-of-two operand turns it into -- "
+           "bit, zero products with an odd operand, and the shift a "
+           "power-of-two operand turns it into -- "
            "before falling back on ruling out the one pair the candidate "
            "holds",
            refinement_group);

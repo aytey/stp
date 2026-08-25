@@ -95,8 +95,8 @@ struct BVEQAbstraction
 // the one in hand, and the candidate is read only to decide which of them
 // it contradicts.
 //
-// The four schemas cover low-bit parity, trailing-zero preservation, and
-// positive and negative powers of two.
+// The five schemas cover low-bit parity, trailing-zero preservation,
+// zero-products with an odd operand, and positive and negative powers of two.
 enum class MulSchema
 {
   // Nothing the candidate contradicts. The round falls through to the
@@ -104,6 +104,12 @@ enum class MulSchema
   None,
   // t[0] = a[0] & b[0]: the product is odd exactly when both operands are.
   Odd,
+  // An odd bit-vector is invertible modulo 2^W, so if one operand is odd
+  // and the product is zero, the other operand must be zero. This is MUL8
+  // from the Bitwuzla set, simplified from
+  //   s = s << (x & (1 >> t))
+  // to its only nontrivial case: t = 0 and x[0] = 1 imply s = 0.
+  ZeroProductOddOperand,
   // The product carries at least as many trailing zeros as either operand,
   // written per bit: t[i] holds only if some bit of that operand at or
   // below i does. Equivalently, for operand s and product t:
@@ -128,20 +134,22 @@ struct MulSchemaChoice
   unsigned shift = 0;
 };
 
-// Bits of BVTermAbstraction::installedSchemas. Only the two unconditional
-// facts are tracked: once installed, no candidate can contradict them
-// again, so re-checking them is wasted and re-emitting them is worse.
-// The two value-guarded schemas need no flag -- installing one for a given
-// operand value settles that value for good, and there are only as many of
-// them as there are bits.
+// Bits of BVTermAbstraction::installedSchemas. Only the unconditional facts
+// are tracked: once installed, no candidate can contradict them again, so
+// re-checking them is wasted and re-emitting them is worse. The two
+// value-guarded schemas need no flag -- installing one for a given operand
+// value settles that value for good, and there are only as many of them as
+// there are bits.
 enum
 {
   MUL_SCHEMA_INSTALLED_ODD = 1u,
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2u,
-  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4u
+  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4u,
+  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8u,
+  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16u
 };
 
-// The first of the four facts above that this candidate contradicts, or
+// The first of the five facts above that this candidate contradicts, or
 // None. Pure: the caller has already read the model, and what comes back
 // depends on nothing else.
 //
@@ -152,6 +160,14 @@ DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
                                            unsigned installedSchemas);
+
+// x[0] = 1 and s != 0 -> t != 0. This is the compact CNF form of the
+// ZeroProductOddOperand schema above. Exposed so the exhaustive test can
+// independently compare what the chooser claims with what the clauses say.
+DLL_PUBLIC void encodeMulZeroProductOddOperand(
+    SATSolver& solver, const std::vector<unsigned>& oddOperandVars,
+    const std::vector<unsigned>& otherOperandVars,
+    const std::vector<unsigned>& resultVars, unsigned width);
 
 // The algebraic facts an abstracted BVDIV or BVMOD is refined with.
 //

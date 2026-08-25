@@ -704,6 +704,11 @@ static unsigned trailingZeros(const std::vector<bool>& bits)
   return bits.size();
 }
 
+static bool anyBitSet(const std::vector<bool>& bits)
+{
+  return std::find(bits.begin(), bits.end(), true) != bits.end();
+}
+
 // Does the candidate's product agree with `other` shifted up by `shift`?
 static bool productIsShift(const std::vector<bool>& other, unsigned shift,
                            const std::vector<bool>& tBits)
@@ -772,6 +777,20 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   if ((installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
       tBits[0] != (aBits[0] && bBits[0]))
     return {MulSchema::Odd, 0, 0};
+
+  // MUL8: t = 0 and x odd -> s = 0, in either reading. Bitwuzla writes
+  // this as s = s << (x & (1 >> t)); the shift amount is nonzero exactly
+  // in the premise above, and s = s << 1 has only the all-zero solution.
+  // Keep the two readings separate just as it does for this commutative
+  // operation: installing one says nothing about an odd second operand.
+  static const unsigned zeroProductInstalled[2] = {
+      MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
+      MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1};
+  if (!anyBitSet(tBits))
+    for (unsigned i = 0; i < 2; ++i)
+      if ((installedSchemas & zeroProductInstalled[i]) == 0 && (*ops[i])[0] &&
+          anyBitSet(*ops[1 - i]))
+        return {MulSchema::ZeroProductOddOperand, i, 0};
 
   return MulSchemaChoice();
 }
@@ -1028,6 +1047,8 @@ static const char* mulSchemaName(MulSchema schema)
   switch (schema)
   {
     case MulSchema::Odd: return "odd";
+    case MulSchema::ZeroProductOddOperand:
+      return "zero-product-odd-operand";
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
@@ -1045,6 +1066,37 @@ static void encodeMulOdd(SATSolver& solver, const std::vector<unsigned>& a,
   cl.clear(); cl.push(SATSolver::mkLit(result[0], true));  cl.push(SATSolver::mkLit(a[0], false)); solver.addClause(cl);
   cl.clear(); cl.push(SATSolver::mkLit(result[0], true));  cl.push(SATSolver::mkLit(b[0], false)); solver.addClause(cl);
   cl.clear(); cl.push(SATSolver::mkLit(result[0], false)); cl.push(SATSolver::mkLit(a[0], true)); cl.push(SATSolver::mkLit(b[0], true)); solver.addClause(cl);
+}
+
+// oddOperand[0] = 1 and otherOperand != 0 -> result != 0.
+//
+// `resultNonzero` shares the OR of the result bits across the width clauses.
+// Writing the implication out without it would put all W result literals in
+// each of W clauses. With it, each bit of the other operand needs only the
+// ternary clause below.
+void encodeMulZeroProductOddOperand(SATSolver& solver,
+                                    const std::vector<unsigned>& oddOperand,
+                                    const std::vector<unsigned>& otherOperand,
+                                    const std::vector<unsigned>& result,
+                                    unsigned width)
+{
+  assert(width > 0);
+  assert(oddOperand.size() == width);
+  assert(otherOperand.size() == width);
+  assert(result.size() == width);
+
+  unsigned resultNonzero = result[0];
+  for (unsigned i = 1; i < width; ++i)
+    resultNonzero = mkOr(solver, resultNonzero, result[i]);
+
+  for (unsigned i = 0; i < width; ++i)
+  {
+    SATSolver::vec_literals cl;
+    cl.push(SATSolver::mkLit(oddOperand[0], true));
+    cl.push(SATSolver::mkLit(otherOperand[i], true));
+    cl.push(SATSolver::mkLit(resultNonzero, false));
+    solver.addClause(cl);
+  }
 }
 
 // result[i] -> some bit of `op` at or below i, one clause per bit. The
@@ -1741,6 +1793,14 @@ unsigned BVAbstractionRefiner::refineTerms(
         case MulSchema::Odd:
           encodeMulOdd(solver, aVars, bVars, resultVars);
           abs.installedSchemas |= MUL_SCHEMA_INSTALLED_ODD;
+          break;
+
+        case MulSchema::ZeroProductOddOperand:
+          encodeMulZeroProductOddOperand(solver, *opVars[chosen],
+                                         *opVars[1 - chosen], resultVars, W);
+          abs.installedSchemas |=
+              (chosen == 0 ? MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0
+                           : MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1);
           break;
 
         case MulSchema::TrailingZeros:

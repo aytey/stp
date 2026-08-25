@@ -28,9 +28,10 @@ THE SOFTWARE.
 // A blocking lemma excludes one point of a 2^(2W) space, so a multiplication
 // the search has to work through can need more rounds than there are pairs
 // of operands. The schemas exclude a slice each -- the product's trailing
-// zeros, its low bit, and the shift a power-of-two operand turns the whole
-// product into -- and BVAbstractionRefiner spends one whenever the candidate
-// contradicts it, falling back on the blocking lemma when none of them does.
+// zeros, its low bit, zero products with an odd operand, and the shift a
+// power-of-two operand turns the whole product into -- and
+// BVAbstractionRefiner spends one whenever the candidate contradicts it,
+// falling back on the blocking lemma when none of them does.
 //
 // BVMultSchema_Test covers which schema is chosen, exhaustively. What is
 // left for here is the part that needs a solver: that the clauses put into
