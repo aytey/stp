@@ -802,26 +802,31 @@ AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
                                 bool bNegated, uint64_t installedSchemas,
                                 uint32_t enabledGroups)
 {
-  if (!bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::ADD))
-    return AddSchemaChoice();
-
   const std::vector<bool> a = effectiveOperand(aBits, aNegated);
   const std::vector<bool> b = effectiveOperand(bBits, bNegated);
   const std::vector<bool>* ops[2] = {&a, &b};
   const unsigned width = (unsigned)tBits.size();
 
-  for (unsigned i = 0; i < ADD_LEMMA_COUNT; ++i)
-  {
-    if (!addLemmaApplicable(ADD_LEMMAS[i], width))
-      continue;
-    for (unsigned op = 0; op < 2; ++op)
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::ADD))
+    for (unsigned i = 0; i < ADD_LEMMA_COUNT; ++i)
     {
-      if ((installedSchemas & addLemmaInstalledBit(i, op)) != 0)
+      if (!addLemmaApplicable(ADD_LEMMAS[i], width))
         continue;
-      if (!addLemmaHolds(ADD_LEMMAS[i], *ops[op], *ops[1 - op], tBits))
-        return {true, ADD_LEMMAS[i], op, i};
+      for (unsigned op = 0; op < 2; ++op)
+      {
+        if ((installedSchemas & addLemmaInstalledBit(i, op)) != 0)
+          continue;
+        if (!addLemmaHolds(ADD_LEMMAS[i], *ops[op], *ops[1 - op], tBits))
+          return {AddSchema::Lemma, ADD_LEMMAS[i], op, i, BVSchemaGroup::ADD};
+      }
     }
-  }
+
+  const unsigned prefix = lowPrefixWidth(width);
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
+      (installedSchemas & SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+      !exactLowPrefixHolds(BVPLUS, a, b, tBits, prefix))
+    return {AddSchema::LowPrefix, AddLemma::AddZero, 0, 0,
+            BVSchemaGroup::LOW_PREFIX};
 
   return AddSchemaChoice();
 }
@@ -934,6 +939,14 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
         return {MulSchema::Lemma, op, 0, i, group};
     }
   }
+
+  // Last, the exact low bits, which say something narrow and certain where
+  // everything above says something wide and loose.
+  const unsigned prefix = lowPrefixWidth(width);
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
+      (installedSchemas & SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
+      !exactLowPrefixHolds(BVMULT, aBits, bBits, tBits, prefix))
+    return {MulSchema::LowPrefix, 0, 0, 0, BVSchemaGroup::LOW_PREFIX};
 
   return MulSchemaChoice();
 }
@@ -1116,7 +1129,10 @@ static const RemLemma REM_LEMMAS[] = {
     RemLemma::RemainderInOperandsAboveLowBit,
     RemLemma::DividendNotOrOfNegations,
     RemLemma::DifferenceAboveRemainder,
-    RemLemma::XorAboveRemainder};
+    RemLemma::XorAboveRemainder,
+    // Last, and off: the source defines it and does not enable it, and STP
+    // carries the same bound as a schema. See `urem7`.
+    RemLemma::Urem7};
 
 static const unsigned REM_LEMMA_COUNT =
     sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
@@ -1186,6 +1202,7 @@ static BVSchemaGroup remLemmaGroup(RemLemma lemma)
   switch (lemma)
   {
     case RemLemma::RemainderIsDifference: return BVSchemaGroup::QUOTIENT_ONE;
+    case RemLemma::Urem7: return BVSchemaGroup::UREM7;
 
     case RemLemma::DividendZero:
     case RemLemma::DivisorEqualsDividend:
@@ -1305,6 +1322,41 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         return {DivSchema::Lemma, 0, i, group};
     }
 
+    // q >=u 2^k  <->  s <=u (a >> k), at the two k around the candidate
+    // quotient's top bit.
+    //
+    // Every k at or below the quotient's highest set bit has a true left
+    // side and every k above it a false one, and the true quotient has that
+    // same shape. So if the candidate's magnitude band and the divisor
+    // disagree, one of the two k on the boundary of the candidate's band
+    // witnesses it, and checking only those two is not a heuristic -- it is
+    // where the disagreement has to be. k = 0 is skipped: `q >=u 1` is
+    // `q != 0`, which the facts above already carry.
+    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::QUOTIENT_THRESHOLDS))
+    {
+      const auto bandDisagrees = [&](unsigned k) {
+        std::vector<bool> shifted = shiftedRight(aBits, k);
+        bool quotientAtLeast = false;
+        for (unsigned i = k; i < width; ++i)
+          quotientAtLeast = quotientAtLeast || tBits[i];
+        return quotientAtLeast != valueLessOrEqual(bBits, shifted);
+      };
+
+      int quotientTop = -1;
+      for (int i = (int)width - 1; i >= 0; --i)
+        if (tBits[i]) { quotientTop = i; break; }
+
+      if (quotientTop > 0 && bandDisagrees((unsigned)quotientTop))
+        return {DivSchema::QuotientPow2Threshold, (unsigned)quotientTop, 0,
+                BVSchemaGroup::QUOTIENT_THRESHOLDS};
+
+      const unsigned above =
+          (quotientTop < 1) ? 1u : (unsigned)quotientTop + 1;
+      if (above < width && bandDisagrees(above))
+        return {DivSchema::QuotientPow2Threshold, above, 0,
+                BVSchemaGroup::QUOTIENT_THRESHOLDS};
+    }
+
     // Last of all, b >=u 2^k -> t <=u (a >> k), at the largest k the guard
     // allows, which is where the candidate divisor's top bit sits.
     //
@@ -1348,6 +1400,8 @@ static const char* divSchemaName(DivSchema schema)
     case DivSchema::Pow2Divisor: return "power-of-two-divisor";
     case DivSchema::DivisorAtLeastPow2:
       return "divisor-at-least-power-of-two";
+    case DivSchema::QuotientPow2Threshold:
+      return "quotient-power-of-two-threshold";
     case DivSchema::RemainderAtMostDividend: return "remainder-at-most-dividend";
     case DivSchema::RemainderBelowDivisor: return "remainder-below-divisor";
     case DivSchema::QuotientAtMostDividend: return "quotient-at-most-dividend";
@@ -1422,6 +1476,7 @@ static const char* mulSchemaName(MulSchema schema)
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
+    case MulSchema::LowPrefix: return "exact-low-prefix";
     // Named by mulLemmaName instead; the caller asks that when it has one.
     case MulSchema::Lemma:
     case MulSchema::None: break;
@@ -1581,6 +1636,263 @@ unsigned encodeLessOrEqual(SATSolver& solver, const std::vector<unsigned>& lv,
 // so what goes in is one binary clause per divisor bit. No definition, no
 // extra variable, and the solver sees the premise on every bit rather than
 // behind one literal it has to reason through.
+static unsigned mkAnd(SATSolver& solver, unsigned x, unsigned y)
+{
+  const unsigned z = freshVar(solver);
+  SATSolver::vec_literals cl;
+  cl.clear(); cl.push(SATSolver::mkLit(z, true));  cl.push(SATSolver::mkLit(x, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(z, true));  cl.push(SATSolver::mkLit(y, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(z, false)); cl.push(SATSolver::mkLit(x, true)); cl.push(SATSolver::mkLit(y, true)); solver.addClause(cl);
+  return z;
+}
+
+static void addEquivalence(SATSolver& solver, unsigned x, unsigned y)
+{
+  SATSolver::vec_literals cl;
+  cl.clear(); cl.push(SATSolver::mkLit(x, true));  cl.push(SATSolver::mkLit(y, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(x, false)); cl.push(SATSolver::mkLit(y, true));  solver.addClause(cl);
+}
+
+unsigned lowPrefixWidth(unsigned width)
+{
+  return width < 3 ? width : 3;
+}
+
+bool exactLowPrefixHolds(Kind opKind, const std::vector<bool>& aBits,
+                         const std::vector<bool>& bBits,
+                         const std::vector<bool>& resultBits,
+                         unsigned prefixBits)
+{
+  assert(opKind == BVPLUS || opKind == BVMULT);
+  assert(prefixBits > 0 && prefixBits <= resultBits.size());
+
+  std::vector<bool> expected(prefixBits, false);
+  if (opKind == BVPLUS)
+  {
+    bool carry = false;
+    for (unsigned i = 0; i < prefixBits; ++i)
+    {
+      expected[i] = (aBits[i] != bBits[i]) != carry;
+      carry =
+          (aBits[i] && bBits[i]) || (carry && (aBits[i] || bBits[i]));
+    }
+  }
+  else
+  {
+    // Each low shifted copy of b, added into the prefix. No operand bit at
+    // or above prefixBits can reach a product bit below it, which is the
+    // whole reason this is a theorem about the multiplication rather than
+    // about the low bits of one.
+    for (unsigned i = 0; i < prefixBits; ++i)
+    {
+      if (!aBits[i])
+        continue;
+      bool carry = false;
+      for (unsigned j = 0; i + j < prefixBits; ++j)
+      {
+        const unsigned bit = i + j;
+        const bool addend = bBits[j];
+        const bool sum = (expected[bit] != addend) != carry;
+        carry = (expected[bit] && addend) || (carry && (expected[bit] || addend));
+        expected[bit] = sum;
+      }
+    }
+  }
+
+  for (unsigned i = 0; i < prefixBits; ++i)
+    if (expected[i] != resultBits[i])
+      return false;
+  return true;
+}
+
+// The low `prefixBits` of the sum, a full-adder row at a time.
+//
+// The carry into bit zero is a constant: an operand the record negates
+// contributes `~v + 1`, and the blaster refuses to abstract an addition
+// whose operands are both negated, so exactly one increment is ever
+// outstanding. Above the prefix nothing is emitted -- the carry out of the
+// top row is dropped and the result's high bits stay free.
+void encodeAddLowPrefix(SATSolver& solver, const std::vector<unsigned>& aVars,
+                        const std::vector<unsigned>& bVars,
+                        const std::vector<unsigned>& resultVars,
+                        unsigned prefixBits, bool aNegated, bool bNegated)
+{
+  assert(prefixBits > 0);
+  assert(!(aNegated && bNegated));
+
+  unsigned carryVar = pinnedVar(solver, aNegated != bNegated);
+  for (unsigned bit = 0; bit < prefixBits; ++bit)
+  {
+    const unsigned a = aVars[bit];
+    const unsigned b = bVars[bit];
+    const unsigned result = resultVars[bit];
+    const unsigned carry = carryVar;
+    SATSolver::vec_literals cl;
+
+    // One clause per row of the three inputs, falsified only by that row
+    // paired with the wrong sum bit. Written out of the row rather than
+    // transcribed, so a negated operand is a flipped literal and not a
+    // second set of clauses.
+    for (unsigned row = 0; row < 8; ++row)
+    {
+      const bool aBit = (row & 1) != 0;
+      const bool bBit = (row & 2) != 0;
+      const bool carryBit = (row & 4) != 0;
+      const bool sum = (aBit != bBit) != carryBit;
+      cl.clear();
+      cl.push(SATSolver::mkLit(a, aBit != aNegated));
+      cl.push(SATSolver::mkLit(b, bBit != bNegated));
+      cl.push(SATSolver::mkLit(carry, carryBit));
+      cl.push(SATSolver::mkLit(result, !sum));
+      solver.addClause(cl);
+    }
+
+    if (bit + 1 == prefixBits)
+      break;
+
+    const unsigned next = freshVar(solver);
+    cl.clear(); cl.push(SATSolver::mkLit(a, aNegated));   cl.push(SATSolver::mkLit(b, bNegated));   cl.push(SATSolver::mkLit(next, true));  solver.addClause(cl);
+    cl.clear(); cl.push(SATSolver::mkLit(a, aNegated));   cl.push(SATSolver::mkLit(carry, false));  cl.push(SATSolver::mkLit(next, true));  solver.addClause(cl);
+    cl.clear(); cl.push(SATSolver::mkLit(b, bNegated));   cl.push(SATSolver::mkLit(carry, false));  cl.push(SATSolver::mkLit(next, true));  solver.addClause(cl);
+    cl.clear(); cl.push(SATSolver::mkLit(a, !aNegated));  cl.push(SATSolver::mkLit(b, !bNegated));  cl.push(SATSolver::mkLit(next, false)); solver.addClause(cl);
+    cl.clear(); cl.push(SATSolver::mkLit(a, !aNegated));  cl.push(SATSolver::mkLit(carry, true));   cl.push(SATSolver::mkLit(next, false)); solver.addClause(cl);
+    cl.clear(); cl.push(SATSolver::mkLit(b, !bNegated));  cl.push(SATSolver::mkLit(carry, true));   cl.push(SATSolver::mkLit(next, false)); solver.addClause(cl);
+    carryVar = next;
+  }
+}
+
+// ... and the low `prefixBits` of the product, column by column. Written out
+// rather than looped because there are three columns and the last one drops
+// its carry, which a loop would have to special-case anyway.
+void encodeMulLowPrefix(SATSolver& solver, const std::vector<unsigned>& aVars,
+                        const std::vector<unsigned>& bVars,
+                        const std::vector<unsigned>& resultVars,
+                        unsigned prefixBits)
+{
+  assert(prefixBits > 0 && prefixBits <= 3);
+
+  const unsigned p00 = mkAnd(solver, aVars[0], bVars[0]);
+  addEquivalence(solver, resultVars[0], p00);
+  if (prefixBits == 1)
+    return;
+
+  const unsigned p10 = mkAnd(solver, aVars[1], bVars[0]);
+  const unsigned p01 = mkAnd(solver, aVars[0], bVars[1]);
+  addEquivalence(solver, resultVars[1], mkXor(solver, p10, p01));
+  if (prefixBits == 2)
+    return;
+
+  // Column two is its three partial products plus the carry out of column
+  // one. What it carries is above the prefix and is not built.
+  const unsigned carry1 = mkAnd(solver, p10, p01);
+  const unsigned p20 = mkAnd(solver, aVars[2], bVars[0]);
+  const unsigned p11 = mkAnd(solver, aVars[1], bVars[1]);
+  const unsigned p02 = mkAnd(solver, aVars[0], bVars[2]);
+  addEquivalence(solver, resultVars[2],
+                 mkXor(solver, mkXor(solver, p20, p11),
+                       mkXor(solver, p02, carry1)));
+}
+
+bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
+                          const std::vector<bool>& divisorBits,
+                          const std::vector<bool>& quotientBits,
+                          const std::vector<bool>& remainderBits,
+                          unsigned prefixBits)
+{
+  assert(prefixBits > 0 && prefixBits <= dividendBits.size());
+
+  // low(q*s), then low(that + r), each by the same rule the prefix
+  // encoders below build: a low bit of either operation depends only on
+  // equally low bits of what goes into it.
+  std::vector<bool> product(prefixBits, false);
+  for (unsigned i = 0; i < prefixBits; ++i)
+  {
+    if (!quotientBits[i])
+      continue;
+    bool carry = false;
+    for (unsigned j = 0; i + j < prefixBits; ++j)
+    {
+      const unsigned bit = i + j;
+      const bool addend = divisorBits[j];
+      const bool sum = (product[bit] != addend) != carry;
+      carry = (product[bit] && addend) || (carry && (product[bit] || addend));
+      product[bit] = sum;
+    }
+  }
+
+  bool carry = false;
+  for (unsigned i = 0; i < prefixBits; ++i)
+  {
+    const bool sum = (product[i] != remainderBits[i]) != carry;
+    carry = (product[i] && remainderBits[i]) ||
+            (carry && (product[i] || remainderBits[i]));
+    if (sum != dividendBits[i])
+      return false;
+  }
+  return true;
+}
+
+void encodeDivRemLowPrefix(SATSolver& solver,
+                           const std::vector<unsigned>& dividendVars,
+                           const std::vector<unsigned>& divisorVars,
+                           const std::vector<unsigned>& quotientVars,
+                           const std::vector<unsigned>& remainderVars,
+                           unsigned prefixBits)
+{
+  assert(prefixBits > 0 && prefixBits <= 3);
+
+  // The product's low bits get variables of their own; nothing above the
+  // prefix is built, so this is a handful of gates rather than a multiplier.
+  std::vector<unsigned> product(prefixBits);
+  for (unsigned i = 0; i < prefixBits; ++i)
+    product[i] = freshVar(solver);
+
+  encodeMulLowPrefix(solver, quotientVars, divisorVars, product, prefixBits);
+  encodeAddLowPrefix(solver, product, remainderVars, dividendVars, prefixBits,
+                     false, false);
+}
+
+// `q >=u 2^k <-> s <=u (a >> k)` at one k.
+//
+// The right side is one comparison over wires read from the dividend at an
+// offset, with a pinned zero above them -- no shifter, and the comparison
+// width is left alone so that a divisor with any bit at or above W-k
+// correctly fails it. The left side is the disjunction of the quotient's
+// bits from k up, and it is tied to the comparison without a variable of its
+// own: one clause saying the comparison implies some high quotient bit, and
+// one per high bit saying that bit implies the comparison.
+void encodeDivPow2Threshold(SATSolver& solver,
+                            const std::vector<unsigned>& dividendVars,
+                            const std::vector<unsigned>& divisorVars,
+                            const std::vector<unsigned>& quotientVars,
+                            unsigned width, unsigned shift)
+{
+  assert(width > 1);
+  assert(shift > 0 && shift < width);
+
+  const unsigned zero = pinnedVar(solver, false);
+  std::vector<unsigned> shiftedDividend(width, zero);
+  for (unsigned i = 0; i + shift < width; ++i)
+    shiftedDividend[i] = dividendVars[i + shift];
+
+  const unsigned divisorFits =
+      encodeLessOrEqual(solver, divisorVars, shiftedDividend, width, false);
+
+  SATSolver::vec_literals cl;
+  cl.push(SATSolver::mkLit(divisorFits, true));
+  for (unsigned i = shift; i < width; ++i)
+    cl.push(SATSolver::mkLit(quotientVars[i], false));
+  solver.addClause(cl);
+
+  for (unsigned i = shift; i < width; ++i)
+  {
+    cl.clear();
+    cl.push(SATSolver::mkLit(quotientVars[i], true));
+    cl.push(SATSolver::mkLit(divisorFits, false));
+    solver.addClause(cl);
+  }
+}
+
 void encodeDivBound(SATSolver& solver, DivSchema schema,
                            const std::vector<unsigned>& dividendVars,
                            const std::vector<unsigned>& divisorVars,
@@ -2020,9 +2332,17 @@ unsigned BVAbstractionRefiner::refineTerms(
   //
   // Installed once per pair and never revisited: it is unconditional, so no
   // later candidate can contradict it.
+  //
+  // Two relations, and the prefix gets first refusal. It is the identity's
+  // low bits and costs a handful of gates where the identity costs a
+  // multiplier, so where the candidate breaks the prefix it is the cheaper
+  // way to say the same thing. Where the candidate's low bits already
+  // recompose the prefix would rule nothing out, and the identity -- which
+  // may still be broken further up -- is what fires.
+  const uint32_t pairGroups = bm->UserFlags.bv_term_abstraction_schema_groups;
   if (bm->UserFlags.bv_term_abstraction_schemas &&
-      bvSchemaGroupEnabled(bm->UserFlags.bv_term_abstraction_schema_groups,
-                           BVSchemaGroup::DIVREM_IDENTITY))
+      (bvSchemaGroupEnabled(pairGroups, BVSchemaGroup::DIVREM_IDENTITY) ||
+       bvSchemaGroupEnabled(pairGroups, BVSchemaGroup::DIVREM_PREFIX)))
   {
     std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
                        ASTNode::ASTNodeEqual>
@@ -2034,8 +2354,9 @@ unsigned BVAbstractionRefiner::refineTerms(
     for (size_t idx = 0; idx < terms_.size() && !remainders.empty(); ++idx)
     {
       BVTermAbstraction& q = terms_[idx];
-      if (q.opKind != BVDIV || q.defined || q.divModIdentity ||
-          !divMods[idx].seen)
+      if (q.opKind != BVDIV || q.defined || !divMods[idx].seen)
+        continue;
+      if (q.divModIdentity && q.divModPrefix)
         continue;
 
       NodeFactory* nf = bm->defaultNodeFactory;
@@ -2046,7 +2367,39 @@ unsigned BVAbstractionRefiner::refineTerms(
         continue;
 
       BVTermAbstraction& r = terms_[found->second];
-      if (r.defined || r.divModIdentity || r.width != q.width)
+      if (r.defined || r.width != q.width)
+        continue;
+
+      const std::vector<unsigned>& quotientVars =
+          encodedResultBitsOf(q, nodeToSATVar);
+      const std::vector<unsigned>& remainderVars =
+          encodedResultBitsOf(r, nodeToSATVar);
+      const unsigned prefix = lowPrefixWidth(q.width);
+
+      // The prefix first, where it is on and the candidate breaks it.
+      if (bvSchemaGroupEnabled(pairGroups, BVSchemaGroup::DIVREM_PREFIX) &&
+          !q.divModPrefix && !r.divModPrefix &&
+          !divRemLowPrefixHolds(divMods[idx].aBits, divMods[idx].bBits,
+                                divMods[idx].actual,
+                                divMods[found->second].actual, prefix))
+      {
+        std::vector<unsigned> aVars, bVars;
+        getOperandVars(q.operands[0], q.width, nodeToSATVar, solver, aVars);
+        getOperandVars(q.operands[1], q.width, nodeToSATVar, solver, bVars);
+        encodeDivRemLowPrefix(solver, aVars, bVars, quotientVars,
+                              remainderVars, prefix);
+
+        q.divModPrefix = r.divModPrefix = true;
+        countSchemaLemma(bm, BVSchemaGroup::DIVREM_PREFIX);
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "BV abstraction: BVDIV/BVMOD division-identity prefix"
+                    << std::endl;
+        refined++;
+        continue;
+      }
+
+      if (!bvSchemaGroupEnabled(pairGroups, BVSchemaGroup::DIVREM_IDENTITY) ||
+          q.divModIdentity || r.divModIdentity)
         continue;
 
       // Only where the candidate breaks it. A round spent on a fact the
@@ -2068,10 +2421,9 @@ unsigned BVAbstractionRefiner::refineTerms(
       std::vector<unsigned> aVars, bVars;
       getOperandVars(q.operands[0], q.width, nodeToSATVar, solver, aVars);
       getOperandVars(q.operands[1], q.width, nodeToSATVar, solver, bVars);
-      BVExactEncoder(bm).encodeDivModIdentity(
-          solver, product, q.width, aVars, bVars,
-          encodedResultBitsOf(q, nodeToSATVar),
-          encodedResultBitsOf(r, nodeToSATVar));
+      BVExactEncoder(bm).encodeDivModIdentity(solver, product, q.width, aVars,
+                                              bVars, quotientVars,
+                                              remainderVars);
 
       q.divModIdentity = r.divModIdentity = true;
       countSchemaLemma(bm, BVSchemaGroup::DIVREM_IDENTITY);
@@ -2119,21 +2471,35 @@ unsigned BVAbstractionRefiner::refineTerms(
     // A fact instead of the adder, where the chooser found one. The record
     // is not defined by it -- the sum stays free and a later round may take
     // another fact or the adder itself.
-    if (inc.schema.found)
+    if (inc.schema.schema != AddSchema::None)
     {
       const unsigned chosen = inc.schema.operand;
       const std::vector<unsigned>* opVars[2] = {&leftVars, &rightVars};
       const bool negated[2] = {lNeg, rNeg};
-      BVExactEncoder(bm).encodeAddLemma(
-          solver, inc.schema.lemma, abs.width, *opVars[chosen],
-          *opVars[1 - chosen], resultVars, negated[chosen],
-          negated[1 - chosen]);
-      abs.installedSchemas |=
-          addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+
+      if (inc.schema.schema == AddSchema::LowPrefix)
+      {
+        encodeAddLowPrefix(solver, leftVars, rightVars, resultVars,
+                           lowPrefixWidth(abs.width), lNeg, rNeg);
+        abs.installedSchemas |= SCHEMA_INSTALLED_LOW_PREFIX;
+      }
+      else
+      {
+        BVExactEncoder(bm).encodeAddLemma(
+            solver, inc.schema.lemma, abs.width, *opVars[chosen],
+            *opVars[1 - chosen], resultVars, negated[chosen],
+            negated[1 - chosen]);
+        abs.installedSchemas |=
+            addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+      }
+
       abs.schemaRounds++;
-      countSchemaLemma(bm, BVSchemaGroup::ADD);
+      countSchemaLemma(bm, inc.schema.group);
       if (bm->UserFlags.stats_flag)
-        std::cerr << "BV abstraction: BVPLUS " << addLemmaName(inc.schema.lemma)
+        std::cerr << "BV abstraction: BVPLUS "
+                  << (inc.schema.schema == AddSchema::LowPrefix
+                          ? "exact-low-prefix"
+                          : addLemmaName(inc.schema.lemma))
                   << " lemma over operand " << chosen << std::endl;
       refined++;
       continue;
@@ -2260,6 +2626,12 @@ unsigned BVAbstractionRefiner::refineTerms(
               divSchemaSources(abs.opKind, W, inc.divSchema));
           break;
 
+        case DivSchema::QuotientPow2Threshold:
+          assert(abs.opKind == BVDIV);
+          encodeDivPow2Threshold(solver, aVars, bVars, resultVars, W,
+                                 inc.divSchema.shift);
+          break;
+
         case DivSchema::DivisorAtLeastPow2:
           encodeDivShiftBound(solver, aVars, bVars, resultVars, W,
                               inc.divSchema.shift);
@@ -2364,6 +2736,12 @@ unsigned BVAbstractionRefiner::refineTerms(
                                    inc.schema.shift);
           break;
         }
+
+        case MulSchema::LowPrefix:
+          encodeMulLowPrefix(solver, *opVars[0], *opVars[1], resultVars,
+                             lowPrefixWidth(W));
+          abs.installedSchemas |= SCHEMA_INSTALLED_LOW_PREFIX;
+          break;
 
         case MulSchema::Lemma:
         {

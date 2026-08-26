@@ -73,6 +73,15 @@ enum class BVSchemaGroup : unsigned
   MUL_EXTRA,
   // Bitwuzla's ADD registry.
   ADD,
+  // `q >=u 2^k  <->  s <=u (x >> k)`, the quotient's magnitude band.
+  QUOTIENT_THRESHOLDS,
+  // The exact low min(3, W) bits of an abstracted sum or product.
+  LOW_PREFIX,
+  // `low3(x) = low3(q*s + r)` across a BVDIV and the BVMOD beside it, which
+  // is DIVREM_IDENTITY's prefix rather than the whole of it.
+  DIVREM_PREFIX,
+  // UREM7, which the source defines and does not enable.
+  UREM7,
   COUNT
 };
 
@@ -98,9 +107,14 @@ constexpr uint32_t BV_SCHEMA_GROUP_ALL =
 // at all. `--bv-term-abstraction-schema-groups=all` is the setting that
 // reproduces the complete imported stack.
 constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
-    BV_SCHEMA_GROUP_ALL & ~(bvSchemaGroupBit(BVSchemaGroup::UDIV_EXTRA) |
-                            bvSchemaGroupBit(BVSchemaGroup::MUL_EXTRA) |
-                            bvSchemaGroupBit(BVSchemaGroup::ADD));
+    BV_SCHEMA_GROUP_ALL &
+    ~(bvSchemaGroupBit(BVSchemaGroup::UDIV_EXTRA) |
+      bvSchemaGroupBit(BVSchemaGroup::MUL_EXTRA) |
+      bvSchemaGroupBit(BVSchemaGroup::ADD) |
+      bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_THRESHOLDS) |
+      bvSchemaGroupBit(BVSchemaGroup::LOW_PREFIX) |
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PREFIX) |
+      bvSchemaGroupBit(BVSchemaGroup::UREM7));
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 {

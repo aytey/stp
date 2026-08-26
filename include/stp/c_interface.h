@@ -567,11 +567,19 @@ enum bv_schema_group_t
   STP_BV_SCHEMA_GROUP_UDIV_EXTRA = 1 << 8,
   STP_BV_SCHEMA_GROUP_MUL_EXTRA = 1 << 9,
   STP_BV_SCHEMA_GROUP_ADD = 1 << 10,
-  STP_BV_SCHEMA_GROUP_ALL = (1 << 11) - 1,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 11,
+  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 12,
+  STP_BV_SCHEMA_GROUP_DIVREM_PREFIX = 1 << 13,
+  STP_BV_SCHEMA_GROUP_UREM7 = 1 << 14,
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 15) - 1,
   STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_ALL &
                                 ~(STP_BV_SCHEMA_GROUP_UDIV_EXTRA |
                                   STP_BV_SCHEMA_GROUP_MUL_EXTRA |
-                                  STP_BV_SCHEMA_GROUP_ADD)
+                                  STP_BV_SCHEMA_GROUP_ADD |
+                                  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS |
+                                  STP_BV_SCHEMA_GROUP_LOW_PREFIX |
+                                  STP_BV_SCHEMA_GROUP_DIVREM_PREFIX |
+                                  STP_BV_SCHEMA_GROUP_UREM7)
 };
 
 //! \brief Sets the given interface flag for the given validity checker to param_value.
@@ -855,7 +863,11 @@ enum stp_counter_t
   STP_COUNTER_BV_SCHEMA_DIVREM_IDENTITY = 25,
   STP_COUNTER_BV_SCHEMA_UDIV_EXTRA = 26,
   STP_COUNTER_BV_SCHEMA_MUL_EXTRA = 27,
-  STP_COUNTER_BV_SCHEMA_ADD = 28
+  STP_COUNTER_BV_SCHEMA_ADD = 28,
+  STP_COUNTER_BV_SCHEMA_QUOTIENT_THRESHOLDS = 29,
+  STP_COUNTER_BV_SCHEMA_LOW_PREFIX = 30,
+  STP_COUNTER_BV_SCHEMA_DIVREM_PREFIX = 31,
+  STP_COUNTER_BV_SCHEMA_UREM7 = 32
 };
 
 //! \brief Reads one of the counters above.

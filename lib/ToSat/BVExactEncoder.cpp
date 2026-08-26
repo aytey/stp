@@ -603,6 +603,10 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
     case RemLemma::RemainderIsDifference:
       // s <=u x <u 2s -> t = x - s
       return !fitsExactlyOnce(x, s) || t == addOf(x, negOf(s));
+
+    case RemLemma::Urem7:
+      // ~(-s) >=u t
+      return ule(t, notOf(negOf(s)));
   }
   return true;
 }
@@ -638,6 +642,7 @@ const char* remLemmaName(RemLemma lemma)
       return "difference-above-remainder";
     case RemLemma::XorAboveRemainder: return "xor-above-remainder";
     case RemLemma::RemainderIsDifference: return "remainder-is-difference";
+    case RemLemma::Urem7: return "urem7";
   }
   return "unknown";
 }

@@ -36,11 +36,21 @@ namespace
 
 // In BVSchemaGroup order, which is also the counter order. The static
 // assertion below is the whole guard against the two drifting apart.
-const char* const GROUP_NAMES[] = {
-    "base",   "udiv",       "urem",       "mul6",
-    "mul8",   "divisor-magnitude",        "quotient-one",
-    "divrem-identity",      "udiv-extra", "mul-extra",
-    "add"};
+const char* const GROUP_NAMES[] = {"base",
+                                   "udiv",
+                                   "urem",
+                                   "mul6",
+                                   "mul8",
+                                   "divisor-magnitude",
+                                   "quotient-one",
+                                   "divrem-identity",
+                                   "udiv-extra",
+                                   "mul-extra",
+                                   "add",
+                                   "quotient-thresholds",
+                                   "low-prefix",
+                                   "divrem-prefix",
+                                   "urem7"};
 
 static_assert(sizeof(GROUP_NAMES) / sizeof(GROUP_NAMES[0]) ==
                   BV_SCHEMA_GROUP_COUNT,

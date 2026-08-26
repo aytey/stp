@@ -35,9 +35,30 @@ static_assert(STP_COUNTER_UF_CONSTRAINTS_INSTALLED == 16,
 static_assert(STP_COUNTER_BV_SCHEMA_LEMMAS == 17,
               "new counters must follow the published counter prefix");
 
+// The per-family block that follows it. Only where it starts is pinned:
+// what a caller compiles in is the ordinal of the family it reads, and the
+// whole block moves together if this one does. Where it ends is not pinned
+// on purpose -- a family appended to BVSchemaGroup extends the block, and
+// that is the one change to it that breaks nobody.
+//
+// An insertion *into* the block is the change that would, and it is caught
+// without naming every member: vc_getCounter indexes the coverage array by
+// `counter - STP_COUNTER_BV_SCHEMA_BASE`, and asserts there that the span
+// from BASE to the last family is exactly BV_SCHEMA_GROUP_COUNT wide. A
+// family inserted rather than appended fails that assertion.
+static_assert(STP_COUNTER_BV_SCHEMA_BASE == 18,
+              "the per-family schema counters must start where they always "
+              "have");
+
+// ... and the flag enum, which grew the same way and for the same reason.
+static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS >
+                  BV_TERM_ABSTRACTION_SCHEMAS,
+              "new interface flags must be appended, not inserted");
+
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {
   EXPECT_EQ(15, static_cast<int>(STP_COUNTER_UF_APPLICATIONS_LOWERED));
   EXPECT_EQ(16, static_cast<int>(STP_COUNTER_UF_CONSTRAINTS_INSTALLED));
   EXPECT_EQ(17, static_cast<int>(STP_COUNTER_BV_SCHEMA_LEMMAS));
+  EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_BASE));
 }

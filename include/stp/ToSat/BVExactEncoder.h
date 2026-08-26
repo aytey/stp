@@ -252,7 +252,20 @@ enum class RemLemma
   // s <=u x <u 2s -> t = x - s, which is the quotient fact of the same name
   // read over a remainder: subtracting the divisor once is the whole of the
   // division.
-  RemainderIsDifference
+  RemainderIsDifference,
+  // ~(-s) >=u t, which is Bitwuzla's UREM7 and the one fact in its remainder
+  // registry it defines and leaves out of the enabled set.
+  //
+  // It is `s != 0 -> t <u s` with the premise folded into the arithmetic --
+  // `~(-s)` is `s - 1` for a nonzero s and `~0` for a zero one, so the bound
+  // is the same where the premise holds and vacuous where it does not. STP
+  // already carries that fact as the RemainderBelowDivisor schema, so this
+  // says nothing new; it excludes the same 49.2% of the cube at six bits.
+  //
+  // Here for the reason the source keeps it written down rather than
+  // deleted: "redundant with a schema" is a claim about STP's schema set,
+  // and that set changes. Behind `urem7`, which is off.
+  Urem7
 };
 
 DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,

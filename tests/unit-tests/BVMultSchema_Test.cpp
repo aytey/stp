@@ -141,6 +141,14 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
       return mulLemmaHolds(table[choice.lemmaIndex], bitsOf(ops[choice.operand]),
                            bitsOf(ops[1 - choice.operand]), bitsOf(t));
     }
+    case MulSchema::LowPrefix:
+    {
+      // The exact low bits, which are their own predicate and read neither
+      // operand as the fact's `x`.
+      const unsigned width = WIDTH;
+      return exactLowPrefixHolds(BVMULT, bitsOf(a), bitsOf(b), bitsOf(t),
+                                 lowPrefixWidth(width));
+    }
     case MulSchema::None:
       break;
   }

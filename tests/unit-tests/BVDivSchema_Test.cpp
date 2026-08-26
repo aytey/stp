@@ -254,6 +254,21 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
             continue;
           }
 
+          if (choice.schema == DivSchema::QuotientPow2Threshold)
+          {
+            // q >=u 2^k <-> b <=u (a >> k). The chooser offers a k only
+            // where the candidate's two sides disagree, so both readings
+            // have to be checked rather than one.
+            const unsigned k = choice.shift;
+            const bool quotientAtLeast = (t >> k) != 0;
+            const bool divisorFits = (b <= (a >> k));
+            ASSERT_NE(quotientAtLeast, divisorFits)
+                << "the threshold at k=" << k << " over "
+                << _kind_names[opKind] << " at a=" << a << " b=" << b
+                << " t=" << t << " is already satisfied by the candidate";
+            continue;
+          }
+
           if (!namesADivisor(choice.schema))
           {
             ASSERT_FALSE(boundHolds(choice.schema, a, b, t))
@@ -552,9 +567,13 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
           const DivSchemaChoice choice =
               chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), all,
                               BV_SCHEMA_GROUP_ALL);
+          // The two magnitude schemas are exempt: each is guarded on a
+          // k rather than installed once, so having spent every table
+          // entry says nothing about them.
           ASSERT_TRUE(choice.schema == DivSchema::None ||
                       namesADivisor(choice.schema) ||
-                      choice.schema == DivSchema::DivisorAtLeastPow2)
+                      choice.schema == DivSchema::DivisorAtLeastPow2 ||
+                      choice.schema == DivSchema::QuotientPow2Threshold)
               << "a bound was offered again over " << _kind_names[opKind]
               << " at a=" << a << " b=" << b << " t=" << t;
         }
@@ -724,6 +743,59 @@ TEST(BVDivSchemaBounds, the_shift_bound_is_chosen_at_the_divisors_top_bit)
         ASSERT_EQ((int)choice.shift, topBit(b))
             << "a=" << a << " b=" << b << " t=" << t;
       }
+}
+
+// The quotient's magnitude band, q >=u 2^k <-> b <=u (a >> k), is true of
+// division at every pair of operands and every exponent -- not only the
+// exponent the candidate chose. It is a biconditional, so a reading that was
+// merely usually true in either direction would turn a satisfiable query
+// unsat.
+TEST(BVDivSchemaBounds, the_quotient_threshold_is_true_of_division_everywhere)
+{
+  for (unsigned k = 1; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; a++)
+      for (unsigned b = 0; b < VALUES; b++)
+      {
+        const unsigned t = referenceDiv(a, b);
+        ASSERT_EQ((t >> k) != 0, b <= (a >> k))
+            << "the threshold at k=" << k << " is false of division at a=" << a
+            << " b=" << b << " (quotient " << t << ")";
+      }
+}
+
+// ... and its clauses forbid exactly what it claims, at every exponent.
+TEST_F(BVDivBoundEncodingTest, the_quotient_threshold_forbids_what_it_claims)
+{
+  for (unsigned k = 1; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; a++)
+      for (unsigned b = 0; b < VALUES; b++)
+        for (unsigned t = 0; t < VALUES; t++)
+        {
+          std::unique_ptr<SATSolver> solver = makeSolver();
+          ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+          std::vector<unsigned> av(WIDTH), bv(WIDTH), tv(WIDTH);
+          for (unsigned i = 0; i < WIDTH; ++i)
+          {
+            av[i] = solver->newVar();
+            bv[i] = solver->newVar();
+            tv[i] = solver->newVar();
+            solver->setFrozen(av[i]);
+            solver->setFrozen(bv[i]);
+            solver->setFrozen(tv[i]);
+          }
+
+          encodeDivPow2Threshold(*solver, av, bv, tv, WIDTH, k);
+          pin(*solver, av, a);
+          pin(*solver, bv, b);
+          pin(*solver, tv, t);
+
+          bool timedOut = false;
+          const bool sat = solver->solve(timedOut);
+          ASSERT_FALSE(timedOut);
+          ASSERT_EQ(((t >> k) != 0) == (b <= (a >> k)), sat)
+              << "k=" << k << " a=" << a << " b=" << b << " t=" << t;
+        }
 }
 
 // The clauses forbid what the schema claims and nothing more: every triple

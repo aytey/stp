@@ -954,8 +954,12 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_SCHEMA_UDIV_EXTRA:
     case STP_COUNTER_BV_SCHEMA_MUL_EXTRA:
     case STP_COUNTER_BV_SCHEMA_ADD:
+    case STP_COUNTER_BV_SCHEMA_QUOTIENT_THRESHOLDS:
+    case STP_COUNTER_BV_SCHEMA_LOW_PREFIX:
+    case STP_COUNTER_BV_SCHEMA_DIVREM_PREFIX:
+    case STP_COUNTER_BV_SCHEMA_UREM7:
     {
-      static_assert(STP_COUNTER_BV_SCHEMA_ADD - STP_COUNTER_BV_SCHEMA_BASE +
+      static_assert(STP_COUNTER_BV_SCHEMA_UREM7 - STP_COUNTER_BV_SCHEMA_BASE +
                             1 ==
                         (int)stp::BV_SCHEMA_GROUP_COUNT,
                     "the published per-group counters are out of step with "

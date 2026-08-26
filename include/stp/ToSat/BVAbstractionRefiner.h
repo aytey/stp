@@ -120,7 +120,20 @@ enum class MulSchema
   // the division facts they are mostly synthesised inequalities, and two of
   // the three shift by a variable amount, so they are built by the
   // bit-blaster rather than written a clause at a time.
-  Lemma
+  Lemma,
+  // The exact low min(3, W) bits of the product, and nothing above them.
+  //
+  // Not an algebraic fact but a piece of the operation, and it is a theorem
+  // for the reason the piece-at-a-time escalation is: a low product bit
+  // depends only on equally low operand bits, so `t[2:0] = (a*b)[2:0]` is
+  // true of the whole multiplication rather than an approximation of it.
+  // Three columns of partial products, no carry out of the top one, and the
+  // bits above stay free.
+  //
+  // Last of the product schemas: what it says is narrow and exact where the
+  // facts above it are wide and loose, so it is what is left when none of
+  // them applies.
+  LowPrefix
 };
 
 // Which fact to spend, over which operand. Multiplication is commutative,
@@ -228,6 +241,20 @@ enum class DivSchema
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
   QuotientAtMostDividend,
+  // q >=u 2^k  <->  s <=u (a >> k), the quotient's magnitude band.
+  //
+  // The schema above read the other way and sharpened into a biconditional.
+  // `DivisorAtLeastPow2` guards on the divisor's magnitude and bounds the
+  // quotient; this says the two are equivalent, so it constrains the
+  // quotient from below as well as above. Neither subsumes the other -- one
+  // names a k from the divisor and the other from the quotient -- and they
+  // are separate families for that reason.
+  //
+  // No installed-flag: installing it at one k settles that k, and there are
+  // only as many k as there are bits. Both boundaries around the candidate
+  // quotient's top bit are checked and no more, which keeps selection linear
+  // in the width rather than comparing W shifted dividends at O(W) apiece.
+  QuotientPow2Threshold,
   // One of the wider facts, named by DivSchemaChoice::lemmaIndex -- a
   // DivLemma over a BVDIV and a RemLemma over a BVMOD. They are mostly
   // inequalities over the result rather than statements of what it is, and
@@ -252,6 +279,14 @@ enum
   // a record is exactly one of BVDIV, BVMOD and BVMULT, so only one of them
   // is ever indexed into it.
   LEMMA_INSTALLED_FIRST = 64u
+};
+
+// The low-prefix schema's flag. One bit for both operations, which is safe
+// because a record is exactly one of BVPLUS and BVMULT; and well clear of
+// the lemma tables' range below and the shift bound's above.
+enum : uint64_t
+{
+  SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 58
 };
 
 // The shift bound's allowance, which is the one thing here that needs one.
@@ -324,15 +359,28 @@ DLL_PUBLIC const AddLemma* addLemmaTable(unsigned& count);
 // so there was never much to gain by saying something weaker about it first.
 // That is still the fallback and still what happens when `add` is off, which
 // it is by default. `found` is what says a fact was picked instead.
+enum class AddSchema
+{
+  // Nothing on offer. The round falls through to the exact adder, which is
+  // what an inconsistent addition has always got.
+  None,
+  // One of the AddLemma facts.
+  Lemma,
+  // The exact low min(3, W) bits of the sum -- the addition reading of
+  // MulSchema::LowPrefix, and a theorem for the same reason.
+  LowPrefix
+};
+
 struct AddSchemaChoice
 {
-  bool found = false;
+  AddSchema schema = AddSchema::None;
   AddLemma lemma = AddLemma::AddZero;
   // Which of the two operands plays the fact's `x`. Addition is commutative
   // and the registry is not symmetric, so both readings are offered and each
   // carries its own installed-flag.
   unsigned operand = 0;
   unsigned lemmaIndex = 0;
+  BVSchemaGroup group = BVSchemaGroup::ADD;
 };
 
 // The first fact this candidate contradicts, or none. `tBits` is the sum the
@@ -399,6 +447,60 @@ DLL_PUBLIC unsigned encodeLessOrEqual(SATSolver& solver,
 // own result bits. Exposed for the same reason as the encoder above: that
 // the clauses say what the schema claims is a question only a solver can
 // answer.
+// `q >=u 2^k <-> s <=u (a >> k)` over the operand proxies and the
+// abstraction's own quotient bits, at one k. Exposed for the same reason as
+// the bound encoder below it.
+DLL_PUBLIC void encodeDivPow2Threshold(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars, unsigned width, unsigned shift);
+
+// The exact low `prefixBits` of a sum or a product, over the operand proxies
+// and the abstraction's own result bits. `aNegated`/`bNegated` say which
+// operands the record adds the two's complement of; the blaster refuses to
+// abstract an addition whose operands are both negated, which is what lets
+// the carry into bit zero be a constant.
+DLL_PUBLIC void encodeAddLowPrefix(SATSolver& solver,
+                                   const std::vector<unsigned>& aVars,
+                                   const std::vector<unsigned>& bVars,
+                                   const std::vector<unsigned>& resultVars,
+                                   unsigned prefixBits, bool aNegated,
+                                   bool bNegated);
+
+DLL_PUBLIC void encodeMulLowPrefix(SATSolver& solver,
+                                   const std::vector<unsigned>& aVars,
+                                   const std::vector<unsigned>& bVars,
+                                   const std::vector<unsigned>& resultVars,
+                                   unsigned prefixBits);
+
+// Whether the candidate's low `prefixBits` already are what the operation
+// says they must be. `opKind` is BVPLUS or BVMULT.
+DLL_PUBLIC bool exactLowPrefixHolds(Kind opKind, const std::vector<bool>& aBits,
+                                    const std::vector<bool>& bBits,
+                                    const std::vector<bool>& resultBits,
+                                    unsigned prefixBits);
+
+// How many low bits the schema pins. Three: enough that the product's
+// columns carry into each other, cheap enough that the clause is a handful
+// of gates at any width.
+DLL_PUBLIC unsigned lowPrefixWidth(unsigned width);
+
+// `low_k(x) = low_k(q*s + r)` over a BVDIV and the BVMOD beside it: the
+// division identity's prefix, built out of the two prefix encoders above
+// rather than out of a multiplier.
+DLL_PUBLIC void encodeDivRemLowPrefix(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars,
+    const std::vector<unsigned>& remainderVars, unsigned prefixBits);
+
+// Whether the candidate's low `prefixBits` already recompose.
+DLL_PUBLIC bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
+                                     const std::vector<bool>& divisorBits,
+                                     const std::vector<bool>& quotientBits,
+                                     const std::vector<bool>& remainderBits,
+                                     unsigned prefixBits);
+
 DLL_PUBLIC void encodeDivBound(SATSolver& solver, DivSchema schema,
                                const std::vector<unsigned>& dividendVars,
                                const std::vector<unsigned>& divisorVars,
@@ -469,6 +571,9 @@ struct BVTermAbstraction
   // the rest because it belongs to a pair of records rather than to one:
   // both halves carry the flag and either half setting it settles both.
   bool divModIdentity = false;
+  // ... and whether the prefix of it is, which is tracked apart because the
+  // two are separate families and either may be on without the other.
+  bool divModPrefix = false;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.

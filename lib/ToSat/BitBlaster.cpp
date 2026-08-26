@@ -3530,6 +3530,10 @@ BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
                             BBEQ(t, diff));
     }
+
+    case RemLemma::Urem7:
+      // ~(-s) >=u t
+      return BBBVLE(t, BBNeg(BBUminus(s)), false);
   }
 
   FatalError("BBRemLemma: unknown lemma");
