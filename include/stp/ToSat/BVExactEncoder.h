@@ -284,7 +284,44 @@ enum class MulLemma
   // zero product mean.
   FactorUnchangedByMaskedShift,
   // (x & t) != (s | ~t). Restricted; see mulLemmaApplicable().
-  FactorAndProductNotOr
+  FactorAndProductNotOr,
+
+  // The rest of the source's general product registry, numbered rather than
+  // named for the reason the division tail is -- and behind `mul-extra`,
+  // which is off. None of these excludes more than 1.6% of the cube, and
+  // the one of them that was measured on a query written to need it lost:
+  // `t != ((s | 1) << (t << x))` turned 5.42s into 7.06s, because it spends
+  // a refinement round on a candidate the rest settle anyway. It is here
+  // under its own number, and it is off with the others.
+  //
+  // Bitwuzla's `LemmaKind::MULn`, read out of the source fact by fact.
+  //
+  // s != ~(t | (1 & (x | s))). Restricted.
+  Mul5,
+  // t != ((s | 1) << (t << x)). Restricted.
+  Mul7,
+  // t >=u (1 & ((x & s) >> 1)). Restricted, and not by a minimum.
+  Mul9,
+  // x != (1 ^ (x << (s ^ t)))
+  Mul10,
+  // t != (1 | ~(x ^ s)). Restricted.
+  Mul11,
+  // t != (~1 | (x ^ s)). Restricted.
+  Mul12,
+  // x != (x << (s + t)) - 1
+  Mul13,
+  // x != 1 - (x << (s - t))
+  Mul14,
+  // s != 1 + (s << (t - x))
+  Mul15,
+  // s != 1 - (s << (t - x))
+  Mul16,
+  // s != 1 + (s << (x - t))
+  Mul17,
+  // t != (1 | (x + s)). Restricted.
+  Mul18,
+  // x != ~(x << (s + t))
+  Mul19
 };
 
 DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,

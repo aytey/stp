@@ -731,7 +731,24 @@ static bool productIsShift(const std::vector<bool>& other, unsigned shift,
 // they fired in the solver they come from, as with the quotient facts.
 static const MulLemma MUL_LEMMAS[] = {
     MulLemma::FactorUnchangedByMaskedShift, // 75 firings
-    MulLemma::FactorAndProductNotOr};       // 5
+    MulLemma::FactorAndProductNotOr,        // 5
+
+    // The rest of the source's general registry, which fired at most four
+    // times apiece and is behind `mul-extra`, off. Source order, there
+    // being no count worth sorting by.
+    MulLemma::Mul5,
+    MulLemma::Mul7,
+    MulLemma::Mul9,
+    MulLemma::Mul10,
+    MulLemma::Mul11,
+    MulLemma::Mul12,
+    MulLemma::Mul13,
+    MulLemma::Mul14,
+    MulLemma::Mul15,
+    MulLemma::Mul16,
+    MulLemma::Mul17,
+    MulLemma::Mul18,
+    MulLemma::Mul19};
 
 static const unsigned MUL_LEMMA_COUNT =
     sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
@@ -751,6 +768,21 @@ static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
   {
     case MulLemma::FactorUnchangedByMaskedShift: return BVSchemaGroup::MUL8;
     case MulLemma::FactorAndProductNotOr: return BVSchemaGroup::MUL6;
+
+    case MulLemma::Mul5:
+    case MulLemma::Mul7:
+    case MulLemma::Mul9:
+    case MulLemma::Mul10:
+    case MulLemma::Mul11:
+    case MulLemma::Mul12:
+    case MulLemma::Mul13:
+    case MulLemma::Mul14:
+    case MulLemma::Mul15:
+    case MulLemma::Mul16:
+    case MulLemma::Mul17:
+    case MulLemma::Mul18:
+    case MulLemma::Mul19:
+      return BVSchemaGroup::MUL_EXTRA;
   }
   return BVSchemaGroup::BASE;
 }

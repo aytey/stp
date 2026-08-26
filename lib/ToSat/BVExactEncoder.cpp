@@ -658,16 +658,89 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
     case MulLemma::FactorAndProductNotOr:
       // (x & t) != (s | ~t)
       return andOf(x, t) != orOf(s, notOf(t));
+
+    case MulLemma::Mul5:
+      // s != ~(t | (1 & (x | s)))
+      return s != notOf(orOf(t, andOf(one, orOf(x, s))));
+
+    case MulLemma::Mul7:
+    {
+      // t != ((s | 1) << (t << x))
+      std::vector<bool> sOr1 = s;
+      sOr1[0] = true;
+      return t != shlOf(sOr1, shlOf(t, x));
+    }
+
+    case MulLemma::Mul9:
+      // t >=u (1 & ((x & s) >> 1))
+      return ule(andOf(one, shrOf(andOf(x, s), one)), t);
+
+    case MulLemma::Mul10:
+      // x != (1 ^ (x << (s ^ t)))
+      return x != xorOf(one, shlOf(x, xorOf(s, t)));
+
+    case MulLemma::Mul11:
+      // t != (1 | ~(x ^ s))
+      return t != orOf(one, notOf(xorOf(x, s)));
+
+    case MulLemma::Mul12:
+      // t != (~1 | (x ^ s))
+      return t != orOf(notOf(one), xorOf(x, s));
+
+    case MulLemma::Mul13:
+      // x != (x << (s + t)) - 1
+      return x != subOf(shlOf(x, addOf(s, t)), one);
+
+    case MulLemma::Mul14:
+      // x != 1 - (x << (s - t))
+      return x != subOf(one, shlOf(x, subOf(s, t)));
+
+    case MulLemma::Mul15:
+      // s != 1 + (s << (t - x))
+      return s != addOf(one, shlOf(s, subOf(t, x)));
+
+    case MulLemma::Mul16:
+      // s != 1 - (s << (t - x))
+      return s != subOf(one, shlOf(s, subOf(t, x)));
+
+    case MulLemma::Mul17:
+      // s != 1 + (s << (x - t))
+      return s != addOf(one, shlOf(s, subOf(x, t)));
+
+    case MulLemma::Mul18:
+      // t != (1 | (x + s))
+      return t != orOf(one, addOf(x, s));
+
+    case MulLemma::Mul19:
+      // x != ~(x << (s + t))
+      return x != notOf(shlOf(x, addOf(s, t)));
   }
   return true;
 }
 
 bool mulLemmaApplicable(MulLemma lemma, unsigned width)
 {
-  // `(x & t) != (s | ~t)` is false at one bit, where the product is the
-  // conjunction and x = s = t = 1 satisfies both sides. It is true at every
-  // width above, checked exhaustively to eight bits.
-  return lemma != MulLemma::FactorAndProductNotOr || width > 1;
+  switch (lemma)
+  {
+    // `(x & t) != (s | ~t)` is false at one bit, where the product is the
+    // conjunction and x = s = t = 1 satisfies both sides. The four below it
+    // are the source's other one-bit exclusions.
+    case MulLemma::FactorAndProductNotOr:
+    case MulLemma::Mul5:
+    case MulLemma::Mul7:
+    case MulLemma::Mul11:
+    case MulLemma::Mul12:
+    case MulLemma::Mul18:
+      return width > 1;
+
+    // `t >=u (1 & ((x & s) >> 1))` is the product side's one restriction
+    // that is not a minimum: true at one bit, false at two, true above.
+    case MulLemma::Mul9:
+      return width != 2;
+
+    default:
+      return true;
+  }
 }
 
 bool divModIdentityHolds(const std::vector<bool>& x,
@@ -687,6 +760,19 @@ const char* mulLemmaName(MulLemma lemma)
       return "factor-unchanged-by-masked-shift";
     case MulLemma::FactorAndProductNotOr:
       return "factor-and-product-not-or";
+    case MulLemma::Mul5: return "mul5";
+    case MulLemma::Mul7: return "mul7";
+    case MulLemma::Mul9: return "mul9";
+    case MulLemma::Mul10: return "mul10";
+    case MulLemma::Mul11: return "mul11";
+    case MulLemma::Mul12: return "mul12";
+    case MulLemma::Mul13: return "mul13";
+    case MulLemma::Mul14: return "mul14";
+    case MulLemma::Mul15: return "mul15";
+    case MulLemma::Mul16: return "mul16";
+    case MulLemma::Mul17: return "mul17";
+    case MulLemma::Mul18: return "mul18";
+    case MulLemma::Mul19: return "mul19";
   }
   return "unknown";
 }
