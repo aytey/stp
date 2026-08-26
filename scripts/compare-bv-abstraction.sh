@@ -41,8 +41,12 @@ usage()
   cat <<'EOF'
 Usage: compare-bv-abstraction.sh --corpus DIR [options] [-- COMMON_STP_ARG ...]
 
-Required:
+Required (one of):
   --corpus DIR         directory of *.smt2 queries (searched one level deep)
+  --list FILE          file of query paths, one per line -- for a population
+                       selected by some means other than living in a directory
+
+Required:
   --variant NAME:FLAGS one configuration to measure; repeatable, order kept
 
 Options:
@@ -60,6 +64,7 @@ EOF
 
 solver=""
 corpus=""
+list=""
 output=""
 repetitions=1
 timeout_s=20
@@ -72,6 +77,7 @@ while (($#)); do
   case "$1" in
     --solver) solver=${2:?}; shift 2;;
     --corpus) corpus=${2:?}; shift 2;;
+    --list) list=${2:?}; shift 2;;
     --output) output=${2:?}; shift 2;;
     --repetitions) repetitions=${2:?}; shift 2;;
     --timeout) timeout_s=${2:?}; shift 2;;
@@ -91,8 +97,13 @@ done
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 [ -n "$solver" ] || solver="$here/../build/stp"
 [ -x "$solver" ] || die "not executable: $solver"
-[ -n "$corpus" ] || die "--corpus is required"
-[ -d "$corpus" ] || die "not a directory: $corpus"
+if [ -n "$list" ]; then
+  [ -f "$list" ] || die "not a file: $list"
+  [ -z "$corpus" ] || die "--corpus and --list are alternatives"
+else
+  [ -n "$corpus" ] || die "one of --corpus or --list is required"
+  [ -d "$corpus" ] || die "not a directory: $corpus"
+fi
 ((${#variant_names[@]} > 0)) || die "at least one --variant is required"
 
 if [ -z "$output" ]; then
@@ -101,8 +112,13 @@ else
   mkdir -p "$output" || die "cannot create $output"
 fi
 
-mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
-((${#queries[@]} > 0)) || die "no *.smt2 files in $corpus"
+if [ -n "$list" ]; then
+  mapfile -t queries < <(grep -v '^[[:space:]]*$' "$list")
+  ((${#queries[@]} > 0)) || die "no paths in $list"
+else
+  mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
+  ((${#queries[@]} > 0)) || die "no *.smt2 files in $corpus"
+fi
 
 records="$output/runs.tsv"
 : > "$records"
@@ -111,7 +127,7 @@ records="$output/runs.tsv"
 {
   printf 'solver\t%s\n' "$solver"
   printf 'solver_sha256\t%s\n' "$(sha256sum "$solver" | cut -d' ' -f1)"
-  printf 'corpus\t%s\n' "$corpus"
+  printf 'corpus\t%s\n' "${corpus:-list:$list}"
   printf 'queries\t%d\n' "${#queries[@]}"
   printf 'repetitions\t%d\n' "$repetitions"
   printf 'timeout\t%d\n' "$timeout_s"
@@ -154,7 +170,7 @@ for ((rep = 0; rep < repetitions; ++rep)); do
         "$name" "$rep" "$verdict" "$(echo "$finish - $start" | bc)" \
         "$(pick rounds "$ref")" "$(pick blocking "$ref")" "$(pick schema "$ref")" \
         "$(pick exact "$esc")" "$(pick clauses "$esc")" \
-        "$(basename "$query")" >> "$records"
+        "$query" >> "$records"
 
       done_runs=$((done_runs + 1))
       # Only when someone is watching: piped into a file this is one very
@@ -175,13 +191,13 @@ with open(sys.argv[1]) as fh:
         rows.append(dict(zip(header, line.rstrip('\n').split('\t'))))
 
 split = os.environ.get('FP_SPLIT') == '1'
-corpus = os.environ['CORPUS']
+corpus = os.environ.get('CORPUS', '')
 isfp = {}
 if split:
     for r in rows:
         q = r['query']
         if q not in isfp:
-            with open(os.path.join(corpus, q)) as fh:
+            with open(q if os.path.isabs(q) else os.path.join(corpus, q)) as fh:
                 isfp[q] = 'fp.' in fh.read()
 
 variants = list(dict.fromkeys(r['variant'] for r in rows))
