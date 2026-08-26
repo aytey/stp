@@ -271,3 +271,17 @@ TEST(BVDivLemma, width_restrictions_are_explicit)
   EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef38, 3));
   EXPECT_TRUE(divLemmaApplicable(DivLemma::UdivRef9, 1));
 }
+
+TEST(BVDivLemma, observed_registry_entries_have_semantic_names)
+{
+  EXPECT_STREQ("quotient-not-negated-and",
+               divLemmaName(DivLemma::UdivRef9));
+  EXPECT_STREQ("masked-dividend-above-divisor-and-quotient",
+               divLemmaName(DivLemma::UdivRef12));
+  EXPECT_STREQ("dividend-above-doubled-shifted-divisor",
+               divLemmaName(DivLemma::UdivRef14));
+  EXPECT_STREQ("quotient-above-doubled-shifted-dividend",
+               divLemmaName(DivLemma::UdivRef16));
+  EXPECT_STREQ("dividend-not-twice-quotient-plus-or",
+               divLemmaName(DivLemma::UdivRef33));
+}

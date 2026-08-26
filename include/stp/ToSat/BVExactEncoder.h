@@ -76,12 +76,13 @@ namespace stp
 // synthesis that paper describes -- which is the argument for porting them
 // rather than inventing a set.
 //
-// The semantic names are the original high-firing subset; the UdivRef names
-// complete Bitwuzla's enabled UDIV registry after excluding facts already
-// subsumed by STP's divisor-value schemas and bounds. The table in the refiner
-// keeps measured entries in firing order and the unobserved tail in source
-// order. Completeness is useful for controlled ablations, not evidence that
-// every fact should eventually be enabled by default.
+// The enum identifiers retain Bitwuzla's registry IDs where that makes source
+// reconciliation mechanical. divLemmaName() gives every measured entry a
+// semantic diagnostic name, while the unobserved tail deliberately keeps its
+// source number. The table in the refiner keeps measured entries in firing
+// order and the unobserved tail in source order. Completeness is useful for
+// controlled ablations, not evidence that every fact should eventually be
+// enabled by default.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -101,10 +102,9 @@ enum class DivLemma
   // x >=u ((t << 1) >> (t << s))
   DividendAboveShiftedDoubleQuotient,
 
-  // The names below deliberately retain Bitwuzla's registry identifiers.
-  // Unlike the implication-style facts above, the synthesised expressions
-  // do not have concise semantic names that are less error-prone than their
-  // source IDs.
+  // These identifiers deliberately retain Bitwuzla's registry numbers.
+  // The observed entries have readable diagnostic names in divLemmaName();
+  // the source ID remains here so the transcription is still auditable.
   UdivRef9,
   UdivRef12,
   UdivRef14,
@@ -132,10 +132,12 @@ enum class DivLemma
   UdivRef38
 };
 
-// The remainder-specific part of Bitwuzla's registry. UremRef6 is retained
-// so the transcription and its circuit stay checked, but the source solver
-// does not enable it and neither does STP: it is subsumed by the existing
-// non-zero-divisor remainder bound (and is vacuous over a zero divisor).
+// The remainder-specific part of Bitwuzla's registry. Enum identifiers keep
+// the source IDs, while remLemmaName() describes each enabled relationship in
+// solver diagnostics. UremRef6 is retained so the transcription and its
+// circuit stay checked, but the source solver does not enable it and neither
+// does STP: it is subsumed by the existing non-zero-divisor remainder bound
+// (and is vacuous over a zero divisor).
 enum class RemLemma
 {
   UremRef2,
@@ -154,7 +156,8 @@ enum class RemLemma
 
 // The unconditional multiplication facts not already represented by STP's
 // power-of-two, low-bit, trailing-zero and odd-inverse schemas. The IDs are
-// Bitwuzla's registry names; each has two readings because multiplication is
+// Bitwuzla's registry names; mulLemmaName() gives the qualified MulRef3 fact
+// its semantic name. Each has two readings because multiplication is
 // commutative but most synthesised expressions are not syntactically so.
 enum class MulLemma
 {

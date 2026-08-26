@@ -503,6 +503,11 @@ public:
   // answers in five hundredths of one. Zero never escalates, which is what
   // this was before.
   //
+  // Sixteen was compared directly with thirty-two over the 287 natural
+  // division/remainder consumers under the qualified schema mask: solve
+  // counts and medians tied, sixteen gained no repeatable solve, and two
+  // small cases were stably slower. Keep the established ceiling.
+  //
   // A ceiling and no longer the allowance itself: see the divisor below.
   unsigned bv_term_abstraction_rounds = 32;
   // Optionally make that a rate instead: `width / this`, floored at one and

@@ -455,16 +455,24 @@ const char* divLemmaName(DivLemma lemma)
       return "divisor-less-one-above-shifted-dividend";
     case DivLemma::DividendAboveShiftedDoubleQuotient:
       return "dividend-above-shifted-double-quotient";
-    case DivLemma::UdivRef9: return "udiv-ref9";
-    case DivLemma::UdivRef12: return "udiv-ref12";
-    case DivLemma::UdivRef14: return "udiv-ref14";
-    case DivLemma::UdivRef16: return "udiv-ref16";
-    case DivLemma::UdivRef17: return "udiv-ref17";
-    case DivLemma::UdivRef18: return "udiv-ref18";
-    case DivLemma::UdivRef19: return "udiv-ref19";
-    case DivLemma::UdivRef26: return "udiv-ref26";
-    case DivLemma::UdivRef27: return "udiv-ref27";
-    case DivLemma::UdivRef33: return "udiv-ref33";
+    case DivLemma::UdivRef9: return "quotient-not-negated-and";
+    case DivLemma::UdivRef12:
+      return "masked-dividend-above-divisor-and-quotient";
+    case DivLemma::UdivRef14:
+      return "dividend-above-doubled-shifted-divisor";
+    case DivLemma::UdivRef16:
+      return "quotient-above-doubled-shifted-dividend";
+    case DivLemma::UdivRef17:
+      return "dividend-above-or-and-doubled-divisor";
+    case DivLemma::UdivRef18:
+      return "dividend-above-or-and-doubled-quotient";
+    case DivLemma::UdivRef19: return "shifted-dividend-not-or";
+    case DivLemma::UdivRef26:
+      return "dividend-above-quotient-xor-shifted";
+    case DivLemma::UdivRef27:
+      return "dividend-above-divisor-xor-shifted";
+    case DivLemma::UdivRef33:
+      return "dividend-not-twice-quotient-plus-or";
     case DivLemma::UdivRef10: return "udiv-ref10";
     case DivLemma::UdivRef11: return "udiv-ref11";
     case DivLemma::UdivRef20: return "udiv-ref20";
@@ -568,18 +576,20 @@ const char* remLemmaName(RemLemma lemma)
 {
   switch (lemma)
   {
-    case RemLemma::UremRef2: return "urem-ref2";
-    case RemLemma::UremRef4: return "urem-ref4";
-    case RemLemma::UremRef5: return "urem-ref5";
+    case RemLemma::UremRef2: return "dividend-zero";
+    case RemLemma::UremRef4: return "divisor-equals-dividend";
+    case RemLemma::UremRef5: return "dividend-below-divisor";
     case RemLemma::UremRef6: return "urem-ref6-disabled";
-    case RemLemma::UremRef7: return "urem-ref7";
-    case RemLemma::UremRef8: return "urem-ref8";
-    case RemLemma::UremRef9: return "urem-ref9";
-    case RemLemma::UremRef10: return "urem-ref10";
-    case RemLemma::UremRef11: return "urem-ref11";
-    case RemLemma::UremRef12: return "urem-ref12";
-    case RemLemma::UremRef13: return "urem-ref13";
-    case RemLemma::UremRef14: return "urem-ref14";
+    case RemLemma::UremRef7:
+      return "dividend-within-divisor-or-remainder";
+    case RemLemma::UremRef8: return "dividend-above-remainder-or-and";
+    case RemLemma::UremRef9: return "remainder-outside-operands-not-one";
+    case RemLemma::UremRef10: return "remainder-not-or-of-complements";
+    case RemLemma::UremRef11:
+      return "remainder-in-operands-above-low-bit";
+    case RemLemma::UremRef12: return "dividend-not-or-of-negations";
+    case RemLemma::UremRef13: return "difference-above-remainder";
+    case RemLemma::UremRef14: return "xor-above-remainder";
   }
   return "unknown";
 }
@@ -680,7 +690,7 @@ const char* mulLemmaName(MulLemma lemma)
   switch (lemma)
   {
     case MulLemma::MulRef1: return "mul-ref1";
-    case MulLemma::MulRef3: return "mul-ref3";
+    case MulLemma::MulRef3: return "factor-and-product-not-or";
     case MulLemma::MulRefN3: return "mul-refn3";
     case MulLemma::MulRefN5: return "mul-refn5";
     case MulLemma::MulRefN6: return "mul-refn6";

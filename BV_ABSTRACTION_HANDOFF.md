@@ -2,14 +2,18 @@
 
 Date: 2026-08-26
 
-Branch: `cegar-next-codex`
+Branch: `cegar-next-codex-v2`
+
+Based on: `bc1e6e79` (`cegar-next-codex`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
 Additional source reviewed: `1351a312` (`pr-lemmas`)
 
+V2 comparison source: `17465e3d` (`cegar-next-claude`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex`
+`/home/avj/clones/stp/cegar-next-codex-v2`
 
 ## Executive summary
 
@@ -51,6 +55,42 @@ off in the inherited profile.
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
 
+## V2 hybrid delta
+
+The comparison with `cegar-next-claude` produced four changes without
+altering the complete catalogue, the public flag ordinals, or the qualified
+default group mask:
+
+- Paired division/remainder refinement now reads both candidate values and
+  emits both low-prefix and full recomposition clauses through each
+  abstraction record's owned result-variable accessor. This preserves the
+  durable incremental record when the AST-keyed map names a newer encoding
+  of the same hash-consed term. A unit regression deliberately makes those
+  two sources disagree and checks both the read and write sides.
+- The capped divisor-magnitude bound now precedes the open-ended quotient
+  thresholds. On the 256-bit binade regression, the `all` profile changed
+  from a 30-second timeout at roughly 577 MB to 0.02 seconds at roughly
+  23 MB. A chooser-level regression holds both facts violated and requires
+  the capped family to win.
+- Observed imported UDIV and UREM facts, plus qualified `MulRef3`, use
+  semantic diagnostic names while retaining their source-registry enum IDs
+  for mechanical reconciliation. Nine focused query regressions exercise
+  individual imported relationships by name and group.
+- A fresh CaDiCaL build passes all 172 CTest entries, including both complete
+  query-file configurations. A separate simplifying-MiniSat build passes the
+  five focused lemma/refiner binaries and the complete query-file suite.
+
+The proposed 16-round limit was compared with 32 using the identical
+`base,urem,mul-ref3` mask on all 287 natural division/remainder consumers from
+the qualification corpus, at a two-second internal budget. Both solved 256
+files with no answer disagreement; their common-solve medians were both
+0.060 seconds, with totals of 25.04 seconds at 16 and 25.21 seconds at 32.
+Five changed or materially timed cases were then repeated three times at a
+five-second budget. Sixteen rounds gained no solve and produced two stable
+small slowdowns, so V2 retains the 32-round default. Raw comparison data,
+while the temporary directory survives, is under
+`/tmp/stp-codex-v2-rounds.cwLXsl`.
+
 ## Scope and defaults
 
 The base already contains the general BV term-abstraction machinery and the
@@ -89,7 +129,7 @@ The named groups and their disposition are:
 | `udiv-extra` | Remaining non-base UDIV registry | no |
 | `urem` | Enabled UREM registry | yes |
 | `mul8` | Zero product with an odd operand | no |
-| `mul-ref3` | `MulRef3` alone | yes |
+| `mul-ref3` | `FactorAndProductNotOr` (`MulRef3`) alone | yes |
 | `mul-extra` | Remaining general MUL registry | no |
 | `add` | Complete ADD registry | no |
 | `quotient-thresholds` | UDIV power-of-two magnitude thresholds | no |

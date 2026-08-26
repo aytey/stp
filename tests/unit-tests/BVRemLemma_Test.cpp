@@ -231,3 +231,15 @@ TEST(BVRemLemma, restrictions_and_disabled_fact_are_explicit)
   EXPECT_FALSE(remLemmaEnabled(RemLemma::UremRef6));
   EXPECT_TRUE(remLemmaEnabled(RemLemma::UremRef7));
 }
+
+TEST(BVRemLemma, enabled_registry_entries_have_semantic_names)
+{
+  EXPECT_STREQ("dividend-zero", remLemmaName(RemLemma::UremRef2));
+  EXPECT_STREQ("dividend-below-divisor", remLemmaName(RemLemma::UremRef5));
+  EXPECT_STREQ("dividend-within-divisor-or-remainder",
+               remLemmaName(RemLemma::UremRef7));
+  EXPECT_STREQ("difference-above-remainder",
+               remLemmaName(RemLemma::UremRef13));
+  EXPECT_STREQ("xor-above-remainder",
+               remLemmaName(RemLemma::UremRef14));
+}

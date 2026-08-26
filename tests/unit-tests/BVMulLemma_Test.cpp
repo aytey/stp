@@ -226,3 +226,9 @@ TEST(BVMulLemma, width_restrictions_are_explicit)
   EXPECT_TRUE(mulLemmaApplicable(MulLemma::MulRefN5, 3));
   EXPECT_TRUE(mulLemmaApplicable(MulLemma::MulRefN6, 1));
 }
+
+TEST(BVMulLemma, qualified_registry_entry_has_a_semantic_name)
+{
+  EXPECT_STREQ("factor-and-product-not-or",
+               mulLemmaName(MulLemma::MulRef3));
+}
