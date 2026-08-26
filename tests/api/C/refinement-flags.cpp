@@ -46,9 +46,98 @@ THE SOFTWARE.
 #include "stp/c_interface.h"
 #include <gtest/gtest.h>
 
-static_assert(BV_TERM_ABSTRACTION_DIVMOD ==
-                  BV_TERM_ABSTRACTION_SCHEMA_GROUPS + 1,
+// ifaceflag_t values are compiled into client binaries. Pin the complete
+// published prefix explicitly: merely checking that the newest two are
+// adjacent would not catch an insertion or reorder earlier in the enum.
+static_assert(EXPRDELETE == 0, "published interface-flag ordinal changed");
+static_assert(MS == 1, "published interface-flag ordinal changed");
+static_assert(SMS == 2, "published interface-flag ordinal changed");
+static_assert(CMS4 == 3, "published interface-flag ordinal changed");
+static_assert(RISS == 4, "published interface-flag ordinal changed");
+static_assert(MSP == 5, "published interface-flag ordinal changed");
+static_assert(CADICAL == 6, "published interface-flag ordinal changed");
+static_assert(INCREMENTAL_AUTO_ENGAGE_AT == 7,
+              "published interface-flag ordinal changed");
+static_assert(UF_NARROW_RESULTS == 8,
+              "published interface-flag ordinal changed");
+static_assert(UF_EQUALITY_INJECTIVITY == 9,
+              "published interface-flag ordinal changed");
+static_assert(UF_LEMMAS_PER_ROUND == 10,
+              "published interface-flag ordinal changed");
+static_assert(UF_ACKERMANN == 11, "published interface-flag ordinal changed");
+static_assert(UF_ACKERMANN_BUDGET == 12,
+              "published interface-flag ordinal changed");
+static_assert(UF_PHASE_HINTS == 13, "published interface-flag ordinal changed");
+static_assert(UF_SORT_WIDTH == 14, "published interface-flag ordinal changed");
+static_assert(DISTINCT_ORDERING == 15,
+              "published interface-flag ordinal changed");
+static_assert(AIG_NODE_BUDGET == 16,
+              "published interface-flag ordinal changed");
+static_assert(BV_EQ_ABSTRACTION == 17,
+              "published interface-flag ordinal changed");
+static_assert(BV_ABSTRACTION_WIDTH == 18,
+              "published interface-flag ordinal changed");
+static_assert(BV_EQ_REFINE_WIDTH == 19,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION == 20,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_MULT == 21,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_ROUNDS == 22,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_SCHEMAS == 23,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_VALUE_DIVISOR == 24,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_INC_BITBLAST == 25,
+              "published interface-flag ordinal changed");
+static_assert(CNF_GENERATION_EFFORT == 26,
+              "published interface-flag ordinal changed");
+static_assert(INCREMENTAL_SCOPED_PREPROCESSING == 27,
+              "published interface-flag ordinal changed");
+static_assert(INCREMENTAL_PIECE_REWRITING == 28,
+              "published interface-flag ordinal changed");
+static_assert(CNF_AUTO_THRESHOLD == 29,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS == 30,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_DIVMOD == 31,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_PROFILE == 32,
               "new interface flags must be appended to preserve the C ABI");
+
+static_assert(STP_BV_SCHEMA_GROUP_BASE == (1 << 0),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_UDIV15 == (1 << 1),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_UDIV_EXTRA == (1 << 2),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_UREM == (1 << 3),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_MUL8 == (1 << 4),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_MUL_REF3 == (1 << 5),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_MUL_EXTRA == (1 << 6),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_ADD == (1 << 7),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS == (1 << 8),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_LOW_PREFIX == (1 << 9),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM == (1 << 10),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_DIVREM_PAIR == (1 << 11),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT == (1 << 12),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE == (1 << 13),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_DIVREM_FULL == (1 << 14),
+              "published schema-group bit changed");
+static_assert(STP_BV_SCHEMA_GROUP_UDIV_OBSERVED == (1 << 15),
+              "new schema-group bits must be appended");
 
 namespace
 {
@@ -184,6 +273,19 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, 0);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups);
 
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_AGGRESSIVE,
+            flags(vc).bv_term_abstraction_schema_groups);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
+            flags(vc).bv_term_abstraction_rounds);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
+            flags(vc).bv_term_abstraction_schema_groups);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS,
+            flags(vc).bv_term_abstraction_rounds);
+
   // Zero is a meaning of its own here too: do not scale, and leave the flat
   // ceiling above as the allowance.
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_VALUE_DIVISOR, 0);
@@ -236,7 +338,7 @@ TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
                        STP_BV_SCHEMA_GROUP_BASE);
-  const int invalid[] = {-1, 1 << 15, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
+  const int invalid[] = {-1, 1 << 16, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
   for (const int value : invalid)
   {
     vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, value);
@@ -244,6 +346,27 @@ TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
               flags(vc).bv_term_abstraction_schema_groups);
   }
   EXPECT_EQ(3, errors);
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
+}
+
+TEST(refinement_flags, InvalidBVProfileIsAtomic)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE);
+  const uint32_t mask = flags(vc).bv_term_abstraction_schema_groups;
+  const unsigned rounds = flags(vc).bv_term_abstraction_rounds;
+
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE, -1);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE, 2);
+  EXPECT_EQ(mask, flags(vc).bv_term_abstraction_schema_groups);
+  EXPECT_EQ(rounds, flags(vc).bv_term_abstraction_rounds);
+  EXPECT_EQ(2, errors);
 
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);

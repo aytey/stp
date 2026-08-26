@@ -542,6 +542,25 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_DIVMOD:
       b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
       break;
+    case BV_TERM_ABSTRACTION_PROFILE:
+      if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED)
+      {
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            stp::BV_SCHEMA_GROUP_QUALIFIED;
+        b->UserFlags.bv_term_abstraction_rounds =
+            stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
+      }
+      else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE)
+      {
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            stp::BV_SCHEMA_GROUP_AGGRESSIVE;
+        b->UserFlags.bv_term_abstraction_rounds =
+            stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
+      }
+      else
+        reportCAPIError("BV_TERM_ABSTRACTION_PROFILE takes a "
+                        "bv_term_abstraction_profile_t ordinal");
+      break;
     case BV_TERM_ABSTRACTION_SCHEMAS:
       b->UserFlags.bv_term_abstraction_schemas = param_value != 0;
       break;
@@ -950,6 +969,7 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT:
     case STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE:
     case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL:
+    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED:
       return c.bv_schema_group_lemmas[static_cast<unsigned>(counter) -
                                       static_cast<unsigned>(
                                           STP_COUNTER_BV_SCHEMA_GROUP_BASE)];

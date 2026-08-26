@@ -81,11 +81,46 @@ TEST(UserDefinedFlags_Test, internal_model_consumer_is_a_separate_input)
 TEST(UserDefinedFlags_Test, bv_schema_groups_default_to_qualified_profile)
 {
   stp::UserDefinedFlags uf;
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_DEFAULT, uf.bv_term_abstraction_schema_groups);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
+            uf.bv_term_abstraction_schema_groups);
   EXPECT_EQ("base,urem,mul-ref3",
             stp::formatBVSchemaGroups(uf.bv_term_abstraction_schema_groups));
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS,
+            uf.bv_term_abstraction_rounds);
   EXPECT_FALSE(uf.bv_term_abstraction);
   EXPECT_TRUE(uf.bv_term_abstraction_schemas);
+}
+
+TEST(UserDefinedFlags_Test, named_bv_profiles_apply_mask_and_rounds_atomically)
+{
+  uint32_t mask = 0;
+  unsigned rounds = 0;
+  std::string error;
+  ASSERT_TRUE(
+      stp::parseBVTermAbstractionProfile("aggressive", mask, rounds, error));
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_AGGRESSIVE, mask);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS, rounds);
+  EXPECT_TRUE(
+      stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::UDIV_OBSERVED));
+  EXPECT_TRUE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_FULL));
+  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::UDIV_EXTRA));
+  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::MUL_EXTRA));
+  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::ADD));
+  EXPECT_FALSE(
+      stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::QUOTIENT_THRESHOLDS));
+
+  ASSERT_TRUE(
+      stp::parseBVTermAbstractionProfile("qualified", mask, rounds, error));
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED, mask);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS, rounds);
+
+  mask = 0x5a5u;
+  rounds = 7;
+  EXPECT_FALSE(
+      stp::parseBVTermAbstractionProfile("unknown", mask, rounds, error));
+  EXPECT_EQ(0x5a5u, mask);
+  EXPECT_EQ(7u, rounds);
+  EXPECT_NE(std::string::npos, error.find("qualified or aggressive"));
 }
 
 TEST(UserDefinedFlags_Test, every_bv_schema_group_round_trips_by_name)

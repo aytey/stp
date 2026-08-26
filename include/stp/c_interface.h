@@ -193,10 +193,28 @@ enum bv_schema_group_t
   STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT = 1 << 12,
   STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 13,
   STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 14,
-  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_BASE |
-                                STP_BV_SCHEMA_GROUP_UREM |
-                                STP_BV_SCHEMA_GROUP_MUL_REF3,
-  STP_BV_SCHEMA_GROUP_ALL = (1 << 15) - 1
+  //! Ranked UDIV facts beyond BASE and UDIV15. UDIV_EXTRA remains a
+  //! compatibility umbrella that enables both these and the unobserved tail.
+  STP_BV_SCHEMA_GROUP_UDIV_OBSERVED = 1 << 15,
+  STP_BV_SCHEMA_GROUP_QUALIFIED = STP_BV_SCHEMA_GROUP_BASE |
+                                  STP_BV_SCHEMA_GROUP_UREM |
+                                  STP_BV_SCHEMA_GROUP_MUL_REF3,
+  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_QUALIFIED,
+  STP_BV_SCHEMA_GROUP_AGGRESSIVE =
+      STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
+      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
+      STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
+      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 16) - 1
+};
+
+//! Atomic mask/round pairs accepted by BV_TERM_ABSTRACTION_PROFILE.
+enum bv_term_abstraction_profile_t
+{
+  STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED = 0,
+  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 1
 };
 
 //! Interface-only flags.
@@ -570,7 +588,17 @@ enum ifaceflag_t
   //! remains unchanged. This is the C API's way to reach
   //! --bv-term-abstraction-divmod.
   //!
-  BV_TERM_ABSTRACTION_DIVMOD
+  BV_TERM_ABSTRACTION_DIVMOD,
+
+  //! Applies one complete BV term-abstraction schema profile. `param_value`
+  //! is a bv_term_abstraction_profile_t ordinal. QUALIFIED selects the
+  //! established base/UREM/MulRef3 mask with a 32-round ceiling; AGGRESSIVE
+  //! selects the observed hybrid catalogue with a 16-round ceiling. Invalid
+  //! values are refused without changing either field. Appended so every
+  //! previously published interface-flag ordinal remains stable. This is the
+  //! C API's way to reach --bv-term-abstraction-profile.
+  //!
+  BV_TERM_ABSTRACTION_PROFILE
 
 };
 
@@ -858,7 +886,8 @@ enum stp_counter_t
   STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR,
   STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
   STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL
+  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL,
+  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED
 };
 
 //! \brief Reads one of the counters above.

@@ -112,6 +112,10 @@ public:
   // Likewise for the named mask of BV abstraction schema families.
   std::string bv_schema_groups = formatBVSchemaGroups(BV_SCHEMA_GROUP_DEFAULT);
 
+  // A named, atomic schema-mask/refinement-round pair. Empty means the two
+  // lower-level options retain their independently parsed values.
+  std::string bv_abstraction_profile;
+
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
   bool interactive = false;
@@ -382,24 +386,37 @@ void ExtraMain::create_options()
            "with algebraic facts that hold for every pair of operands before "
            "their operation-specific fallback",
            refinement_group);
-  app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
-                 "comma-separated schema families allowed by "
-                 "--bv-term-abstraction-schemas: base, udiv15, udiv-extra, "
-                 "urem, mul8, mul-ref3, mul-extra, add, "
-                 "quotient-thresholds, low-prefix, quotient-one-rem, "
-                 "divrem-pair, quotient-one-quot, divisor-magnitude, or "
-                 "divrem-full; 'all' selects the complete experimental "
-                 "stack and 'none' selects no schemas")
+  CLI::Option* const bv_schema_groups_option =
+      app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
+                     "comma-separated schema families allowed by "
+                     "--bv-term-abstraction-schemas: base, udiv15, "
+                     "udiv-observed, udiv-extra, urem, mul8, mul-ref3, "
+                     "mul-extra, add, quotient-thresholds, low-prefix, "
+                     "quotient-one-rem, divrem-pair, quotient-one-quot, "
+                     "divisor-magnitude, or divrem-full; 'all' selects the "
+                     "complete experimental stack and 'none' selects no "
+                     "schemas")
+          ->group(refinement_group)
+          ->capture_default_str();
+  CLI::Option* const bv_rounds_option =
+      app.add_option("--bv-term-abstraction-rounds",
+                     bm->UserFlags.bv_term_abstraction_rounds,
+                     "ceiling on the blocking lemmas one abstracted "
+                     "BVMULT/BVDIV/BVMOD may take before its refinement "
+                     "encodes the operation exactly instead of enumerating "
+                     "further operand pairs (0: never; enumerate without "
+                     "limit)")
+          ->group(refinement_group)
+          ->capture_default_str();
+  app.add_option("--bv-term-abstraction-profile", bv_abstraction_profile,
+                 "apply an atomic schema-mask/round pair: 'qualified' keeps "
+                 "the corpus-qualified base, UREM and MulRef3 mask at 32 "
+                 "rounds; 'aggressive' adds the observed UDIV and MUL8 "
+                 "facts, divisor-magnitude and quotient-one facts, and the "
+                 "full paired DIV/REM identity at 16 rounds")
       ->group(refinement_group)
-      ->capture_default_str();
-  app.add_option("--bv-term-abstraction-rounds",
-                 bm->UserFlags.bv_term_abstraction_rounds,
-                 "ceiling on the blocking lemmas one abstracted "
-                 "BVMULT/BVDIV/BVMOD may take before its refinement encodes "
-                 "the operation exactly instead of enumerating further "
-                 "operand pairs (0: never; enumerate without limit)")
-      ->group(refinement_group)
-      ->capture_default_str();
+      ->excludes(bv_schema_groups_option)
+      ->excludes(bv_rounds_option);
   app.add_option("--bv-term-abstraction-value-divisor",
                  bm->UserFlags.bv_term_abstraction_value_divisor,
                  "scale that allowance with the operand width, as "
@@ -949,6 +966,19 @@ int ExtraMain::parse_options(int argc, char** argv)
                              error))
     {
       cerr << "ERROR: --bv-term-abstraction-schema-groups: " << error << endl;
+      return -1;
+    }
+  }
+
+  if (!bv_abstraction_profile.empty())
+  {
+    std::string error;
+    if (!parseBVTermAbstractionProfile(
+            bv_abstraction_profile,
+            bm->UserFlags.bv_term_abstraction_schema_groups,
+            bm->UserFlags.bv_term_abstraction_rounds, error))
+    {
+      cerr << "ERROR: --bv-term-abstraction-profile: " << error << endl;
       return -1;
     }
   }

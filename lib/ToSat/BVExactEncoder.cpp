@@ -281,7 +281,8 @@ bool divLemmaApplicable(DivLemma lemma, unsigned width)
   switch (lemma)
   {
     case DivLemma::UdivRef21:
-    case DivLemma::UdivRef33: return width > 1;
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+      return width > 1;
     case DivLemma::UdivRef31: return width > 2;
     case DivLemma::UdivRef38: return width != 2;
     default: return width > 0;
@@ -293,7 +294,6 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
 {
   assert(x.size() == s.size());
   assert(x.size() == t.size());
-  assert(divLemmaApplicable(lemma, (unsigned)x.size()));
 
   const unsigned W = (unsigned)x.size();
   const std::vector<bool> zero(W, false);
@@ -331,43 +331,43 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
       // x >=u ((t << 1) >> (t << s))
       return ule(shrOf(shlOf(t, one), shlOf(t, s)), x);
 
-    case DivLemma::UdivRef9:
+    case DivLemma::QuotientNotNegatedAnd:
       // t != -(s & ~x)
       return t != negOf(andOf(s, notOf(x)));
 
-    case DivLemma::UdivRef12:
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
       // (x & -t) >=u (s & t)
       return ule(andOf(s, t), andOf(x, negOf(t)));
 
-    case DivLemma::UdivRef14:
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
       // x >=u ((s >> (s << t)) << 1)
       return ule(shlOf(shrOf(s, shlOf(s, t)), one), x);
 
-    case DivLemma::UdivRef16:
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
       // t >=u ((x >> s) << 1)
       return ule(shlOf(shrOf(x, s), one), t);
 
-    case DivLemma::UdivRef17:
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
       // x >=u ((x | t) & (s << 1))
       return ule(andOf(orOf(x, t), shlOf(s, one)), x);
 
-    case DivLemma::UdivRef18:
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
       // x >=u ((x | s) & (t << 1))
       return ule(andOf(orOf(x, s), shlOf(t, one)), x);
 
-    case DivLemma::UdivRef19:
+    case DivLemma::ShiftedDividendNotOr:
       // (x >> t) != (s | t)
       return shrOf(x, t) != orOf(s, t);
 
-    case DivLemma::UdivRef26:
+    case DivLemma::DividendAboveQuotientXorShifted:
       // x >=u (t xor (t >> (s >> 1)))
       return ule(xorOf(t, shrOf(t, shrOf(s, one))), x);
 
-    case DivLemma::UdivRef27:
+    case DivLemma::DividendAboveDivisorXorShifted:
       // x >=u (s xor (s >> (t >> 1)))
       return ule(xorOf(s, shrOf(s, shrOf(t, one))), x);
 
-    case DivLemma::UdivRef33:
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
       // x != t + t + (x | s)
       return x != addOf(t, addOf(t, orOf(x, s)));
 
@@ -455,23 +455,25 @@ const char* divLemmaName(DivLemma lemma)
       return "divisor-less-one-above-shifted-dividend";
     case DivLemma::DividendAboveShiftedDoubleQuotient:
       return "dividend-above-shifted-double-quotient";
-    case DivLemma::UdivRef9: return "quotient-not-negated-and";
-    case DivLemma::UdivRef12:
+    case DivLemma::QuotientNotNegatedAnd:
+      return "quotient-not-negated-and";
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
       return "masked-dividend-above-divisor-and-quotient";
-    case DivLemma::UdivRef14:
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
       return "dividend-above-doubled-shifted-divisor";
-    case DivLemma::UdivRef16:
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
       return "quotient-above-doubled-shifted-dividend";
-    case DivLemma::UdivRef17:
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
       return "dividend-above-or-and-doubled-divisor";
-    case DivLemma::UdivRef18:
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
       return "dividend-above-or-and-doubled-quotient";
-    case DivLemma::UdivRef19: return "shifted-dividend-not-or";
-    case DivLemma::UdivRef26:
+    case DivLemma::ShiftedDividendNotOr:
+      return "shifted-dividend-not-or";
+    case DivLemma::DividendAboveQuotientXorShifted:
       return "dividend-above-quotient-xor-shifted";
-    case DivLemma::UdivRef27:
+    case DivLemma::DividendAboveDivisorXorShifted:
       return "dividend-above-divisor-xor-shifted";
-    case DivLemma::UdivRef33:
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
       return "dividend-not-twice-quotient-plus-or";
     case DivLemma::UdivRef10: return "udiv-ref10";
     case DivLemma::UdivRef11: return "udiv-ref11";
@@ -494,7 +496,7 @@ const char* divLemmaName(DivLemma lemma)
 
 bool remLemmaApplicable(RemLemma lemma, unsigned width)
 {
-  if (lemma == RemLemma::UremRef12)
+  if (lemma == RemLemma::DividendNotOrOfNegations)
     return width > 2;
   return width > 0;
 }
@@ -504,7 +506,7 @@ bool remLemmaEnabled(RemLemma lemma)
   // Bitwuzla defines but deliberately omits REF6 from its active registry.
   // It is also redundant in STP: for s != 0, t < s implies t <= s - 1;
   // for s = 0, its all-ones upper bound says nothing.
-  return lemma != RemLemma::UremRef6;
+  return lemma != RemLemma::RemainderBelowDivisorDisabled;
 }
 
 bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
@@ -512,7 +514,6 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
 {
   assert(x.size() == s.size());
   assert(x.size() == t.size());
-  assert(remLemmaApplicable(lemma, (unsigned)x.size()));
 
   const unsigned W = (unsigned)x.size();
   const std::vector<bool> zero(W, false);
@@ -521,51 +522,51 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
 
   switch (lemma)
   {
-    case RemLemma::UremRef2:
+    case RemLemma::DividendZero:
       // x = 0 -> t = 0
       return !allZero(x) || allZero(t);
 
-    case RemLemma::UremRef4:
+    case RemLemma::DivisorEqualsDividend:
       // s = x -> t = 0
       return s != x || allZero(t);
 
-    case RemLemma::UremRef5:
+    case RemLemma::DividendBelowDivisor:
       // x <u s -> t = x
       return ule(s, x) || t == x;
 
-    case RemLemma::UremRef6:
+    case RemLemma::RemainderBelowDivisorDisabled:
       // ~(-s) >=u t
       return ule(t, notOf(negOf(s)));
 
-    case RemLemma::UremRef7:
+    case RemLemma::DividendWithinDivisorOrRemainder:
       // x = x & (s | t | -s)
       return x == andOf(x, orOf(s, orOf(t, negOf(s))));
 
-    case RemLemma::UremRef8:
+    case RemLemma::DividendAboveRemainderOrAnd:
       // x >=u (t | (x & s))
       return ule(orOf(t, andOf(x, s)), x);
 
-    case RemLemma::UremRef9:
+    case RemLemma::RemainderOutsideOperandsNotOne:
       // 1 != (t & ~(x | s))
       return one != andOf(t, notOf(orOf(x, s)));
 
-    case RemLemma::UremRef10:
+    case RemLemma::RemainderNotOrOfComplements:
       // t != (~x | -s)
       return t != orOf(notOf(x), negOf(s));
 
-    case RemLemma::UremRef11:
+    case RemLemma::RemainderInOperandsAboveLowBit:
       // (t & (x | s)) >=u (t & 1)
       return ule(andOf(t, one), andOf(t, orOf(x, s)));
 
-    case RemLemma::UremRef12:
+    case RemLemma::DividendNotOrOfNegations:
       // x != (-x | -(~t))
       return x != orOf(negOf(x), negOf(notOf(t)));
 
-    case RemLemma::UremRef13:
+    case RemLemma::DifferenceAboveRemainder:
       // (x + -s) >=u t
       return ule(t, addOf(x, negOf(s)));
 
-    case RemLemma::UremRef14:
+    case RemLemma::XorAboveRemainder:
       // ((-s) xor (x | s)) >=u t
       return ule(t, xorOf(negOf(s), orOf(x, s)));
   }
@@ -576,20 +577,30 @@ const char* remLemmaName(RemLemma lemma)
 {
   switch (lemma)
   {
-    case RemLemma::UremRef2: return "dividend-zero";
-    case RemLemma::UremRef4: return "divisor-equals-dividend";
-    case RemLemma::UremRef5: return "dividend-below-divisor";
-    case RemLemma::UremRef6: return "urem-ref6-disabled";
-    case RemLemma::UremRef7:
+    case RemLemma::DividendZero:
+      return "dividend-zero";
+    case RemLemma::DivisorEqualsDividend:
+      return "divisor-equals-dividend";
+    case RemLemma::DividendBelowDivisor:
+      return "dividend-below-divisor";
+    case RemLemma::RemainderBelowDivisorDisabled:
+      return "remainder-below-divisor-disabled";
+    case RemLemma::DividendWithinDivisorOrRemainder:
       return "dividend-within-divisor-or-remainder";
-    case RemLemma::UremRef8: return "dividend-above-remainder-or-and";
-    case RemLemma::UremRef9: return "remainder-outside-operands-not-one";
-    case RemLemma::UremRef10: return "remainder-not-or-of-complements";
-    case RemLemma::UremRef11:
+    case RemLemma::DividendAboveRemainderOrAnd:
+      return "dividend-above-remainder-or-and";
+    case RemLemma::RemainderOutsideOperandsNotOne:
+      return "remainder-outside-operands-not-one";
+    case RemLemma::RemainderNotOrOfComplements:
+      return "remainder-not-or-of-complements";
+    case RemLemma::RemainderInOperandsAboveLowBit:
       return "remainder-in-operands-above-low-bit";
-    case RemLemma::UremRef12: return "dividend-not-or-of-negations";
-    case RemLemma::UremRef13: return "difference-above-remainder";
-    case RemLemma::UremRef14: return "xor-above-remainder";
+    case RemLemma::DividendNotOrOfNegations:
+      return "dividend-not-or-of-negations";
+    case RemLemma::DifferenceAboveRemainder:
+      return "difference-above-remainder";
+    case RemLemma::XorAboveRemainder:
+      return "xor-above-remainder";
   }
   return "unknown";
 }
@@ -599,7 +610,7 @@ bool mulLemmaApplicable(MulLemma lemma, unsigned width)
   switch (lemma)
   {
     case MulLemma::MulRef1:
-    case MulLemma::MulRef3:
+    case MulLemma::FactorAndProductNotOr:
     case MulLemma::MulRefN3:
     case MulLemma::MulRef14:
     case MulLemma::MulRef15:
@@ -614,7 +625,6 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
 {
   assert(x.size() == s.size());
   assert(x.size() == t.size());
-  assert(mulLemmaApplicable(lemma, (unsigned)x.size()));
 
   const unsigned W = (unsigned)x.size();
   std::vector<bool> one(W, false);
@@ -626,7 +636,7 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
       // s != ~(t | (1 & (x | s)))
       return s != notOf(orOf(t, andOf(one, orOf(x, s))));
 
-    case MulLemma::MulRef3:
+    case MulLemma::FactorAndProductNotOr:
       // (x & t) != (s | ~t)
       return andOf(x, t) != orOf(s, notOf(t));
 
@@ -690,7 +700,8 @@ const char* mulLemmaName(MulLemma lemma)
   switch (lemma)
   {
     case MulLemma::MulRef1: return "mul-ref1";
-    case MulLemma::MulRef3: return "factor-and-product-not-or";
+    case MulLemma::FactorAndProductNotOr:
+      return "factor-and-product-not-or";
     case MulLemma::MulRefN3: return "mul-refn3";
     case MulLemma::MulRefN5: return "mul-refn5";
     case MulLemma::MulRefN6: return "mul-refn6";
@@ -705,6 +716,18 @@ const char* mulLemmaName(MulLemma lemma)
     case MulLemma::MulRef12: return "mul-ref12";
   }
   return "unknown";
+}
+
+bool mul8PublishedHolds(const std::vector<bool>& x, const std::vector<bool>& s,
+                        const std::vector<bool>& t)
+{
+  assert(!x.empty());
+  assert(x.size() == s.size());
+  assert(x.size() == t.size());
+
+  std::vector<bool> one(x.size(), false);
+  one[0] = true;
+  return s == shlOf(s, andOf(x, shrOf(one, t)));
 }
 
 bool addLemmaApplicable(AddLemma lemma, unsigned width)
@@ -722,7 +745,6 @@ bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& x,
   assert(!x.empty());
   assert(x.size() == s.size());
   assert(x.size() == t.size());
-  assert(addLemmaApplicable(lemma, (unsigned)x.size()));
 
   const unsigned W = (unsigned)x.size();
   const std::vector<bool> zero(W, false);

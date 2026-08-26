@@ -335,6 +335,7 @@ TEST(BVDivSchema, schema_groups_gate_division_before_selection)
   };
   const GroupCase cases[] = {{BVSchemaGroup::BASE, BVDIV},
                              {BVSchemaGroup::UDIV15, BVDIV},
+                             {BVSchemaGroup::UDIV_OBSERVED, BVDIV},
                              {BVSchemaGroup::UDIV_EXTRA, BVDIV},
                              {BVSchemaGroup::UREM, BVMOD},
                              {BVSchemaGroup::QUOTIENT_THRESHOLDS, BVDIV},

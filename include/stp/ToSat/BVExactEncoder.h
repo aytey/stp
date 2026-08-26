@@ -76,13 +76,13 @@ namespace stp
 // synthesis that paper describes -- which is the argument for porting them
 // rather than inventing a set.
 //
-// The enum identifiers retain Bitwuzla's registry IDs where that makes source
-// reconciliation mechanical. divLemmaName() gives every measured entry a
-// semantic diagnostic name, while the unobserved tail deliberately keeps its
-// source number. The table in the refiner keeps measured entries in firing
-// order and the unobserved tail in source order. Completeness is useful for
-// controlled ablations, not evidence that every fact should eventually be
-// enabled by default.
+// Every observed fact has a semantic identifier and retains Bitwuzla's source
+// registry ID beside it. The unobserved tail deliberately keeps only its
+// source identifier: source reconciliation is more valuable than inventing a
+// fluent name for a synthesised relationship nobody observed firing. The
+// table in the refiner keeps measured entries in firing order and the tail in
+// source order. Completeness is useful for controlled ablations, not evidence
+// that every fact should eventually be enabled by default.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -102,19 +102,28 @@ enum class DivLemma
   // x >=u ((t << 1) >> (t << s))
   DividendAboveShiftedDoubleQuotient,
 
-  // These identifiers deliberately retain Bitwuzla's registry numbers.
-  // The observed entries have readable diagnostic names in divLemmaName();
-  // the source ID remains here so the transcription is still auditable.
-  UdivRef9,
-  UdivRef12,
-  UdivRef14,
-  UdivRef16,
-  UdivRef17,
-  UdivRef18,
-  UdivRef19,
-  UdivRef26,
-  UdivRef27,
-  UdivRef33,
+  // t != -(s & ~x) (Bitwuzla UDIV ref9)
+  QuotientNotNegatedAnd,
+  // (x & -t) >=u (s & t) (Bitwuzla UDIV ref12)
+  MaskedDividendAboveDivisorAndQuotient,
+  // x >=u ((s >> (s << t)) << 1) (Bitwuzla UDIV ref14)
+  DividendAboveDoubledShiftedDivisor,
+  // t >=u ((x >> s) << 1) (Bitwuzla UDIV ref16)
+  QuotientAboveDoubledShiftedDividend,
+  // x >=u ((x | t) & (s << 1)) (Bitwuzla UDIV ref17)
+  DividendAboveOrAndDoubledDivisor,
+  // x >=u ((x | s) & (t << 1)) (Bitwuzla UDIV ref18)
+  DividendAboveOrAndDoubledQuotient,
+  // (x >> t) != (s | t) (Bitwuzla UDIV ref19)
+  ShiftedDividendNotOr,
+  // x >=u (t xor (t >> (s >> 1))) (Bitwuzla UDIV ref26)
+  DividendAboveQuotientXorShifted,
+  // x >=u (s xor (s >> (t >> 1))) (Bitwuzla UDIV ref27)
+  DividendAboveDivisorXorShifted,
+  // x != t + t + (x | s) (Bitwuzla UDIV ref33)
+  DividendNotTwiceQuotientPlusOr,
+
+  // The unobserved registry tail retains source identifiers verbatim.
   UdivRef10,
   UdivRef11,
   UdivRef20,
@@ -129,40 +138,66 @@ enum class DivLemma
   UdivRef32,
   UdivRef34,
   UdivRef36,
-  UdivRef38
+  UdivRef38,
+
+  // Source-compatible spellings from the first catalogue. These aliases do
+  // not add registry entries or change any underlying values.
+  UdivRef9 = QuotientNotNegatedAnd,
+  UdivRef12 = MaskedDividendAboveDivisorAndQuotient,
+  UdivRef14 = DividendAboveDoubledShiftedDivisor,
+  UdivRef16 = QuotientAboveDoubledShiftedDividend,
+  UdivRef17 = DividendAboveOrAndDoubledDivisor,
+  UdivRef18 = DividendAboveOrAndDoubledQuotient,
+  UdivRef19 = ShiftedDividendNotOr,
+  UdivRef26 = DividendAboveQuotientXorShifted,
+  UdivRef27 = DividendAboveDivisorXorShifted,
+  UdivRef33 = DividendNotTwiceQuotientPlusOr
 };
 
-// The remainder-specific part of Bitwuzla's registry. Enum identifiers keep
-// the source IDs, while remLemmaName() describes each enabled relationship in
-// solver diagnostics. UremRef6 is retained so the transcription and its
-// circuit stay checked, but the source solver does not enable it and neither
-// does STP: it is subsumed by the existing non-zero-divisor remainder bound
-// (and is vacuous over a zero divisor).
+// The remainder-specific part of Bitwuzla's registry. Semantic identifiers
+// retain the source registry IDs in comments. RemainderBelowDivisorDisabled
+// is kept so the transcription and circuit stay checked, but the source
+// solver does not enable it and neither does STP: it is subsumed by the
+// existing non-zero-divisor remainder bound (and is vacuous over zero).
 enum class RemLemma
 {
-  UremRef2,
-  UremRef4,
-  UremRef5,
-  UremRef6,
-  UremRef7,
-  UremRef8,
-  UremRef9,
-  UremRef10,
-  UremRef11,
-  UremRef12,
-  UremRef13,
-  UremRef14
+  DividendZero,                     // Bitwuzla UREM ref2
+  DivisorEqualsDividend,            // ref4
+  DividendBelowDivisor,             // ref5
+  RemainderBelowDivisorDisabled,    // ref6
+  DividendWithinDivisorOrRemainder, // ref7
+  DividendAboveRemainderOrAnd,      // ref8
+  RemainderOutsideOperandsNotOne,   // ref9
+  RemainderNotOrOfComplements,      // ref10
+  RemainderInOperandsAboveLowBit,   // ref11
+  DividendNotOrOfNegations,         // ref12
+  DifferenceAboveRemainder,         // ref13
+  XorAboveRemainder,                // ref14
+
+  // Source-compatible spellings from the first catalogue.
+  UremRef2 = DividendZero,
+  UremRef4 = DivisorEqualsDividend,
+  UremRef5 = DividendBelowDivisor,
+  UremRef6 = RemainderBelowDivisorDisabled,
+  UremRef7 = DividendWithinDivisorOrRemainder,
+  UremRef8 = DividendAboveRemainderOrAnd,
+  UremRef9 = RemainderOutsideOperandsNotOne,
+  UremRef10 = RemainderNotOrOfComplements,
+  UremRef11 = RemainderInOperandsAboveLowBit,
+  UremRef12 = DividendNotOrOfNegations,
+  UremRef13 = DifferenceAboveRemainder,
+  UremRef14 = XorAboveRemainder
 };
 
 // The unconditional multiplication facts not already represented by STP's
-// power-of-two, low-bit, trailing-zero and odd-inverse schemas. The IDs are
-// Bitwuzla's registry names; mulLemmaName() gives the qualified MulRef3 fact
-// its semantic name. Each has two readings because multiplication is
+// power-of-two, low-bit, trailing-zero and odd-inverse schemas. The qualified
+// fact has a semantic identifier and source ID comment; the unqualified tail
+// retains its registry IDs. Each has two readings because multiplication is
 // commutative but most synthesised expressions are not syntactically so.
 enum class MulLemma
 {
   MulRef1,
-  MulRef3,
+  FactorAndProductNotOr, // Bitwuzla MUL ref3
   MulRefN3,
   MulRefN5,
   MulRefN6,
@@ -174,7 +209,10 @@ enum class MulLemma
   MulRefN12,
   MulRefN13,
   MulRef13,
-  MulRef12
+  MulRef12,
+
+  // Source-compatible spelling from the first catalogue.
+  MulRef3 = FactorAndProductNotOr
 };
 
 enum class AddLemma
@@ -221,6 +259,14 @@ DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& tBits);
 DLL_PUBLIC bool mulLemmaApplicable(MulLemma lemma, unsigned width);
 DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
+
+// Bitwuzla's published MUL8 relationship, kept in its original shift form:
+//   s = s << (x & (1 >> t)).
+// The refiner uses this independently expressed predicate to choose the
+// schema; its installed CNF uses the simpler equivalent implication.
+DLL_PUBLIC bool mul8PublishedHolds(const std::vector<bool>& xBits,
+                                   const std::vector<bool>& sBits,
+                                   const std::vector<bool>& tBits);
 
 DLL_PUBLIC bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& sBits,
@@ -285,12 +331,12 @@ public:
   // Splice x = q*s+r over the four live vectors belonging to a paired BVDIV
   // and BVMOD abstraction. Arithmetic is truncated to `width`, so this is a
   // theorem of SMT-LIB's totalised division even when the divisor is zero.
-  void encodeDivRemIdentity(
-      SATSolver& solver, const ASTNode& product, unsigned width,
-      const std::vector<unsigned>& dividendVars,
-      const std::vector<unsigned>& divisorVars,
-      const std::vector<unsigned>& quotientVars,
-      const std::vector<unsigned>& remainderVars);
+  void encodeDivRemIdentity(SATSolver& solver, const ASTNode& product,
+                            unsigned width,
+                            const std::vector<unsigned>& dividendVars,
+                            const std::vector<unsigned>& divisorVars,
+                            const std::vector<unsigned>& quotientVars,
+                            const std::vector<unsigned>& remainderVars);
 };
 
 } // namespace stp

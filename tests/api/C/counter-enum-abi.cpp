@@ -40,6 +40,8 @@ static_assert(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR == 29,
               "schema-group counter block must remain contiguous");
 static_assert(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL == 32,
               "new schema-group counters must be appended");
+static_assert(STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED == 33,
+              "new schema-group counters must be appended");
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {
@@ -49,4 +51,5 @@ TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
   EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_BASE));
   EXPECT_EQ(29, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR));
   EXPECT_EQ(32, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL));
+  EXPECT_EQ(33, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED));
 }

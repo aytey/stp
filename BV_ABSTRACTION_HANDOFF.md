@@ -2,9 +2,9 @@
 
 Date: 2026-08-26
 
-Branch: `cegar-next-codex-v2`
+Branch: `cegar-next-codex-v3`
 
-Based on: `bc1e6e79` (`cegar-next-codex`)
+Based on: `989065aa` (`cegar-next-codex-v2`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
@@ -12,8 +12,10 @@ Additional source reviewed: `1351a312` (`pr-lemmas`)
 
 V2 comparison source: `17465e3d` (`cegar-next-claude`)
 
+V3 comparison source: `ed66f875` (`cegar-next-claude-v2`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex-v2`
+`/home/avj/clones/stp/cegar-next-codex-v3`
 
 ## Executive summary
 
@@ -54,6 +56,87 @@ off in the inherited profile.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
+
+## V3 hybrid convergence
+
+V3 keeps V2's corpus-qualified defaults and record-aware paired DIV/REM
+scheduler, then incorporates the parts of `cegar-next-claude-v2` that make
+the larger catalogue easier to select, audit, and maintain:
+
+- `udiv-observed` is a new group containing the ten ranked imported UDIV
+  facts beyond `base` and `udiv15`. It was appended as bit 15, preserving all
+  existing mask bits and counter ordinals. The old `udiv-extra` bit remains a
+  compatibility umbrella: it still enables the observed facts and the
+  unobserved registry tail exactly as it did in V2.
+- The observed UDIV registry, the full UREM registry, and `MulRef3` now use
+  semantic enum identifiers as well as semantic diagnostics. Comments retain
+  their source-registry IDs for reconciliation with Bitwuzla, and aliases
+  preserve the first catalogue's C++ spellings and underlying values.
+- Named `qualified` and `aggressive` profiles apply the schema mask and round
+  ceiling as one atomic operation. They are available through both the CLI
+  and C API. An invalid profile changes neither field, and the CLI refuses to
+  combine a profile with either lower-level option.
+- The imported DIV, REM, MUL, and ADD registries share one table-driven test
+  harness. It checks registry completeness, theorem soundness, width
+  applicability, useful counterexamples, and predicate/circuit equivalence.
+  The MUL8 regression additionally compares the published shifted predicate
+  with an independently written compact implication before checking the CNF.
+- ABI tests pin every pre-existing interface-flag, schema-bit, and counter
+  ordinal explicitly. New public values are appended.
+
+The profiles are:
+
+| Profile | Groups | Rounds |
+| --- | --- | ---: |
+| `qualified` | `base,urem,mul-ref3` | 32 |
+| `aggressive` | `base,udiv15,udiv-observed,urem,mul8,mul-ref3,quotient-one-rem,quotient-one-quot,divisor-magnitude,divrem-full` | 16 |
+
+Neither profile enables BV term abstraction itself. A complete invocation is:
+
+```sh
+build/stp --bv-term-abstraction=1 \
+  --bv-term-abstraction-profile=qualified input.smt2
+```
+
+The complete unobserved UDIV and MUL tails, ADD registry, open-ended quotient
+thresholds, and low-prefix experiments remain individually selectable but
+are not included in either named profile.
+
+### V3 profile qualification
+
+The two profiles were compared on all 287 natural DIV/REM consumers from the
+existing qualification corpus: 219 SPEAR inputs plus 68 broader consumers.
+Each input/profile pair used CaDiCaL, non-incremental mode, and a two-second
+internal budget. Order was alternated per input and repetition, and the
+complete run was repeated three times.
+
+| Repeat | Qualified solved | Aggressive solved | Common median, Q/A | Common total, Q/A |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 258 | 257 | 0.040 / 0.030 s | 17.36 / 17.71 s |
+| 2 | 258 | 257 | 0.030 / 0.030 s | 17.27 / 17.71 s |
+| 3 | 258 | 257 | 0.040 / 0.030 s | 17.30 / 17.61 s |
+
+There were no answer disagreements. Aggressive gained no solves, lost the
+same solve in every repetition, and took 1.8--2.5% more time over the common
+solves. The split explains why it is still a useful named experiment: both
+profiles solved all 219 SPEAR inputs, while aggressive reduced their common
+total by 3.6--6.3% in each repeat. On the other 68 consumers it solved 38
+against qualified's 39 and increased the 38 common-solve total from
+5.21--5.31 seconds to 6.15--6.33 seconds.
+
+On the lost `sin2.c.2.smt2` case, qualified solved in 1.18--1.21 seconds at a
+five-second budget; aggressive returned unknown after five seconds in all
+three repeats and solved in about 5.8 seconds when given ten. Its trace
+installed two 109-bit full recomposition facts early in the run.
+
+The measured decision is therefore to retain `qualified` as the default mask
+and round ceiling, while exposing `aggressive` as one reproducible opt-in
+experiment. Raw profile data, while the temporary directory survives, is in
+`/tmp/stp-cegar-v3-profile.zzNPXg`.
+
+Fresh `RelWithDebInfo` builds pass the complete test suites with both supported
+refinement backends: 170/170 with CaDiCaL and 169/169 with simplifying
+MiniSat.
 
 ## V2 hybrid delta
 
@@ -126,7 +209,8 @@ The named groups and their disposition are:
 | --- | --- | --- |
 | `base` | Schemas already present on merged master | yes |
 | `udiv15` | `DividendAboveShiftedDoubleQuotient` | no |
-| `udiv-extra` | Remaining non-base UDIV registry | no |
+| `udiv-observed` | Ranked imported UDIV facts beyond `base` and `udiv15` | no |
+| `udiv-extra` | Compatibility umbrella for `udiv-observed` and the unobserved UDIV tail | no |
 | `urem` | Enabled UREM registry | yes |
 | `mul8` | Zero product with an odd operand | no |
 | `mul-ref3` | `FactorAndProductNotOr` (`MulRef3`) alone | yes |
@@ -174,7 +258,7 @@ build/stp -s --bv-term-abstraction=1 input.smt2
 
 `-t` reports candidates, abstractions, refinement rounds, blocking lemmas,
 aggregate schema lemmas, and the exact partition of schema firings over the
-fifteen groups. `-s` prints each selected schema by name and the SAT/backend
+sixteen groups. `-s` prints each selected schema by name and the SAT/backend
 telemetry. The C counter API likewise exposes one counter for every group;
 the group counts always sum to the aggregate schema count.
 
@@ -237,17 +321,17 @@ DividendZero
 DivisorEqualsDividend
 DivisorLessOneAboveShiftedDividend
 DividendAboveShiftedDoubleQuotient       (UDIV15)
-UdivRef9
+QuotientNotNegatedAnd                    (UDIV ref9)
 DivisorAllOnes
-UdivRef14
-UdivRef33
-UdivRef16
-UdivRef17
-UdivRef12
-UdivRef26
-UdivRef19
-UdivRef18
-UdivRef27
+DividendAboveDoubledShiftedDivisor       (UDIV ref14)
+DividendNotTwiceQuotientPlusOr           (UDIV ref33)
+QuotientAboveDoubledShiftedDividend      (UDIV ref16)
+DividendAboveOrAndDoubledDivisor         (UDIV ref17)
+MaskedDividendAboveDivisorAndQuotient    (UDIV ref12)
+DividendAboveQuotientXorShifted          (UDIV ref26)
+ShiftedDividendNotOr                     (UDIV ref19)
+DividendAboveOrAndDoubledQuotient        (UDIV ref18)
+DividendAboveDivisorXorShifted           (UDIV ref27)
 UdivRef10, UdivRef11, UdivRef20, UdivRef21, UdivRef23,
 UdivRef24, UdivRef25, UdivRef28, UdivRef29, UdivRef30,
 UdivRef31, UdivRef32, UdivRef34, UdivRef36, UdivRef38
@@ -280,10 +364,12 @@ regression.
 The transcribed `RemLemma` registry contains 12 entries and enables 11:
 
 ```text
-UremRef2, UremRef4, UremRef5,
-UremRef6 (transcribed and tested, deliberately disabled),
-UremRef7, UremRef8, UremRef9, UremRef10, UremRef11,
-UremRef12, UremRef13, UremRef14
+DividendZero, DivisorEqualsDividend, DividendBelowDivisor,
+RemainderBelowDivisorDisabled (UREM ref6; tested but deliberately disabled),
+DividendWithinDivisorOrRemainder, DividendAboveRemainderOrAnd,
+RemainderOutsideOperandsNotOne, RemainderNotOrOfComplements,
+RemainderInOperandsAboveLowBit, DividendNotOrOfNegations,
+DifferenceAboveRemainder, XorAboveRemainder
 ```
 
 `UremRef6` is omitted from Bitwuzla's active registry. It is redundant in
@@ -312,7 +398,7 @@ There are 14 general `MulLemma` entries, each offered in both operand
 readings where applicable:
 
 ```text
-MulRef3, MulRefN3,
+FactorAndProductNotOr (MUL ref3), MulRefN3,
 MulRef1, MulRefN5, MulRefN6, MulRef14, MulRef15, MulRefN9,
 MulRef18, MulRefN11, MulRefN12, MulRefN13, MulRef13, MulRef12
 ```
@@ -351,19 +437,23 @@ different polarity behaviour.
 ### Paired division/remainder
 
 When syntactically identical operands occur in both
-`q = bvudiv(x, s)` and `r = bvurem(x, s)`, the refiner can assert:
+`q = bvudiv(x, s)` and `r = bvurem(x, s)`, the refiner can assert either:
 
 ```text
 low3(x) = low3(q*s + r)
+x = q*s + r                         (modulo 2^W)
 ```
 
-The pairing is by AST identity and width, not by candidate value. Only the
-low prefix is built. This relationship also holds for `s = 0`, because
+The pairing is by AST identity and width, not by candidate value. The first
+form is the inexpensive `divrem-pair` group; the second is the stronger
+`divrem-full` group. Both relationships also hold for `s = 0`, because
 SMT-LIB gives `q = ~0`, `r = x`, and therefore `q*0+r = x`.
 
 The shared fact is charged to both records' schema allowances. A violating
 pair receives this relationship before either member spends an individual
-schema or value-pair lemma in that round.
+schema or value-pair lemma in that round. Candidate reads and emitted clauses
+use each durable abstraction record's owned result variables, so pairing
+remains correct when an AST-keyed map points at a newer encoding epoch.
 
 ## Why the implementation is sound
 
@@ -406,9 +496,7 @@ the clauses and variables it described have been discarded.
 
 The main focused tests are:
 
-- `tests/unit-tests/BVDivLemma_Test.cpp`
-- `tests/unit-tests/BVRemLemma_Test.cpp`
-- `tests/unit-tests/BVMulLemma_Test.cpp`
+- `tests/unit-tests/BVAbstractionLemma_Test.cpp`
 - `tests/unit-tests/BVAddLemma_Test.cpp`
 - `tests/unit-tests/BVDivSchema_Test.cpp`
 - `tests/unit-tests/BVMultSchema_Test.cpp`

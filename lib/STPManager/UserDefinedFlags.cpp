@@ -47,7 +47,8 @@ const char* const GROUP_NAMES[] = {"base",
                                    "divrem-pair",
                                    "quotient-one-quot",
                                    "divisor-magnitude",
-                                   "divrem-full"};
+                                   "divrem-full",
+                                   "udiv-observed"};
 
 static_assert(sizeof(GROUP_NAMES) / sizeof(GROUP_NAMES[0]) ==
                   BV_SCHEMA_GROUP_COUNT,
@@ -175,6 +176,34 @@ std::string formatBVSchemaGroups(uint32_t mask)
       first = false;
     }
   return out.str();
+}
+
+bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
+                                   unsigned& rounds, std::string& error)
+{
+  uint32_t parsedMask;
+  unsigned parsedRounds;
+  if (text == "qualified")
+  {
+    parsedMask = BV_SCHEMA_GROUP_QUALIFIED;
+    parsedRounds = BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
+  }
+  else if (text == "aggressive")
+  {
+    parsedMask = BV_SCHEMA_GROUP_AGGRESSIVE;
+    parsedRounds = BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
+  }
+  else
+  {
+    error = "unknown BV term-abstraction profile '" + text +
+            "'; expected qualified or aggressive";
+    return false;
+  }
+
+  mask = parsedMask;
+  rounds = parsedRounds;
+  error.clear();
+  return true;
 }
 
 } // namespace stp

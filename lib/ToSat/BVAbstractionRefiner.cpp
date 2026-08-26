@@ -740,11 +740,6 @@ static unsigned trailingZeros(const std::vector<bool>& bits)
   return bits.size();
 }
 
-static bool anyBitSet(const std::vector<bool>& bits)
-{
-  return std::find(bits.begin(), bits.end(), true) != bits.end();
-}
-
 // Does the candidate's product agree with `other` shifted up by `shift`?
 static bool productIsShift(const std::vector<bool>& other, unsigned shift,
                            const std::vector<bool>& tBits)
@@ -845,22 +840,22 @@ bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
 }
 
 static const MulLemma MUL_LEMMAS[] = {
-    MulLemma::MulRef3,  // 5 firings in the ranking corpus
-    MulLemma::MulRefN3, // 4
+    MulLemma::FactorAndProductNotOr, // Bitwuzla MUL ref3; 5 firings
+    MulLemma::MulRefN3,              // 4
 
     // The unobserved tail in upstream registry order.
-    MulLemma::MulRef1,   MulLemma::MulRefN5,  MulLemma::MulRefN6,
-    MulLemma::MulRef14,  MulLemma::MulRef15,  MulLemma::MulRefN9,
-    MulLemma::MulRef18,  MulLemma::MulRefN11, MulLemma::MulRefN12,
-    MulLemma::MulRefN13, MulLemma::MulRef13,  MulLemma::MulRef12};
+    MulLemma::MulRef1, MulLemma::MulRefN5, MulLemma::MulRefN6,
+    MulLemma::MulRef14, MulLemma::MulRef15, MulLemma::MulRefN9,
+    MulLemma::MulRef18, MulLemma::MulRefN11, MulLemma::MulRefN12,
+    MulLemma::MulRefN13, MulLemma::MulRef13, MulLemma::MulRef12};
 
 static const unsigned MUL_LEMMA_COUNT =
     sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
 
 static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
 {
-  return lemma == MulLemma::MulRef3 ? BVSchemaGroup::MUL_REF3
-                                    : BVSchemaGroup::MUL_EXTRA;
+  return lemma == MulLemma::FactorAndProductNotOr ? BVSchemaGroup::MUL_REF3
+                                                  : BVSchemaGroup::MUL_EXTRA;
 }
 
 const MulLemma* mulLemmaTable(unsigned& count)
@@ -984,11 +979,10 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   static const unsigned zeroProductInstalled[2] = {
       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1};
-  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::MUL8) &&
-      !anyBitSet(tBits))
+  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::MUL8))
     for (unsigned i = 0; i < 2; ++i)
-      if ((installedSchemas & zeroProductInstalled[i]) == 0 && (*ops[i])[0] &&
-          anyBitSet(*ops[1 - i]))
+      if ((installedSchemas & zeroProductInstalled[i]) == 0 &&
+          !mul8PublishedHolds(*ops[i], *ops[1 - i], tBits))
         return {MulSchema::ZeroProductOddOperand, i, 0, 0, BVSchemaGroup::MUL8};
 
   // The remaining facts are unconditional but asymmetric expressions over a
@@ -1120,43 +1114,33 @@ static std::vector<bool> valueSubtract(const std::vector<bool>& left,
 // which round buys which fact, and buying the most productive first is the
 // cheapest guess available.
 static const DivLemma DIV_LEMMAS[] = {
-    DivLemma::DivisorAboveShiftedDividend,        // 280 firings
-    DivLemma::QuotientBelowNegatedDivisor,        // 200
-    DivLemma::DividendAboveNegatedAnd,            // 187
-    DivLemma::DividendZero,                       // 171
-    DivLemma::DivisorEqualsDividend,              // 162
-    DivLemma::DivisorLessOneAboveShiftedDividend, // 161
-    DivLemma::DividendAboveShiftedDoubleQuotient, // 125
-    DivLemma::UdivRef9,                            // 62
-    DivLemma::DivisorAllOnes,                     // 59
-    DivLemma::UdivRef14,                          // 54
-    DivLemma::UdivRef33,                          // 26
-    DivLemma::UdivRef16,                          // 14
-    DivLemma::UdivRef17,                          // 10
-    DivLemma::UdivRef12,                          // 9
-    DivLemma::UdivRef26,                          // 3
-    DivLemma::UdivRef19,                          // 3
-    DivLemma::UdivRef18,                          // 2
-    DivLemma::UdivRef27,                          // 2
+    DivLemma::DivisorAboveShiftedDividend,           // 280 firings
+    DivLemma::QuotientBelowNegatedDivisor,           // 200
+    DivLemma::DividendAboveNegatedAnd,               // 187
+    DivLemma::DividendZero,                          // 171
+    DivLemma::DivisorEqualsDividend,                 // 162
+    DivLemma::DivisorLessOneAboveShiftedDividend,    // 161
+    DivLemma::DividendAboveShiftedDoubleQuotient,    // 125
+    DivLemma::QuotientNotNegatedAnd,                 // ref9; 62
+    DivLemma::DivisorAllOnes,                        // 59
+    DivLemma::DividendAboveDoubledShiftedDivisor,    // ref14; 54
+    DivLemma::DividendNotTwiceQuotientPlusOr,        // ref33; 26
+    DivLemma::QuotientAboveDoubledShiftedDividend,   // ref16; 14
+    DivLemma::DividendAboveOrAndDoubledDivisor,      // ref17; 10
+    DivLemma::MaskedDividendAboveDivisorAndQuotient, // ref12; 9
+    DivLemma::DividendAboveQuotientXorShifted,       // ref26; 3
+    DivLemma::ShiftedDividendNotOr,                  // ref19; 3
+    DivLemma::DividendAboveOrAndDoubledQuotient,     // ref18; 2
+    DivLemma::DividendAboveDivisorXorShifted,        // ref27; 2
 
     // The remainder of Bitwuzla's enabled UDIV registry did not fire in the
     // profile used to rank the entries above. Keep source order for this
     // unranked tail so reconciliation against that registry stays mechanical.
-    DivLemma::UdivRef10,
-    DivLemma::UdivRef11,
-    DivLemma::UdivRef20,
-    DivLemma::UdivRef21,
-    DivLemma::UdivRef23,
-    DivLemma::UdivRef24,
-    DivLemma::UdivRef25,
-    DivLemma::UdivRef28,
-    DivLemma::UdivRef29,
-    DivLemma::UdivRef30,
-    DivLemma::UdivRef31,
-    DivLemma::UdivRef32,
-    DivLemma::UdivRef34,
-    DivLemma::UdivRef36,
-    DivLemma::UdivRef38};
+    DivLemma::UdivRef10, DivLemma::UdivRef11, DivLemma::UdivRef20,
+    DivLemma::UdivRef21, DivLemma::UdivRef23, DivLemma::UdivRef24,
+    DivLemma::UdivRef25, DivLemma::UdivRef28, DivLemma::UdivRef29,
+    DivLemma::UdivRef30, DivLemma::UdivRef31, DivLemma::UdivRef32,
+    DivLemma::UdivRef34, DivLemma::UdivRef36, DivLemma::UdivRef38};
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
@@ -1180,16 +1164,54 @@ static BVSchemaGroup divLemmaGroup(DivLemma lemma)
     case DivLemma::DivisorLessOneAboveShiftedDividend:
       return BVSchemaGroup::BASE;
 
+    case DivLemma::QuotientNotNegatedAnd:
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
+    case DivLemma::ShiftedDividendNotOr:
+    case DivLemma::DividendAboveQuotientXorShifted:
+    case DivLemma::DividendAboveDivisorXorShifted:
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+      return BVSchemaGroup::UDIV_OBSERVED;
+
     default:
       return BVSchemaGroup::UDIV_EXTRA;
   }
 }
 
+// UDIV_EXTRA was published by v2 as an umbrella for the complete non-base
+// registry. Keep that spelling source-compatible while allowing v3's new
+// UDIV_OBSERVED bit to select and account for only the ranked entries.
+static bool divLemmaGroupEnabled(uint32_t mask, BVSchemaGroup group)
+{
+  return bvSchemaGroupEnabled(mask, group) ||
+         (group == BVSchemaGroup::UDIV_OBSERVED &&
+          bvSchemaGroupEnabled(mask, BVSchemaGroup::UDIV_EXTRA));
+}
+
+static BVSchemaGroup divLemmaAccountingGroup(uint32_t mask, BVSchemaGroup group)
+{
+  if (group == BVSchemaGroup::UDIV_OBSERVED &&
+      !bvSchemaGroupEnabled(mask, BVSchemaGroup::UDIV_OBSERVED))
+    return BVSchemaGroup::UDIV_EXTRA;
+  return group;
+}
+
 static const RemLemma REM_LEMMAS[] = {
-    RemLemma::UremRef2,  RemLemma::UremRef4,  RemLemma::UremRef5,
-    RemLemma::UremRef6,  RemLemma::UremRef7,  RemLemma::UremRef8,
-    RemLemma::UremRef9,  RemLemma::UremRef10, RemLemma::UremRef11,
-    RemLemma::UremRef12, RemLemma::UremRef13, RemLemma::UremRef14};
+    RemLemma::DividendZero,
+    RemLemma::DivisorEqualsDividend,
+    RemLemma::DividendBelowDivisor,
+    RemLemma::RemainderBelowDivisorDisabled,
+    RemLemma::DividendWithinDivisorOrRemainder,
+    RemLemma::DividendAboveRemainderOrAnd,
+    RemLemma::RemainderOutsideOperandsNotOne,
+    RemLemma::RemainderNotOrOfComplements,
+    RemLemma::RemainderInOperandsAboveLowBit,
+    RemLemma::DividendNotOrOfNegations,
+    RemLemma::DifferenceAboveRemainder,
+    RemLemma::XorAboveRemainder};
 
 static const unsigned REM_LEMMA_COUNT =
     sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
@@ -1319,14 +1341,15 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
       const BVSchemaGroup group = divLemmaGroup(DIV_LEMMAS[i]);
-      if (!bvSchemaGroupEnabled(enabledGroups, group))
+      if (!divLemmaGroupEnabled(enabledGroups, group))
         continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
       if (!divLemmaApplicable(DIV_LEMMAS[i], width))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i, group};
+        return {DivSchema::Lemma, 0, i,
+                divLemmaAccountingGroup(enabledGroups, group)};
     }
 
     // Use the candidate divisor's highest set bit as a broad guard:

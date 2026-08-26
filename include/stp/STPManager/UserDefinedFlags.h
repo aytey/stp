@@ -53,6 +53,11 @@ enum class BVSchemaGroup : unsigned
   QUOTIENT_ONE_QUOT,
   DIVISOR_MAGNITUDE,
   DIVREM_FULL,
+  // The ranked Bitwuzla UDIV facts that fired on the qualification corpus.
+  // Appended so every existing public mask bit and coverage-counter ordinal
+  // remains stable. UDIV_EXTRA remains the compatibility umbrella that also
+  // enables these facts as well as the unobserved registry tail.
+  UDIV_OBSERVED,
   COUNT
 };
 
@@ -71,10 +76,32 @@ constexpr uint32_t BV_SCHEMA_GROUP_ALL =
 // schemas, the UREM registry that decides the wide ecrw cases, and MulRef3.
 // BV term abstraction itself remains off by default, so this profile only
 // matters when a caller explicitly enables that experiment.
-constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
+constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UREM) |
     bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
+
+constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT = BV_SCHEMA_GROUP_QUALIFIED;
+
+// A deliberately opt-in profile that combines the productive families from
+// the two CEGAR catalogues. The complete imported tails, open-ended quotient
+// thresholds, low-prefix experiments and ADD registry remain available as
+// individual groups, but are not smuggled into this profile without corpus
+// evidence.
+constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
+    bvSchemaGroupBit(BVSchemaGroup::BASE) |
+    bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
+    bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED) |
+    bvSchemaGroupBit(BVSchemaGroup::UREM) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL8) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL_REF3) |
+    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_REM) |
+    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
+    bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE) |
+    bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
+
+constexpr unsigned BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS = 32;
+constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 {
@@ -89,6 +116,12 @@ DLL_PUBLIC const char* bvSchemaGroupName(BVSchemaGroup group);
 DLL_PUBLIC bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
                                     std::string& error);
 DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
+
+// Parse one of the two measured mask/round pairs. Both outputs are left
+// unchanged on error, so callers cannot accidentally apply half a profile.
+DLL_PUBLIC bool parseBVTermAbstractionProfile(const std::string& text,
+                                              uint32_t& mask, unsigned& rounds,
+                                              std::string& error);
 
 /******************************************************************
  * Struct UserDefFlags:
@@ -509,7 +542,7 @@ public:
   // small cases were stably slower. Keep the established ceiling.
   //
   // A ceiling and no longer the allowance itself: see the divisor below.
-  unsigned bv_term_abstraction_rounds = 32;
+  unsigned bv_term_abstraction_rounds = BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
   // Optionally make that a rate instead: `width / this`, floored at one and
   // capped by the ceiling above. The argument for it is that a blocking
   // lemma rules out one pair of operand values, so what one is worth falls

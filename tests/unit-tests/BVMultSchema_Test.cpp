@@ -58,10 +58,10 @@ namespace
 const unsigned WIDTH = 4;
 const unsigned VALUES = 1u << WIDTH;
 
-std::vector<bool> bitsOf(unsigned value)
+std::vector<bool> bitsOf(unsigned value, unsigned width = WIDTH)
 {
-  std::vector<bool> bits(WIDTH);
-  for (unsigned i = 0; i < WIDTH; ++i)
+  std::vector<bool> bits(width);
+  for (unsigned i = 0; i < width; ++i)
     bits[i] = ((value >> i) & 1u) != 0;
   return bits;
 }
@@ -517,6 +517,34 @@ TEST(bv_mult_schema, AnOddOperandRefusesAWrongZeroProduct)
   EXPECT_NE(MulSchema::ZeroProductOddOperand, firstInstalled.schema);
 }
 
+// Keep the chooser's published shift expression independent of the compact
+// implication installed as CNF. The two must agree over every triple, and
+// the published expression must hold at the true truncated product.
+TEST(bv_mult_schema, ThePublishedMUL8PredicateMatchesItsImplication)
+{
+  for (unsigned width = 1; width <= 6; ++width)
+  {
+    const unsigned values = 1u << width;
+    const unsigned mask = values - 1;
+    for (unsigned x = 0; x < values; ++x)
+      for (unsigned s = 0; s < values; ++s)
+      {
+        const unsigned product = (x * s) & mask;
+        EXPECT_TRUE(mul8PublishedHolds(bitsOf(x, width), bitsOf(s, width),
+                                       bitsOf(product, width)))
+            << "width=" << width << " x=" << x << " s=" << s;
+        for (unsigned t = 0; t < values; ++t)
+        {
+          const bool implication = t != 0 || (x & 1u) == 0 || s == 0;
+          EXPECT_EQ(implication,
+                    mul8PublishedHolds(bitsOf(x, width), bitsOf(s, width),
+                                       bitsOf(t, width)))
+              << "width=" << width << " x=" << x << " s=" << s << " t=" << t;
+        }
+      }
+  }
+}
+
 // The compact implication circuit used by the refiner is equivalent to the
 // published shift expression's only nontrivial case, over every triple.
 TEST_F(BVMultSchemaTest, TheZeroProductCircuitAgreesWithThePredicate)
@@ -525,8 +553,10 @@ TEST_F(BVMultSchemaTest, TheZeroProductCircuitAgreesWithThePredicate)
     for (unsigned otherOperand = 0; otherOperand < VALUES; ++otherOperand)
       for (unsigned t = 0; t < VALUES; ++t)
       {
-        const bool want =
-            zeroProductOddOperandHolds(oddOperand, otherOperand, t);
+        const bool want = mul8PublishedHolds(bitsOf(oddOperand),
+                                             bitsOf(otherOperand), bitsOf(t));
+        EXPECT_EQ(want,
+                  zeroProductOddOperandHolds(oddOperand, otherOperand, t));
         ASSERT_EQ(want, zeroProductCircuitPermits(oddOperand, otherOperand, t))
             << "oddOperand=" << oddOperand << " otherOperand=" << otherOperand
             << " t=" << t;
