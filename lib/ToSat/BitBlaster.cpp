@@ -3551,12 +3551,27 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
   {
     case MulLemma::FactorUnchangedByMaskedShift:
     {
-      // s = s << (x & (1 >> t))
-      const BBNodeVec masked = BBShiftRightByVariable(one, t, width);
-      BBNodeVec amount(width);
-      for (unsigned i = 0; i < width; i++)
-        amount[i] = nf->CreateNode(AND, x[i], masked[i]);
-      return BBEQ(s, BBShiftLeftByVariable(s, amount, width));
+      // s = s << (x & (1 >> t)), built as the implication it is rather than
+      // as the shift it is written as.
+      //
+      // `1 >> t` is one exactly when the product is zero, so the shift
+      // amount is `x & 1`, and the claim is `s = s << 1` exactly when the
+      // product is zero and x is odd -- which in the ring is `s = 2s`, which
+      // is `s = 0`. Everywhere else the shift amount is zero and the fact
+      // says `s = s`. So the whole of it is
+      //
+      //   t != 0  or  x is even  or  s = 0
+      //
+      // which is three literals over two equalities and no barrel shifter,
+      // where the published form is two of them.
+      //
+      // This is a claim about two encodings being the same, and it is not
+      // taken on trust: the predicate beside this one is still the published
+      // shift expression, and the circuit test asks this circuit and that
+      // predicate about all 4096 triples at four bits and 512 at three.
+      const BBNodeVec zero = BBfill(width, BBFalse);
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(t, zero)),
+                            nf->CreateNode(NOT, x[0]), BBEQ(s, zero));
     }
 
     case MulLemma::FactorAndProductNotOr:
