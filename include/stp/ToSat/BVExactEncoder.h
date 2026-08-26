@@ -104,7 +104,7 @@ enum class DivLemma
   // x >=u ((s >> (s << t)) << 1)
   DividendAboveDoubledShiftedDivisor,
   // x != t + t + (x | s). The one fact here that is false at a width the
-  // abstraction can be asked for; see divLemmaMinWidth().
+  // abstraction can be asked for; see divLemmaApplicable().
   DividendNotTwiceQuotientPlusOr,
   // t >=u ((x >> s) << 1)
   QuotientAboveDoubledShiftedDividend,
@@ -123,7 +123,55 @@ enum class DivLemma
   // s <=u x <u 2s -> t = 1, which is the remainder fact of the same premise
   // read over a quotient: a divisor that fits the dividend exactly once
   // divides it exactly once.
-  QuotientIsOne
+  QuotientIsOne,
+
+  // The rest of the source's registry, which fired nothing where the facts
+  // above were measured. That is real evidence and not an absence of it --
+  // it says no candidate broke one of these without also breaking something
+  // ranked ahead of it -- but it is not proof they are useless, so they are
+  // here and behind `udiv-extra`, which is off.
+  //
+  // These keep the source's numbering rather than taking names. Every fact
+  // above says something a reader can follow, and its name says it; these
+  // are synthesised inequalities nobody derived by reasoning, so a name
+  // would be an invention dressed as a description, and the number is the
+  // only identifier that can be checked against anything. It is
+  // Bitwuzla's `LemmaKind::UDIVn`, and every one below was read out of
+  // `src/solver/abstract/abstraction_lemmas.cpp` rather than off a list.
+  //
+  // (s | t) != (x & ~1)
+  Udiv10,
+  // (s | 1) != (x & ~t)
+  Udiv11,
+  // s != ~(s >> (t >> 1))
+  Udiv20,
+  // x != ~(x & (t << 1)). Restricted; see divLemmaApplicable().
+  Udiv21,
+  // t >=u ((x << 1) >> s)
+  Udiv22,
+  // x >=u (s << ~(x | t))
+  Udiv23,
+  // x >=u (t << ~(x | s))
+  Udiv24,
+  // x >=u (s << ~(x ^ t))
+  Udiv27,
+  // x >=u (t << ~(x ^ s))
+  Udiv28,
+  // x != t + (s | (x + s))
+  Udiv29,
+  // x != t + (1 + (1 << x)). Restricted; see divLemmaApplicable().
+  Udiv30,
+  // s >=u ((x + t) >> t)
+  Udiv31,
+  // (s ^ (x | t)) >=u (t ^ 1). The strongest of the fifteen by a long way:
+  // it rules out 49.2% of the triples at six bits, which is more than every
+  // fact ranked ahead of it except `x >=u -((-s) & (-t))`.
+  Udiv33,
+  // t >=u (x >> (s - 1))
+  Udiv34,
+  // x != 1 - (x << (x - t)). Restricted, and not by a minimum; see
+  // divLemmaApplicable().
+  Udiv36
 };
 
 // Whether one of them holds of these three values. The refiner asks before
@@ -145,7 +193,17 @@ DLL_PUBLIC bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& xBits,
 // and the chooser skips a fact the abstraction in front of it is too narrow
 // for. A minimum is exact rather than cautious: the tests check that the fact
 // really does fail one bit below it.
-DLL_PUBLIC unsigned divLemmaMinWidth(DivLemma lemma);
+// Whether a fact may be evaluated or installed at this width.
+//
+// Almost every one is true at one bit and this answers yes. A handful are
+// not, and the source says which -- but not all of them in the same shape:
+// `x != 1 - (x << (x - t))` is true at one bit, false at two and true at
+// every width above, which no minimum can express. So the question asked
+// here and everywhere else is the general one, and the exhaustive sweep in
+// BVAbstractionLemma_Test is what holds the answers to it: a width this
+// admits is a width the fact is checked true at, and a width it refuses is
+// one the fact is checked false at.
+DLL_PUBLIC bool divLemmaApplicable(DivLemma lemma, unsigned width);
 
 DLL_PUBLIC const char* divLemmaName(DivLemma lemma);
 
@@ -185,7 +243,7 @@ enum class RemLemma
   RemainderNotOrOfComplements,
   // (t & (x | s)) >=u (t & 1)
   RemainderInOperandsAboveLowBit,
-  // x != (-x | -(~t)). Restricted; see remLemmaMinWidth().
+  // x != (-x | -(~t)). Restricted; see remLemmaApplicable().
   DividendNotOrOfNegations,
   // (x - s) >=u t
   DifferenceAboveRemainder,
@@ -201,7 +259,7 @@ DLL_PUBLIC bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& sBits,
                               const std::vector<bool>& tBits);
 
-DLL_PUBLIC unsigned remLemmaMinWidth(RemLemma lemma);
+DLL_PUBLIC bool remLemmaApplicable(RemLemma lemma, unsigned width);
 
 DLL_PUBLIC const char* remLemmaName(RemLemma lemma);
 
@@ -225,7 +283,7 @@ enum class MulLemma
   // then `s = s << 1` forces s to zero, which is what an odd factor and a
   // zero product mean.
   FactorUnchangedByMaskedShift,
-  // (x & t) != (s | ~t). Restricted; see mulLemmaMinWidth().
+  // (x & t) != (s | ~t). Restricted; see mulLemmaApplicable().
   FactorAndProductNotOr
 };
 
@@ -233,7 +291,7 @@ DLL_PUBLIC bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& xBits,
                               const std::vector<bool>& sBits,
                               const std::vector<bool>& tBits);
 
-DLL_PUBLIC unsigned mulLemmaMinWidth(MulLemma lemma);
+DLL_PUBLIC bool mulLemmaApplicable(MulLemma lemma, unsigned width);
 
 DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
 

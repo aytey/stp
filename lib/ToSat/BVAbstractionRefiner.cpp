@@ -825,7 +825,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
     const BVSchemaGroup group = mulLemmaGroup(MUL_LEMMAS[i]);
     if (!bvSchemaGroupEnabled(enabledGroups, group))
       continue;
-    if (width < mulLemmaMinWidth(MUL_LEMMAS[i]))
+    if (!mulLemmaApplicable(MUL_LEMMAS[i], width))
       continue;
     for (unsigned op = 0; op < 2; ++op)
     {
@@ -966,7 +966,27 @@ static const DivLemma DIV_LEMMAS[] = {
     DivLemma::DividendAboveQuotientXorShifted,       // 3
     DivLemma::ShiftedDividendNotOr,                  // 3
     DivLemma::DividendAboveOrAndDoubledQuotient,     // 2
-    DivLemma::DividendAboveDivisorXorShifted};       // 2
+    DivLemma::DividendAboveDivisorXorShifted,        // 2
+
+    // The rest of the source's registry, which fired nothing on the corpus
+    // the counts above come from and is behind `udiv-extra`, off. No count
+    // to sort by, so this tail keeps the source's own order and
+    // reconciliation against it stays mechanical.
+    DivLemma::Udiv10,
+    DivLemma::Udiv11,
+    DivLemma::Udiv20,
+    DivLemma::Udiv21,
+    DivLemma::Udiv22,
+    DivLemma::Udiv23,
+    DivLemma::Udiv24,
+    DivLemma::Udiv27,
+    DivLemma::Udiv28,
+    DivLemma::Udiv29,
+    DivLemma::Udiv30,
+    DivLemma::Udiv31,
+    DivLemma::Udiv33,
+    DivLemma::Udiv34,
+    DivLemma::Udiv36};
 
 static const unsigned DIV_LEMMA_COUNT =
     sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
@@ -1040,6 +1060,24 @@ static BVSchemaGroup divLemmaGroup(DivLemma lemma)
     case DivLemma::DividendAboveOrAndDoubledQuotient:
     case DivLemma::DividendAboveDivisorXorShifted:
       return BVSchemaGroup::UDIV;
+
+    // The imported tail that fired nothing.
+    case DivLemma::Udiv10:
+    case DivLemma::Udiv11:
+    case DivLemma::Udiv20:
+    case DivLemma::Udiv21:
+    case DivLemma::Udiv22:
+    case DivLemma::Udiv23:
+    case DivLemma::Udiv24:
+    case DivLemma::Udiv27:
+    case DivLemma::Udiv28:
+    case DivLemma::Udiv29:
+    case DivLemma::Udiv30:
+    case DivLemma::Udiv31:
+    case DivLemma::Udiv33:
+    case DivLemma::Udiv34:
+    case DivLemma::Udiv36:
+      return BVSchemaGroup::UDIV_EXTRA;
   }
   return BVSchemaGroup::BASE;
 }
@@ -1133,7 +1171,7 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
-      if (width < remLemmaMinWidth(REM_LEMMAS[i]))
+      if (!remLemmaApplicable(REM_LEMMAS[i], width))
         continue;
       if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i, group};
@@ -1159,11 +1197,10 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
-      // A fact the source marks as restricted is skipped where it does not
-      // hold rather than left out of the table: the width that reaches here
-      // is whatever --bv-abstraction-width was set to, and only one of these
-      // is restricted at all.
-      if (width < divLemmaMinWidth(DIV_LEMMAS[i]))
+      // A fact the source marks as restricted is skipped at the widths it
+      // does not hold at, rather than left out of the table: the width that
+      // reaches here is whatever --bv-abstraction-width was set to.
+      if (!divLemmaApplicable(DIV_LEMMAS[i], width))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
         return {DivSchema::Lemma, 0, i, group};

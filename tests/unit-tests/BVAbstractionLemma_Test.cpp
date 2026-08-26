@@ -90,7 +90,10 @@ const unsigned CIRCUIT_WIDTHS[2] = {3, 4};
 struct Fact
 {
   std::string name;
-  unsigned minWidth;
+  // Which widths the fact declares itself good for. A predicate rather than
+  // a minimum because one fact is true at one bit, false at two and true
+  // above, and a minimum cannot say that.
+  std::function<bool(unsigned)> applicable;
   std::function<bool(const std::vector<bool>&, const std::vector<bool>&,
                      const std::vector<bool>&)>
       holds;
@@ -135,7 +138,8 @@ std::vector<Family> families()
   {
     const DivLemma lemma = divTable[i];
     quotients.facts.push_back(
-        {divLemmaName(lemma), divLemmaMinWidth(lemma),
+        {divLemmaName(lemma),
+         [lemma](unsigned width) { return divLemmaApplicable(lemma, width); },
          [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
                  const std::vector<bool>& t) {
            return divLemmaHolds(lemma, x, s, t);
@@ -154,7 +158,8 @@ std::vector<Family> families()
   {
     const RemLemma lemma = remTable[i];
     remainders.facts.push_back(
-        {remLemmaName(lemma), remLemmaMinWidth(lemma),
+        {remLemmaName(lemma),
+         [lemma](unsigned width) { return remLemmaApplicable(lemma, width); },
          [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
                  const std::vector<bool>& t) {
            return remLemmaHolds(lemma, x, s, t);
@@ -173,7 +178,8 @@ std::vector<Family> families()
   {
     const MulLemma lemma = mulTable[i];
     products.facts.push_back(
-        {mulLemmaName(lemma), mulLemmaMinWidth(lemma),
+        {mulLemmaName(lemma),
+         [lemma](unsigned width) { return mulLemmaApplicable(lemma, width); },
          [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
                  const std::vector<bool>& t) {
            return mulLemmaHolds(lemma, x, s, t);
@@ -265,8 +271,10 @@ TEST(BVAbstractionLemma, every_lemma_is_true_of_the_operation)
 {
   for (const Family& family : families())
     for (const Fact& fact : family.facts)
-      for (unsigned width = fact.minWidth; width <= MAX_WIDTH; ++width)
+      for (unsigned width = 1; width <= MAX_WIDTH; ++width)
       {
+        if (!fact.applicable(width))
+          continue;
         const unsigned values = 1u << width;
         for (unsigned x = 0; x < values; x++)
           for (unsigned s = 0; s < values; s++)
@@ -280,30 +288,32 @@ TEST(BVAbstractionLemma, every_lemma_is_true_of_the_operation)
       }
 }
 
-// ... and the minimum each declares is the narrowest it is true of, not a
-// margin someone rounded up. A minimum that is too high costs a fact on
-// narrow abstractions for nothing; one that is too low is unsoundness, and
-// the sweep above would not see it.
-TEST(BVAbstractionLemma, a_declared_minimum_width_is_the_narrowest_that_works)
+// ... and a width a fact refuses is one it really is false at, not a margin
+// someone rounded up. A refusal that is too broad costs a fact on narrow
+// abstractions for nothing; one that is too narrow is unsoundness, and the
+// sweep above -- which only looks at the widths a fact admits -- would not
+// see it. Together the two tests pin the answer at every width from one to
+// MAX_WIDTH in both directions.
+TEST(BVAbstractionLemma, a_width_is_refused_exactly_where_the_fact_is_false)
 {
   for (const Family& family : families())
     for (const Fact& fact : family.facts)
-    {
-      if (fact.minWidth == 1)
-        continue;
+      for (unsigned width = 1; width <= MAX_WIDTH; ++width)
+      {
+        if (fact.applicable(width))
+          continue;
 
-      const unsigned width = fact.minWidth - 1;
-      const unsigned values = 1u << width;
-      bool broken = false;
-      for (unsigned x = 0; x < values && !broken; x++)
-        for (unsigned s = 0; s < values && !broken; s++)
-          broken = !fact.holds(bitsOf(x, width), bitsOf(s, width),
-                               bitsOf(family.reference(x, s, width), width));
+        const unsigned values = 1u << width;
+        bool broken = false;
+        for (unsigned x = 0; x < values && !broken; x++)
+          for (unsigned s = 0; s < values && !broken; s++)
+            broken = !fact.holds(bitsOf(x, width), bitsOf(s, width),
+                                 bitsOf(family.reference(x, s, width), width));
 
-      EXPECT_TRUE(broken)
-          << family.what << " " << fact.name << " declares a minimum of "
-          << fact.minWidth << " bits but is true of the operation at " << width;
-    }
+        EXPECT_TRUE(broken)
+            << family.what << " " << fact.name << " refuses " << width
+            << " bits but is true of the operation there";
+      }
 }
 
 // Each fact rules something out. One true of every triple would be sound and
@@ -338,7 +348,7 @@ TEST_F(BVAbstractionLemmaTest, the_circuit_agrees_with_the_predicate)
     for (const Family& family : families())
       for (const Fact& fact : family.facts)
       {
-        if (width < fact.minWidth)
+        if (!fact.applicable(width))
           continue;
         Circuit c = build(fact, width);
         for (unsigned x = 0; x < values; x++)

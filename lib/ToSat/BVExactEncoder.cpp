@@ -221,6 +221,11 @@ std::vector<bool> addOf(const std::vector<bool>& a, const std::vector<bool>& b)
   return r;
 }
 
+std::vector<bool> subOf(const std::vector<bool>& a, const std::vector<bool>& b)
+{
+  return addOf(a, negOf(b));
+}
+
 // The truncated product, as the abstraction's own result would hold it.
 std::vector<bool> mulOf(const std::vector<bool>& a, const std::vector<bool>& b)
 {
@@ -382,16 +387,106 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
     case DivLemma::QuotientIsOne:
       // s <=u x <u 2s -> t = 1
       return !fitsExactlyOnce(x, s) || t == one;
+
+    case DivLemma::Udiv10:
+      // (s | t) != (x & ~1)
+      return orOf(s, t) != andOf(x, notOf(one));
+
+    case DivLemma::Udiv11:
+    {
+      // (s | 1) != (x & ~t)
+      std::vector<bool> sOr1 = s;
+      sOr1[0] = true;
+      return sOr1 != andOf(x, notOf(t));
+    }
+
+    case DivLemma::Udiv20:
+      // s != ~(s >> (t >> 1))
+      return s != notOf(shrOf(s, shrOf(t, one)));
+
+    case DivLemma::Udiv21:
+      // x != ~(x & (t << 1))
+      return x != notOf(andOf(x, shlOf(t, one)));
+
+    case DivLemma::Udiv22:
+      // t >=u ((x << 1) >> s)
+      return ule(shrOf(shlOf(x, one), s), t);
+
+    case DivLemma::Udiv23:
+      // x >=u (s << ~(x | t))
+      return ule(shlOf(s, notOf(orOf(x, t))), x);
+
+    case DivLemma::Udiv24:
+      // x >=u (t << ~(x | s))
+      return ule(shlOf(t, notOf(orOf(x, s))), x);
+
+    case DivLemma::Udiv27:
+      // x >=u (s << ~(x ^ t))
+      return ule(shlOf(s, notOf(xorOf(x, t))), x);
+
+    case DivLemma::Udiv28:
+      // x >=u (t << ~(x ^ s))
+      return ule(shlOf(t, notOf(xorOf(x, s))), x);
+
+    case DivLemma::Udiv29:
+      // x != t + (s | (x + s))
+      return x != addOf(t, orOf(s, addOf(x, s)));
+
+    case DivLemma::Udiv30:
+      // x != t + (1 + (1 << x))
+      return x != addOf(t, addOf(one, shlOf(one, x)));
+
+    case DivLemma::Udiv31:
+      // s >=u ((x + t) >> t)
+      return ule(shrOf(addOf(x, t), t), s);
+
+    case DivLemma::Udiv33:
+      // (s ^ (x | t)) >=u (t ^ 1)
+      return ule(xorOf(t, one), xorOf(s, orOf(x, t)));
+
+    case DivLemma::Udiv34:
+      // t >=u (x >> (s - 1))
+      return ule(shrOf(x, decOf(s)), t);
+
+    case DivLemma::Udiv36:
+      // x != 1 - (x << (x - t))
+      return x != subOf(one, shlOf(x, subOf(x, t)));
   }
   return true;
 }
 
-unsigned divLemmaMinWidth(DivLemma lemma)
+bool divLemmaApplicable(DivLemma lemma, unsigned width)
 {
-  // `x != t + t + (x | s)` is false at one bit: x = 1, s = 0 gives the
-  // totalised quotient t = 1, and 1 + 1 + (1 | 0) is 1. Everything else here
-  // is true at every width, checked exhaustively to eight bits.
-  return (lemma == DivLemma::DividendNotTwiceQuotientPlusOr) ? 2 : 1;
+  switch (lemma)
+  {
+    // `x != t + t + (x | s)` is false at one bit: x = 1, s = 0 gives the
+    // totalised quotient t = 1, and 1 + 1 + (1 | 0) is 1.
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+    // `x != ~(x & (t << 1))` is false at one bit: x = 1 over s = 1 gives
+    // t = 1, `t << 1` clears, and ~(1 & 0) is 1.
+    case DivLemma::Udiv21:
+      return width > 1;
+
+    // `x != t + (1 + (1 << x))` is false at one and two bits.
+    case DivLemma::Udiv30:
+      return width > 2;
+
+    // The one restriction that is not a minimum. At two bits x = 1 over
+    // s = 0 gives the totalised quotient t = 3, so `x - t` is 2, the shift
+    // clears the vector, and `1 - 0` is the x the fact says it is not. At
+    // one bit and at three and above it is true, so a minimum of three
+    // would give up a width the fact is good for -- and the sweep in
+    // BVAbstractionLemma_Test would not notice, because it only ever looks
+    // upward from what is declared here.
+    case DivLemma::Udiv36:
+      return width != 2;
+
+    // Everything else is true at every width, checked exhaustively to eight
+    // bits. A fact added here and forgotten is claimed at every width, and
+    // the sweep is what catches it.
+    default:
+      return true;
+  }
 }
 
 const char* divLemmaName(DivLemma lemma)
@@ -432,6 +527,21 @@ const char* divLemmaName(DivLemma lemma)
     case DivLemma::DividendAboveDivisorXorShifted:
       return "dividend-above-divisor-xor-shifted";
     case DivLemma::QuotientIsOne: return "quotient-is-one";
+    case DivLemma::Udiv10: return "udiv10";
+    case DivLemma::Udiv11: return "udiv11";
+    case DivLemma::Udiv20: return "udiv20";
+    case DivLemma::Udiv21: return "udiv21";
+    case DivLemma::Udiv22: return "udiv22";
+    case DivLemma::Udiv23: return "udiv23";
+    case DivLemma::Udiv24: return "udiv24";
+    case DivLemma::Udiv27: return "udiv27";
+    case DivLemma::Udiv28: return "udiv28";
+    case DivLemma::Udiv29: return "udiv29";
+    case DivLemma::Udiv30: return "udiv30";
+    case DivLemma::Udiv31: return "udiv31";
+    case DivLemma::Udiv33: return "udiv33";
+    case DivLemma::Udiv34: return "udiv34";
+    case DivLemma::Udiv36: return "udiv36";
   }
   return "unknown";
 }
@@ -497,12 +607,12 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
   return true;
 }
 
-unsigned remLemmaMinWidth(RemLemma lemma)
+bool remLemmaApplicable(RemLemma lemma, unsigned width)
 {
   // `x != (-x | -(~t))` is false at one and two bits -- at two, x = 2 over
   // s = 3 leaves the remainder t = 2, and -2 | -(~2) is 2. Everything else
   // here is true at every width, checked exhaustively to eight bits.
-  return (lemma == RemLemma::DividendNotOrOfNegations) ? 3 : 1;
+  return lemma != RemLemma::DividendNotOrOfNegations || width > 2;
 }
 
 const char* remLemmaName(RemLemma lemma)
@@ -552,12 +662,12 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
   return true;
 }
 
-unsigned mulLemmaMinWidth(MulLemma lemma)
+bool mulLemmaApplicable(MulLemma lemma, unsigned width)
 {
   // `(x & t) != (s | ~t)` is false at one bit, where the product is the
   // conjunction and x = s = t = 1 satisfies both sides. It is true at every
   // width above, checked exhaustively to eight bits.
-  return (lemma == MulLemma::FactorAndProductNotOr) ? 2 : 1;
+  return lemma != MulLemma::FactorAndProductNotOr || width > 1;
 }
 
 bool divModIdentityHolds(const std::vector<bool>& x,

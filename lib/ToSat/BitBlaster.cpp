@@ -3311,6 +3311,102 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       // s <=u x <u 2s -> t = 1
       return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
                             BBEQ(t, one));
+
+    // The registry tail. Written with the expression builders rather than a
+    // loop apiece, so each line can be read against the fact above it.
+
+    case DivLemma::Udiv10:
+      // (s | t) != (x & ~1)
+      return nf->CreateNode(NOT, BBEQ(BBOr(s, t), BBAnd(x, BBNeg(one))));
+
+    case DivLemma::Udiv11:
+    {
+      // (s | 1) != (x & ~t)
+      BBNodeVec sOrOne = s;
+      sOrOne[0] = BBTrue;
+      return nf->CreateNode(NOT, BBEQ(sOrOne, BBAnd(x, BBNeg(t))));
+    }
+
+    case DivLemma::Udiv20:
+    {
+      // s != ~(s >> (t >> 1))
+      BBNodeVec half = t;
+      BBRShift(half, 1);
+      return nf->CreateNode(
+          NOT, BBEQ(s, BBNeg(BBShiftRightByVariable(s, half, width))));
+    }
+
+    case DivLemma::Udiv21:
+    {
+      // x != ~(x & (t << 1))
+      BBNodeVec doubled = t;
+      BBLShift(doubled, 1);
+      return nf->CreateNode(NOT, BBEQ(x, BBNeg(BBAnd(x, doubled))));
+    }
+
+    case DivLemma::Udiv22:
+    {
+      // t >=u ((x << 1) >> s)
+      BBNodeVec doubled = x;
+      BBLShift(doubled, 1);
+      return BBBVLE(BBShiftRightByVariable(doubled, s, width), t, false);
+    }
+
+    case DivLemma::Udiv23:
+      // x >=u (s << ~(x | t))
+      return BBBVLE(BBShiftLeftByVariable(s, BBNeg(BBOr(x, t)), width), x,
+                    false);
+
+    case DivLemma::Udiv24:
+      // x >=u (t << ~(x | s))
+      return BBBVLE(BBShiftLeftByVariable(t, BBNeg(BBOr(x, s)), width), x,
+                    false);
+
+    case DivLemma::Udiv27:
+      // x >=u (s << ~(x ^ t))
+      return BBBVLE(BBShiftLeftByVariable(s, BBNeg(BBXor(x, t)), width), x,
+                    false);
+
+    case DivLemma::Udiv28:
+      // x >=u (t << ~(x ^ s))
+      return BBBVLE(BBShiftLeftByVariable(t, BBNeg(BBXor(x, s)), width), x,
+                    false);
+
+    case DivLemma::Udiv29:
+      // x != t + (s | (x + s))
+      return nf->CreateNode(NOT, BBEQ(x, BBAdd(t, BBOr(s, BBAdd(x, s)))));
+
+    case DivLemma::Udiv30:
+      // x != t + (1 + (1 << x))
+      return nf->CreateNode(
+          NOT,
+          BBEQ(x, BBAdd(t, BBAdd(one, BBShiftLeftByVariable(one, x, width)))));
+
+    case DivLemma::Udiv31:
+      // s >=u ((x + t) >> t)
+      return BBBVLE(BBShiftRightByVariable(BBAdd(x, t), t, width), s, false);
+
+    case DivLemma::Udiv33:
+      // (s ^ (x | t)) >=u (t ^ 1)
+      return BBBVLE(BBXor(t, one), BBXor(s, BBOr(x, t)), false);
+
+    case DivLemma::Udiv34:
+    {
+      // t >=u (x >> (s - 1))
+      BBNodeVec sMinusOne = s;
+      BBSub(sMinusOne, one, support);
+      return BBBVLE(BBShiftRightByVariable(x, sMinusOne, width), t, false);
+    }
+
+    case DivLemma::Udiv36:
+    {
+      // x != 1 - (x << (x - t))
+      BBNodeVec xMinusT = x;
+      BBSub(xMinusT, t, support);
+      BBNodeVec difference = one;
+      BBSub(difference, BBShiftLeftByVariable(x, xMinusT, width), support);
+      return nf->CreateNode(NOT, BBEQ(x, difference));
+    }
   }
 
   FatalError("BBDivLemma: unknown lemma");
