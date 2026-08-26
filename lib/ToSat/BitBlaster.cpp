@@ -2190,6 +2190,43 @@ BBNodeVec BitBlaster::BBUminus(const BBNodeVec& x)
   return BBInc(xneg);
 }
 
+// Bitwise and/or/xor and the truncated sum, written as expressions so a fact
+// quoted as `x >=u ((x | t) & (s << 1))` can be built in that shape.
+BBNodeVec BitBlaster::BBAnd(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(AND, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBOr(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(OR, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBXor(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result(x.size());
+  for (unsigned i = 0; i < x.size(); ++i)
+    result[i] = nf->CreateNode(XOR, x[i], y[i]);
+  return result;
+}
+
+BBNodeVec BitBlaster::BBAdd(const BBNodeVec& x, const BBNodeVec& y)
+{
+  assert(x.size() == y.size());
+  BBNodeVec result = x;
+  BBPlus2(result, y, nf->getFalse());
+  return result;
+}
+
 // AND each bit of vector y with single bit b and return the result.
 BBNodeVec BitBlaster::BBAndBit(const BBNodeVec& y,
                                BBNode b)

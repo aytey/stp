@@ -109,6 +109,10 @@ public:
   // default spelling.
   std::string cnf_effort = "auto";
 
+  // ... and for the schema-family mask, whose default spelling is derived
+  // from the mask rather than written out, so the two cannot disagree.
+  std::string bv_schema_groups = formatBVSchemaGroups(BV_SCHEMA_GROUP_DEFAULT);
+
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
   bool interactive = false;
@@ -385,6 +389,14 @@ void ExtraMain::create_options()
            "before falling back on ruling out the one pair the candidate "
            "holds",
            refinement_group);
+  app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
+                 "comma-separated families of algebraic facts the option "
+                 "above may offer: base, udiv, urem, mul6, mul8, "
+                 "divisor-magnitude, quotient-one, divrem-identity, "
+                 "udiv-extra, mul-extra, add; 'all' takes every family "
+                 "implemented and 'none' takes none, and both stand alone")
+      ->group(refinement_group)
+      ->capture_default_str();
   app.add_option("--bv-term-abstraction-rounds",
                  bm->UserFlags.bv_term_abstraction_rounds,
                  "ceiling on the blocking lemmas one abstracted "
@@ -976,6 +988,18 @@ int ExtraMain::parse_options(int argc, char** argv)
                  "very-high."
               << std::endl;
     return -1;
+  }
+
+  {
+    std::string error;
+    if (!parseBVSchemaGroups(bv_schema_groups,
+                             bm->UserFlags.bv_term_abstraction_schema_groups,
+                             error))
+    {
+      std::cerr << "ERROR: --bv-term-abstraction-schema-groups: " << error
+                << std::endl;
+      return -1;
+    }
   }
 
   int selected_type = 0;

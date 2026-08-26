@@ -545,6 +545,19 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_SCHEMAS:
       b->UserFlags.bv_term_abstraction_schemas = param_value != 0;
       break;
+    // A mask rather than a boolean, so it is checked against the published
+    // bits rather than against zero: a caller built on a later header can
+    // name a family this library has never heard of, and quietly enabling
+    // whatever bit happens to sit there would be worse than refusing.
+    case BV_TERM_ABSTRACTION_SCHEMA_GROUPS:
+      if (param_value < 0 ||
+          (static_cast<uint32_t>(param_value) & ~stp::BV_SCHEMA_GROUP_ALL) != 0)
+        reportCAPIError("BV_TERM_ABSTRACTION_SCHEMA_GROUPS takes a bitwise OR "
+                        "of bv_schema_group_t values");
+      else
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            static_cast<uint32_t>(param_value);
+      break;
     case BV_TERM_ABSTRACTION_INC_BITBLAST:
       b->UserFlags.bv_term_abstraction_inc_bitblast = param_value != 0;
       break;
@@ -925,6 +938,31 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_REFINEMENT_ROUNDS: return c.bv_refinement_rounds;
     case STP_COUNTER_BV_BLOCKING_LEMMAS: return c.bv_blocking_lemmas;
     case STP_COUNTER_BV_SCHEMA_LEMMAS: return c.bv_schema_lemmas;
+
+    // The published ordinals are contiguous from STP_COUNTER_BV_SCHEMA_BASE
+    // and in BVSchemaGroup order, so this is one subtraction rather than
+    // eleven cases -- and the static assertion below is what keeps that
+    // true when a family is appended.
+    case STP_COUNTER_BV_SCHEMA_BASE:
+    case STP_COUNTER_BV_SCHEMA_UDIV:
+    case STP_COUNTER_BV_SCHEMA_UREM:
+    case STP_COUNTER_BV_SCHEMA_MUL6:
+    case STP_COUNTER_BV_SCHEMA_MUL8:
+    case STP_COUNTER_BV_SCHEMA_DIVISOR_MAGNITUDE:
+    case STP_COUNTER_BV_SCHEMA_QUOTIENT_ONE:
+    case STP_COUNTER_BV_SCHEMA_DIVREM_IDENTITY:
+    case STP_COUNTER_BV_SCHEMA_UDIV_EXTRA:
+    case STP_COUNTER_BV_SCHEMA_MUL_EXTRA:
+    case STP_COUNTER_BV_SCHEMA_ADD:
+    {
+      static_assert(STP_COUNTER_BV_SCHEMA_ADD - STP_COUNTER_BV_SCHEMA_BASE +
+                            1 ==
+                        (int)stp::BV_SCHEMA_GROUP_COUNT,
+                    "the published per-group counters are out of step with "
+                    "BVSchemaGroup");
+      return c.bv_schema_group_lemmas[counter - STP_COUNTER_BV_SCHEMA_BASE];
+    }
+
     case STP_COUNTER_UF_APPLICATIONS_LOWERED:
       return c.uf_applications_lowered;
     case STP_COUNTER_UF_CONSTRAINTS_INSTALLED:

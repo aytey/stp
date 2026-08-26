@@ -150,7 +150,8 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
 MulSchemaChoice choose(unsigned a, unsigned b, unsigned t,
                        unsigned installed = 0)
 {
-  return chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), installed);
+  return chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), installed,
+                         BV_SCHEMA_GROUP_ALL);
 }
 
 } // namespace

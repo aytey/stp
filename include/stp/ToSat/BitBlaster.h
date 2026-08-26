@@ -99,6 +99,16 @@ class BitBlaster
   // Unary minus
   BBNodeVec BBUminus(const BBNodeVec& x);
 
+  // Bitwise and/or/xor, and the truncated sum, as expressions rather than as
+  // in-place mutations of a result vector. The abstraction facts are quoted
+  // from a source that writes them as nested terms, and transcribing them is
+  // where the mistakes live; a builder that reads like the term it is
+  // building removes a whole class of them.
+  BBNodeVec BBAnd(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBOr(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBXor(const BBNodeVec& x, const BBNodeVec& y);
+  BBNodeVec BBAdd(const BBNodeVec& x, const BBNodeVec& y);
+
   // Multiply.
   BBNodeVec BBMult(const BBNodeVec& x, const BBNodeVec& y,
                         BBNodeSet& support, const ASTNode& n);

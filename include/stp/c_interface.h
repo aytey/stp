@@ -530,8 +530,48 @@ enum ifaceflag_t
   //! libstp, so the published prefix has to stay put -- the same rule
   //! tests/api/C/counter-enum-abi.cpp keeps for stp_counter_t.
   //!
-  CNF_AUTO_THRESHOLD
+  CNF_AUTO_THRESHOLD,
 
+  //! \brief Which families of algebraic facts BV_TERM_ABSTRACTION_SCHEMAS
+  //! may offer.
+  //!
+  //! `param_value` is a bitwise OR of bv_schema_group_t values; zero selects
+  //! none, which reaches the operation's own fallback exactly as turning the
+  //! master switch off does. A negative value, or one with a bit outside the
+  //! published set, is refused with a nonfatal diagnostic and leaves the
+  //! mask unchanged -- a caller does not get half of what it asked for.
+  //!
+  //! Appended for the reason above it. This is the C API's way to reach
+  //! --bv-term-abstraction-schema-groups.
+  //!
+  BV_TERM_ABSTRACTION_SCHEMA_GROUPS
+
+};
+
+//! \brief The bits BV_TERM_ABSTRACTION_SCHEMA_GROUPS accepts.
+//!
+//! One per family of facts, in the same order as the command-line names.
+//! DEFAULT is what an explicitly enabled abstraction inherits -- every
+//! family measured to pay for its refinement rounds; ALL adds the three
+//! imported for completeness and measured not to.
+enum bv_schema_group_t
+{
+  STP_BV_SCHEMA_GROUP_BASE = 1 << 0,
+  STP_BV_SCHEMA_GROUP_UDIV = 1 << 1,
+  STP_BV_SCHEMA_GROUP_UREM = 1 << 2,
+  STP_BV_SCHEMA_GROUP_MUL6 = 1 << 3,
+  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 4,
+  STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 5,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE = 1 << 6,
+  STP_BV_SCHEMA_GROUP_DIVREM_IDENTITY = 1 << 7,
+  STP_BV_SCHEMA_GROUP_UDIV_EXTRA = 1 << 8,
+  STP_BV_SCHEMA_GROUP_MUL_EXTRA = 1 << 9,
+  STP_BV_SCHEMA_GROUP_ADD = 1 << 10,
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 11) - 1,
+  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_ALL &
+                                ~(STP_BV_SCHEMA_GROUP_UDIV_EXTRA |
+                                  STP_BV_SCHEMA_GROUP_MUL_EXTRA |
+                                  STP_BV_SCHEMA_GROUP_ADD)
 };
 
 //! \brief Sets the given interface flag for the given validity checker to param_value.
@@ -799,7 +839,23 @@ enum stp_counter_t
   //! both counters. Other abstraction kinds increment the pass counter
   //! without incrementing either lemma counter, so the two lemma counts do
   //! not partition STP_COUNTER_BV_REFINEMENT_ROUNDS.
-  STP_COUNTER_BV_SCHEMA_LEMMAS = 17
+  STP_COUNTER_BV_SCHEMA_LEMMAS = 17,
+
+  //! The same total partitioned by the family the fact came from, in
+  //! bv_schema_group_t order, so a mixed run can be attributed without
+  //! parsing diagnostic text. These eleven sum to
+  //! STP_COUNTER_BV_SCHEMA_LEMMAS exactly.
+  STP_COUNTER_BV_SCHEMA_BASE = 18,
+  STP_COUNTER_BV_SCHEMA_UDIV = 19,
+  STP_COUNTER_BV_SCHEMA_UREM = 20,
+  STP_COUNTER_BV_SCHEMA_MUL6 = 21,
+  STP_COUNTER_BV_SCHEMA_MUL8 = 22,
+  STP_COUNTER_BV_SCHEMA_DIVISOR_MAGNITUDE = 23,
+  STP_COUNTER_BV_SCHEMA_QUOTIENT_ONE = 24,
+  STP_COUNTER_BV_SCHEMA_DIVREM_IDENTITY = 25,
+  STP_COUNTER_BV_SCHEMA_UDIV_EXTRA = 26,
+  STP_COUNTER_BV_SCHEMA_MUL_EXTRA = 27,
+  STP_COUNTER_BV_SCHEMA_ADD = 28
 };
 
 //! \brief Reads one of the counters above.

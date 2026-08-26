@@ -135,6 +135,10 @@ struct MulSchemaChoice
   // an index into the table the refiner keeps. `operand` says which of the
   // multiplication's operands plays the `x` of the fact.
   unsigned lemmaIndex = 0;
+  // Which family the chosen fact belongs to, so the refinement can charge
+  // its counter without a second classification that could disagree with
+  // the one the chooser already made.
+  BVSchemaGroup group = BVSchemaGroup::BASE;
 };
 
 // Bits of BVTermAbstraction::installedSchemas. Only the two unconditional
@@ -160,7 +164,8 @@ enum
 DLL_PUBLIC MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           uint64_t installedSchemas);
+                                           uint64_t installedSchemas,
+                                           uint32_t enabledGroups);
 
 // The algebraic facts an abstracted BVDIV or BVMOD is refined with.
 //
@@ -312,6 +317,8 @@ struct DivSchemaChoice
   // table for this record's kind. Held as an index rather than the enum so
   // one field serves both tables.
   unsigned lemmaIndex = 0;
+  // Which family the chosen fact belongs to; see MulSchemaChoice::group.
+  BVSchemaGroup group = BVSchemaGroup::BASE;
 };
 
 // Where each bit of the result comes from once a schema has fixed the
@@ -339,7 +346,8 @@ DLL_PUBLIC DivSchemaChoice chooseDivSchema(Kind opKind,
                                            const std::vector<bool>& aBits,
                                            const std::vector<bool>& bBits,
                                            const std::vector<bool>& tBits,
-                                           uint64_t installedSchemas);
+                                           uint64_t installedSchemas,
+                                           uint32_t enabledGroups);
 
 // A variable that holds exactly when `lv <= rv`. Shared by the comparison
 // refinement, which is where it comes from, and by the division bounds,

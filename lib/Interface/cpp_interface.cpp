@@ -1160,6 +1160,19 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
                 << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
                 << " blocking=" << c.bv_blocking_lemmas
                 << " schema=" << c.bv_schema_lemmas << std::endl;
+      // The schema total again, split by the family each fact came from.
+      // Printed only where a schema fired at all, so an ordinary run is not
+      // given a line of zeroes -- and printed even for the families that are
+      // off, because "this family fired nothing" and "this family was not
+      // offered" are answered by the same line read against the mask.
+      if (c.bv_schema_lemmas != 0)
+      {
+        std::cerr << "Abstraction schema families:";
+        for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; i++)
+          std::cerr << " " << bvSchemaGroupName((BVSchemaGroup)i) << "="
+                    << c.bv_schema_group_lemmas[i];
+        std::cerr << std::endl;
+      }
     }
   }
 

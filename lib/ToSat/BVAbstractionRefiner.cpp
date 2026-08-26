@@ -742,12 +742,30 @@ const MulLemma* mulLemmaTable(unsigned& count)
   return MUL_LEMMAS;
 }
 
+// Which family each fact belongs to. Written as a switch with no default so
+// that a fact added to the enum and forgotten here is a compile error rather
+// than a lemma silently charged to `base` and silently enabled with it.
+static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
+{
+  switch (lemma)
+  {
+    case MulLemma::FactorUnchangedByMaskedShift: return BVSchemaGroup::MUL8;
+    case MulLemma::FactorAndProductNotOr: return BVSchemaGroup::MUL6;
+  }
+  return BVSchemaGroup::BASE;
+}
+
 MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                uint64_t installedSchemas)
+                                uint64_t installedSchemas,
+                                uint32_t enabledGroups)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
+
+  // The four schemas below are what merged master already had, so they move
+  // together under one name.
+  const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
 
   // a = 2^k -> t = b << k, and the same read the other way round. Where it
   // applies it says the most of the four: the shift *is* the product for
@@ -756,7 +774,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // applies -- this is only ever called over a candidate whose product is
   // already known wrong, and for a power-of-two operand "wrong" and
   // "disagrees with the shift" are the same statement.
-  for (unsigned i = 0; i < 2; ++i)
+  for (unsigned i = 0; base && i < 2; ++i)
   {
     const int k = powerOfTwoExponent(*ops[i]);
     if (k >= 0 && !productIsShift(*ops[1 - i], (unsigned)k, tBits))
@@ -766,7 +784,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
   // excluded by name: that covers the minimum signed value, which is its own
   // negation and which the schema above has already taken.
-  for (unsigned i = 0; i < 2; ++i)
+  for (unsigned i = 0; base && i < 2; ++i)
   {
     if (powerOfTwoExponent(*ops[i]) >= 0)
       continue;
@@ -782,7 +800,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   static const uint64_t tzInstalled[2] = {
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0,
       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1};
-  for (unsigned pass = 0; pass < 2; ++pass)
+  for (unsigned pass = 0; base && pass < 2; ++pass)
   {
     const unsigned i = 1 - pass;
     if ((installedSchemas & tzInstalled[i]) != 0)
@@ -794,7 +812,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   }
 
   // t[0] = a[0] & b[0].
-  if ((installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
+  if (base && (installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
       tBits[0] != (aBits[0] && bBits[0]))
     return {MulSchema::Odd, 0, 0, 0};
 
@@ -804,6 +822,9 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   const unsigned width = (unsigned)tBits.size();
   for (unsigned i = 0; i < MUL_LEMMA_COUNT; ++i)
   {
+    const BVSchemaGroup group = mulLemmaGroup(MUL_LEMMAS[i]);
+    if (!bvSchemaGroupEnabled(enabledGroups, group))
+      continue;
     if (width < mulLemmaMinWidth(MUL_LEMMAS[i]))
       continue;
     for (unsigned op = 0; op < 2; ++op)
@@ -811,7 +832,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       if ((installedSchemas & mulLemmaInstalledBit(i, op)) != 0)
         continue;
       if (!mulLemmaHolds(MUL_LEMMAS[i], *ops[op], *ops[1 - op], tBits))
-        return {MulSchema::Lemma, op, 0, i};
+        return {MulSchema::Lemma, op, 0, i, group};
     }
   }
 
@@ -900,6 +921,15 @@ static std::vector<bool> shiftedRight(const std::vector<bool>& bits,
   return out;
 }
 
+// Every schema lemma is counted here and nowhere else, so the total and its
+// partition cannot drift: a family that forgets to charge itself shows up as
+// a total that no longer equals the sum, which a test checks.
+static void countSchemaLemma(STPMgr* bm, BVSchemaGroup group)
+{
+  bm->UserFlags.coverage.bv_schema_lemmas++;
+  bm->UserFlags.coverage.bv_schema_group_lemmas[(unsigned)group]++;
+}
+
 static bool valueIsZero(const std::vector<bool>& bits)
 {
   for (unsigned i = 0; i < bits.size(); ++i)
@@ -978,26 +1008,88 @@ const RemLemma* remLemmaTable(unsigned& count)
   return REM_LEMMAS;
 }
 
+// Which family each fact belongs to, as for the product facts above: a
+// switch with no default, so a new fact has to say where it goes.
+static BVSchemaGroup divLemmaGroup(DivLemma lemma)
+{
+  switch (lemma)
+  {
+    // What merged master already had.
+    case DivLemma::DividendZero:
+    case DivLemma::DivisorEqualsDividend:
+    case DivLemma::DivisorAllOnes:
+    case DivLemma::QuotientBelowNegatedDivisor:
+    case DivLemma::DividendAboveNegatedAnd:
+    case DivLemma::DivisorAboveShiftedDividend:
+    case DivLemma::DivisorLessOneAboveShiftedDividend:
+      return BVSchemaGroup::BASE;
+
+    // Ours, and paired with the remainder reading of the same premise.
+    case DivLemma::QuotientIsOne: return BVSchemaGroup::QUOTIENT_ONE;
+
+    // The rest of the imported facts that fired on the ranking corpus.
+    case DivLemma::DividendAboveShiftedDoubleQuotient:
+    case DivLemma::QuotientNotNegatedAnd:
+    case DivLemma::DividendAboveDoubledShiftedDivisor:
+    case DivLemma::DividendNotTwiceQuotientPlusOr:
+    case DivLemma::QuotientAboveDoubledShiftedDividend:
+    case DivLemma::DividendAboveOrAndDoubledDivisor:
+    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
+    case DivLemma::DividendAboveQuotientXorShifted:
+    case DivLemma::ShiftedDividendNotOr:
+    case DivLemma::DividendAboveOrAndDoubledQuotient:
+    case DivLemma::DividendAboveDivisorXorShifted:
+      return BVSchemaGroup::UDIV;
+  }
+  return BVSchemaGroup::BASE;
+}
+
+static BVSchemaGroup remLemmaGroup(RemLemma lemma)
+{
+  switch (lemma)
+  {
+    case RemLemma::RemainderIsDifference: return BVSchemaGroup::QUOTIENT_ONE;
+
+    case RemLemma::DividendZero:
+    case RemLemma::DivisorEqualsDividend:
+    case RemLemma::DividendBelowDivisor:
+    case RemLemma::DividendWithinDivisorOrRemainder:
+    case RemLemma::DividendAboveRemainderOrAnd:
+    case RemLemma::RemainderOutsideOperandsNotOne:
+    case RemLemma::RemainderNotOrOfComplements:
+    case RemLemma::RemainderInOperandsAboveLowBit:
+    case RemLemma::DividendNotOrOfNegations:
+    case RemLemma::DifferenceAboveRemainder:
+    case RemLemma::XorAboveRemainder:
+      return BVSchemaGroup::UREM;
+  }
+  return BVSchemaGroup::UREM;
+}
+
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
-                                uint64_t installedSchemas)
+                                uint64_t installedSchemas,
+                                uint32_t enabledGroups)
 {
   const unsigned width = (unsigned)tBits.size();
   const bool divisorZero = valueIsZero(bBits);
+  // The divisor-value schemas and the three bounds are what merged master
+  // already had, so they move together.
+  const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
 
   // The divisor-guarded facts first, where they apply: each says what the
   // operation *is* for that divisor, which is more than any bound can say.
   // Zero is not a power of two, so the two never contend and the order
   // between them is a formality.
-  if (divisorZero)
+  if (base && divisorZero)
   {
     const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
     if (!resultMatchesSources(divSchemaSources(opKind, width, choice), aBits,
                               tBits))
       return choice;
   }
-  else
+  else if (base)
   {
     const int k = powerOfTwoExponent(bBits);
     if (k >= 0)
@@ -1018,13 +1110,15 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   {
     // r <=u a, with no premise at all -- it holds over a zero divisor too,
     // where the remainder is the dividend.
-    if ((installedSchemas &
+    if (base &&
+        (installedSchemas &
          DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND) == 0 &&
         !valueLessOrEqual(tBits, aBits))
       return {DivSchema::RemainderAtMostDividend, 0};
 
     // b != 0 -> r <u b.
-    if ((installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR) ==
+    if (base &&
+        (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR) ==
             0 &&
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
@@ -1034,19 +1128,23 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // only the table differs.
     for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
     {
+      const BVSchemaGroup group = remLemmaGroup(REM_LEMMAS[i]);
+      if (!bvSchemaGroupEnabled(enabledGroups, group))
+        continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
       if (width < remLemmaMinWidth(REM_LEMMAS[i]))
         continue;
       if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i};
+        return {DivSchema::Lemma, 0, i, group};
     }
   }
   else if (opKind == BVDIV)
   {
     // b != 0 -> t <=u a, which is the shift bound below at k = 0 and is kept
     // separate because it is the one reading of it that needs no shift.
-    if ((installedSchemas &
+    if (base &&
+        (installedSchemas &
          DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND) == 0 &&
         !divisorZero && !valueLessOrEqual(tBits, aBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
@@ -1056,6 +1154,9 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // every one of them is about `t = a udiv b`.
     for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
     {
+      const BVSchemaGroup group = divLemmaGroup(DIV_LEMMAS[i]);
+      if (!bvSchemaGroupEnabled(enabledGroups, group))
+        continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
       // A fact the source marks as restricted is skipped where it does not
@@ -1065,7 +1166,7 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
       if (width < divLemmaMinWidth(DIV_LEMMAS[i]))
         continue;
       if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i};
+        return {DivSchema::Lemma, 0, i, group};
     }
 
     // Last of all, b >=u 2^k -> t <=u (a >> k), at the largest k the guard
@@ -1092,9 +1193,12 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     //
     // A zero divisor has no top bit and the fact says nothing about it.
     const int top = divisorZero ? -1 : topSetBit(bBits);
-    if (top >= 1 && divShiftBoundsLeft(installedSchemas) &&
+    if (bvSchemaGroupEnabled(enabledGroups,
+                             BVSchemaGroup::DIVISOR_MAGNITUDE) &&
+        top >= 1 && divShiftBoundsLeft(installedSchemas) &&
         !valueLessOrEqual(tBits, shiftedRight(aBits, (unsigned)top)))
-      return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0};
+      return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0,
+              BVSchemaGroup::DIVISOR_MAGNITUDE};
   }
 
   return DivSchemaChoice();
@@ -1723,11 +1827,14 @@ unsigned BVAbstractionRefiner::refineTerms(
           (schemaLimit == 0 || abs.schemaRounds < schemaLimit);
       if (schemaAllowance)
       {
+        const uint32_t groups =
+            bm->UserFlags.bv_term_abstraction_schema_groups;
         if (abs.opKind == BVMULT)
-          schema = chooseMulSchema(aBits, bBits, actual, abs.installedSchemas);
+          schema = chooseMulSchema(aBits, bBits, actual, abs.installedSchemas,
+                                   groups);
         else
           divSchema = chooseDivSchema(abs.opKind, aBits, bBits, actual,
-                                      abs.installedSchemas);
+                                      abs.installedSchemas, groups);
       }
 
       incDivMul.push_back({idx, std::move(aBits), std::move(bBits),
@@ -1753,7 +1860,9 @@ unsigned BVAbstractionRefiner::refineTerms(
   //
   // Installed once per pair and never revisited: it is unconditional, so no
   // later candidate can contradict it.
-  if (bm->UserFlags.bv_term_abstraction_schemas)
+  if (bm->UserFlags.bv_term_abstraction_schemas &&
+      bvSchemaGroupEnabled(bm->UserFlags.bv_term_abstraction_schema_groups,
+                           BVSchemaGroup::DIVREM_IDENTITY))
   {
     std::unordered_map<ASTNode, size_t, ASTNode::ASTNodeHasher,
                        ASTNode::ASTNodeEqual>
@@ -1805,7 +1914,7 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodedResultBitsOf(r, nodeToSATVar));
 
       q.divModIdentity = r.divModIdentity = true;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm, BVSchemaGroup::DIVREM_IDENTITY);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVDIV/BVMOD division-identity lemma"
                   << std::endl;
@@ -2017,7 +2126,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm, inc.divSchema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
                   << (inc.divSchema.schema != DivSchema::Lemma
@@ -2090,7 +2199,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
-      bm->UserFlags.coverage.bv_schema_lemmas++;
+      countSchemaLemma(bm, inc.schema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVMULT "
                   << (inc.schema.schema == MulSchema::Lemma

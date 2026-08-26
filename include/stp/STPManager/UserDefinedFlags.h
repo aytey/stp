@@ -25,10 +25,98 @@ THE SOFTWARE.
 #define UDEFFLAGS_H
 
 #include "stp/Sat/SearchBias.h"
+#include "stp/Util/Attributes.h"
 #include <cstdint>
+#include <string>
 
 namespace stp
 {
+
+// The families of algebraic facts BV term abstraction may refine with, as a
+// mask the caller can turn on and off a family at a time.
+//
+// Every fact behind this mask is a theorem, and every one of them is tested
+// as such. What the mask decides is not soundness but whether a family pays
+// for the refinement rounds it spends, and that is a question about a corpus
+// rather than about the fact -- so the answer belongs to whoever is running
+// the corpus, not to the source file.
+//
+// The grain is a family and not a lemma on purpose. A public option per fact
+// would publish an ordering that is an implementation detail, and there are
+// sixty of them; a family is the unit the measurements actually distinguish.
+//
+// The ordinal is also the coverage-counter index, so appending is safe and
+// reordering is not.
+enum class BVSchemaGroup : unsigned
+{
+  // Everything merged master already had: the divisor-value schemas, the
+  // three bounds, the four product schemas, and the seven division facts of
+  // the first round.
+  BASE = 0,
+  // The further Bitwuzla UDIV facts that fired on the ranking corpus.
+  UDIV,
+  // The Bitwuzla UREM registry.
+  UREM,
+  // MUL6, `(x & t) != (s | ~t)`.
+  MUL6,
+  // MUL8, `t = 0 and x odd -> s = 0`.
+  MUL8,
+  // `b >=u 2^k -> t <=u (a >> k)`, the divisor-magnitude bound.
+  DIVISOR_MAGNITUDE,
+  // `s <=u x <u 2s`, over both the quotient and the remainder.
+  QUOTIENT_ONE,
+  // `x = t*s + r` across a BVDIV and the BVMOD beside it.
+  DIVREM_IDENTITY,
+  // The UDIV facts Bitwuzla ships that fired nothing on the ranking corpus.
+  UDIV_EXTRA,
+  // The rest of Bitwuzla's general MUL registry.
+  MUL_EXTRA,
+  // Bitwuzla's ADD registry.
+  ADD,
+  COUNT
+};
+
+constexpr unsigned BV_SCHEMA_GROUP_COUNT =
+    static_cast<unsigned>(BVSchemaGroup::COUNT);
+
+constexpr uint32_t bvSchemaGroupBit(BVSchemaGroup group)
+{
+  return uint32_t{1} << static_cast<unsigned>(group);
+}
+
+constexpr uint32_t BV_SCHEMA_GROUP_ALL =
+    (uint32_t{1} << BV_SCHEMA_GROUP_COUNT) - 1;
+
+// What an explicitly enabled BV term abstraction inherits: everything that
+// has been measured to pay, which is everything except the three families
+// imported for completeness and measured not to.
+//
+// Over the 219 `QF_BV/spear` files that actually abstract a division, the
+// three off by default cost 62% more refinement rounds and install three
+// times the schema lemmas; the eight on by default settle those files in
+// 1063 rounds and 209 blocking lemmas against 1915 and 3525 with no schemas
+// at all. `--bv-term-abstraction-schema-groups=all` is the setting that
+// reproduces the complete imported stack.
+constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
+    BV_SCHEMA_GROUP_ALL & ~(bvSchemaGroupBit(BVSchemaGroup::UDIV_EXTRA) |
+                            bvSchemaGroupBit(BVSchemaGroup::MUL_EXTRA) |
+                            bvSchemaGroupBit(BVSchemaGroup::ADD));
+
+constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
+{
+  return (mask & bvSchemaGroupBit(group)) != 0;
+}
+
+DLL_PUBLIC const char* bvSchemaGroupName(BVSchemaGroup group);
+
+// Parse the comma-separated command-line spelling. `all` and `none` are
+// aliases for the complete and the empty mask and have to stand alone.
+// Whitespace and repeats are accepted; a malformed list is rejected without
+// changing `mask` at all, so a caller that ignores the return value is left
+// with what it had rather than with half of what it asked for.
+DLL_PUBLIC bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
+                                    std::string& error);
+DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
 
 /******************************************************************
  * Struct UserDefFlags:
@@ -601,6 +689,11 @@ public:
   // their keep against.
   bool bv_term_abstraction_schemas = true;
 
+  // Which families of them the switch above may offer -- see BVSchemaGroup.
+  // The master switch still wins: turning it off reaches the operation's own
+  // fallback whatever this holds, and so does an empty mask.
+  uint32_t bv_term_abstraction_schema_groups = BV_SCHEMA_GROUP_DEFAULT;
+
   // You can select these with any combination you want of true & false.
   bool division_variant_1 = true;
   bool division_variant_2 = true;
@@ -905,6 +998,12 @@ public:
     // interchangeable: the same number of each says very different things
     // about how a query was decided.
     uint64_t bv_schema_lemmas = 0;
+    // The same total, partitioned by BVSchemaGroup, so a run can be
+    // attributed to a family without parsing diagnostic text -- which is
+    // what deciding whether a family pays needs. Every schema lemma
+    // increments the total above and exactly one entry here, so the entries
+    // sum to the total and a mismatch is a bug rather than a rounding.
+    uint64_t bv_schema_group_lemmas[BV_SCHEMA_GROUP_COUNT] = {};
     // Uninterpreted-function applications the lowering decided, and the
     // constraints it installed for them.
     uint64_t uf_applications_lowered = 0;

@@ -184,7 +184,8 @@ TEST(BVDivSchema, chosen_schema_is_valid_for_every_dividend)
         for (unsigned t = 0; t < VALUES; t++)
         {
           const DivSchemaChoice choice =
-              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                              BV_SCHEMA_GROUP_ALL);
           if (choice.schema == DivSchema::None)
             continue;
 
@@ -213,7 +214,8 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
         for (unsigned t = 0; t < VALUES; t++)
         {
           const DivSchemaChoice choice =
-              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                              BV_SCHEMA_GROUP_ALL);
           if (choice.schema == DivSchema::None)
             continue;
 
@@ -279,7 +281,8 @@ TEST(BVDivSchema, correct_candidates_choose_nothing)
       {
         const unsigned t = reference(opKind, a, b);
         const DivSchemaChoice choice =
-            chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+            chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                              BV_SCHEMA_GROUP_ALL);
         ASSERT_EQ(choice.schema, DivSchema::None)
             << "a correct " << _kind_names[opKind] << " candidate at a=" << a
             << " b=" << b << " was offered a schema";
@@ -299,7 +302,8 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
           if (t == reference(opKind, a, b))
             continue;
           const DivSchemaChoice choice =
-              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                              BV_SCHEMA_GROUP_ALL);
           if (choice.schema != DivSchema::None)
             continue;
 
@@ -546,7 +550,8 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
         for (unsigned t = 0; t < VALUES; t++)
         {
           const DivSchemaChoice choice =
-              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), all);
+              chooseDivSchema(opKind, bitsOf(a), bitsOf(b), bitsOf(t), all,
+                              BV_SCHEMA_GROUP_ALL);
           ASSERT_TRUE(choice.schema == DivSchema::None ||
                       namesADivisor(choice.schema) ||
                       choice.schema == DivSchema::DivisorAtLeastPow2)
@@ -562,7 +567,8 @@ TEST(BVDivSchemaBounds, a_named_divisor_outranks_a_bound)
   // BVMOD, dividend 3, divisor 2 = 2^1: the remainder is 1, and a candidate
   // holding 7 breaks both the power-of-two schema and both bounds.
   const DivSchemaChoice choice =
-      chooseDivSchema(BVMOD, bitsOf(3), bitsOf(2), bitsOf(7), 0);
+      chooseDivSchema(BVMOD, bitsOf(3), bitsOf(2), bitsOf(7), 0,
+                              BV_SCHEMA_GROUP_ALL);
   EXPECT_EQ(choice.schema, DivSchema::Pow2Divisor);
   EXPECT_EQ(choice.shift, 1u);
 }
@@ -711,7 +717,8 @@ TEST(BVDivSchemaBounds, the_shift_bound_is_chosen_at_the_divisors_top_bit)
       for (unsigned t = 0; t < VALUES; t++)
       {
         const DivSchemaChoice choice =
-            chooseDivSchema(BVDIV, bitsOf(a), bitsOf(b), bitsOf(t), 0);
+            chooseDivSchema(BVDIV, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                              BV_SCHEMA_GROUP_ALL);
         if (choice.schema != DivSchema::DivisorAtLeastPow2)
           continue;
         ASSERT_EQ((int)choice.shift, topBit(b))
