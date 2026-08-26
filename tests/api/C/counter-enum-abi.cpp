@@ -89,6 +89,9 @@ TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
   EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_BASE));
 }
 
+static_assert(STP_COUNTER_BV_EXACT_ESCALATIONS == 33,
+              "the escalation counters must follow the per-family block");
+
 TEST(c_counter_enum_abi, PublishedInterfaceFlagOrdinalsRemainStable)
 {
   EXPECT_EQ(21, static_cast<int>(BV_TERM_ABSTRACTION_MULT));

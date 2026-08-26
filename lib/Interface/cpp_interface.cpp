@@ -1165,6 +1165,18 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
       // given a line of zeroes -- and printed even for the families that are
       // off, because "this family fired nothing" and "this family was not
       // offered" are answered by the same line read against the mask.
+      // The escalations, which are the counter that says whether any of the
+      // above was worth doing. Printed whenever the abstraction took an
+      // operation at all, including zero -- "nothing escalated" is the
+      // result worth seeing, and an absent line does not say it.
+      if (c.bv_abstracted[UserDefinedFlags::ABSTRACT_MULT] != 0 ||
+          c.bv_abstracted[UserDefinedFlags::ABSTRACT_DIVMOD] != 0)
+        std::cerr << "Abstraction escalations: exact=" << c.bv_exact_escalations
+                  << " mult=" << c.bv_exact_escalations_mult
+                  << " divmod=" << c.bv_exact_escalations_divmod
+                  << " clauses=" << c.bv_exact_clauses
+                  << " vars=" << c.bv_exact_variables << std::endl;
+
       if (c.bv_schema_lemmas != 0)
       {
         std::cerr << "Abstraction schema families:";

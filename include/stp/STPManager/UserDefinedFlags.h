@@ -1098,6 +1098,27 @@ public:
     // increments the total above and exactly one entry here, so the entries
     // sum to the total and a mismatch is a bug rather than a rounding.
     uint64_t bv_schema_group_lemmas[BV_SCHEMA_GROUP_COUNT] = {};
+    // Refinements that gave up and installed the operation's exact circuit,
+    // and what that circuit cost.
+    //
+    // These are the counters that say whether the abstraction is working, as
+    // opposed to how busy it is. A round, a blocking lemma and a schema
+    // lemma all measure effort spent trying; an escalation measures the
+    // attempt being abandoned, and the clauses and variables measure what
+    // was paid for abandoning it. A query where the abstraction is a loss
+    // looks exactly like one where it is a win until you know how many of
+    // its operations ended up encoded exactly anyway -- and then it looks
+    // like what it is, the exact encoding plus the refinement that failed to
+    // avoid it.
+    //
+    // Split by operation because the two are not the same trade: an exact
+    // multiplier is affordable and an exact divider is not, so the same
+    // count means different things.
+    uint64_t bv_exact_escalations = 0;
+    uint64_t bv_exact_escalations_mult = 0;
+    uint64_t bv_exact_escalations_divmod = 0;
+    uint64_t bv_exact_clauses = 0;
+    uint64_t bv_exact_variables = 0;
     // Uninterpreted-function applications the lowering decided, and the
     // constraints it installed for them.
     uint64_t uf_applications_lowered = 0;

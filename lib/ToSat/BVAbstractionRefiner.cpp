@@ -2828,10 +2828,26 @@ unsigned BVAbstractionRefiner::refineTerms(
         }
       }
 
+      // What the exact encoding costs, measured rather than inferred: the
+      // solver's own clause and variable counts across the call.
+      const uint64_t exactClausesBefore = solver.submittedClauses();
+      const uint32_t exactVariablesBefore = solver.nVars();
+
       BVExactEncoder(bm).encode(solver, encodeAs, upto, aVars, bVars,
                                 resultVars);
       abs.blastedBits = upto;
       abs.defined = (upto == W);
+
+      {
+        UserDefinedFlags::EncodingCoverage& c = bm->UserFlags.coverage;
+        c.bv_exact_escalations++;
+        if (abs.opKind == BVMULT)
+          c.bv_exact_escalations_mult++;
+        else
+          c.bv_exact_escalations_divmod++;
+        c.bv_exact_clauses += solver.submittedClauses() - exactClausesBefore;
+        c.bv_exact_variables += solver.nVars() - exactVariablesBefore;
+      }
 
       if (bm->UserFlags.stats_flag)
       {

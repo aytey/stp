@@ -876,7 +876,22 @@ enum stp_counter_t
   STP_COUNTER_BV_SCHEMA_QUOTIENT_THRESHOLDS = 29,
   STP_COUNTER_BV_SCHEMA_LOW_PREFIX = 30,
   STP_COUNTER_BV_SCHEMA_DIVREM_PREFIX = 31,
-  STP_COUNTER_BV_SCHEMA_UREM7 = 32
+  STP_COUNTER_BV_SCHEMA_UREM7 = 32,
+
+  //! Refinements that abandoned the abstraction and installed the
+  //! operation's exact circuit, split by operation family, and what those
+  //! circuits cost in clauses and variables.
+  //!
+  //! Everything above counts effort spent refining. These count refinement
+  //! giving up, which is the number that says whether the effort paid: a
+  //! query whose operations all end up encoded exactly has paid for the
+  //! exact encoding *and* the search that failed to avoid it. Appended, as
+  //! every counter here is.
+  STP_COUNTER_BV_EXACT_ESCALATIONS = 33,
+  STP_COUNTER_BV_EXACT_ESCALATIONS_MULT = 34,
+  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD = 35,
+  STP_COUNTER_BV_EXACT_CLAUSES = 36,
+  STP_COUNTER_BV_EXACT_VARIABLES = 37
 };
 
 //! \brief Reads one of the counters above.

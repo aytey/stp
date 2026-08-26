@@ -967,6 +967,14 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
       return c.bv_schema_group_lemmas[counter - STP_COUNTER_BV_SCHEMA_BASE];
     }
 
+    case STP_COUNTER_BV_EXACT_ESCALATIONS: return c.bv_exact_escalations;
+    case STP_COUNTER_BV_EXACT_ESCALATIONS_MULT:
+      return c.bv_exact_escalations_mult;
+    case STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD:
+      return c.bv_exact_escalations_divmod;
+    case STP_COUNTER_BV_EXACT_CLAUSES: return c.bv_exact_clauses;
+    case STP_COUNTER_BV_EXACT_VARIABLES: return c.bv_exact_variables;
+
     case STP_COUNTER_UF_APPLICATIONS_LOWERED:
       return c.uf_applications_lowered;
     case STP_COUNTER_UF_CONSTRAINTS_INSTALLED:
