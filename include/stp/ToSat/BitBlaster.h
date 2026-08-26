@@ -459,6 +459,11 @@ public:
     unsigned width;
     bool operandNegated[3] = {false, false, false};
     int condCISymbolIndex = -1;
+    // The result inputs this record was filed with, carried across rather
+    // than looked up later by AST identity. symbolToBBNode holds one vector
+    // per node, so it can only ever name the newest registration; a record
+    // that names its own inputs is right whatever that map says.
+    std::vector<int> resultCISymbolIndices;
   };
 
 private:

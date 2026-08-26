@@ -3715,6 +3715,14 @@ struct IncrementalSolver::Impl
       }
       a.numOperands = raw.numOperands;
       a.width = raw.width;
+      // The record's own result inputs, so the check never has to ask
+      // symbolToBBNode which result this term has; see resultSATVars.
+      a.resultSATVars.reserve(raw.resultCISymbolIndices.size());
+      for (const int index : raw.resultCISymbolIndices)
+      {
+        assert(index >= 0);
+        a.resultSATVars.push_back(abstractionVarOf(index));
+      }
       if (raw.condCISymbolIndex >= 0)
         a.condSATVar = abstractionVarOf(raw.condCISymbolIndex);
       encodeAbstractionNode(a.termNode);

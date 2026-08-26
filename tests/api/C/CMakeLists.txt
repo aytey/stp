@@ -25,6 +25,7 @@
 AddSTPGTest(array-cvcl-02.cpp)
 AddSTPGTest(array-equality-retired-after-pop.cpp)
 AddSTPGTest(bv-abstraction-array-candidate-is-bound.cpp)
+AddSTPGTest(bv-abstraction-incremental-model.cpp)
 AddSTPGTest(cnf-effort-flag.cpp)
 AddSTPGTest(incremental-scoped-preprocessing.cpp)
 AddSTPGTest(counter-enum-abi.cpp)

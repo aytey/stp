@@ -316,6 +316,16 @@ struct BVTermAbstraction
   ASTNode operands[3];
   unsigned numOperands;
   unsigned width;
+  // The variables of this record's own free result bits, so that the check
+  // does not have to ask an AST-keyed map which result a term has. Filled by
+  // the persistent incremental path; the batch path leaves it empty and is
+  // resolved through nodeToSATVar as it always was.
+  //
+  // The blaster abstracts a term at most once, so the map answers correctly
+  // today. This holds the refinement to the stronger statement anyway: a
+  // record is checked against the inputs it was filed with, whatever else
+  // has since been registered under the same node.
+  std::vector<unsigned> resultSATVars;
   bool operandNegated[3] = {false, false, false};
   unsigned condSATVar = BV_ABSTRACTION_NO_VAR;
   bool defined = false;
