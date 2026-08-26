@@ -415,16 +415,6 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION_MULT,
 
-  //! ... and whether it covers BVDIV and BVMOD, which used to share the flag
-  //! above.
-  //!
-  //! They are not the same decision: what the abstraction saves is the
-  //! circuit it does not build, and a divider is far dearer than a
-  //! multiplier. `param_value` nonzero includes them (the default). This is
-  //! the C API's way to reach --bv-term-abstraction-divmod.
-  //!
-  BV_TERM_ABSTRACTION_DIVMOD,
-
   //! How many blocking lemmas one abstracted BVMULT, BVDIV or BVMOD may take
   //! before its refinement encodes the operation exactly instead of ruling
   //! out further operand pairs (default 32).
@@ -544,7 +534,26 @@ enum ifaceflag_t
   //! Appended for the reason above it. This is the C API's way to reach
   //! --bv-term-abstraction-schema-groups.
   //!
-  BV_TERM_ABSTRACTION_SCHEMA_GROUPS
+  BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
+
+  //! \brief Whether BV_TERM_ABSTRACTION covers BVDIV and BVMOD, which used
+  //! to share BV_TERM_ABSTRACTION_MULT.
+  //!
+  //! They are not the same decision: what the abstraction saves is the
+  //! circuit it does not build, and a divider is far dearer than a
+  //! multiplier. `param_value` nonzero includes them (the default). This is
+  //! the C API's way to reach --bv-term-abstraction-divmod.
+  //!
+  //! It belongs beside BV_TERM_ABSTRACTION_MULT by subject and is here
+  //! instead, for the reason CNF_AUTO_THRESHOLD is: these are integers a
+  //! caller compiles into its binary before loading a newer libstp, so a
+  //! flag inserted among them silently renumbers every one after it. This
+  //! one was inserted, and the consequence was not theoretical -- a client
+  //! built against master's headers and run against this library set
+  //! INCREMENTAL_PIECE_REWRITING when it asked for CNF_AUTO_THRESHOLD, with
+  //! no diagnostic. Subject order is worth nothing against that.
+  //!
+  BV_TERM_ABSTRACTION_DIVMOD
 
 };
 

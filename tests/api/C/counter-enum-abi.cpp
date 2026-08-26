@@ -50,9 +50,35 @@ static_assert(STP_COUNTER_BV_SCHEMA_BASE == 18,
               "the per-family schema counters must start where they always "
               "have");
 
-// ... and the flag enum, which grew the same way and for the same reason.
-static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS >
-                  BV_TERM_ABSTRACTION_SCHEMAS,
+// ... and ifaceflag_t, which is the same ABI and the same rule, pinned the
+// same way.
+//
+// It was not pinned before, and a flag was inserted into the middle of it --
+// twice, past a review that added the assertions above and reasoned about
+// append-versus-insert while doing so. What the counter enum had and this
+// one did not was a test. So this one names ordinals rather than asserting
+// an ordering between two of them: an ordering is satisfied by an insertion
+// anywhere below it, which is exactly what happened.
+//
+// A published flag whose number moves silently redirects a caller compiled
+// against an older header to a different flag. There is no diagnostic for
+// it and no way for the caller to notice.
+static_assert(BV_TERM_ABSTRACTION_MULT == 21,
+              "the published BV term abstraction flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_VALUE_DIVISOR == 24,
+              "an interface flag was inserted, not appended");
+static_assert(CNF_GENERATION_EFFORT == 26,
+              "an interface flag was inserted, not appended");
+static_assert(INCREMENTAL_PIECE_REWRITING == 28,
+              "an interface flag was inserted, not appended");
+static_assert(CNF_AUTO_THRESHOLD == 29,
+              "an interface flag was inserted, not appended");
+
+// The two this branch appends. Their own ordinals are pinned as well, so
+// that a later flag has to go after them rather than between them.
+static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS == 30,
+              "new interface flags must be appended, not inserted");
+static_assert(BV_TERM_ABSTRACTION_DIVMOD == 31,
               "new interface flags must be appended, not inserted");
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
@@ -61,4 +87,15 @@ TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
   EXPECT_EQ(16, static_cast<int>(STP_COUNTER_UF_CONSTRAINTS_INSTALLED));
   EXPECT_EQ(17, static_cast<int>(STP_COUNTER_BV_SCHEMA_LEMMAS));
   EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_BASE));
+}
+
+TEST(c_counter_enum_abi, PublishedInterfaceFlagOrdinalsRemainStable)
+{
+  EXPECT_EQ(21, static_cast<int>(BV_TERM_ABSTRACTION_MULT));
+  EXPECT_EQ(24, static_cast<int>(BV_TERM_ABSTRACTION_VALUE_DIVISOR));
+  EXPECT_EQ(26, static_cast<int>(CNF_GENERATION_EFFORT));
+  EXPECT_EQ(28, static_cast<int>(INCREMENTAL_PIECE_REWRITING));
+  EXPECT_EQ(29, static_cast<int>(CNF_AUTO_THRESHOLD));
+  EXPECT_EQ(30, static_cast<int>(BV_TERM_ABSTRACTION_SCHEMA_GROUPS));
+  EXPECT_EQ(31, static_cast<int>(BV_TERM_ABSTRACTION_DIVMOD));
 }
