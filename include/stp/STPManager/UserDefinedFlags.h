@@ -568,6 +568,30 @@ public:
   // without them. On the Certora family the setting is indifferent -- 30
   // files solved at sixteen against 29 at thirty-two, inside its own spread.
   //
+  // That sweep predates the imported registries, so the setting was
+  // re-measured against this profile, on the 260 files of
+  // `/mnt/baranem/smt2_problems/non-incremental` whose division or remainder
+  // actually reaches the abstraction. At a two-second budget the two are
+  // indistinguishable: both solve 257, both time out on the same three,
+  // nothing disagrees, and the totals are 17.19s against 17.29s. Solve
+  // counts do not decide this, and it is worth saying plainly that they
+  // don't -- that corpus's median consumer takes 0.04s, so there is nothing
+  // there for a round allowance to be wrong about.
+  //
+  // What decides it is the fourteen consumers that take longer than 0.2s,
+  // three runs each at a thirty-second budget: both settings solve all
+  // fourteen, the summed medians are 25.93s at sixteen against 26.49s at
+  // thirty-two, and the two files whose medians move by more than a tenth
+  // move in sixteen's favour. Neither number is large. The claim is only
+  // that sixteen is not worse here, which is what the counters said first --
+  // over the 219 `QF_BV/spear` consumers it converges in 1063 refinement
+  // rounds and 209 blocking lemmas against 1127 and 273 at thirty-two.
+  //
+  // The same experiment on a profile carrying only the base facts finds no
+  // difference at all, which is consistent rather than contradictory: what a
+  // round is worth depends on how many facts are on offer to spend it, and
+  // that is the argument for sixteen rather than any single measurement.
+  //
   // One number still bounds two purses, the blocking lemmas and the schema
   // lemmas, and there is no measurement saying they want the same bound.
   unsigned bv_term_abstraction_rounds = 16;
