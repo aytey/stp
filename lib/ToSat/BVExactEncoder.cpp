@@ -527,21 +527,30 @@ const char* divLemmaName(DivLemma lemma)
     case DivLemma::DividendAboveDivisorXorShifted:
       return "dividend-above-divisor-xor-shifted";
     case DivLemma::QuotientIsOne: return "quotient-is-one";
-    case DivLemma::Udiv10: return "udiv10";
-    case DivLemma::Udiv11: return "udiv11";
-    case DivLemma::Udiv20: return "udiv20";
-    case DivLemma::Udiv21: return "udiv21";
-    case DivLemma::Udiv22: return "udiv22";
-    case DivLemma::Udiv23: return "udiv23";
-    case DivLemma::Udiv24: return "udiv24";
-    case DivLemma::Udiv27: return "udiv27";
-    case DivLemma::Udiv28: return "udiv28";
-    case DivLemma::Udiv29: return "udiv29";
-    case DivLemma::Udiv30: return "udiv30";
-    case DivLemma::Udiv31: return "udiv31";
-    case DivLemma::Udiv33: return "udiv33";
-    case DivLemma::Udiv34: return "udiv34";
-    case DivLemma::Udiv36: return "udiv36";
+    case DivLemma::Udiv10: return "divisor-or-quotient-not-masked-dividend";
+    case DivLemma::Udiv11:
+      return "divisor-or-one-not-dividend-without-quotient";
+    case DivLemma::Udiv20:
+      return "divisor-not-negated-self-shifted-by-half-quotient";
+    case DivLemma::Udiv21: return "dividend-not-negated-and-doubled-quotient";
+    case DivLemma::Udiv22:
+      return "quotient-above-doubled-dividend-shifted-by-divisor";
+    case DivLemma::Udiv23:
+      return "dividend-above-divisor-shifted-by-negated-or";
+    case DivLemma::Udiv24:
+      return "dividend-above-quotient-shifted-by-negated-or";
+    case DivLemma::Udiv27:
+      return "dividend-above-divisor-shifted-by-negated-xor";
+    case DivLemma::Udiv28:
+      return "dividend-above-quotient-shifted-by-negated-xor";
+    case DivLemma::Udiv29: return "dividend-not-quotient-plus-divisor-or-sum";
+    case DivLemma::Udiv30:
+      return "dividend-not-quotient-plus-one-plus-shifted-one";
+    case DivLemma::Udiv31: return "divisor-above-sum-shifted-by-quotient";
+    case DivLemma::Udiv33: return "divisor-xor-or-above-quotient-xor-one";
+    case DivLemma::Udiv34:
+      return "quotient-above-dividend-shifted-by-divisor-less-one";
+    case DivLemma::Udiv36: return "dividend-not-one-less-shifted-dividend";
   }
   return "unknown";
 }
@@ -642,7 +651,7 @@ const char* remLemmaName(RemLemma lemma)
       return "difference-above-remainder";
     case RemLemma::XorAboveRemainder: return "xor-above-remainder";
     case RemLemma::RemainderIsDifference: return "remainder-is-difference";
-    case RemLemma::Urem7: return "urem7";
+    case RemLemma::Urem7: return "remainder-below-negated-divisor";
   }
   return "unknown";
 }
@@ -765,19 +774,20 @@ const char* mulLemmaName(MulLemma lemma)
       return "factor-unchanged-by-masked-shift";
     case MulLemma::FactorAndProductNotOr:
       return "factor-and-product-not-or";
-    case MulLemma::Mul5: return "mul5";
-    case MulLemma::Mul7: return "mul7";
-    case MulLemma::Mul9: return "mul9";
-    case MulLemma::Mul10: return "mul10";
-    case MulLemma::Mul11: return "mul11";
-    case MulLemma::Mul12: return "mul12";
-    case MulLemma::Mul13: return "mul13";
-    case MulLemma::Mul14: return "mul14";
-    case MulLemma::Mul15: return "mul15";
-    case MulLemma::Mul16: return "mul16";
-    case MulLemma::Mul17: return "mul17";
-    case MulLemma::Mul18: return "mul18";
-    case MulLemma::Mul19: return "mul19";
+    case MulLemma::Mul5: return "factor-not-negated-product-or-low-bit";
+    case MulLemma::Mul7:
+      return "product-not-odd-factor-shifted-by-shifted-product";
+    case MulLemma::Mul9: return "product-above-masked-shifted-factors";
+    case MulLemma::Mul10: return "factor-not-one-xor-factor-shifted-by-xor";
+    case MulLemma::Mul11: return "product-not-one-or-negated-xor";
+    case MulLemma::Mul12: return "product-not-high-ones-or-xor";
+    case MulLemma::Mul13: return "factor-not-shifted-factor-less-one";
+    case MulLemma::Mul14: return "factor-not-one-less-shifted-factor";
+    case MulLemma::Mul15: return "factor-not-one-plus-shifted-factor";
+    case MulLemma::Mul16: return "factor-not-one-less-shifted-factor-reversed";
+    case MulLemma::Mul17: return "factor-not-one-plus-shifted-factor-reversed";
+    case MulLemma::Mul18: return "product-not-one-or-sum";
+    case MulLemma::Mul19: return "factor-not-negated-shifted-factor";
   }
   return "unknown";
 }

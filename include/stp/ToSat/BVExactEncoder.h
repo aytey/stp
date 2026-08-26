@@ -139,6 +139,13 @@ enum class DivLemma
   // Bitwuzla's `LemmaKind::UDIVn`, and every one below was read out of
   // `src/solver/abstract/abstraction_lemmas.cpp` rather than off a list.
   //
+  // What each of them *prints* is a different question, and the answer is
+  // not the number. A diagnostic naming a lemma `udiv23` tells a reader
+  // nothing they can act on, so `divLemmaName` describes the shape instead
+  // and a `-s` line can be read without the source open. The identifier
+  // reconciles against the registry, the diagnostic describes the fact, and
+  // neither has to do the other's job.
+  //
   // (s | t) != (x & ~1)
   Udiv10,
   // (s | 1) != (x & ~t)
