@@ -243,9 +243,10 @@ TEST_F(BVDivRemSchemaTest, full_clauses_match_modular_recomposition)
 
 TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
 {
-  // Both pair families are deliberately outside the qualified default
-  // profile. Selecting them together checks the staging rule: where the low
-  // prefix rejects the candidate it gets first refusal over the full circuit.
+  // Both pair families are deliberately outside the conservative qualified
+  // profile; only the prefix belongs to the broader inherited profile.
+  // Selecting them together checks the staging rule: where the low prefix
+  // rejects the candidate it gets first refusal over the full circuit.
   mgr.UserFlags.bv_term_abstraction_schema_groups =
       bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR) |
       bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);

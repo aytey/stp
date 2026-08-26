@@ -568,6 +568,13 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
         b->UserFlags.bv_term_abstraction_rounds =
             stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
       }
+      else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX)
+      {
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            stp::BV_SCHEMA_GROUP_BROAD_PREFIX;
+        b->UserFlags.bv_term_abstraction_rounds =
+            stp::BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
+      }
       else
         reportCAPIError("BV_TERM_ABSTRACTION_PROFILE takes a "
                         "bv_term_abstraction_profile_t ordinal");

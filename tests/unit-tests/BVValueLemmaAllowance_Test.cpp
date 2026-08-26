@@ -64,12 +64,14 @@ unsigned allowance(unsigned ceiling, unsigned divisor, unsigned width,
 TEST(bv_value_lemma_allowance, TheDefaultIsFlat)
 {
   UserDefinedFlags defaults;
-  EXPECT_EQ(32u, defaults.bv_term_abstraction_rounds);
+  EXPECT_EQ(BV_TERM_ABSTRACTION_DEFAULT_ROUNDS,
+            defaults.bv_term_abstraction_rounds);
+  EXPECT_EQ(16u, defaults.bv_term_abstraction_rounds);
   EXPECT_EQ(0u, defaults.bv_term_abstraction_value_divisor);
   EXPECT_EQ(0u, defaults.bv_term_abstraction_divmod_value_limit);
 
   for (unsigned width : {8u, 16u, 24u, 33u, 53u, 64u})
-    EXPECT_EQ(32u, valueLemmaAllowance(defaults, width)) << "width=" << width;
+    EXPECT_EQ(16u, valueLemmaAllowance(defaults, width)) << "width=" << width;
 }
 
 // Varying the number of value blocks must not require changing the schema

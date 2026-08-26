@@ -22,18 +22,23 @@ Options:
   --repetitions N        complete blocked repetitions (default: 1)
   --timeout SECONDS      per-query wall-clock cap (default: 20)
   --limits LIST          comma-separated value limits (default: 4,8,16,32)
+  --profiles LIST        compare named profiles instead of value limits; the
+                         first comma-separated profile is the reference
   --width BITS           abstraction width floor (default: 53)
   --backend NAME         minisat, cadical, or default (default: minisat)
   --no-exact-control     omit the abstraction-off control
   --no-v4-control        omit the uncapped v4 control
   --help                 show this text
 
-The harness selects the qualified profile explicitly and always requests
-quick statistics. Arguments after -- are passed unchanged to every STP run.
+Allowance mode selects the qualified profile explicitly. Profile mode runs
+each requested atomic profile with its own round limit. Both modes always
+request quick statistics. Arguments after -- are passed unchanged to every
+STP run.
 The result directory contains runs.tsv, records.tsv, summary.tsv,
 comparisons.tsv, comparison-summary.tsv, disagreements.tsv, metadata.txt,
 corpus.sha256, and one raw log per run. Comparisons use v4 as their reference
-when that control is enabled.
+in allowance mode when that control is enabled, or the first requested profile
+in profile mode.
 EOF
 }
 
@@ -49,6 +54,8 @@ output=
 repetitions=1
 timeout_seconds=20
 limits_csv=4,8,16,32
+profiles_csv=
+limits_explicit=0
 width=53
 backend=minisat
 include_exact=1
@@ -85,6 +92,12 @@ while (($# > 0)); do
     --limits)
       (($# >= 2)) || die '--limits needs a comma-separated list'
       limits_csv=$2
+      limits_explicit=1
+      shift 2
+      ;;
+    --profiles)
+      (($# >= 2)) || die '--profiles needs a comma-separated list'
+      profiles_csv=$2
       shift 2
       ;;
     --width)
@@ -138,18 +151,34 @@ command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
 time_bin=/usr/bin/time
 [[ -x $time_bin ]] || die '/usr/bin/time is required'
 
-IFS=, read -r -a requested_limits <<< "$limits_csv"
 limits=()
-for limit in "${requested_limits[@]}"; do
-  [[ $limit =~ ^[1-9][0-9]*$ ]] ||
-    die "every value limit must be a positive integer: $limit"
-  duplicate=0
-  for old in "${limits[@]}"; do
-    [[ $old == "$limit" ]] && duplicate=1
+profiles=()
+if [[ -n $profiles_csv ]]; then
+  ((limits_explicit == 0)) || die '--profiles and --limits are mutually exclusive'
+  IFS=, read -r -a requested_profiles <<< "$profiles_csv"
+  for profile in "${requested_profiles[@]}"; do
+    [[ $profile =~ ^[a-z0-9][a-z0-9-]*$ ]] ||
+      die "invalid profile name: $profile"
+    duplicate=0
+    for old in "${profiles[@]}"; do
+      [[ $old == "$profile" ]] && duplicate=1
+    done
+    ((duplicate == 0)) && profiles+=("$profile")
   done
-  ((duplicate == 0)) && limits+=("$limit")
-done
-((${#limits[@]} > 0)) || die '--limits supplied no values'
+  ((${#profiles[@]} > 0)) || die '--profiles supplied no names'
+else
+  IFS=, read -r -a requested_limits <<< "$limits_csv"
+  for limit in "${requested_limits[@]}"; do
+    [[ $limit =~ ^[1-9][0-9]*$ ]] ||
+      die "every value limit must be a positive integer: $limit"
+    duplicate=0
+    for old in "${limits[@]}"; do
+      [[ $old == "$limit" ]] && duplicate=1
+    done
+    ((duplicate == 0)) && limits+=("$limit")
+  done
+  ((${#limits[@]} > 0)) || die '--limits supplied no values'
+fi
 
 mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
 ((${#queries[@]} > 0)) || die "no *.smt2 files found in $corpus"
@@ -186,15 +215,24 @@ case "$backend" in
 esac
 
 variants=()
+reference_variant=
 if ((include_exact)); then
   variants+=(exact)
 fi
-if ((include_v4)); then
-  variants+=(v4)
+if ((${#profiles[@]} > 0)); then
+  for profile in "${profiles[@]}"; do
+    variants+=("profile-$profile")
+  done
+  reference_variant=profile-${profiles[0]}
+else
+  if ((include_v4)); then
+    variants+=(v4)
+    reference_variant=v4
+  fi
+  for limit in "${limits[@]}"; do
+    variants+=("cap$limit")
+  done
 fi
-for limit in "${limits[@]}"; do
-  variants+=("cap$limit")
-done
 ((${#variants[@]} > 0)) || die 'all variants were disabled'
 
 variant_args()
@@ -208,6 +246,11 @@ variant_args()
 
   VARIANT_ARGS+=(--bv-eq-abstraction=1 --bv-term-abstraction=1)
   VARIANT_ARGS+=("--bv-abstraction-width=$width")
+  if [[ $variant == profile-* ]]; then
+    VARIANT_ARGS+=("--bv-term-abstraction-profile=${variant#profile-}")
+    return
+  fi
+
   VARIANT_ARGS+=(--bv-term-abstraction-profile=qualified)
   if [[ $variant == cap* ]]; then
     VARIANT_ARGS+=("--bv-term-abstraction-divmod-value-limit=${variant#cap}")
@@ -242,11 +285,8 @@ rm -f "$smoke" "$output"/smoke-*.log
   printf 'width=%s\n' "$width"
   printf 'backend=%s\n' "$backend"
   printf 'variants=%s\n' "${variants[*]}"
-  if ((include_v4)); then
-    printf 'comparison_reference=v4\n'
-  else
-    printf 'comparison_reference=none\n'
-  fi
+  printf 'profiles=%s\n' "${profiles[*]:-none}"
+  printf 'comparison_reference=%s\n' "${reference_variant:-none}"
   printf 'common_args='; printf ' %q' "${common_args[@]}"; printf '\n'
   printf 'extra_args='; printf ' %q' "${extra_args[@]}"; printf '\n'
   printf 'solver_sha256=%s\n' "$(sha256sum "$solver" | awk '{print $1}')"
@@ -479,14 +519,14 @@ awk -F '\t' -v OFS='\t' '
                       sort -t $'\t' -k1,1 -k2,2 -k3,3; } > "$summary_tsv"
 
 # A blocked campaign is most useful as a matched experiment: each variant's
-# row sits beside the v4 row for the same repetition and query. Preserve that
-# join explicitly so an aggregate regression can be separated from scheduler
-# noise and from a handful of large outliers without scraping raw logs.
+# row sits beside the reference row for the same repetition and query. Preserve
+# that join explicitly so an aggregate regression can be separated from
+# scheduler noise and from a handful of large outliers without scraping logs.
 printf '%s\n' \
   $'repetition\tclass\tdriver\tquery\tvariant\treference_status\tvariant_status\treference_wall_seconds\tvariant_wall_seconds\tdelta_seconds\twall_ratio\treference_blocking\tvariant_blocking\treference_exact\tvariant_exact' \
   > "$comparisons_tsv"
-if ((include_v4)); then
-  awk -F '\t' -v OFS='\t' '
+if [[ -n $reference_variant ]]; then
+  awk -F '\t' -v OFS='\t' -v reference_variant="$reference_variant" '
     NR == 1 { next }
     {
       key=$1 SUBSEP $6
@@ -494,14 +534,14 @@ if ((include_v4)); then
       class[key]=$4; driver[key]=$5
       status[item]=$8; wall[item]=$10
       blocking[item]=$15; exact[item]=$17
-      if ($3 != "v4") seen[item]=1
+      if ($3 != reference_variant) seen[item]=1
     }
     END {
       for (item in seen) {
         split(item, p, SUBSEP)
         key=p[1] SUBSEP p[2]
         variant=p[3]
-        reference=key SUBSEP "v4"
+        reference=key SUBSEP reference_variant
         if (!(reference in status)) continue
         delta=wall[item]-wall[reference]
         ratio=wall[reference] == 0 ? 0 : wall[item]/wall[reference]

@@ -174,8 +174,9 @@ DLL_PUBLIC void vc_setFlag(VC vc, char c);
 
 //! Named bits accepted by BV_TERM_ABSTRACTION_SCHEMA_GROUPS. They mirror the
 //! command-line names in ordinal order; combine any of them with bitwise OR.
-//! The default is the qualified base/UREM/MulRef3 subset, while ALL retains
-//! every experimental schema implemented by the library.
+//! The default is the KLEE-qualified broad catalogue plus the cheap DIV/REM
+//! prefix, while QUALIFIED preserves the older base/UREM/MulRef3 subset and
+//! ALL retains every experimental schema implemented by the library.
 enum bv_schema_group_t
 {
   STP_BV_SCHEMA_GROUP_BASE = 1 << 0,
@@ -199,7 +200,6 @@ enum bv_schema_group_t
   STP_BV_SCHEMA_GROUP_QUALIFIED = STP_BV_SCHEMA_GROUP_BASE |
                                   STP_BV_SCHEMA_GROUP_UREM |
                                   STP_BV_SCHEMA_GROUP_MUL_REF3,
-  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_QUALIFIED,
   STP_BV_SCHEMA_GROUP_AGGRESSIVE =
       STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
       STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
@@ -215,6 +215,10 @@ enum bv_schema_group_t
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
       STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
+  //! SPEAR plus cheap low-three-bit paired DIV/REM recomposition.
+  STP_BV_SCHEMA_GROUP_BROAD_PREFIX =
+      STP_BV_SCHEMA_GROUP_SPEAR | STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
+  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_BROAD_PREFIX,
   STP_BV_SCHEMA_GROUP_ALL = (1 << 16) - 1
 };
 
@@ -224,7 +228,9 @@ enum bv_term_abstraction_profile_t
   STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED = 0,
   STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 1,
   //! Append-only: preserves the two v3 profile ordinals above.
-  STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR = 2
+  STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR = 2,
+  //! Append-only: broad observed catalogue plus cheap DIV/REM prefix.
+  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX = 3
 };
 
 //! Interface-only flags.
@@ -475,7 +481,7 @@ enum ifaceflag_t
 
   //! How many blocking lemmas one abstracted BVMULT, BVDIV or BVMOD may take
   //! before its refinement encodes the operation exactly instead of ruling
-  //! out further operand pairs (default 32).
+  //! out further operand pairs (default 16).
   //!
   //! `param_value` is that count; zero never escalates and enumerates without
   //! limit. A negative value is refused with a nonfatal diagnostic and leaves
@@ -607,8 +613,9 @@ enum ifaceflag_t
   //! established base/UREM/MulRef3 mask with a 32-round ceiling; AGGRESSIVE
   //! selects the v3 observed catalogue including full paired recomposition;
   //! SPEAR selects the same broad single-record families without either
-  //! paired relation, at 16 rounds. Invalid values are refused without
-  //! changing either field. Appended so every
+  //! paired relation, at 16 rounds. BROAD_PREFIX adds the cheap low-three-bit
+  //! paired relation while leaving full recomposition opt-in. Invalid values
+  //! are refused without changing either field. Appended so every
   //! previously published interface-flag ordinal remains stable. This is the
   //! C API's way to reach --bv-term-abstraction-profile.
   //!

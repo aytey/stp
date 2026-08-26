@@ -2,9 +2,9 @@
 
 Date: 2026-08-26
 
-Branch: `cegar-next-codex-v4`
+Branch: `cegar-next-codex-v5`
 
-Based on: `0b47eaec` (`cegar-next-codex-v3`)
+Based on: `cc1be2c2` (`cegar-next-codex-v4`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
@@ -16,8 +16,10 @@ V3 comparison source: `ed66f875` (`cegar-next-claude-v2`)
 
 V4 comparison source: `438faa4c` (`cegar-next-claude-v3`)
 
+V5 comparison source: `5b453e12` (`cegar-next-claude-v4`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex-v4`
+`/home/avj/clones/stp/cegar-next-codex-v5`
 
 ## Executive summary
 
@@ -39,25 +41,156 @@ complete:
   restrictions, totalised zero-divisor behaviour, and complete end-to-end
   regressions are tested.
 
-The coverage-first qualification sweep is now complete. It found a small
-productive subset and a much larger neutral or harmful tail. Commit
-`9d763349` therefore keeps every sound implementation available but puts the
-families behind one named group mask:
+The coverage-first qualification sweep and the later KLEE/SymFPU policy sweep
+are now complete. They found a small portable core, a broader profile that is
+materially better on KLEE's floating-point lowering, and a much larger neutral
+or harmful tail. Every sound implementation remains available behind named
+groups:
 
-- an explicitly enabled BV term abstraction inherits only `base,urem,mul-ref3`;
+- an explicitly enabled BV term abstraction inherits the 16-round
+  `broad-prefix` profile described below;
+- `qualified` preserves the older 32-round `base,urem,mul-ref3` policy;
 - `all` reproduces the complete stack represented before the mask;
 - `none` reaches the ordinary operation-specific fallback without offering a
   schema;
 - the master `--bv-term-abstraction-schemas=0` still overrides every group;
 - BV term abstraction itself remains off by default.
 
-The hybrid retains that qualified profile unchanged. Its three additional
-families have compelling targeted regressions but no broad isolated corpus
-qualification, so they are available for controlled experiments and remain
-off in the inherited profile.
+The change of inherited mask is deliberately narrower than a catalogue
+promotion: experimental registry tails remain excluded, full DIV/REM
+recomposition remains individually opt-in, and all historical granular mask
+bits and counters retain their values.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
+
+## V5 KLEE policy qualification
+
+V5 adds one atomic profile without coarsening the established public mask:
+
+| Profile | Groups | Rounds | Role |
+| --- | --- | ---: | --- |
+| `qualified` | `base,urem,mul-ref3` | 32 | older conservative comparison |
+| `spear` / `broad-no-pair` | broad observed catalogue, no paired relation | 16 | prefix ablation |
+| `broad-prefix` / `klee` | SPEAR plus `divrem-pair` | 16 | inherited after explicit opt-in |
+| `aggressive` | SPEAR plus `divrem-full` | 16 | full-identity experiment |
+
+`divrem-pair` is the low-three-bit relation. `divrem-full` is the full-width
+identity containing a wide multiplier. The latter is not part of
+`broad-prefix` and remains selectable on its own.
+
+The simpler group language from the Claude line is accepted as input aliases
+over Codex's granular ABI-safe bits:
+
+| Alias | Existing groups selected |
+| --- | --- |
+| `udiv` | `udiv15,udiv-observed` |
+| `mul6` | `mul-ref3` |
+| `quotient-one` | `quotient-one-rem,quotient-one-quot` |
+| `divrem-prefix` | `divrem-pair` |
+| `divrem-identity` | `divrem-full` |
+
+Formatting and telemetry continue to emit the canonical granular names. This
+gives callers the clearer vocabulary without renumbering a bit, changing a
+counter owner, or hiding an ablation boundary.
+
+### Blocked KLEE experiment
+
+The 417-query `queries-wide` corpus from
+`/home/avj/clones/stp/cegar_refinement_prompts` was run in query blocks with
+variant order rotated inside every block. It contains 298 queries with native
+floating-point syntax and 119 pure-BV controls from eleven KLEE drivers.
+There were three complete repetitions, a 20-second per-query cap, CaDiCaL,
+non-incremental mode, abstraction width 53, and KLEE's
+`--cnf-auto-threshold=0`. Every configuration hit the same one expected
+`pow_00017` timeout per repetition. There were no other failures, status
+mismatches, or SAT/UNSAT disagreements.
+
+| Configuration | FP repeat totals | FP median | BV repeat totals | Relative to qualified FP median |
+| --- | --- | ---: | --- | ---: |
+| abstraction off | 43.66 / 42.18 / 43.64 s | 43.64 s | 2.38 / 2.33 / 2.36 s | -35.6% |
+| `qualified` | 74.87 / 67.66 / 67.78 s | 67.78 s | 2.40 / 2.29 / 2.27 s | reference |
+| `spear` | 46.36 / 43.53 / 43.80 s | 43.80 s | 2.44 / 2.26 / 2.40 s | -35.4% |
+| `broad-prefix` | 45.83 / 42.49 / 42.80 s | **42.80 s** | 2.45 / 2.37 / 2.43 s | **-36.9%** |
+| `aggressive` | 69.83 / 63.89 / 65.85 s | 65.85 s | 2.41 / 2.39 / 2.44 s | -2.8% |
+
+The refinement work is deterministic across the three repetitions:
+
+| Profile | Blocking lemmas / repeat | Schema lemmas / repeat | Exact escalations / repeat |
+| --- | ---: | ---: | ---: |
+| `qualified` | 1,772 | 336 | 33 |
+| `spear` | 486 | 451 | 17 |
+| `broad-prefix` | 615 | 492 | 22 |
+| `aggressive` | 206 | 491 | 7 |
+
+This tracks down the apparent roughly 30% Claude advantage. A matched mask
+previously left only a 3-4% branch difference, below this machine's measured
+noise floor. Reproducing Claude's broad 16-round policy inside the Codex
+scheduler instead removes 37% of the qualified profile's median FP time. It
+also reduces exact escalation and the expensive value-block tail. The speedup
+is a policy result, not evidence that Claude's implementation or batching is
+faster.
+
+Two limits on that conclusion matter:
+
+- SPEAR and `broad-prefix` are only 1-2.4% apart in each repetition. The
+  prefix is cheap, matches SymFPU's paired lowering, and wins the aggregate,
+  but it does not explain the headline gain.
+- The profile gain is concentrated in `atan2`; other drivers range from small
+  gains to small losses. The pure-BV control is effectively unchanged. This
+  supports a KLEE-qualified enabled profile, not a claim that the catalogue is
+  universally optimal.
+
+Full recomposition demonstrates why lemma count alone is misleading. It
+reduces blocking and exact escalation most aggressively, yet its wide
+multiplier makes SAT about 54% slower than `broad-prefix` at the FP medians.
+It therefore remains individually opt-in.
+
+The experiment was run with:
+
+```text
+scripts/benchmark-bv-refinement.sh \
+  --solver /path/to/stp \
+  --corpus /home/avj/clones/stp/cegar_refinement_prompts/queries-wide \
+  --repetitions 3 --timeout 20 --backend cadical --width 53 \
+  --profiles qualified,spear,broad-prefix,aggressive
+```
+
+The enhanced harness records matched comparisons and one row per abstraction
+record, including blocking/exact clause cost and time. Raw results from this
+run, while the temporary directory survives, are under
+`/tmp/stp-cegar-v5-profile-matrix-20260826`.
+
+### Default and batching decisions
+
+The three repetitions justify replacing only the profile inherited after an
+explicit request for BV term abstraction:
+
+```text
+term abstraction = off
+enabled schema profile = broad-prefix (alias klee)
+schema rounds = 16
+full DIV/REM identity = opt-in
+```
+
+KLEE evaluation can select the same pair atomically with:
+
+```text
+--bv-term-abstraction=1 --bv-eq-abstraction=1 \
+--bv-abstraction-width=53 --cnf-auto-threshold=0 \
+--bv-term-abstraction-profile=klee
+```
+
+The C API exposes the same policy as the appended
+`STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX` ordinal. Neither route turns
+term abstraction on implicitly.
+
+Claude's pair-plus-individual batching is not ported. The same-mask difference
+was only 3-4%, and this controlled run explains the much larger inherited
+configuration gap without it. Codex's pair-only pass keeps one charged schema
+decision per record, preserves the round budget's meaning, and already has
+live scheduler tests. A batching mode would add public and telemetry
+complexity without current evidence of a gain.
 
 ## V4 hybrid convergence
 
@@ -260,12 +393,12 @@ initial division work merged in PR #989:
 - The ITE, addition, and comparison families have their own scope flags.
 - `--bv-term-abstraction-schemas=1` enables algebraic schemas. The schema
   flag defaults to true, but term abstraction itself defaults to false.
-- `--bv-term-abstraction-schema-groups=base,urem,mul-ref3` selects the
-  schema families offered when the master schema flag is on. The value is a
-  comma-separated list; `all` and `none` are stand-alone aliases. Whitespace
-  and duplicate names are accepted, while malformed lists are rejected
-  without partially changing the mask.
-- `--bv-term-abstraction-rounds=32` separately caps schema rounds and
+- `--bv-term-abstraction-schema-groups` defaults to the groups in
+  `broad-prefix` and selects the families offered when the master schema flag
+  is on. The value is a comma-separated list; `all` and `none` are stand-alone
+  aliases. Whitespace and duplicate names are accepted, while malformed lists
+  are rejected without partially changing the mask.
+- `--bv-term-abstraction-rounds=16` separately caps schema rounds and
   value-pair blocking rounds for a heavy arithmetic record. Schema rounds do
   not consume the blocking allowance; after the blocking allowance is spent,
   the ordinary exact operation is installed.
@@ -280,20 +413,20 @@ The named groups and their disposition are:
 | Group | Contents | In inherited profile? |
 | --- | --- | --- |
 | `base` | Schemas already present on merged master | yes |
-| `udiv15` | `DividendAboveShiftedDoubleQuotient` | no |
-| `udiv-observed` | Ranked imported UDIV facts beyond `base` and `udiv15` | no |
+| `udiv15` | `DividendAboveShiftedDoubleQuotient` | yes |
+| `udiv-observed` | Ranked imported UDIV facts beyond `base` and `udiv15` | yes |
 | `udiv-extra` | Compatibility umbrella for `udiv-observed` and the unobserved UDIV tail | no |
 | `urem` | Enabled UREM registry | yes |
-| `mul8` | Zero product with an odd operand | no |
+| `mul8` | Zero product with an odd operand | yes |
 | `mul-ref3` | `FactorAndProductNotOr` (`MulRef3`) alone | yes |
 | `mul-extra` | Remaining general MUL registry | no |
 | `add` | Complete ADD registry | no |
 | `quotient-thresholds` | UDIV power-of-two magnitude thresholds | no |
 | `low-prefix` | Exact low-three-bit ADD and MUL facts | no |
-| `quotient-one-rem` | Remainder in the quotient-one band | no |
-| `divrem-pair` | Paired DIV/REM low-prefix recomposition | no |
-| `quotient-one-quot` | Quotient equals one in the one-subtraction band | no |
-| `divisor-magnitude` | Capped divisor-magnitude quotient bound | no |
+| `quotient-one-rem` | Remainder in the quotient-one band | yes |
+| `divrem-pair` | Paired DIV/REM low-prefix recomposition | yes |
+| `quotient-one-quot` | Quotient equals one in the one-subtraction band | yes |
+| `divisor-magnitude` | Capped divisor-magnitude quotient bound | yes |
 | `divrem-full` | Paired DIV/REM full modular recomposition | no |
 
 The paired scheduler gives the low-prefix relation first refusal only when
@@ -309,7 +442,7 @@ stable. `BV_TERM_ABSTRACTION_DIVMOD` and the three new group counters were
 appended; they were not inserted into the published enum prefixes.
 
 This partition is deliberately coarser than individual lemmas. It supports
-qualified defaults and controlled experiments without making every
+named profiles and controlled experiments without making every
 low-frequency algebraic fact a permanent command-line option. The C API
 exposes the same bits through `BV_TERM_ABSTRACTION_SCHEMA_GROUPS`; unknown or
 negative mask bits are rejected.
@@ -889,24 +1022,28 @@ Raw logs, while the temporary directory survives, are under:
 
 Keep the complete sound implementation behind the named groups. Do not
 silently discard tested research code, but do not make the whole registry
-tail the inherited behaviour either. The qualified policy is:
+tail the inherited behaviour either. After the V5 KLEE qualification, the
+inherited policy is:
 
 ```text
 term abstraction off by default
 schemas on when abstraction is requested
-schema groups = base,urem,mul-ref3
+schema profile = broad-prefix
+schema rounds = 16
 ```
 
-`--bv-term-abstraction-schema-groups=all` is the reproducibility and future
-research setting. Individual opt-in groups make later workload-specific
-qualification possible without rebuilding or carrying private patches.
+`qualified` preserves the previous mask/round pair, while
+`--bv-term-abstraction-schema-groups=all` is the complete-catalogue
+reproducibility and future-research setting. Individual opt-in groups make
+later workload-specific qualification possible without rebuilding or carrying
+private patches.
 
 The remaining work is integration rather than lemma discovery:
 
 - run the repository CI matrix, particularly the non-CaDiCaL and Windows
   configurations not present in this build;
 - decide whether review is clearest as this checkpoint or as an ordered PR
-  series, without changing the qualified default;
+  series;
 - if requested during review, repeat the UREM screen on another independent
   remainder-heavy corpus.
 

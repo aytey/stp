@@ -76,8 +76,28 @@ std::string expectedGroups()
       out << ", ";
     out << GROUP_NAMES[i];
   }
-  out << ", all, or none";
+  out << ", udiv, mul6, quotient-one, divrem-prefix, divrem-identity, all, or "
+         "none";
   return out.str();
+}
+
+bool groupAliasMask(const std::string& token, uint32_t& aliasMask)
+{
+  if (token == "udiv")
+    aliasMask = bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
+                bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED);
+  else if (token == "mul6")
+    aliasMask = bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
+  else if (token == "quotient-one")
+    aliasMask = bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_REM) |
+                bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT);
+  else if (token == "divrem-prefix")
+    aliasMask = bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+  else if (token == "divrem-identity")
+    aliasMask = bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
+  else
+    return false;
+  return true;
 }
 
 } // namespace
@@ -145,6 +165,12 @@ bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
         found = true;
         break;
       }
+    uint32_t aliasMask = 0;
+    if (!found && groupAliasMask(token, aliasMask))
+    {
+      parsed |= aliasMask;
+      found = true;
+    }
     if (!found)
     {
       error = "unknown BV schema group '" + token + "'; expected " +
@@ -198,10 +224,15 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
     parsedMask = BV_SCHEMA_GROUP_SPEAR;
     parsedRounds = BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
   }
+  else if (text == "broad-prefix" || text == "klee")
+  {
+    parsedMask = BV_SCHEMA_GROUP_BROAD_PREFIX;
+    parsedRounds = BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
+  }
   else
   {
     error = "unknown BV term-abstraction profile '" + text +
-            "'; expected qualified, aggressive, or spear";
+            "'; expected qualified, aggressive, spear, or broad-prefix";
     return false;
   }
 

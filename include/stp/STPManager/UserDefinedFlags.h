@@ -72,16 +72,15 @@ constexpr uint32_t bvSchemaGroupBit(BVSchemaGroup group)
 constexpr uint32_t BV_SCHEMA_GROUP_ALL =
     (uint32_t{1} << BV_SCHEMA_GROUP_COUNT) - 1;
 
-// The profile justified by the corpus qualification: retain the established
-// schemas, the UREM registry that decides the wide ecrw cases, and MulRef3.
-// BV term abstraction itself remains off by default, so this profile only
-// matters when a caller explicitly enables that experiment.
+// The conservative profile justified by the original catalogue
+// qualification: retain the established schemas, the UREM registry that
+// decides the wide ecrw cases, and MulRef3. It remains named for regression
+// comparisons after the KLEE qualification below superseded it as the mask
+// inherited by an explicitly enabled abstraction.
 constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UREM) |
     bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
-
-constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT = BV_SCHEMA_GROUP_QUALIFIED;
 
 // A deliberately opt-in profile that combines the productive families from
 // the two CEGAR catalogues. The complete imported tails, open-ended quotient
@@ -102,8 +101,9 @@ constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
 
 // The broad 16-round experiment that performed best on the SPEAR slice in
 // the v3 comparison, without either paired DIV/REM relation. The paired
-// prefix and full identities remain separately selectable groups until a
-// broader corpus justifies paying for their multipliers as part of a profile.
+// relations remain separately selectable groups; in particular, the
+// low-three-bit relation is cheap and belongs to the profile below, while the
+// full-width identity constructs a multiplier and stays opt-in.
 constexpr uint32_t BV_SCHEMA_GROUP_SPEAR =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
@@ -115,9 +115,33 @@ constexpr uint32_t BV_SCHEMA_GROUP_SPEAR =
     bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
     bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE);
 
+// The KLEE/SymFPU-qualified broad profile. SymFPU lowers each floating-point
+// division to a quotient and remainder over the same roughly double-width
+// operands. Their low-three-bit recomposition is therefore widely applicable
+// and costs only a few gates, unlike the full identity's wide multiplier.
+// Keep the historical granular group bits and counters, and expose this as an
+// atomic mask instead of renumbering them into a coarser public partition.
+//
+// Three query-blocked repetitions over 298 floating-point and 119 pure-BV
+// KLEE queries put this profile at 45.83/42.49/42.80 seconds for the FP slice,
+// against 74.87/67.66/67.78 for QUALIFIED. The pure-BV control stayed within
+// 0.18 seconds. The same broad profile without the paired prefix was within
+// 2.4%, so the large gain is the broad 16-round policy rather than batching
+// or a different implementation. Full recomposition took
+// 69.83/63.89/65.85 seconds and remains opt-in.
+constexpr uint32_t BV_SCHEMA_GROUP_BROAD_PREFIX =
+    BV_SCHEMA_GROUP_SPEAR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+
 constexpr unsigned BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS = 32;
 constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
 constexpr unsigned BV_TERM_ABSTRACTION_SPEAR_ROUNDS = 16;
+constexpr unsigned BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS = 16;
+
+// These defaults matter only after a caller explicitly turns BV term
+// abstraction on. The global feature switch remains off.
+constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT = BV_SCHEMA_GROUP_BROAD_PREFIX;
+constexpr unsigned BV_TERM_ABSTRACTION_DEFAULT_ROUNDS =
+    BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 {
@@ -552,13 +576,15 @@ public:
   // answers in five hundredths of one. Zero never escalates, which is what
   // this was before.
   //
-  // Sixteen was compared directly with thirty-two over the 287 natural
-  // division/remainder consumers under the qualified schema mask: solve
-  // counts and medians tied, sixteen gained no repeatable solve, and two
-  // small cases were stably slower. Keep the established ceiling.
+  // Under the qualified mask, sixteen and thirty-two tied over 287 natural
+  // division/remainder consumers. The decision changed only when mask and
+  // ceiling were measured as one policy on the KLEE/SymFPU workload: the
+  // broad 16-round profile was 37% faster at the median of three blocked
+  // repetitions than qualified at 32 rounds, without moving the pure-BV
+  // control. Named profiles retain both policies for reproducibility.
   //
   // A ceiling and no longer the allowance itself: see the divisor below.
-  unsigned bv_term_abstraction_rounds = BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
+  unsigned bv_term_abstraction_rounds = BV_TERM_ABSTRACTION_DEFAULT_ROUNDS;
   // Optionally make that a rate instead: `width / this`, floored at one and
   // capped by the ceiling above. The argument for it is that a blocking
   // lemma rules out one pair of operand values, so what one is worth falls
@@ -705,9 +731,10 @@ public:
   bool bv_term_abstraction_schemas = true;
 
   // Which schema families the master switch above may offer. The default is
-  // the qualified subset; `all` at the CLI reproduces the complete
-  // experimental stack kept in this branch, while an empty mask leaves the
-  // operation-specific fallback exactly as the master switch being off does.
+  // the KLEE-qualified broad-prefix subset; `qualified` preserves the older
+  // conservative policy, `all` reproduces the complete experimental stack,
+  // and an empty mask leaves the operation-specific fallback exactly as the
+  // master switch being off does.
   uint32_t bv_term_abstraction_schema_groups = BV_SCHEMA_GROUP_DEFAULT;
 
   // You can select these with any combination you want of true & false.

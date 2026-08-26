@@ -402,7 +402,8 @@ void ExtraMain::create_options()
                      "quotient-one-rem, divrem-pair, quotient-one-quot, "
                      "divisor-magnitude, or divrem-full; 'all' selects the "
                      "complete experimental stack and 'none' selects no "
-                     "schemas")
+                     "schemas; semantic aliases are udiv, mul6, "
+                     "quotient-one, divrem-prefix and divrem-identity")
           ->group(refinement_group)
           ->capture_default_str();
   CLI::Option* const bv_rounds_option =
@@ -420,8 +421,10 @@ void ExtraMain::create_options()
                  "the corpus-qualified base, UREM and MulRef3 mask at 32 "
                  "rounds; 'spear' adds the observed UDIV and MUL8 facts, "
                  "divisor-magnitude and quotient-one facts at 16 rounds but "
-                 "no paired DIV/REM relation; 'aggressive' preserves the v3 "
-                 "profile with full paired recomposition")
+                 "no paired DIV/REM relation; the inherited 'broad-prefix' "
+                 "profile (alias 'klee') adds cheap low-three-bit paired "
+                 "recomposition; 'aggressive' preserves the v3 profile with "
+                 "full paired recomposition")
       ->group(refinement_group)
       ->excludes(bv_schema_groups_option)
       ->excludes(bv_rounds_option);

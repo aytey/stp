@@ -69,8 +69,12 @@ TEST(BVSchemaGroups, every_group_has_a_unique_round_tripping_name)
     EXPECT_EQ(name, formatBVSchemaGroups(parsed));
   }
 
-  const uint32_t masks[] = {0u, BV_SCHEMA_GROUP_ALL, BV_SCHEMA_GROUP_DEFAULT,
-                            BV_SCHEMA_GROUP_AGGRESSIVE, BV_SCHEMA_GROUP_SPEAR};
+  const uint32_t masks[] = {0u,
+                            BV_SCHEMA_GROUP_ALL,
+                            BV_SCHEMA_GROUP_DEFAULT,
+                            BV_SCHEMA_GROUP_AGGRESSIVE,
+                            BV_SCHEMA_GROUP_SPEAR,
+                            BV_SCHEMA_GROUP_BROAD_PREFIX};
   for (uint32_t mask : masks)
   {
     uint32_t parsed = ~0u;
@@ -125,6 +129,10 @@ TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_AGGRESSIVE));
   EXPECT_EQ(BV_SCHEMA_GROUP_SPEAR,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_SPEAR));
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_PREFIX,
+            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD_PREFIX));
+  EXPECT_EQ(BV_SCHEMA_GROUP_DEFAULT,
+            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT));
   EXPECT_EQ(BV_SCHEMA_GROUP_ALL,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_ALL));
 }
@@ -205,4 +213,19 @@ TEST(BVSchemaGroups, spear_profile_excludes_both_paired_relations)
                                    BVSchemaGroup::QUOTIENT_ONE_REM));
   EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_SPEAR,
                                    BVSchemaGroup::QUOTIENT_ONE_QUOT));
+}
+
+TEST(BVSchemaGroups, broad_prefix_profile_adds_only_the_cheap_paired_relation)
+{
+  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS);
+  EXPECT_EQ(BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS,
+            BV_TERM_ABSTRACTION_DEFAULT_ROUNDS);
+  EXPECT_EQ(BV_SCHEMA_GROUP_SPEAR |
+                bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR),
+            BV_SCHEMA_GROUP_BROAD_PREFIX);
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_PREFIX, BV_SCHEMA_GROUP_DEFAULT);
+  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
+                                   BVSchemaGroup::DIVREM_PAIR));
+  EXPECT_FALSE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
+                                    BVSchemaGroup::DIVREM_FULL));
 }
