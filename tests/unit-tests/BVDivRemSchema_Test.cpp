@@ -322,6 +322,79 @@ TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
   EXPECT_FALSE(timedOut);
 }
 
+// Incremental lowering can retain more than one abstraction record for a
+// hash-consed term. The AST-keyed map then names whichever result was
+// registered last, while each durable record owns the result variables its
+// candidate actually uses. A paired lemma must inspect and constrain those
+// record-owned variables on both sides, just like every single-record path.
+TEST_F(BVDivRemSchemaTest, paired_lemma_uses_each_records_owned_result)
+{
+  mgr.UserFlags.bv_term_abstraction_schema_groups =
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+  NodeFactory* factory = mgr.defaultNodeFactory;
+  const ASTNode dividend = mgr.CreateSymbol("owned_dividend", 0, WIDTH);
+  const ASTNode divisor = mgr.CreateSymbol("owned_divisor", 0, WIDTH);
+  const ASTNode div = factory->CreateTerm(BVDIV, WIDTH, dividend, divisor);
+  const ASTNode rem = factory->CreateTerm(BVMOD, WIDTH, dividend, divisor);
+
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  const std::vector<unsigned> dividendVars = makeVars(*solver);
+  const std::vector<unsigned> divisorVars = makeVars(*solver);
+  const std::vector<unsigned> ownedQuotientVars = makeVars(*solver);
+  const std::vector<unsigned> ownedRemainderVars = makeVars(*solver);
+  const std::vector<unsigned> mappedQuotientVars = makeVars(*solver);
+  const std::vector<unsigned> mappedRemainderVars = makeVars(*solver);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction divRecord;
+  divRecord.termNode = div;
+  divRecord.opKind = BVDIV;
+  divRecord.operands[0] = dividend;
+  divRecord.operands[1] = divisor;
+  divRecord.numOperands = 2;
+  divRecord.width = WIDTH;
+  divRecord.resultSATVars = ownedQuotientVars;
+  refiner.terms().push_back(divRecord);
+
+  BVTermAbstraction remRecord;
+  remRecord.termNode = rem;
+  remRecord.opKind = BVMOD;
+  remRecord.operands[0] = dividend;
+  remRecord.operands[1] = divisor;
+  remRecord.numOperands = 2;
+  remRecord.width = WIDTH;
+  remRecord.resultSATVars = ownedRemainderVars;
+  refiner.terms().push_back(remRecord);
+
+  ToSATBase::ASTNodeToSATVar nodeToVars;
+  nodeToVars[dividend] = dividendVars;
+  nodeToVars[divisor] = divisorVars;
+  nodeToVars[div] = mappedQuotientVars;
+  nodeToVars[rem] = mappedRemainderVars;
+
+  // x=13 and s=3. The map's q=4,r=1 satisfies recomposition, while the
+  // durable records' q=r=0 do not. Reading the map would miss the paired
+  // violation; writing the lemma to the map would fail to block it.
+  pin(*solver, dividendVars, 13);
+  pin(*solver, divisorVars, 3);
+  pin(*solver, ownedQuotientVars, 0);
+  pin(*solver, ownedRemainderVars, 0);
+  pin(*solver, mappedQuotientVars, 4);
+  pin(*solver, mappedRemainderVars, 1);
+  bool timedOut = false;
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+  EXPECT_TRUE(refiner.terms()[0].divRemLowPrefixInstalled);
+  EXPECT_TRUE(refiner.terms()[1].divRemLowPrefixInstalled);
+  EXPECT_EQ(1u, mgr.UserFlags.coverage.bv_schema_lemmas);
+
+  EXPECT_FALSE(solver->solve(timedOut));
+  EXPECT_FALSE(timedOut);
+}
+
 TEST_F(BVDivRemSchemaTest,
        refiner_uses_full_identity_when_the_low_prefix_already_holds)
 {

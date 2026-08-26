@@ -381,6 +381,25 @@ TEST(BVDivSchema, schema_groups_gate_division_before_selection)
         }
 }
 
+TEST(BVDivSchema, capped_magnitude_precedes_open_ended_thresholds)
+{
+  const uint32_t groups =
+      bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE) |
+      bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_THRESHOLDS);
+
+  // For a=15, b=9 and the wrong q=2, both families are violated:
+  //   magnitude k=3 says q <= 15>>3 = 1;
+  //   threshold k=1 says q>=2 iff 9 <= 15>>1, whose sides disagree.
+  // The magnitude family has only two possible firings per abstraction,
+  // while thresholds can consume one round per quotient bit. It must get
+  // first refusal so the latter cannot exhaust the schema allowance.
+  const DivSchemaChoice choice = chooseDivSchema(
+      BVDIV, bitsOf(15), bitsOf(9), bitsOf(2), 0, groups);
+  EXPECT_EQ(DivSchema::DivisorMagnitudeBound, choice.schema);
+  EXPECT_EQ(BVSchemaGroup::DIVISOR_MAGNITUDE, choice.group);
+  EXPECT_EQ(3u, choice.shift);
+}
+
 // Where a wrong candidate is turned away, it is because the divisor is one
 // the schemas have nothing to say about -- neither zero nor a power of two.
 // This is the coverage claim: everything else is caught.

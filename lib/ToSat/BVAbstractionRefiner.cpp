@@ -481,6 +481,16 @@ unsigned BVAbstractionRefiner::refineEqualities(
   return refined;
 }
 
+static void readModelBits(const std::vector<unsigned>& satVars,
+                          unsigned width, SATSolver& solver,
+                          std::vector<bool>& bits)
+{
+  assert(satVars.size() >= width);
+  bits.resize(width);
+  for (unsigned i = 0; i < width; ++i)
+    bits[i] = (solver.modelValue(satVars[i]) == solver.true_literal());
+}
+
 static void getOperandBits(
     const ASTNode& operand, unsigned width,
     const ToSATBase::ASTNodeToSATVar& nodeToSATVar, SATSolver& solver,
@@ -496,8 +506,7 @@ static void getOperandBits(
   }
   const std::vector<unsigned>& satVars =
       encodedBitsOf(operand, width, nodeToSATVar);
-  for (unsigned i = 0; i < width; ++i)
-    bits[i] = (solver.modelValue(satVars[i]) == solver.true_literal());
+  readModelBits(satVars, width, solver, bits);
 }
 
 static void getOperandVars(
@@ -1320,6 +1329,37 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         return {DivSchema::Lemma, 0, i, group};
     }
 
+    // Use the candidate divisor's highest set bit as a broad guard:
+    // b >= 2^k -> q <= a >> k. This family is deliberately capped at two
+    // magnitudes per abstraction, so give it precedence over the open-ended
+    // quotient thresholds below. On a query that pins the divisor's binade,
+    // the magnitude bound can decide the result in one round; letting the
+    // thresholds go first can consume the complete schema allowance before
+    // this stronger candidate-specific bound gets a turn.
+    if (bvSchemaGroupEnabled(enabledGroups,
+                             BVSchemaGroup::DIVISOR_MAGNITUDE) &&
+        divMagnitudeBoundsLeft(installedSchemas))
+    {
+      int divisorTop = -1;
+      for (int i = (int)width - 1; i >= 0; --i)
+        if (bBits[i])
+        {
+          divisorTop = i;
+          break;
+        }
+
+      if (divisorTop >= 1)
+      {
+        std::vector<bool> shiftedDividend(width, false);
+        for (unsigned i = 0; i + (unsigned)divisorTop < width; ++i)
+          shiftedDividend[i] = aBits[i + (unsigned)divisorTop];
+        if (!valueLessOrEqual(tBits, shiftedDividend))
+          return {DivSchema::DivisorMagnitudeBound,
+                  (unsigned)divisorTop, 0,
+                  BVSchemaGroup::DIVISOR_MAGNITUDE};
+      }
+    }
+
     // q >= 2^k iff b <= (a >> k). The right side is just a comparison over
     // wires from the dividend; the left side is the OR of q[k..W-1]. Start
     // at one because k=0 is the already-covered q != 0 boundary. No
@@ -1361,34 +1401,6 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
       if (above < width && thresholdMismatch(above))
         return {DivSchema::QuotientPow2Threshold, above, 0,
                 BVSchemaGroup::QUOTIENT_THRESHOLDS};
-    }
-
-    // Use the candidate divisor's highest set bit as a broad guard:
-    // b >= 2^k -> q <= a >> k. Keep it behind the complete fixed catalogue
-    // and the exact quotient thresholds, and admit at most two magnitudes per
-    // abstraction; otherwise a search can walk k upward one round at a time.
-    if (bvSchemaGroupEnabled(enabledGroups,
-                             BVSchemaGroup::DIVISOR_MAGNITUDE) &&
-        divMagnitudeBoundsLeft(installedSchemas))
-    {
-      int divisorTop = -1;
-      for (int i = (int)width - 1; i >= 0; --i)
-        if (bBits[i])
-        {
-          divisorTop = i;
-          break;
-        }
-
-      if (divisorTop >= 1)
-      {
-        std::vector<bool> shiftedDividend(width, false);
-        for (unsigned i = 0; i + (unsigned)divisorTop < width; ++i)
-          shiftedDividend[i] = aBits[i + (unsigned)divisorTop];
-        if (!valueLessOrEqual(tBits, shiftedDividend))
-          return {DivSchema::DivisorMagnitudeBound,
-                  (unsigned)divisorTop, 0,
-                  BVSchemaGroup::DIVISOR_MAGNITUDE};
-      }
     }
   }
 
@@ -2159,10 +2171,10 @@ unsigned BVAbstractionRefiner::refineTerms(
                      dividendBits);
       getOperandBits(div.operands[1], div.width, nodeToSATVar, solver,
                      divisorBits);
-      getOperandBits(div.termNode, div.width, nodeToSATVar, solver,
-                     quotientBits);
-      getOperandBits(rem.termNode, rem.width, nodeToSATVar, solver,
-                     remainderBits);
+      readModelBits(encodedResultBitsOf(div, nodeToSATVar), div.width, solver,
+                    quotientBits);
+      readModelBits(encodedResultBitsOf(rem, nodeToSATVar), rem.width, solver,
+                    remainderBits);
 
       const unsigned lowPrefix = std::min(3u, div.width);
       BVSchemaGroup chosenGroup = BVSchemaGroup::COUNT;
@@ -2453,9 +2465,9 @@ unsigned BVAbstractionRefiner::refineTerms(
     getOperandVars(div.operands[1], div.width, nodeToSATVar, solver,
                    divisorVars);
     const std::vector<unsigned>& quotientVars =
-        encodedBitsOf(div.termNode, div.width, nodeToSATVar);
+        encodedResultBitsOf(div, nodeToSATVar);
     const std::vector<unsigned>& remainderVars =
-        encodedBitsOf(rem.termNode, rem.width, nodeToSATVar);
+        encodedResultBitsOf(rem, nodeToSATVar);
 
     if (inc.group == BVSchemaGroup::DIVREM_PAIR)
     {
