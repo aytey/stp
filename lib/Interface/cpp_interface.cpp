@@ -1056,6 +1056,8 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
       IncrementalSolver* inc = GlobalSTP->getIncrementalSolver();
       last_result = inc->checkSat(assertionsSMT2, fromCheckSatAssuming,
                                   firstForcedIncrementalSolve);
+      if (bm.UserFlags.quick_statistics_flag)
+        inc->reportBVAbstractionRecords(std::cerr);
 
       // Core-aware caching: when the refutation's failed assumptions all
       // lie at or below some level D beneath the top, the stack truncated
@@ -1159,7 +1161,11 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
       std::cerr << std::endl
                 << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
                 << " blocking=" << c.bv_blocking_lemmas
-                << " schema=" << c.bv_schema_lemmas << std::endl;
+                << " schema=" << c.bv_schema_lemmas
+                << " exact=" << c.bv_exact_escalations
+                << " exact-mult=" << c.bv_exact_escalations_mult
+                << " exact-divmod=" << c.bv_exact_escalations_divmod
+                << std::endl;
       std::cerr << "Abstraction schemas by group:";
       for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
         std::cerr << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i))

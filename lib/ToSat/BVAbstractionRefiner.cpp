@@ -28,6 +28,7 @@ THE SOFTWARE.
 #include "stp/ToSat/BVExactEncoder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <limits>
 #include <unordered_map>
@@ -1513,16 +1514,96 @@ unsigned valueLemmaAllowance(const UserDefinedFlags& uf, unsigned width)
     return 0; // never escalate: enumerate without limit
 
   const unsigned divisor = uf.bv_term_abstraction_value_divisor;
-  if (divisor == 0)
-    return ceiling; // the flat allowance this replaced
+  unsigned allowance = ceiling;
+  if (divisor != 0)
+  {
+    // At least one. A rate that rounds to nothing would escalate before the
+    // abstraction has been given a single chance to pay, which is not what
+    // "scale it with the width" is meant to mean at narrow widths -- and
+    // width zero does not occur, since the type checker gives every operation
+    // a width and the abstraction has a floor besides.
+    const unsigned scaled = width / divisor;
+    allowance = std::min(allowance, scaled == 0 ? 1u : scaled);
+  }
 
-  // At least one. A rate that rounds to nothing would escalate before the
-  // abstraction has been given a single chance to pay, which is not what
-  // "scale it with the width" is meant to mean at narrow widths -- and
-  // width zero does not occur, since the type checker gives every operation
-  // a width and the abstraction has a floor besides.
-  const unsigned scaled = width / divisor;
-  return std::min(ceiling, scaled == 0 ? 1u : scaled);
+  return allowance;
+}
+
+unsigned valueLemmaAllowance(const UserDefinedFlags& uf, unsigned width,
+                             Kind opKind)
+{
+  unsigned allowance = valueLemmaAllowance(uf, width);
+  if (allowance == 0 || (opKind != BVDIV && opKind != BVMOD))
+    return allowance;
+
+  // Unlike the round ceiling, this does not alter how many algebraic schemas
+  // a record may receive, and unlike the older width scaling it does not alter
+  // BVMULT. It isolates the wide divider candidates which motivated the
+  // experiment. Zero deliberately means absent rather than "escalate
+  // immediately", leaving rounds=0 as the one spelling of never escalating.
+  const unsigned valueLimit =
+      uf.bv_term_abstraction_divmod_value_limit;
+  return valueLimit == 0 ? allowance : std::min(allowance, valueLimit);
+}
+
+void BVAbstractionRefiner::reportRecords(std::ostream& out) const
+{
+  for (size_t i = 0; i < terms_.size(); ++i)
+  {
+    const BVTermAbstraction& abs = terms_[i];
+    bool paired = false;
+    if (abs.opKind == BVDIV || abs.opKind == BVMOD)
+      for (size_t j = 0; j < terms_.size(); ++j)
+      {
+        const BVTermAbstraction& other = terms_[j];
+        if (i == j || other.width != abs.width ||
+            other.opKind == abs.opKind ||
+            (other.opKind != BVDIV && other.opKind != BVMOD))
+          continue;
+        if (other.operands[0].GetNodeNum() == abs.operands[0].GetNodeNum() &&
+            other.operands[1].GetNodeNum() == abs.operands[1].GetNodeNum())
+        {
+          paired = true;
+          break;
+        }
+      }
+    const char* state = "open";
+    if (abs.defined)
+      state = abs.exactEscalations == 0 ? "defined" : "exact";
+    else if (abs.blastedBits != 0)
+      state = "partial";
+
+    // Each value-pair block emits W clauses containing both W-bit operands
+    // and one result bit. These derived counts expose the accumulated SAT
+    // payload without adding bookkeeping to the hot path.
+    const uint64_t blockingClauses =
+        static_cast<uint64_t>(abs.blockedRounds) * abs.width;
+    const uint64_t blockingLiterals =
+        blockingClauses * (2 * static_cast<uint64_t>(abs.width) + 1);
+    const bool hasValueAllowance =
+        abs.opKind == BVMULT || abs.opKind == BVDIV || abs.opKind == BVMOD;
+    const unsigned allowance =
+        hasValueAllowance
+            ? valueLemmaAllowance(bm->UserFlags, abs.width, abs.opKind)
+            : 0;
+
+    out << "BV abstraction record: record=" << i
+        << " node=" << abs.termNode.GetNodeNum()
+        << " kind=" << _kind_names[abs.opKind] << " width=" << abs.width
+        << " state=" << state << " blocking=" << abs.blockedRounds
+        << " schemas=" << abs.schemaRounds
+        << " exact=" << abs.exactEscalations
+        << " exact-bits=" << abs.blastedBits
+        << " allowance=" << allowance
+        << " paired=" << (paired ? 1 : 0)
+        << " pair-prefix=" << (abs.divRemLowPrefixInstalled ? 1 : 0)
+        << " pair-full=" << (abs.divRemFullInstalled ? 1 : 0)
+        << " blocking-clauses=" << blockingClauses
+        << " blocking-literals=" << blockingLiterals
+        << " exact-clauses=" << abs.exactClauses
+        << " exact-vars=" << abs.exactVariables
+        << " exact-us=" << abs.exactMicroseconds << '\n';
+  }
 }
 
 static const char* mulSchemaName(MulSchema schema)
@@ -2851,7 +2932,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     // BVExactEncoder. Two independent encodings of a divider that agree
     // today are two that can stop agreeing, and these two already had: the
     // written-out one and BBDivMod disagreed about a zero divisor.
-    const unsigned limit = valueLemmaAllowance(bm->UserFlags, W);
+    const unsigned limit = valueLemmaAllowance(bm->UserFlags, W, abs.opKind);
     if (limit != 0 && abs.blockedRounds >= limit)
     {
       // All of it, unless the piece-at-a-time escalation is on and this is
@@ -2883,10 +2964,30 @@ unsigned BVAbstractionRefiner::refineTerms(
         }
       }
 
+      const uint64_t exactClausesBefore = solver.submittedClauses();
+      const uint32_t exactVariablesBefore = solver.nVars();
+      const std::chrono::steady_clock::time_point exactStarted =
+          std::chrono::steady_clock::now();
       BVExactEncoder(bm).encode(solver, encodeAs, upto, aVars, bVars,
                                 resultVars);
+      const uint64_t exactMicros = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - exactStarted)
+              .count());
       abs.blastedBits = upto;
       abs.defined = (upto == W);
+      abs.exactEscalations++;
+      abs.exactClauses += solver.submittedClauses() - exactClausesBefore;
+      abs.exactVariables += solver.nVars() - exactVariablesBefore;
+      abs.exactMicroseconds += exactMicros;
+      bm->UserFlags.coverage.bv_exact_escalations++;
+      if (abs.opKind == BVMULT)
+        bm->UserFlags.coverage.bv_exact_escalations_mult++;
+      else
+      {
+        assert(abs.opKind == BVDIV || abs.opKind == BVMOD);
+        bm->UserFlags.coverage.bv_exact_escalations_divmod++;
+      }
 
       if (bm->UserFlags.stats_flag)
       {

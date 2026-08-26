@@ -629,6 +629,12 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
         b->UserFlags.bv_term_abstraction_value_divisor =
             static_cast<unsigned>(param_value);
       break;
+    case BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT:
+      if (nonNegativeFlag(param_value,
+                          "BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT"))
+        b->UserFlags.bv_term_abstraction_divmod_value_limit =
+            static_cast<unsigned>(param_value);
+      break;
     case UF_LEMMAS_PER_ROUND:
       if (nonNegativeFlag(param_value, "UF_LEMMAS_PER_ROUND"))
         b->UserFlags.uf_lemmas_per_round = static_cast<unsigned>(param_value);
@@ -988,6 +994,12 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
       return c.uf_applications_lowered;
     case STP_COUNTER_UF_CONSTRAINTS_INSTALLED:
       return c.uf_constraints_installed;
+    case STP_COUNTER_BV_EXACT_ESCALATIONS:
+      return c.bv_exact_escalations;
+    case STP_COUNTER_BV_EXACT_ESCALATIONS_MULT:
+      return c.bv_exact_escalations_mult;
+    case STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD:
+      return c.bv_exact_escalations_divmod;
   }
   reportCAPIError("vc_getCounter: unrecognised counter");
   return 0;

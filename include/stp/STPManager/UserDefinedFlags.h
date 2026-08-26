@@ -586,6 +586,20 @@ public:
   // rate is really aimed at are not in it; someone with 53- or 64-bit
   // operands may find otherwise, which is why the flag stays.
   unsigned bv_term_abstraction_value_divisor = 0;
+  // An independent cap on BVDIV/BVMOD value-pair blocking, after the round
+  // ceiling and optional width scaling above have been applied. This
+  // separates the experiment callers actually want to run -- four, eight,
+  // sixteen or thirty-two divider candidates -- from both multiplication and
+  // `bv_term_abstraction_rounds`, which also bounds algebraic-schema
+  // refinement. Zero means no additional cap, preserving every established
+  // profile and the default allowance exactly.
+  //
+  // This is a measurement control, not a recommended policy. On the broad
+  // 417-query KLEE corpus, 4 and 8 were clear regressions and 16 was slower in
+  // three interleaved runs. Records frequently settled after 16 bad
+  // candidates but before the old allowance, so repetition count by itself
+  // could not identify when paying for an exact divider would help.
+  unsigned bv_term_abstraction_divmod_value_limit = 0;
   // Escalate an abstracted BVMULT a piece at a time rather than all at once:
   // encode only the bits up to and a little past the lowest one the
   // candidate got wrong, and come back for more if that does not settle the
@@ -1000,6 +1014,13 @@ public:
     // interchangeable: the same number of each says very different things
     // about how a query was decided.
     uint64_t bv_schema_lemmas = 0;
+    // Value-pair refinement which reached its allowance and installed the
+    // operation's exact circuit. Split by the only two operation families
+    // which use that path so a corpus can distinguish a divider problem from
+    // a multiplier one without scraping diagnostic prose.
+    uint64_t bv_exact_escalations = 0;
+    uint64_t bv_exact_escalations_mult = 0;
+    uint64_t bv_exact_escalations_divmod = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.

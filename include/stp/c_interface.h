@@ -612,7 +612,20 @@ enum ifaceflag_t
   //! previously published interface-flag ordinal remains stable. This is the
   //! C API's way to reach --bv-term-abstraction-profile.
   //!
-  BV_TERM_ABSTRACTION_PROFILE
+  BV_TERM_ABSTRACTION_PROFILE,
+
+  //! Caps BVDIV/BVMOD value-pair blocking independently of
+  //! BV_TERM_ABSTRACTION_ROUNDS and BVMULT.
+  //!
+  //! `param_value` is the cap applied after the round ceiling and optional
+  //! width scaling. Unlike changing ROUNDS, this leaves the algebraic-schema
+  //! budget untouched, making 4/8/16/32 value-block experiments comparable.
+  //! Zero (the default) adds no cap and preserves the existing allowance; a
+  //! negative value is refused. Appended to preserve every published ordinal.
+  //! This is the C API's way to reach
+  //! --bv-term-abstraction-divmod-value-limit.
+  //!
+  BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT
 
 };
 
@@ -901,7 +914,15 @@ enum stp_counter_t
   STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
   STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
   STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL,
-  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED
+  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED,
+
+  //! Value-pair refinements which spent their allowance and installed an
+  //! exact circuit, in total and partitioned between multiplication and
+  //! division/remainder. Appended to preserve every published counter
+  //! ordinal.
+  STP_COUNTER_BV_EXACT_ESCALATIONS,
+  STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
+  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD
 };
 
 //! \brief Reads one of the counters above.

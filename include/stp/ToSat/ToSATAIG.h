@@ -135,6 +135,10 @@ public:
 
   bool hasBVEQAbstractions() const { return abstraction_.hasEqualities(); }
   bool hasBVTermAbstractions() const { return abstraction_.hasTerms(); }
+  void reportBVAbstractionRecords(std::ostream& out) const
+  {
+    abstraction_.reportRecords(out);
+  }
 
   unsigned refineAbstractions(SATSolver& solver) override;
   uint64_t abstractionRefinements() const override

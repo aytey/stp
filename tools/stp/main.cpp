@@ -435,6 +435,14 @@ void ExtraMain::create_options()
                  "slower and no faster)")
       ->group(refinement_group)
       ->capture_default_str();
+  app.add_option("--bv-term-abstraction-divmod-value-limit",
+                 bm->UserFlags.bv_term_abstraction_divmod_value_limit,
+                 "independent cap on BVDIV/BVMOD value-pair blocking after "
+                 "the round ceiling and optional width scaling; unlike "
+                 "--rounds this changes neither the algebraic-schema budget "
+                 "nor BVMULT (0, the default: no additional cap)")
+      ->group(refinement_group)
+      ->capture_default_str();
 
   bool_arg("--bv-term-abstraction-inc-bitblast",
            bm->UserFlags.bv_term_abstraction_inc_bitblast,

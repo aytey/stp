@@ -53,6 +53,7 @@ THE SOFTWARE.
 #include "stp/ToSat/ToSATBase.h"
 
 #include <cstdint>
+#include <iosfwd>
 #include <vector>
 
 namespace stp
@@ -474,12 +475,20 @@ DLL_PUBLIC void encodeDivUnderDivisorValue(
 // A blocking lemma rules out one pair of operand values out of 2^(2W), so
 // what one is worth falls away as the operands widen and a flat allowance
 // means something quite different at either end of the range. The allowance
-// is a rate instead -- `width / bv_term_abstraction_value_divisor` -- held
-// under the flat ceiling `bv_term_abstraction_rounds`, which keeps every
-// spelling that ceiling already had: zero still never escalates, and an
-// explicit count still caps.
+// may be a rate -- `width / bv_term_abstraction_value_divisor` -- held under
+// the flat ceiling `bv_term_abstraction_rounds`. An operation-specific policy
+// may hold that result lower still. Keeping those layers separate lets a
+// benchmark vary value blocks without also changing the number of schema
+// rounds. Zero rounds still never escalates; zero for the divisor leaves
+// width scaling disabled.
 DLL_PUBLIC unsigned valueLemmaAllowance(const UserDefinedFlags& uf,
                                         unsigned width);
+
+// The operation-specific allowance. DIV/MOD may opt into the independent
+// `bv_term_abstraction_divmod_value_limit`; multiplication deliberately does
+// not, so a divider experiment cannot silently change a corpus's multipliers.
+DLL_PUBLIC unsigned valueLemmaAllowance(const UserDefinedFlags& uf,
+                                        unsigned width, Kind opKind);
 
 struct BVTermAbstraction
 {
@@ -521,6 +530,18 @@ struct BVTermAbstraction
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.
   unsigned blastedBits = 0;
+  // Times value-pair refinement reached its allowance and installed an exact
+  // circuit. Normally zero or one; incremental multiplication bit-blasting
+  // may install more than one increasingly wide piece.
+  unsigned exactEscalations = 0;
+  // Cost paid by those exact escalations. submittedClauses() is the common,
+  // monotone backend boundary, so this remains comparable when a backend's
+  // own clause count is unavailable or preprocessing has removed clauses.
+  // The timer covers circuit construction, CNF conversion and submission;
+  // it deliberately excludes the next SAT search.
+  uint64_t exactClauses = 0;
+  uint64_t exactVariables = 0;
+  uint64_t exactMicroseconds = 0;
   // The bits of -operand[i], minted on first use by a schema that needs the
   // semantic operand and kept so later schemas do not pay for the same
   // negation circuit again.
@@ -564,6 +585,12 @@ public:
   }
 
   uint64_t refinements() const { return refinements_; }
+
+  // A stable, one-line snapshot for every term record. Quick-statistics
+  // consumers use this instead of reconstructing records from free-form
+  // schema diagnostics; in particular it exposes the blocking distribution
+  // which an aggregate total hides.
+  void reportRecords(std::ostream& out) const;
 
   // Keep a simplifying backend from eliminating anything a future lemma
   // will be written over.

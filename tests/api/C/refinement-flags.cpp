@@ -104,6 +104,8 @@ static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS == 30,
 static_assert(BV_TERM_ABSTRACTION_DIVMOD == 31,
               "published interface-flag ordinal changed");
 static_assert(BV_TERM_ABSTRACTION_PROFILE == 32,
+              "published interface-flag ordinal changed");
+static_assert(BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT == 33,
               "new interface flags must be appended to preserve the C ABI");
 
 static_assert(STP_BV_SCHEMA_GROUP_BASE == (1 << 0),
@@ -189,6 +191,7 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT),
             flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
+  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_divmod_value_limit);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_inc_bitblast);
   vc_Destroy(vc);
 }
@@ -320,6 +323,10 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_VALUE_DIVISOR, 16);
   EXPECT_EQ(16u, flags(vc).bv_term_abstraction_value_divisor);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT, 0);
+  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_divmod_value_limit);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT, 8);
+  EXPECT_EQ(8u, flags(vc).bv_term_abstraction_divmod_value_limit);
 
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_INC_BITBLAST, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_inc_bitblast);
@@ -437,19 +444,22 @@ TEST(refinement_flags, ANegativeUnsignedValueIsRefusedAndLeavesTheFieldAlone)
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_VALUE_DIVISOR, 8);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_VALUE_DIVISOR, -3);
   EXPECT_EQ(8u, flags(vc).bv_term_abstraction_value_divisor);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT, 4);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT, -3);
+  EXPECT_EQ(4u, flags(vc).bv_term_abstraction_divmod_value_limit);
 
   vc_setInterfaceFlags(vc, UF_LEMMAS_PER_ROUND, -1);
   EXPECT_EQ(8u, flags(vc).uf_lemmas_per_round);
   vc_setInterfaceFlags(vc, UF_ACKERMANN_BUDGET, -1);
   EXPECT_EQ(256u, flags(vc).uf_eager_budget);
-  EXPECT_EQ(6, errors);
+  EXPECT_EQ(7, errors);
 
   // The AIG budget is signed underneath and -1 is a value of its own there,
   // so only a value below it names nothing and only that is refused.
   vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, 7);
   vc_setInterfaceFlags(vc, AIG_NODE_BUDGET, -2);
   EXPECT_EQ(7, flags(vc).aig_node_budget);
-  EXPECT_EQ(7, errors);
+  EXPECT_EQ(8, errors);
 
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);

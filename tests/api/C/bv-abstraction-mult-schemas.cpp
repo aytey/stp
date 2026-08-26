@@ -95,6 +95,22 @@ void assertANonSquare(VC vc)
   vc_assertFormula(vc, vc_eqExpr(vc, x, y));
 }
 
+// If b <= a < 2b, unsigned division has quotient one. Negating that theorem
+// gives the DIV/MOD exact-escalation path a formula which abstraction alone
+// admits but the exact circuit refutes.
+void assertImpossibleQuotient(VC vc)
+{
+  Expr a = var(vc, "div_a");
+  Expr b = var(vc, "div_b");
+  Expr quotient = vc_bvDivExpr(vc, 64, a, b);
+  vc_assertFormula(vc, vc_bvLeExpr(vc, b, a));
+  vc_assertFormula(
+      vc, vc_bvLtExpr(vc, vc_bvMinusExpr(vc, 64, a, b), b));
+  vc_assertFormula(
+      vc, vc_notExpr(vc, vc_eqExpr(vc, quotient,
+                                   vc_bvConstExprFromInt(vc, 64, 1))));
+}
+
 unsigned long long counter(VC vc, enum stp_counter_t c)
 {
   return vc_getCounter(vc, c);
@@ -133,6 +149,39 @@ TEST(bv_abstraction_mult_schemas, NoSchemaLemmaIsSpentWithTheFlagOff)
   EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_ABSTRACTED_MULT));
   EXPECT_EQ(0u, counter(vc, STP_COUNTER_BV_SCHEMA_LEMMAS));
   EXPECT_GT(counter(vc, STP_COUNTER_BV_BLOCKING_LEMMAS), 0u);
+  vc_Destroy(vc);
+}
+
+// Reaching the value allowance is a different outcome from spending another
+// blocking lemma. Its counters are what an embedder can use in place of the
+// command-line record trace, and the operation-family split must add back to
+// the total.
+TEST(bv_abstraction_mult_schemas, ExactEscalationIsCountedByFamily)
+{
+  VC vc = checker(0);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, 1);
+  assertFactorisation(vc);
+  EXPECT_EQ(0, vc_query(vc, vc_falseExpr(vc)));
+
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_BLOCKING_LEMMAS));
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS));
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_MULT));
+  EXPECT_EQ(0u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
+  vc_Destroy(vc);
+}
+
+TEST(bv_abstraction_mult_schemas, DivModExactEscalationIsCountedByFamily)
+{
+  VC vc = checker(0);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT, 1);
+  assertImpossibleQuotient(vc);
+  EXPECT_EQ(1, vc_query(vc, vc_falseExpr(vc)));
+
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_ABSTRACTED_DIVMOD));
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_BLOCKING_LEMMAS));
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS));
+  EXPECT_EQ(0u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_MULT));
+  EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
   vc_Destroy(vc);
 }
 
