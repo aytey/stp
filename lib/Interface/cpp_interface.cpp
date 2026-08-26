@@ -1145,46 +1145,7 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
       // another solver most wanted and least had: reading them off the query
       // text instead over-counts, because it counts occurrences the
       // simplifier has already retired.
-      const UserDefinedFlags::EncodingCoverage& c = bm.UserFlags.coverage;
-      // In AbstractionKind order; a kind added there needs a name here.
-      static const char* kindNames[] = {"eq",   "compare", "ite",
-                                        "plus", "mult",    "divmod"};
-      static_assert(sizeof(kindNames) / sizeof(kindNames[0]) ==
-                        UserDefinedFlags::EncodingCoverage::KINDS,
-                    "abstraction kind names are out of step with the counters");
-      std::cerr << "Abstraction coverage (candidates -> abstracted):";
-      for (unsigned i = 0; i < UserDefinedFlags::EncodingCoverage::KINDS; i++)
-        std::cerr << " " << kindNames[i] << "=" << c.bv_candidates[i] << "->"
-                  << c.bv_abstracted[i];
-      std::cerr << std::endl
-                << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
-                << " blocking=" << c.bv_blocking_lemmas
-                << " schema=" << c.bv_schema_lemmas << std::endl;
-      // The schema total again, split by the family each fact came from.
-      // Printed only where a schema fired at all, so an ordinary run is not
-      // given a line of zeroes -- and printed even for the families that are
-      // off, because "this family fired nothing" and "this family was not
-      // offered" are answered by the same line read against the mask.
-      // The escalations, which are the counter that says whether any of the
-      // above was worth doing. Printed whenever the abstraction took an
-      // operation at all, including zero -- "nothing escalated" is the
-      // result worth seeing, and an absent line does not say it.
-      if (c.bv_abstracted[UserDefinedFlags::ABSTRACT_MULT] != 0 ||
-          c.bv_abstracted[UserDefinedFlags::ABSTRACT_DIVMOD] != 0)
-        std::cerr << "Abstraction escalations: exact=" << c.bv_exact_escalations
-                  << " mult=" << c.bv_exact_escalations_mult
-                  << " divmod=" << c.bv_exact_escalations_divmod
-                  << " clauses=" << c.bv_exact_clauses
-                  << " vars=" << c.bv_exact_variables << std::endl;
-
-      if (c.bv_schema_lemmas != 0)
-      {
-        std::cerr << "Abstraction schema families:";
-        for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; i++)
-          std::cerr << " " << bvSchemaGroupName((BVSchemaGroup)i) << "="
-                    << c.bv_schema_group_lemmas[i];
-        std::cerr << std::endl;
-      }
+      printAbstractionCoverage(bm.UserFlags, std::cerr);
     }
   }
 

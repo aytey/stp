@@ -161,7 +161,17 @@ void ToSATAIG::handle_cnf_options(Cnf_Dat_t* cnfData, bool needAbsRef)
   if (bm->UserFlags.exit_after_CNF)
   {
     if (bm->UserFlags.quick_statistics_flag)
+    {
       bm->GetRunTimes()->print();
+      // The abstraction coverage too, because it is a fact about the
+      // bit-blasting and the bit-blasting has just finished. Reaching it any
+      // other way means solving the query, which for the question the
+      // counters answer -- did this query contain arithmetic wide enough to
+      // abstract -- is the whole of the work and none of the answer. Over a
+      // corpus of forty thousand it is the difference between minutes and a
+      // day.
+      printAbstractionCoverage(bm->UserFlags, cerr);
+    }
 
     if (needAbsRef)
     {
