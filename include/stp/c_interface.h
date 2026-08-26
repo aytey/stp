@@ -587,7 +587,7 @@ enum bv_schema_group_t
                                   STP_BV_SCHEMA_GROUP_ADD |
                                   STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS |
                                   STP_BV_SCHEMA_GROUP_LOW_PREFIX |
-                                  STP_BV_SCHEMA_GROUP_DIVREM_PREFIX |
+                                  STP_BV_SCHEMA_GROUP_DIVREM_IDENTITY |
                                   STP_BV_SCHEMA_GROUP_UREM7)
 };
 

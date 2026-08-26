@@ -112,16 +112,44 @@ constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
     bvSchemaGroupBit(BVSchemaGroup::UREM) |
     bvSchemaGroupBit(BVSchemaGroup::MUL6);
 
-// What an explicitly enabled BV term abstraction inherits: everything that
-// has been measured to pay, which is everything except the three families
-// imported for completeness and measured not to.
+// What an explicitly enabled BV term abstraction inherits: the families
+// measured to pay, on the workloads this is actually asked to run.
 //
-// Over the 219 `QF_BV/spear` files that actually abstract a division, the
-// three off by default cost 62% more refinement rounds and install three
-// times the schema lemmas; the eight on by default settle those files in
-// 1063 rounds and 209 blocking lemmas against 1915 and 3525 with no schemas
-// at all. `--bv-term-abstraction-schema-groups=all` is the setting that
-// reproduces the complete imported stack.
+// Over the 219 `QF_BV/spear` files that abstract a division, these settle
+// the corpus in 1063 refinement rounds and 209 blocking lemmas against 1915
+// and 3525 with no schemas at all, and the families left out cost 62% more
+// rounds for three times the schema lemmas.
+// `--bv-term-abstraction-schema-groups=all` reproduces the complete
+// imported stack.
+//
+// DIVREM_PREFIX and not DIVREM_IDENTITY, and that pairing is the one thing
+// here a bit-vector corpus could not have decided. Both say the dividend is
+// the quotient times the divisor plus the remainder; the identity says it
+// at the full width and costs a multiplier, the prefix says it of the low
+// three bits and costs a handful of gates. On spear the choice is invisible
+// -- no query there holds a BVDIV and a BVMOD over the same operands, so
+// neither fires and all three settings are identical, file for file.
+//
+// On floating point they are not close. SymFPU's `fixedPointDivide` issues
+// a BVDIV and a BVMOD over the same ~107-bit pair for every binary64
+// `fp.div`, keeps the low 54 quotient bits and tests the remainder against
+// zero -- so every such query hands this exactly the pair it looks for, and
+// the identity answers with a 107-bit multiplier spliced into the CNF for a
+// product nothing reads. Over 298 floating-point queries from eleven KLEE
+// drivers, 20s cap:
+//
+//   divrem-identity   74.77s      divrem-prefix   44.86s
+//   both              62.26s      neither         46.09s
+//   abstraction off   45.84s
+//
+// The identity is 63% worse than not abstracting at all; the prefix is at
+// parity with it. One query goes from 4.11s to 0.07s. The prefix wins
+// because what it installs is small, not because it says less that matters:
+// where the low bits already recompose there was nothing to rule out.
+//
+// The identity stays implemented and reachable, because the fact is sound
+// and stronger and its own pinned query shows what it is for. It is not a
+// default, because the corpus that justified it never fired it.
 constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
     BV_SCHEMA_GROUP_ALL &
     ~(bvSchemaGroupBit(BVSchemaGroup::UDIV_EXTRA) |
@@ -129,7 +157,7 @@ constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT =
       bvSchemaGroupBit(BVSchemaGroup::ADD) |
       bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_THRESHOLDS) |
       bvSchemaGroupBit(BVSchemaGroup::LOW_PREFIX) |
-      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PREFIX) |
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_IDENTITY) |
       bvSchemaGroupBit(BVSchemaGroup::UREM7));
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
