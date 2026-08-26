@@ -193,10 +193,15 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
     parsedMask = BV_SCHEMA_GROUP_AGGRESSIVE;
     parsedRounds = BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
   }
+  else if (text == "spear" || text == "broad-no-pair")
+  {
+    parsedMask = BV_SCHEMA_GROUP_SPEAR;
+    parsedRounds = BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
+  }
   else
   {
     error = "unknown BV term-abstraction profile '" + text +
-            "'; expected qualified or aggressive";
+            "'; expected qualified, aggressive, or spear";
     return false;
   }
 

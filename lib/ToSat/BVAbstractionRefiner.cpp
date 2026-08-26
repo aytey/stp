@@ -840,8 +840,9 @@ bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
 }
 
 static const MulLemma MUL_LEMMAS[] = {
-    MulLemma::FactorAndProductNotOr, // Bitwuzla MUL ref3; 5 firings
-    MulLemma::MulRefN3,              // 4
+    MulLemma::FactorUnchangedByMaskedShift, // Bitwuzla MUL8; 75 firings
+    MulLemma::FactorAndProductNotOr,        // Bitwuzla MUL ref3; 5
+    MulLemma::MulRefN3,                     // 4
 
     // The unobserved tail in upstream registry order.
     MulLemma::MulRef1, MulLemma::MulRefN5, MulLemma::MulRefN6,
@@ -854,8 +855,30 @@ static const unsigned MUL_LEMMA_COUNT =
 
 static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
 {
-  return lemma == MulLemma::FactorAndProductNotOr ? BVSchemaGroup::MUL_REF3
-                                                  : BVSchemaGroup::MUL_EXTRA;
+  switch (lemma)
+  {
+    case MulLemma::FactorUnchangedByMaskedShift:
+      return BVSchemaGroup::MUL8;
+    case MulLemma::FactorAndProductNotOr:
+      return BVSchemaGroup::MUL_REF3;
+
+    case MulLemma::MulRef1:
+    case MulLemma::MulRefN3:
+    case MulLemma::MulRefN5:
+    case MulLemma::MulRefN6:
+    case MulLemma::MulRef14:
+    case MulLemma::MulRef15:
+    case MulLemma::MulRefN9:
+    case MulLemma::MulRef18:
+    case MulLemma::MulRefN11:
+    case MulLemma::MulRefN12:
+    case MulLemma::MulRefN13:
+    case MulLemma::MulRef13:
+    case MulLemma::MulRef12:
+      return BVSchemaGroup::MUL_EXTRA;
+  }
+  assert(false && "MulLemma has no schema-group owner");
+  return BVSchemaGroup::MUL_EXTRA;
 }
 
 const MulLemma* mulLemmaTable(unsigned& count)
@@ -971,23 +994,10 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       tBits[0] != (aBits[0] && bBits[0]))
     return {MulSchema::Odd, 0, 0};
 
-  // MUL8: t = 0 and x odd -> s = 0, in either reading. Bitwuzla writes
-  // this as s = s << (x & (1 >> t)); the shift amount is nonzero exactly
-  // in the premise above, and s = s << 1 has only the all-zero solution.
-  // Keep the two readings separate just as it does for this commutative
-  // operation: installing one says nothing about an odd second operand.
-  static const unsigned zeroProductInstalled[2] = {
-      MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
-      MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1};
-  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::MUL8))
-    for (unsigned i = 0; i < 2; ++i)
-      if ((installedSchemas & zeroProductInstalled[i]) == 0 &&
-          !mul8PublishedHolds(*ops[i], *ops[1 - i], tBits))
-        return {MulSchema::ZeroProductOddOperand, i, 0, 0, BVSchemaGroup::MUL8};
-
-  // The remaining facts are unconditional but asymmetric expressions over a
+  // The registry facts are unconditional but asymmetric expressions over a
   // commutative operation. Offer each source fact in both readings, exactly
-  // once apiece.
+  // once apiece. MUL8 is entry zero, so the ranked 75-firing fact is offered
+  // before the remainder of the imported catalogue.
   for (unsigned lemmaIndex = 0; lemmaIndex < MUL_LEMMA_COUNT; ++lemmaIndex)
   {
     const MulLemma lemma = MUL_LEMMAS[lemmaIndex];
@@ -1093,21 +1103,6 @@ static bool valueIsZero(const std::vector<bool>& bits)
   return true;
 }
 
-static std::vector<bool> valueSubtract(const std::vector<bool>& left,
-                                       const std::vector<bool>& right)
-{
-  assert(left.size() == right.size());
-  std::vector<bool> difference(left.size());
-  bool borrow = false;
-  for (unsigned i = 0; i < left.size(); ++i)
-  {
-    difference[i] = (left[i] != right[i]) != borrow;
-    borrow = (!left[i] && right[i]) || (!left[i] && borrow) ||
-             (right[i] && borrow);
-  }
-  return difference;
-}
-
 // The DivLemma facts, in the order the chooser offers them: by how often
 // they fired in the solver they come from, measured over the queries this
 // is for. A candidate usually breaks more than one, so the order decides
@@ -1117,6 +1112,9 @@ static const DivLemma DIV_LEMMAS[] = {
     DivLemma::DivisorAboveShiftedDividend,           // 280 firings
     DivLemma::QuotientBelowNegatedDivisor,           // 200
     DivLemma::DividendAboveNegatedAnd,               // 187
+    // STP-specific. Ranked here by the extra candidate cube it excludes at
+    // six bits (2.42%), ahead of facts below that add no unique exclusions.
+    DivLemma::QuotientIsOne,
     DivLemma::DividendZero,                          // 171
     DivLemma::DivisorEqualsDividend,                 // 162
     DivLemma::DivisorLessOneAboveShiftedDividend,    // 161
@@ -1155,6 +1153,9 @@ static BVSchemaGroup divLemmaGroup(DivLemma lemma)
     case DivLemma::DividendAboveShiftedDoubleQuotient:
       return BVSchemaGroup::UDIV15;
 
+    case DivLemma::QuotientIsOne:
+      return BVSchemaGroup::QUOTIENT_ONE_QUOT;
+
     case DivLemma::DividendZero:
     case DivLemma::DivisorEqualsDividend:
     case DivLemma::DivisorAllOnes:
@@ -1176,9 +1177,25 @@ static BVSchemaGroup divLemmaGroup(DivLemma lemma)
     case DivLemma::DividendNotTwiceQuotientPlusOr:
       return BVSchemaGroup::UDIV_OBSERVED;
 
-    default:
+    case DivLemma::UdivRef10:
+    case DivLemma::UdivRef11:
+    case DivLemma::UdivRef20:
+    case DivLemma::UdivRef21:
+    case DivLemma::UdivRef23:
+    case DivLemma::UdivRef24:
+    case DivLemma::UdivRef25:
+    case DivLemma::UdivRef28:
+    case DivLemma::UdivRef29:
+    case DivLemma::UdivRef30:
+    case DivLemma::UdivRef31:
+    case DivLemma::UdivRef32:
+    case DivLemma::UdivRef34:
+    case DivLemma::UdivRef36:
+    case DivLemma::UdivRef38:
       return BVSchemaGroup::UDIV_EXTRA;
   }
+  assert(false && "DivLemma has no schema-group owner");
+  return BVSchemaGroup::UDIV_EXTRA;
 }
 
 // UDIV_EXTRA was published by v2 as an umbrella for the complete non-base
@@ -1203,7 +1220,9 @@ static const RemLemma REM_LEMMAS[] = {
     RemLemma::DividendZero,
     RemLemma::DivisorEqualsDividend,
     RemLemma::DividendBelowDivisor,
-    RemLemma::RemainderBelowDivisorDisabled,
+    // STP-specific, and ranked with the three facts above because it likewise
+    // determines the result throughout its premise rather than only bounding it.
+    RemLemma::RemainderIsDifference,
     RemLemma::DividendWithinDivisorOrRemainder,
     RemLemma::DividendAboveRemainderOrAnd,
     RemLemma::RemainderOutsideOperandsNotOne,
@@ -1211,10 +1230,37 @@ static const RemLemma REM_LEMMAS[] = {
     RemLemma::RemainderInOperandsAboveLowBit,
     RemLemma::DividendNotOrOfNegations,
     RemLemma::DifferenceAboveRemainder,
-    RemLemma::XorAboveRemainder};
+    RemLemma::XorAboveRemainder,
+    // Transcribed and tested, but deliberately never offered.
+    RemLemma::RemainderBelowDivisorDisabled};
 
 static const unsigned REM_LEMMA_COUNT =
     sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
+
+static BVSchemaGroup remLemmaGroup(RemLemma lemma)
+{
+  switch (lemma)
+  {
+    case RemLemma::RemainderIsDifference:
+      return BVSchemaGroup::QUOTIENT_ONE_REM;
+
+    case RemLemma::DividendZero:
+    case RemLemma::DivisorEqualsDividend:
+    case RemLemma::DividendBelowDivisor:
+    case RemLemma::RemainderBelowDivisorDisabled:
+    case RemLemma::DividendWithinDivisorOrRemainder:
+    case RemLemma::DividendAboveRemainderOrAnd:
+    case RemLemma::RemainderOutsideOperandsNotOne:
+    case RemLemma::RemainderNotOrOfComplements:
+    case RemLemma::RemainderInOperandsAboveLowBit:
+    case RemLemma::DividendNotOrOfNegations:
+    case RemLemma::DifferenceAboveRemainder:
+    case RemLemma::XorAboveRemainder:
+      return BVSchemaGroup::UREM;
+  }
+  assert(false && "RemLemma has no schema-group owner");
+  return BVSchemaGroup::UREM;
+}
 
 const DivLemma* divLemmaTable(unsigned& count)
 {
@@ -1283,31 +1329,19 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
 
-    // Exactly one subtraction fits: b <= a and a-b < b. The first condition
-    // makes the modular subtraction the natural one; spelling the upper
-    // edge this way avoids the overflow in a < 2*b. Once installed, this
-    // single implication covers the entire band for every nonzero divisor.
-    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::QUOTIENT_ONE_REM) &&
-        (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE) == 0)
+    for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
     {
-      const std::vector<bool> difference = valueSubtract(aBits, bBits);
-      if (valueLessOrEqual(bBits, aBits) &&
-          !valueLessOrEqual(bBits, difference) && difference != tBits)
-        return {DivSchema::RemainderQuotientOne, 0, 0,
-                BVSchemaGroup::QUOTIENT_ONE_REM};
+      const RemLemma lemma = REM_LEMMAS[i];
+      const BVSchemaGroup group = remLemmaGroup(lemma);
+      if (!bvSchemaGroupEnabled(enabledGroups, group))
+        continue;
+      if (!remLemmaEnabled(lemma) || !remLemmaApplicable(lemma, width))
+        continue;
+      if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
+        continue;
+      if (!remLemmaHolds(lemma, aBits, bBits, tBits))
+        return {DivSchema::Lemma, 0, i, group};
     }
-
-    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::UREM))
-      for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
-      {
-        if (!remLemmaEnabled(REM_LEMMAS[i]) ||
-            !remLemmaApplicable(REM_LEMMAS[i], width))
-          continue;
-        if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
-          continue;
-        if (!remLemmaHolds(REM_LEMMAS[i], aBits, bBits, tBits))
-          return {DivSchema::Lemma, 0, i, BVSchemaGroup::UREM};
-      }
   }
   else if (opKind == BVDIV)
   {
@@ -1317,21 +1351,6 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
             0 &&
         !divisorZero && !valueLessOrEqual(tBits, aBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
-
-    // Exactly one subtraction fits. This is the quotient counterpart of
-    // RemainderQuotientOne above and uses the same overflow-safe upper edge.
-    if (bvSchemaGroupEnabled(enabledGroups,
-                             BVSchemaGroup::QUOTIENT_ONE_QUOT) &&
-        (installedSchemas & DIV_SCHEMA_INSTALLED_QUOTIENT_ONE) == 0)
-    {
-      const std::vector<bool> difference = valueSubtract(aBits, bBits);
-      std::vector<bool> one(width, false);
-      one[0] = true;
-      if (valueLessOrEqual(bBits, aBits) &&
-          !valueLessOrEqual(bBits, difference) && tBits != one)
-        return {DivSchema::QuotientOne, 0, 0,
-                BVSchemaGroup::QUOTIENT_ONE_QUOT};
-    }
 
     // Try the ranked, fixed family before the synthesised thresholds below.
     // A W-bit quotient has W-1 distinct threshold facts, so putting that
@@ -1438,8 +1457,6 @@ static const char* divSchemaName(DivSchema schema)
     case DivSchema::Pow2Divisor: return "power-of-two-divisor";
     case DivSchema::RemainderAtMostDividend: return "remainder-at-most-dividend";
     case DivSchema::RemainderBelowDivisor: return "remainder-below-divisor";
-    case DivSchema::RemainderQuotientOne: return "quotient-one-remainder";
-    case DivSchema::QuotientOne: return "quotient-one";
     case DivSchema::QuotientAtMostDividend: return "quotient-at-most-dividend";
     case DivSchema::QuotientPow2Threshold:
       return "power-of-two-quotient-threshold";
@@ -1513,8 +1530,6 @@ static const char* mulSchemaName(MulSchema schema)
   switch (schema)
   {
     case MulSchema::Odd: return "odd";
-    case MulSchema::ZeroProductOddOperand:
-      return "zero-product-odd-operand";
     case MulSchema::TrailingZeros: return "trailing-zeros";
     case MulSchema::Pow2: return "power-of-two";
     case MulSchema::NegPow2: return "negated-power-of-two";
@@ -2678,19 +2693,6 @@ unsigned BVAbstractionRefiner::refineTerms(
           abs.installedSchemas |= DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR;
           break;
 
-        case DivSchema::RemainderQuotientOne:
-          assert(abs.opKind == BVMOD);
-          encodeRemQuotientOne(solver, aVars, bVars, resultVars, W);
-          abs.installedSchemas |=
-              DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE;
-          break;
-
-        case DivSchema::QuotientOne:
-          assert(abs.opKind == BVDIV);
-          encodeDivQuotientOne(solver, aVars, bVars, resultVars, W);
-          abs.installedSchemas |= DIV_SCHEMA_INSTALLED_QUOTIENT_ONE;
-          break;
-
         case DivSchema::QuotientAtMostDividend:
           encodeDivBound(solver, inc.divSchema.schema, aVars, bVars, resultVars,
                          W);
@@ -2763,14 +2765,6 @@ unsigned BVAbstractionRefiner::refineTerms(
         case MulSchema::Odd:
           encodeMulOdd(solver, aVars, bVars, resultVars);
           abs.installedSchemas |= MUL_SCHEMA_INSTALLED_ODD;
-          break;
-
-        case MulSchema::ZeroProductOddOperand:
-          encodeMulZeroProductOddOperand(solver, *opVars[chosen],
-                                         *opVars[1 - chosen], resultVars, W);
-          abs.installedSchemas |=
-              (chosen == 0 ? MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0
-                           : MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1);
           break;
 
         case MulSchema::TrailingZeros:

@@ -46,6 +46,12 @@ static_assert(RemLemma::UremRef2 == RemLemma::DividendZero,
               "legacy UREM spelling changed value");
 static_assert(MulLemma::MulRef3 == MulLemma::FactorAndProductNotOr,
               "legacy MUL spelling changed value");
+static_assert(mulLemmaInstalledBit(0, 0) ==
+                  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
+              "table-driven MUL8 moved its v3 installed bit");
+static_assert(mulLemmaInstalledBit(0, 1) ==
+                  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1,
+              "table-driven MUL8 moved its v3 installed bit");
 
 namespace
 {
@@ -107,7 +113,7 @@ std::vector<Family> families()
   std::vector<Family> result;
   unsigned count = 0;
 
-  Family div{"BVDIV", 33, referenceDiv, {}};
+  Family div{"BVDIV", 34, referenceDiv, {}};
   const DivLemma* divTable = divLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
@@ -125,7 +131,7 @@ std::vector<Family> families()
   }
   result.push_back(div);
 
-  Family rem{"BVMOD", 12, referenceRem, {}};
+  Family rem{"BVMOD", 13, referenceRem, {}};
   const RemLemma* remTable = remLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
@@ -143,7 +149,7 @@ std::vector<Family> families()
   }
   result.push_back(rem);
 
-  Family mul{"BVMULT", 14, referenceMul, {}};
+  Family mul{"BVMULT", 15, referenceMul, {}};
   const MulLemma* mulTable = mulLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
@@ -253,6 +259,84 @@ TEST(BVAbstractionLemma, registries_have_complete_unique_metadata)
           << family.name << " has duplicate name " << fact.name;
     }
   }
+}
+
+TEST(BVAbstractionLemma, custom_facts_have_the_ranked_registry_positions)
+{
+  unsigned count = 0;
+  const DivLemma* div = divLemmaTable(count);
+  ASSERT_EQ(34u, count);
+  EXPECT_EQ(DivLemma::QuotientIsOne, div[3]);
+
+  const RemLemma* rem = remLemmaTable(count);
+  ASSERT_EQ(13u, count);
+  EXPECT_EQ(RemLemma::RemainderIsDifference, rem[3]);
+  EXPECT_EQ(RemLemma::RemainderBelowDivisorDisabled, rem[count - 1]);
+
+  const MulLemma* mul = mulLemmaTable(count);
+  ASSERT_EQ(15u, count);
+  EXPECT_EQ(MulLemma::FactorUnchangedByMaskedShift, mul[0]);
+  EXPECT_EQ(MulLemma::FactorAndProductNotOr, mul[1]);
+}
+
+TEST(BVAbstractionLemma, descriptive_tail_names_keep_the_actual_source_ids)
+{
+  struct DivName
+  {
+    DivLemma lemma;
+    const char* name;
+  };
+  const DivName divNames[] = {
+      {DivLemma::UdivRef10, "divisor-or-quotient-not-masked-dividend"},
+      {DivLemma::UdivRef11, "divisor-or-one-not-dividend-without-quotient"},
+      {DivLemma::UdivRef20,
+       "divisor-not-negated-self-shifted-by-half-quotient"},
+      {DivLemma::UdivRef21, "dividend-not-negated-and-doubled-quotient"},
+      {DivLemma::UdivRef23,
+       "quotient-above-doubled-dividend-shifted-by-divisor"},
+      {DivLemma::UdivRef24,
+       "dividend-above-divisor-shifted-by-negated-or"},
+      {DivLemma::UdivRef25,
+       "dividend-above-quotient-shifted-by-negated-or"},
+      {DivLemma::UdivRef28,
+       "dividend-above-divisor-shifted-by-negated-xor"},
+      {DivLemma::UdivRef29,
+       "dividend-above-quotient-shifted-by-negated-xor"},
+      {DivLemma::UdivRef30, "dividend-not-quotient-plus-divisor-or-sum"},
+      {DivLemma::UdivRef31,
+       "dividend-not-quotient-plus-one-plus-shifted-one"},
+      {DivLemma::UdivRef32, "divisor-above-sum-shifted-by-quotient"},
+      {DivLemma::UdivRef34, "divisor-xor-or-above-quotient-xor-one"},
+      {DivLemma::UdivRef36,
+       "quotient-above-dividend-shifted-by-divisor-less-one"},
+      {DivLemma::UdivRef38, "dividend-not-one-less-shifted-dividend"}};
+  for (const DivName& item : divNames)
+    EXPECT_STREQ(item.name, divLemmaName(item.lemma));
+
+  struct MulName
+  {
+    MulLemma lemma;
+    const char* name;
+  };
+  const MulName mulNames[] = {
+      {MulLemma::MulRef1, "factor-not-negated-product-or-low-bit"},
+      {MulLemma::MulRefN3,
+       "product-not-odd-factor-shifted-by-shifted-product"},
+      {MulLemma::MulRefN5, "product-above-masked-shifted-factors"},
+      {MulLemma::MulRefN6, "factor-not-one-xor-factor-shifted-by-xor"},
+      {MulLemma::MulRef14, "product-not-one-or-negated-xor"},
+      {MulLemma::MulRef15, "product-not-high-ones-or-xor"},
+      {MulLemma::MulRefN9, "factor-not-shifted-factor-less-one"},
+      {MulLemma::MulRef18, "factor-not-one-less-shifted-factor"},
+      {MulLemma::MulRefN11, "factor-not-one-plus-shifted-factor"},
+      {MulLemma::MulRefN12,
+       "factor-not-one-less-shifted-factor-reversed"},
+      {MulLemma::MulRefN13,
+       "factor-not-one-plus-shifted-factor-reversed"},
+      {MulLemma::MulRef13, "product-not-one-or-sum"},
+      {MulLemma::MulRef12, "factor-not-negated-shifted-factor"}};
+  for (const MulName& item : mulNames)
+    EXPECT_STREQ(item.name, mulLemmaName(item.lemma));
 }
 
 TEST(BVAbstractionLemma, every_fact_is_true_of_its_operation)

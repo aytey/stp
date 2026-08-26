@@ -3093,6 +3093,21 @@ BBNodeVec BitBlaster::BBShiftRightByVariable(const BBNodeVec& value,
   return result;
 }
 
+// `s <=u x <u 2s`, with doubling interpreted in the integers. A divisor
+// whose top bit is set doubles past the vector width, making the upper test
+// automatic. A zero divisor cannot satisfy both halves of the premise.
+BBNode BitBlaster::BBFitsExactlyOnce(const BBNodeVec& x,
+                                     const BBNodeVec& s)
+{
+  const unsigned width = (unsigned)x.size();
+  BBNodeVec twice = s;
+  BBLShift(twice, 1);
+  return nf->CreateNode(
+      AND, BBBVLE(s, x, false),
+      nf->CreateNode(OR, s[width - 1],
+                     nf->CreateNode(NOT, BBBVLE(twice, x, false))));
+}
+
 BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
                               const BBNodeVec& s, const BBNodeVec& t,
                               BBNodeSet& support)
@@ -3234,6 +3249,11 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(
           NOT, BBEQ(x, BBAdd(t, BBAdd(t, BBOr(x, s)))));
 
+    case DivLemma::QuotientIsOne:
+      // s <=u x <u 2s -> t = 1
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
+                            BBEQ(t, one));
+
     case DivLemma::UdivRef10:
       // (s | t) != (x & ~1)
       return nf->CreateNode(
@@ -3340,7 +3360,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
 
 BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
                               const BBNodeVec& s, const BBNodeVec& t,
-                              BBNodeSet& /*support*/)
+                              BBNodeSet& support)
 {
   const unsigned width = (unsigned)x.size();
   assert(s.size() == width);
@@ -3366,6 +3386,15 @@ BBNode BitBlaster::BBRemLemma(RemLemma lemma, const BBNodeVec& x,
     case RemLemma::DividendBelowDivisor:
       // x <u s -> t = x
       return nf->CreateNode(OR, BBBVLE(s, x, false), BBEQ(t, x));
+
+    case RemLemma::RemainderIsDifference:
+    {
+      // s <=u x <u 2s -> t = x - s
+      BBNodeVec difference = x;
+      BBSub(difference, s, support);
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
+                            BBEQ(t, difference));
+    }
 
     case RemLemma::RemainderBelowDivisorDisabled:
       // ~(-s) >=u t
@@ -3425,6 +3454,17 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
 
   switch (lemma)
   {
+    case MulLemma::FactorUnchangedByMaskedShift:
+    {
+      // The published form is s = s << (x & (1 >> t)). The shift is
+      // nonzero exactly when t is zero and x is odd, and s = s << 1 has only
+      // the all-zero solution. This compact equivalent avoids two barrel
+      // shifters while the value predicate retains the published spelling.
+      const BBNodeVec zero = BBfill(width, BBFalse);
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(t, zero)),
+                            nf->CreateNode(NOT, x[0]), BBEQ(s, zero));
+    }
+
     case MulLemma::MulRef1:
       // s != ~(t | (1 & (x | s)))
       return nf->CreateNode(

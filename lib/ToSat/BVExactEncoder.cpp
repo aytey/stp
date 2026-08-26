@@ -274,6 +274,18 @@ std::vector<bool> shlOf(const std::vector<bool>& v,
   return r;
 }
 
+// `s <=u x <u 2s`, with doubling interpreted in the integers. If the top
+// bit of s is set, 2s lies beyond the bit-vector range and the upper half of
+// the premise is automatically true. The premise also excludes s = 0.
+bool fitsExactlyOnce(const std::vector<bool>& x,
+                     const std::vector<bool>& s)
+{
+  const unsigned W = (unsigned)x.size();
+  std::vector<bool> one(W, false);
+  one[0] = true;
+  return ule(s, x) && (s[W - 1] || !ule(shlOf(s, one), x));
+}
+
 } // namespace
 
 bool divLemmaApplicable(DivLemma lemma, unsigned width)
@@ -370,6 +382,10 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
     case DivLemma::DividendNotTwiceQuotientPlusOr:
       // x != t + t + (x | s)
       return x != addOf(t, addOf(t, orOf(x, s)));
+
+    case DivLemma::QuotientIsOne:
+      // s <=u x <u 2s -> t = 1
+      return !fitsExactlyOnce(x, s) || t == one;
 
     case DivLemma::UdivRef10:
       // (s | t) != (x & ~1)
@@ -475,21 +491,37 @@ const char* divLemmaName(DivLemma lemma)
       return "dividend-above-divisor-xor-shifted";
     case DivLemma::DividendNotTwiceQuotientPlusOr:
       return "dividend-not-twice-quotient-plus-or";
-    case DivLemma::UdivRef10: return "udiv-ref10";
-    case DivLemma::UdivRef11: return "udiv-ref11";
-    case DivLemma::UdivRef20: return "udiv-ref20";
-    case DivLemma::UdivRef21: return "udiv-ref21";
-    case DivLemma::UdivRef23: return "udiv-ref23";
-    case DivLemma::UdivRef24: return "udiv-ref24";
-    case DivLemma::UdivRef25: return "udiv-ref25";
-    case DivLemma::UdivRef28: return "udiv-ref28";
-    case DivLemma::UdivRef29: return "udiv-ref29";
-    case DivLemma::UdivRef30: return "udiv-ref30";
-    case DivLemma::UdivRef31: return "udiv-ref31";
-    case DivLemma::UdivRef32: return "udiv-ref32";
-    case DivLemma::UdivRef34: return "udiv-ref34";
-    case DivLemma::UdivRef36: return "udiv-ref36";
-    case DivLemma::UdivRef38: return "udiv-ref38";
+    case DivLemma::QuotientIsOne: return "quotient-is-one";
+    case DivLemma::UdivRef10:
+      return "divisor-or-quotient-not-masked-dividend";
+    case DivLemma::UdivRef11:
+      return "divisor-or-one-not-dividend-without-quotient";
+    case DivLemma::UdivRef20:
+      return "divisor-not-negated-self-shifted-by-half-quotient";
+    case DivLemma::UdivRef21:
+      return "dividend-not-negated-and-doubled-quotient";
+    case DivLemma::UdivRef23:
+      return "quotient-above-doubled-dividend-shifted-by-divisor";
+    case DivLemma::UdivRef24:
+      return "dividend-above-divisor-shifted-by-negated-or";
+    case DivLemma::UdivRef25:
+      return "dividend-above-quotient-shifted-by-negated-or";
+    case DivLemma::UdivRef28:
+      return "dividend-above-divisor-shifted-by-negated-xor";
+    case DivLemma::UdivRef29:
+      return "dividend-above-quotient-shifted-by-negated-xor";
+    case DivLemma::UdivRef30:
+      return "dividend-not-quotient-plus-divisor-or-sum";
+    case DivLemma::UdivRef31:
+      return "dividend-not-quotient-plus-one-plus-shifted-one";
+    case DivLemma::UdivRef32:
+      return "divisor-above-sum-shifted-by-quotient";
+    case DivLemma::UdivRef34:
+      return "divisor-xor-or-above-quotient-xor-one";
+    case DivLemma::UdivRef36:
+      return "quotient-above-dividend-shifted-by-divisor-less-one";
+    case DivLemma::UdivRef38:
+      return "dividend-not-one-less-shifted-dividend";
   }
   return "unknown";
 }
@@ -533,6 +565,10 @@ bool remLemmaHolds(RemLemma lemma, const std::vector<bool>& x,
     case RemLemma::DividendBelowDivisor:
       // x <u s -> t = x
       return ule(s, x) || t == x;
+
+    case RemLemma::RemainderIsDifference:
+      // s <=u x <u 2s -> t = x - s
+      return !fitsExactlyOnce(x, s) || t == addOf(x, negOf(s));
 
     case RemLemma::RemainderBelowDivisorDisabled:
       // ~(-s) >=u t
@@ -583,6 +619,8 @@ const char* remLemmaName(RemLemma lemma)
       return "divisor-equals-dividend";
     case RemLemma::DividendBelowDivisor:
       return "dividend-below-divisor";
+    case RemLemma::RemainderIsDifference:
+      return "remainder-is-difference";
     case RemLemma::RemainderBelowDivisorDisabled:
       return "remainder-below-divisor-disabled";
     case RemLemma::DividendWithinDivisorOrRemainder:
@@ -632,6 +670,10 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
 
   switch (lemma)
   {
+    case MulLemma::FactorUnchangedByMaskedShift:
+      // s = s << (x & (1 >> t))
+      return s == shlOf(s, andOf(x, shrOf(one, t)));
+
     case MulLemma::MulRef1:
       // s != ~(t | (1 & (x | s)))
       return s != notOf(orOf(t, andOf(one, orOf(x, s))));
@@ -699,21 +741,36 @@ const char* mulLemmaName(MulLemma lemma)
 {
   switch (lemma)
   {
-    case MulLemma::MulRef1: return "mul-ref1";
+    case MulLemma::FactorUnchangedByMaskedShift:
+      return "factor-unchanged-by-masked-shift";
+    case MulLemma::MulRef1:
+      return "factor-not-negated-product-or-low-bit";
     case MulLemma::FactorAndProductNotOr:
       return "factor-and-product-not-or";
-    case MulLemma::MulRefN3: return "mul-refn3";
-    case MulLemma::MulRefN5: return "mul-refn5";
-    case MulLemma::MulRefN6: return "mul-refn6";
-    case MulLemma::MulRef14: return "mul-ref14";
-    case MulLemma::MulRef15: return "mul-ref15";
-    case MulLemma::MulRefN9: return "mul-refn9";
-    case MulLemma::MulRef18: return "mul-ref18";
-    case MulLemma::MulRefN11: return "mul-refn11";
-    case MulLemma::MulRefN12: return "mul-refn12";
-    case MulLemma::MulRefN13: return "mul-refn13";
-    case MulLemma::MulRef13: return "mul-ref13";
-    case MulLemma::MulRef12: return "mul-ref12";
+    case MulLemma::MulRefN3:
+      return "product-not-odd-factor-shifted-by-shifted-product";
+    case MulLemma::MulRefN5:
+      return "product-above-masked-shifted-factors";
+    case MulLemma::MulRefN6:
+      return "factor-not-one-xor-factor-shifted-by-xor";
+    case MulLemma::MulRef14:
+      return "product-not-one-or-negated-xor";
+    case MulLemma::MulRef15:
+      return "product-not-high-ones-or-xor";
+    case MulLemma::MulRefN9:
+      return "factor-not-shifted-factor-less-one";
+    case MulLemma::MulRef18:
+      return "factor-not-one-less-shifted-factor";
+    case MulLemma::MulRefN11:
+      return "factor-not-one-plus-shifted-factor";
+    case MulLemma::MulRefN12:
+      return "factor-not-one-less-shifted-factor-reversed";
+    case MulLemma::MulRefN13:
+      return "factor-not-one-plus-shifted-factor-reversed";
+    case MulLemma::MulRef13:
+      return "product-not-one-or-sum";
+    case MulLemma::MulRef12:
+      return "factor-not-negated-shifted-factor";
   }
   return "unknown";
 }

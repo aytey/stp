@@ -261,24 +261,6 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
             continue;
           }
 
-          if (choice.schema == DivSchema::RemainderQuotientOne)
-          {
-            ASSERT_EQ(opKind, BVMOD);
-            ASSERT_FALSE(remainderQuotientOneHolds(a, b, t))
-                << "quotient-one band at a=" << a << " b=" << b
-                << " r=" << t << " is already satisfied by the candidate";
-            continue;
-          }
-
-          if (choice.schema == DivSchema::QuotientOne)
-          {
-            ASSERT_EQ(opKind, BVDIV);
-            ASSERT_FALSE(quotientOneHolds(a, b, t))
-                << "quotient-one band at a=" << a << " b=" << b
-                << " q=" << t << " is already satisfied by the candidate";
-            continue;
-          }
-
           if (choice.schema == DivSchema::DivisorMagnitudeBound)
           {
             ASSERT_EQ(opKind, BVDIV);

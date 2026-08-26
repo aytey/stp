@@ -109,6 +109,24 @@ TEST(UserDefinedFlags_Test, named_bv_profiles_apply_mask_and_rounds_atomically)
   EXPECT_FALSE(
       stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::QUOTIENT_THRESHOLDS));
 
+  ASSERT_TRUE(stp::parseBVTermAbstractionProfile("spear", mask, rounds, error));
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_SPEAR, mask);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS, rounds);
+  EXPECT_TRUE(
+      stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::UDIV_OBSERVED));
+  EXPECT_TRUE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::MUL8));
+  EXPECT_TRUE(
+      stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVISOR_MAGNITUDE));
+  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_PAIR));
+  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_FULL));
+
+  uint32_t aliasMask = 0;
+  unsigned aliasRounds = 0;
+  ASSERT_TRUE(stp::parseBVTermAbstractionProfile(
+      "broad-no-pair", aliasMask, aliasRounds, error));
+  EXPECT_EQ(mask, aliasMask);
+  EXPECT_EQ(rounds, aliasRounds);
+
   ASSERT_TRUE(
       stp::parseBVTermAbstractionProfile("qualified", mask, rounds, error));
   EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED, mask);
@@ -120,7 +138,8 @@ TEST(UserDefinedFlags_Test, named_bv_profiles_apply_mask_and_rounds_atomically)
       stp::parseBVTermAbstractionProfile("unknown", mask, rounds, error));
   EXPECT_EQ(0x5a5u, mask);
   EXPECT_EQ(7u, rounds);
-  EXPECT_NE(std::string::npos, error.find("qualified or aggressive"));
+  EXPECT_NE(std::string::npos,
+            error.find("qualified, aggressive, or spear"));
 }
 
 TEST(UserDefinedFlags_Test, every_bv_schema_group_round_trips_by_name)

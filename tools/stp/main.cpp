@@ -116,6 +116,12 @@ public:
   // lower-level options retain their independently parsed values.
   std::string bv_abstraction_profile;
 
+  // Presence distinguishes the legacy MULT scope behavior from an explicit
+  // DIV/MOD override. If only MULT is supplied, it retains its historical
+  // control over all three nonlinear operations.
+  CLI::Option* bv_term_abstraction_mult_option = nullptr;
+  CLI::Option* bv_term_abstraction_divmod_option = nullptr;
+
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
   bool interactive = false;
@@ -371,15 +377,16 @@ void ExtraMain::create_options()
   bool_arg("--embedded-constraints", bm->UserFlags.embedded_constraints,
            "replace an assertion where it occurs inside another assertion",
            refinement_group);
-  bool_arg("--bv-term-abstraction-mult", bm->UserFlags.bv_term_abstraction_mult,
-           "include BVMULT in BV term abstraction; turning it off leaves "
-           "multiplication encoded exactly from the start",
-           refinement_group);
-  bool_arg("--bv-term-abstraction-divmod",
-           bm->UserFlags.bv_term_abstraction_divmod,
-           "include BVDIV and BVMOD in BV term abstraction; turning it off "
-           "leaves division and remainder encoded exactly from the start",
-           refinement_group);
+  bv_term_abstraction_mult_option = bool_arg(
+      "--bv-term-abstraction-mult", bm->UserFlags.bv_term_abstraction_mult,
+      "legacy scope for BVMULT, BVDIV and BVMOD; if the separate DIV/MOD "
+      "option is also present it overrides division and remainder",
+      refinement_group);
+  bv_term_abstraction_divmod_option = bool_arg(
+      "--bv-term-abstraction-divmod", bm->UserFlags.bv_term_abstraction_divmod,
+      "independently override whether BVDIV and BVMOD are abstracted; turning "
+      "it off leaves division and remainder encoded exactly from the start",
+      refinement_group);
   bool_arg("--bv-term-abstraction-schemas",
            bm->UserFlags.bv_term_abstraction_schemas,
            "refine abstracted BVPLUS, BVMULT, BVDIV and BVMOD operations "
@@ -411,9 +418,10 @@ void ExtraMain::create_options()
   app.add_option("--bv-term-abstraction-profile", bv_abstraction_profile,
                  "apply an atomic schema-mask/round pair: 'qualified' keeps "
                  "the corpus-qualified base, UREM and MulRef3 mask at 32 "
-                 "rounds; 'aggressive' adds the observed UDIV and MUL8 "
-                 "facts, divisor-magnitude and quotient-one facts, and the "
-                 "full paired DIV/REM identity at 16 rounds")
+                 "rounds; 'spear' adds the observed UDIV and MUL8 facts, "
+                 "divisor-magnitude and quotient-one facts at 16 rounds but "
+                 "no paired DIV/REM relation; 'aggressive' preserves the v3 "
+                 "profile with full paired recomposition")
       ->group(refinement_group)
       ->excludes(bv_schema_groups_option)
       ->excludes(bv_rounds_option);
@@ -958,6 +966,11 @@ int ExtraMain::parse_options(int argc, char** argv)
     cerr << "Please give '--help' to get help" << endl;
     exit(-1);
   }
+
+  if (bv_term_abstraction_mult_option->count() != 0 &&
+      bv_term_abstraction_divmod_option->count() == 0)
+    bm->UserFlags.bv_term_abstraction_divmod =
+        bm->UserFlags.bv_term_abstraction_mult;
 
   {
     std::string error;

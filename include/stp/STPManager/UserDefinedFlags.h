@@ -100,8 +100,24 @@ constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
     bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE) |
     bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
 
+// The broad 16-round experiment that performed best on the SPEAR slice in
+// the v3 comparison, without either paired DIV/REM relation. The paired
+// prefix and full identities remain separately selectable groups until a
+// broader corpus justifies paying for their multipliers as part of a profile.
+constexpr uint32_t BV_SCHEMA_GROUP_SPEAR =
+    bvSchemaGroupBit(BVSchemaGroup::BASE) |
+    bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
+    bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED) |
+    bvSchemaGroupBit(BVSchemaGroup::UREM) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL8) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL_REF3) |
+    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_REM) |
+    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
+    bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE);
+
 constexpr unsigned BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS = 32;
 constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
+constexpr unsigned BV_TERM_ABSTRACTION_SPEAR_ROUNDS = 16;
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 {
@@ -117,7 +133,7 @@ DLL_PUBLIC bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
                                     std::string& error);
 DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
 
-// Parse one of the two measured mask/round pairs. Both outputs are left
+// Parse one of the named mask/round pairs. Both outputs are left
 // unchanged on error, so callers cannot accidentally apply half a profile.
 DLL_PUBLIC bool parseBVTermAbstractionProfile(const std::string& text,
                                               uint32_t& mask, unsigned& rounds,

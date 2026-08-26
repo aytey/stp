@@ -138,6 +138,12 @@ static_assert(STP_BV_SCHEMA_GROUP_DIVREM_FULL == (1 << 14),
               "published schema-group bit changed");
 static_assert(STP_BV_SCHEMA_GROUP_UDIV_OBSERVED == (1 << 15),
               "new schema-group bits must be appended");
+static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED == 0,
+              "published profile ordinal changed");
+static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE == 1,
+              "published profile ordinal changed");
+static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR == 2,
+              "new profiles must be appended to preserve the C ABI");
 
 namespace
 {
@@ -231,9 +237,22 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
 
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 0);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
 
+  // The appended flag is the explicit independent override. Call order is
+  // intentional: the legacy switch establishes all three, then DIVMOD splits.
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+
+  // Conversely, a later legacy call deliberately restores the coupled
+  // behavior; C API calls are applied in call order.
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 1);
@@ -279,6 +298,15 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
             flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_SPEAR,
+            flags(vc).bv_term_abstraction_schema_groups);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS,
+            flags(vc).bv_term_abstraction_rounds);
+  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups &
+                    (stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_PAIR) |
+                     stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_FULL)));
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
                        STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED);
   EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
@@ -363,7 +391,7 @@ TEST(refinement_flags, InvalidBVProfileIsAtomic)
   const unsigned rounds = flags(vc).bv_term_abstraction_rounds;
 
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE, -1);
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE, 2);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE, 3);
   EXPECT_EQ(mask, flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(rounds, flags(vc).bv_term_abstraction_rounds);
   EXPECT_EQ(2, errors);

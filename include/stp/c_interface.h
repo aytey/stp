@@ -207,6 +207,14 @@ enum bv_schema_group_t
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
       STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
+  //! Broad observed catalogue without either paired DIV/REM relationship.
+  STP_BV_SCHEMA_GROUP_SPEAR =
+      STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
+      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
+      STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
+      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
   STP_BV_SCHEMA_GROUP_ALL = (1 << 16) - 1
 };
 
@@ -214,7 +222,9 @@ enum bv_schema_group_t
 enum bv_term_abstraction_profile_t
 {
   STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED = 0,
-  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 1
+  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 1,
+  //! Append-only: preserves the two v3 profile ordinals above.
+  STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR = 2
 };
 
 //! Interface-only flags.
@@ -452,12 +462,13 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION,
 
-  //! Whether BV_TERM_ABSTRACTION covers BVMULT as well.
+  //! Legacy scope switch for BVMULT, BVDIV and BVMOD.
   //!
-  //! `param_value` nonzero includes it (the default), zero leaves
-  //! multiplication encoded exactly from the start. Division and remainder
-  //! have the separately appended BV_TERM_ABSTRACTION_DIVMOD flag. This is
-  //! the C API's way to reach
+  //! `param_value` nonzero includes all three operations (the default), zero
+  //! leaves all three encoded exactly from the start, preserving the public
+  //! behavior this flag had before DIVMOD was split out. A caller that wants
+  //! independent scopes should set this legacy switch first and then override
+  //! BV_TERM_ABSTRACTION_DIVMOD. This is the C API's way to reach
   //! --bv-term-abstraction-mult.
   //!
   BV_TERM_ABSTRACTION_MULT,
@@ -581,9 +592,10 @@ enum ifaceflag_t
 
   //! Whether BV_TERM_ABSTRACTION covers BVDIV and BVMOD.
   //!
-  //! Division and remainder historically followed
-  //! BV_TERM_ABSTRACTION_MULT. `param_value` nonzero includes them (the
-  //! default), while zero leaves them encoded exactly from the start. This
+  //! Division and remainder historically followed BV_TERM_ABSTRACTION_MULT.
+  //! This appended switch overrides that legacy setting when called after it:
+  //! `param_value` nonzero includes them (the default), while zero leaves them
+  //! encoded exactly from the start. This
   //! value is appended so every previously published interface-flag ordinal
   //! remains unchanged. This is the C API's way to reach
   //! --bv-term-abstraction-divmod.
@@ -593,8 +605,10 @@ enum ifaceflag_t
   //! Applies one complete BV term-abstraction schema profile. `param_value`
   //! is a bv_term_abstraction_profile_t ordinal. QUALIFIED selects the
   //! established base/UREM/MulRef3 mask with a 32-round ceiling; AGGRESSIVE
-  //! selects the observed hybrid catalogue with a 16-round ceiling. Invalid
-  //! values are refused without changing either field. Appended so every
+  //! selects the v3 observed catalogue including full paired recomposition;
+  //! SPEAR selects the same broad single-record families without either
+  //! paired relation, at 16 rounds. Invalid values are refused without
+  //! changing either field. Appended so every
   //! previously published interface-flag ordinal remains stable. This is the
   //! C API's way to reach --bv-term-abstraction-profile.
   //!

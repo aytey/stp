@@ -96,8 +96,8 @@ struct BVEQAbstraction
 // it contradicts.
 //
 // The hand-written schemas cover low-bit parity, trailing-zero preservation,
-// zero-products with an odd operand, and positive and negative powers of two;
-// Lemma carries the remainder of the upstream synthesised registry.
+// and positive and negative powers of two. Lemma carries the ranked upstream
+// registry, including MUL8's zero-product/odd-factor relationship.
 enum class MulSchema
 {
   // Nothing the candidate contradicts. The round falls through to the
@@ -105,12 +105,6 @@ enum class MulSchema
   None,
   // t[0] = a[0] & b[0]: the product is odd exactly when both operands are.
   Odd,
-  // An odd bit-vector is invertible modulo 2^W, so if one operand is odd
-  // and the product is zero, the other operand must be zero. This is MUL8
-  // from the Bitwuzla set, simplified from
-  //   s = s << (x & (1 >> t))
-  // to its only nontrivial case: t = 0 and x[0] = 1 imply s = 0.
-  ZeroProductOddOperand,
   // The product carries at least as many trailing zeros as either operand,
   // written per bit: t[i] holds only if some bit of that operand at or
   // below i does. Equivalently, for operand s and product t:
@@ -158,14 +152,18 @@ enum : uint64_t
   MUL_SCHEMA_INSTALLED_ODD = 1ull,
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2ull,
   MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4ull,
+  // Compatibility spellings for the bits now owned by registry entry zero.
   MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8ull,
   MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull,
-  MUL_LEMMA_INSTALLED_FIRST = 32ull,
-  // Fourteen lemmas in two operand readings occupy bits 5 through 32.
+  // MUL8 is registry entry zero, so it reuses the two bits its former
+  // hand-written schema occupied. Inserting it therefore leaves every older
+  // registry entry and the low-prefix bit exactly where v3 put them.
+  MUL_LEMMA_INSTALLED_FIRST = 8ull,
+  // Fifteen lemmas in two operand readings occupy bits 3 through 32.
   MUL_SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 33
 };
 
-inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
+constexpr uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
 {
   return MUL_LEMMA_INSTALLED_FIRST << (2 * index + operand);
 }
@@ -230,9 +228,9 @@ DLL_PUBLIC void encodeMulLowPrefix(
     const std::vector<unsigned>& resultVars, unsigned width,
     unsigned prefixBits);
 
-// x[0] = 1 and s != 0 -> t != 0. This is the compact CNF form of the
-// ZeroProductOddOperand schema above. Exposed so the exhaustive test can
-// independently compare what the chooser claims with what the clauses say.
+// Direct compact encoding of MUL8, retained as an independently expressed
+// regression oracle even though the live refiner now reaches the relationship
+// through MulLemma::FactorUnchangedByMaskedShift.
 DLL_PUBLIC void encodeMulZeroProductOddOperand(
     SATSolver& solver, const std::vector<unsigned>& oddOperandVars,
     const std::vector<unsigned>& otherOperandVars,
@@ -277,17 +275,6 @@ enum class DivSchema
   RemainderAtMostDividend,
   // b != 0 -> r <u b, which is what a remainder is.
   RemainderBelowDivisor,
-  // The quotient-one band, stated without doubling the divisor (which could
-  // overflow): b <=u a and (a - b) <u b -> r = a - b. The two comparisons
-  // make the premise false for b = 0, so SMT-LIB's totalised zero-divisor
-  // result needs no separate case.
-  RemainderQuotientOne,
-  // The quotient half of the same band:
-  //   b <=u a and (a - b) <u b -> q = 1.
-  // This names the quotient exactly where one subtraction, but not two,
-  // fits. It is kept in a separate group from the remainder fact so corpus
-  // qualification can decide on each cost independently.
-  QuotientOne,
   // b != 0 -> t <=u a. Dividing by one leaves the dividend and dividing by
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
@@ -320,6 +307,10 @@ enum class DivSchema
 // addition flags, which is safe because an abstraction has only one kind.
 enum : uint64_t
 {
+  // Bits zero through two are deliberately reserved: v3 used zero and two
+  // for its standalone quotient-one schemas. The v4 table-driven versions
+  // use ordinary registry bits. installedSchemas is ephemeral internal state,
+  // so inserting the ranked entry has no public ABI effect.
   DIV_SCHEMA_INSTALLED_QUOTIENT_ONE = 1ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE = 4ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
@@ -432,13 +423,12 @@ DLL_PUBLIC void encodeDivPow2Threshold(
     const std::vector<unsigned>& quotientVars, unsigned width,
     unsigned shift);
 
-// b <=u a and (a - b) <u b -> r = a - b.
+// Direct encodings retained as independent regression oracles. The live
+// refiner installs these facts through the ranked DivLemma/RemLemma tables.
 DLL_PUBLIC void encodeRemQuotientOne(
     SATSolver& solver, const std::vector<unsigned>& dividendVars,
     const std::vector<unsigned>& divisorVars,
     const std::vector<unsigned>& remainderVars, unsigned width);
-
-// b <=u a and (a - b) <u b -> q = 1.
 DLL_PUBLIC void encodeDivQuotientOne(
     SATSolver& solver, const std::vector<unsigned>& dividendVars,
     const std::vector<unsigned>& divisorVars,

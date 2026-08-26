@@ -77,12 +77,12 @@ namespace stp
 // rather than inventing a set.
 //
 // Every observed fact has a semantic identifier and retains Bitwuzla's source
-// registry ID beside it. The unobserved tail deliberately keeps only its
-// source identifier: source reconciliation is more valuable than inventing a
-// fluent name for a synthesised relationship nobody observed firing. The
-// table in the refiner keeps measured entries in firing order and the tail in
-// source order. Completeness is useful for controlled ablations, not evidence
-// that every fact should eventually be enabled by default.
+// registry ID beside it. The unobserved tail keeps those identifiers in the
+// enum for mechanical source reconciliation and uses descriptive strings only
+// in diagnostics. The table in the refiner keeps measured entries in firing
+// order and the tail in source order. Completeness is useful for controlled
+// ablations, not evidence that every fact should eventually be enabled by
+// default.
 enum class DivLemma
 {
   // x = 0 and s != 0 -> t = 0
@@ -123,7 +123,14 @@ enum class DivLemma
   // x != t + t + (x | s) (Bitwuzla UDIV ref33)
   DividendNotTwiceQuotientPlusOr,
 
-  // The unobserved registry tail retains source identifiers verbatim.
+  // s <=u x <u 2s -> t = 1. This STP-specific exact-band fact shares its
+  // premise with RemainderIsDifference and is ranked with the fixed UDIV
+  // registry rather than maintained as a one-off schema.
+  QuotientIsOne,
+
+  // The unobserved registry tail retains the actual Bitwuzla REF identifiers
+  // verbatim. Diagnostic names describe the formulas without renumbering the
+  // source catalogue.
   UdivRef10,
   UdivRef11,
   UdivRef20,
@@ -164,6 +171,9 @@ enum class RemLemma
   DividendZero,                     // Bitwuzla UREM ref2
   DivisorEqualsDividend,            // ref4
   DividendBelowDivisor,             // ref5
+  // s <=u x <u 2s -> t = x - s. The remainder half of QuotientIsOne,
+  // integrated into the ranked registry for common ownership and gating.
+  RemainderIsDifference,
   RemainderBelowDivisorDisabled,    // ref6
   DividendWithinDivisorOrRemainder, // ref7
   DividendAboveRemainderOrAnd,      // ref8
@@ -192,10 +202,16 @@ enum class RemLemma
 // The unconditional multiplication facts not already represented by STP's
 // power-of-two, low-bit, trailing-zero and odd-inverse schemas. The qualified
 // fact has a semantic identifier and source ID comment; the unqualified tail
-// retains its registry IDs. Each has two readings because multiplication is
-// commutative but most synthesised expressions are not syntactically so.
+// retains its registry IDs in the enum and has descriptive diagnostic names.
+// Each has two readings because multiplication is commutative but most
+// synthesised expressions are not syntactically so.
 enum class MulLemma
 {
+  // Bitwuzla MUL8: s = s << (x & (1 >> t)). Its only nontrivial reading is
+  // that an odd x and zero product force s to zero. Kept in the published
+  // shift spelling for the value predicate and encoded as the compact
+  // equivalent implication by the bit-blaster.
+  FactorUnchangedByMaskedShift,
   MulRef1,
   FactorAndProductNotOr, // Bitwuzla MUL ref3
   MulRefN3,
@@ -262,8 +278,9 @@ DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
 
 // Bitwuzla's published MUL8 relationship, kept in its original shift form:
 //   s = s << (x & (1 >> t)).
-// The refiner uses this independently expressed predicate to choose the
-// schema; its installed CNF uses the simpler equivalent implication.
+// Retained as an independently named regression oracle. The live registry
+// evaluates the same published form through mulLemmaHolds(), while its
+// installed circuit uses the simpler equivalent implication.
 DLL_PUBLIC bool mul8PublishedHolds(const std::vector<bool>& xBits,
                                    const std::vector<bool>& sBits,
                                    const std::vector<bool>& tBits);

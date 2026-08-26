@@ -544,6 +544,9 @@ public:
                                   const BBNodeVec& amount);
   BBNodeVec BBShiftRightByVariable(const BBNodeVec& value,
                                    const BBNodeVec& amount, unsigned width);
+  // Shared premise for the quotient/remainder exact-one-band registry facts.
+  BBNode BBFitsExactlyOnce(const BBNodeVec& dividend,
+                           const BBNodeVec& divisor);
 
   std::unordered_map<ASTNode, BBNodeVec, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>::iterator
   simplify_during_bb(ASTNode& term, BBNodeSet& support);

@@ -8,7 +8,7 @@
 ; option structures.
 ;
 ; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-mult=0 --bv-term-abstraction-divmod=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=quotient-one-quot %s 2>&1 | %OutputCheck %s
-; CHECK: BV abstraction: BVDIV quotient-one lemma
+; CHECK: BV abstraction: BVDIV quotient-is-one lemma
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$
 (set-logic QF_BV)

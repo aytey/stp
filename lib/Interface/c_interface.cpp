@@ -538,6 +538,10 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
       break;
     case BV_TERM_ABSTRACTION_MULT:
       b->UserFlags.bv_term_abstraction_mult = param_value != 0;
+      // This published flag controlled MULT, DIV and MOD before the appended
+      // DIVMOD switch existed. Preserve that behavior; callers wanting split
+      // scopes can override DIVMOD in a subsequent call.
+      b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
       break;
     case BV_TERM_ABSTRACTION_DIVMOD:
       b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
@@ -556,6 +560,13 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
             stp::BV_SCHEMA_GROUP_AGGRESSIVE;
         b->UserFlags.bv_term_abstraction_rounds =
             stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
+      }
+      else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR)
+      {
+        b->UserFlags.bv_term_abstraction_schema_groups =
+            stp::BV_SCHEMA_GROUP_SPEAR;
+        b->UserFlags.bv_term_abstraction_rounds =
+            stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
       }
       else
         reportCAPIError("BV_TERM_ABSTRACTION_PROFILE takes a "

@@ -137,8 +137,6 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
   {
     case MulSchema::Odd:
       return oddHolds(a, b, t);
-    case MulSchema::ZeroProductOddOperand:
-      return zeroProductOddOperandHolds(ops[choice.operand], other, t);
     case MulSchema::TrailingZeros:
       return trailingZerosHolds(ops[choice.operand], t);
     case MulSchema::Pow2:
@@ -448,7 +446,6 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
         const MulSchema schema = choose(a, b, t, all).schema;
         EXPECT_NE(MulSchema::Odd, schema);
         EXPECT_NE(MulSchema::TrailingZeros, schema);
-        EXPECT_NE(MulSchema::ZeroProductOddOperand, schema);
         EXPECT_NE(MulSchema::LowPrefix, schema);
         EXPECT_NE(MulSchema::Lemma, schema);
       }
@@ -496,25 +493,31 @@ TEST(bv_mult_schema, TheOddBitFactPrecedesTheZeroProductFact)
   EXPECT_FALSE(oddHolds(3, 5, 14));
 }
 
-// Once the four earlier facts all agree with a wrong zero product, an odd
+// Once the hand-written facts all agree with a wrong zero product, an odd
 // operand still proves that a nonzero other operand cannot have produced it.
 // The two readings are installed independently because multiplication is
-// commutative but the implication names which operand is odd.
+// commutative but the registry expression names which operand is odd.
 TEST(bv_mult_schema, AnOddOperandRefusesAWrongZeroProduct)
 {
   const MulSchemaChoice first = choose(3, 6, 0);
-  EXPECT_EQ(MulSchema::ZeroProductOddOperand, first.schema);
+  ASSERT_EQ(MulSchema::Lemma, first.schema);
+  EXPECT_EQ(0u, first.lemmaIndex);
+  EXPECT_EQ(BVSchemaGroup::MUL8, first.group);
   EXPECT_EQ(0u, first.operand);
   EXPECT_FALSE(chosenSchemaHolds(first, 3, 6, 0));
 
   const MulSchemaChoice second = choose(6, 3, 0);
-  EXPECT_EQ(MulSchema::ZeroProductOddOperand, second.schema);
+  ASSERT_EQ(MulSchema::Lemma, second.schema);
+  EXPECT_EQ(0u, second.lemmaIndex);
+  EXPECT_EQ(BVSchemaGroup::MUL8, second.group);
   EXPECT_EQ(1u, second.operand);
   EXPECT_FALSE(chosenSchemaHolds(second, 6, 3, 0));
 
   const MulSchemaChoice firstInstalled =
       choose(3, 6, 0, MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0);
-  EXPECT_NE(MulSchema::ZeroProductOddOperand, firstInstalled.schema);
+  EXPECT_FALSE(firstInstalled.schema == MulSchema::Lemma &&
+               firstInstalled.lemmaIndex == 0 &&
+               firstInstalled.operand == 0);
 }
 
 // Keep the chooser's published shift expression independent of the compact

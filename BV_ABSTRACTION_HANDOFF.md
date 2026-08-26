@@ -2,9 +2,9 @@
 
 Date: 2026-08-26
 
-Branch: `cegar-next-codex-v3`
+Branch: `cegar-next-codex-v4`
 
-Based on: `989065aa` (`cegar-next-codex-v2`)
+Based on: `0b47eaec` (`cegar-next-codex-v3`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
@@ -14,8 +14,10 @@ V2 comparison source: `17465e3d` (`cegar-next-claude`)
 
 V3 comparison source: `ed66f875` (`cegar-next-claude-v2`)
 
+V4 comparison source: `438faa4c` (`cegar-next-claude-v3`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex-v3`
+`/home/avj/clones/stp/cegar-next-codex-v4`
 
 ## Executive summary
 
@@ -28,11 +30,11 @@ complete:
   also transcribed and tested, but deliberately remains disabled in STP.
 - STP's older divisor-value, bound, power-of-two, trailing-zero, odd-product,
   and exact/value-pair fallbacks remain in place.
-- Seven STP-specific schema groups have been added after completing the imported
-  registries: quotient magnitude thresholds, exact low prefixes for addition
-  and multiplication, a quotient-one remainder band, and paired DIV/REM
-  low-prefix recomposition, plus the hybrid's quotient-one quotient band,
-  capped divisor-magnitude bound, and full-width paired recomposition.
+- STP-specific schema groups supplement the imported registries with quotient
+  magnitude thresholds, exact low prefixes, quotient-one bands, a capped
+  divisor-magnitude bound, and paired DIV/REM recomposition. V4 makes the
+  quotient-one and compact MUL8 facts ordinary ranked registry entries rather
+  than parallel special cases.
 - Candidate predicates, emitted circuits or clauses, applicability
   restrictions, totalised zero-divisor behaviour, and complete end-to-end
   regressions are tested.
@@ -56,6 +58,76 @@ off in the inherited profile.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
+
+## V4 hybrid convergence
+
+V4 keeps V3's ABI layout, qualified default, named profiles, record-aware
+paired scheduler, and complete catalogue. It selectively ports the strongest
+maintenance and scheduling ideas from `cegar-next-claude-v3`:
+
+- Quotient-one division and remainder facts are ranked entries at index three
+  in their respective DIV and REM registries, after the three strongest
+  result-determining facts. The published MUL8 fact is likewise the first MUL
+  registry entry. Their old
+  direct encoders remain only as independent regression oracles.
+- Every registry entry has one explicit ownership switch. A centralized test
+  sweeps all width-four ADD, MUL, DIV, and REM models under each single group
+  mask, checks that only the owning group can select an entry, and verifies the
+  C/C++ mask and profile mappings.
+- Tail diagnostics now describe the relationship being installed. Source
+  comments and tests retain the exact Bitwuzla `REF` identifiers, preventing a
+  descriptive rename from silently changing source provenance.
+- `spear` (also accepted as `broad-no-pair`) is a 16-round experimental profile
+  containing the ranked DIV/REM catalogue, MUL8, `mul-ref3`, both quotient-one
+  halves, and the capped divisor-magnitude fact. It excludes both low-prefix
+  and full-width paired relations. Those paired relations remain absent from
+  the qualified and SPEAR masks and available through explicit groups; the V3
+  `aggressive` profile is retained unchanged as a reproducible paired
+  experiment.
+- The legacy `BV_TERM_ABSTRACTION_MULT` interface flag again controls both
+  multiplication and DIV/REM scope. The appended
+  `BV_TERM_ABSTRACTION_DIVMOD` flag can override DIV/REM independently. The C
+  API observes call order, and an explicit CLI DIV/MOD option overrides the
+  legacy option regardless of argument order.
+
+The V4 profiles are:
+
+| Profile | Groups | Rounds |
+| --- | --- | ---: |
+| `qualified` | `base,urem,mul-ref3` | 32 |
+| `spear` / `broad-no-pair` | `base,udiv15,udiv-observed,urem,mul8,mul-ref3,quotient-one-rem,quotient-one-quot,divisor-magnitude` | 16 |
+| `aggressive` | SPEAR plus `divrem-full` (V3-compatible) | 16 |
+
+All pre-existing public flag, schema-bit, counter, and profile values retain
+their numeric values. The SPEAR C aggregate is a mask, and profile ordinal 2
+is appended after qualified and aggressive.
+
+### V4 round qualification
+
+The qualified mask was compared at 16 and 32 rounds on the same 287 natural
+DIV/REM consumers used for V3 qualification. Runs used CaDiCaL,
+non-incremental mode, a two-second internal budget, 24-way parallelism, and
+alternating per-input order. The complete experiment was repeated three
+times.
+
+| Repeat | Solved, 16 / 32 | Decisive total, 16 / 32 | External timeouts, 16 / 32 |
+| ---: | ---: | ---: | ---: |
+| 1 | 258 / 258 | 21.66 / 21.23 s | 2 / 1 |
+| 2 | 258 / 258 | 20.68 / 20.70 s | 2 / 1 |
+| 3 | 258 / 258 | 20.76 / 20.84 s | 2 / 1 |
+
+Both configurations had a 0.040-second median and no SAT/UNSAT disagreement.
+The 16-round configuration gained no solve and, in every repetition, failed
+to terminate within the six-second external guard on
+`rw_rule_candidate_vmcai_2022_bw512_1.smt2`; 32 rounds returned `unknown` at
+the two-second internal budget. Decisive-case performance was otherwise
+effectively tied. V4 therefore retains 32 rounds for `qualified` and keeps the
+16-round SPEAR profile experimental. Raw data, while the temporary directory
+survives, is under `/tmp/stp-cegar-v4-rounds.6QaznZ`.
+
+Fresh `RelWithDebInfo` builds pass the complete suites with both supported
+refinement backends: 171/171 with CaDiCaL and 170/170 with simplifying
+MiniSat.
 
 ## V3 hybrid convergence
 
