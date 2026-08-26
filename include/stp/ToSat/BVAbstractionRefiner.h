@@ -299,6 +299,14 @@ inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
   return (uint64_t)LEMMA_INSTALLED_FIRST << (2 * index + operand);
 }
 
+// ... and the same for the addition facts, which are two-reading for the
+// same reason. The same bits as the products use, which is safe because a
+// record is exactly one of BVPLUS, BVMULT, BVDIV and BVMOD.
+inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
+{
+  return mulLemmaInstalledBit(index, operand);
+}
+
 // The facts the choosers offer, in the order they offer them, and how many
 // there are: the quotient facts over a BVDIV, the remainder facts over a
 // BVMOD, the product facts over a BVMULT. Exposed so a test can walk the
@@ -307,6 +315,36 @@ inline uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
 DLL_PUBLIC const DivLemma* divLemmaTable(unsigned& count);
 DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
 DLL_PUBLIC const MulLemma* mulLemmaTable(unsigned& count);
+DLL_PUBLIC const AddLemma* addLemmaTable(unsigned& count);
+
+// Which fact to spend over an abstracted BVPLUS, and in which reading.
+//
+// Unlike the other three, an inconsistent addition has always been refined
+// by encoding the adder exactly and being done with it: an adder is linear,
+// so there was never much to gain by saying something weaker about it first.
+// That is still the fallback and still what happens when `add` is off, which
+// it is by default. `found` is what says a fact was picked instead.
+struct AddSchemaChoice
+{
+  bool found = false;
+  AddLemma lemma = AddLemma::AddZero;
+  // Which of the two operands plays the fact's `x`. Addition is commutative
+  // and the registry is not symmetric, so both readings are offered and each
+  // carries its own installed-flag.
+  unsigned operand = 0;
+  unsigned lemmaIndex = 0;
+};
+
+// The first fact this candidate contradicts, or none. `tBits` is the sum the
+// candidate holds, already known to disagree with what the operands say it
+// should be, and `xNegated`/`sNegated` say which operands the record adds
+// the two's complement of.
+DLL_PUBLIC AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
+                                           const std::vector<bool>& bBits,
+                                           const std::vector<bool>& tBits,
+                                           bool aNegated, bool bNegated,
+                                           uint64_t installedSchemas,
+                                           uint32_t enabledGroups);
 
 struct DivSchemaChoice
 {

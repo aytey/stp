@@ -759,6 +759,73 @@ const MulLemma* mulLemmaTable(unsigned& count)
   return MUL_LEMMAS;
 }
 
+// The ADD facts, in the source's order. There is no firing count to sort by
+// -- none of them fired -- and no reason to invent one.
+static const AddLemma ADD_LEMMAS[] = {
+    AddLemma::AddZero,    AddLemma::AddSame,    AddLemma::AddInv,
+    AddLemma::AddOverflow, AddLemma::AddNoOverflow, AddLemma::AddOr,
+    AddLemma::AddRef6,    AddLemma::AddRef7,    AddLemma::AddRef8,
+    AddLemma::AddRef9,    AddLemma::AddRef10,   AddLemma::AddRef11,
+    AddLemma::AddRef12};
+
+static const unsigned ADD_LEMMA_COUNT =
+    sizeof(ADD_LEMMAS) / sizeof(ADD_LEMMAS[0]);
+
+const AddLemma* addLemmaTable(unsigned& count)
+{
+  count = ADD_LEMMA_COUNT;
+  return ADD_LEMMAS;
+}
+
+// The record's operands as it actually adds them: a syntactic negation is
+// folded into the record, so the fact is about the two's complement.
+static std::vector<bool> effectiveOperand(const std::vector<bool>& bits,
+                                          bool negated)
+{
+  if (!negated)
+    return bits;
+
+  std::vector<bool> r(bits.size());
+  bool carry = true;
+  for (unsigned i = 0; i < bits.size(); ++i)
+  {
+    const bool inverted = !bits[i];
+    r[i] = inverted ^ carry;
+    carry = inverted && carry;
+  }
+  return r;
+}
+
+AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
+                                const std::vector<bool>& bBits,
+                                const std::vector<bool>& tBits, bool aNegated,
+                                bool bNegated, uint64_t installedSchemas,
+                                uint32_t enabledGroups)
+{
+  if (!bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::ADD))
+    return AddSchemaChoice();
+
+  const std::vector<bool> a = effectiveOperand(aBits, aNegated);
+  const std::vector<bool> b = effectiveOperand(bBits, bNegated);
+  const std::vector<bool>* ops[2] = {&a, &b};
+  const unsigned width = (unsigned)tBits.size();
+
+  for (unsigned i = 0; i < ADD_LEMMA_COUNT; ++i)
+  {
+    if (!addLemmaApplicable(ADD_LEMMAS[i], width))
+      continue;
+    for (unsigned op = 0; op < 2; ++op)
+    {
+      if ((installedSchemas & addLemmaInstalledBit(i, op)) != 0)
+        continue;
+      if (!addLemmaHolds(ADD_LEMMAS[i], *ops[op], *ops[1 - op], tBits))
+        return {true, ADD_LEMMAS[i], op, i};
+    }
+  }
+
+  return AddSchemaChoice();
+}
+
 // Which family each fact belongs to. Written as a switch with no default so
 // that a fact added to the enum and forgotten here is a compile error rather
 // than a lemma silently charged to `base` and silently enabled with it.
@@ -1645,6 +1712,11 @@ unsigned BVAbstractionRefiner::refineTerms(
   };
   struct InconsistentPlus {
     size_t absIdx;
+    // The algebraic fact this candidate contradicts, if `add` is on and one
+    // does. Decided here, with the model in hand, because the clause phase
+    // must not read it. Without one, the record is encoded exactly, which
+    // is what an inconsistent addition has always got.
+    AddSchemaChoice schema;
   };
   struct InconsistentITE {
     size_t absIdx;
@@ -1723,20 +1795,39 @@ unsigned BVAbstractionRefiner::refineTerms(
       const bool rNeg = abs.operandNegated[1];
       const bool carryInit = (lNeg != rNeg);
 
+      // The sum the candidate holds, kept rather than compared bit by bit
+      // and dropped: the facts below are about the whole of it.
+      std::vector<bool> sumBits(abs.width);
+      for (unsigned bit = 0; bit < abs.width; ++bit)
+        sumBits[bit] =
+            (solver.modelValue(resultVars[bit]) == solver.true_literal());
+
       bool carry = carryInit;
       bool consistent = true;
       for (unsigned bit = 0; bit < abs.width; ++bit)
       {
         bool l = leftBits[bit] ^ lNeg;
         bool r = rightBits[bit] ^ rNeg;
-        bool s = (solver.modelValue(resultVars[bit]) == solver.true_literal());
         bool expectedSum = l ^ r ^ carry;
         carry = (l && r) || (l && carry) || (r && carry);
-        if (s != expectedSum) { consistent = false; break; }
+        if (sumBits[bit] != expectedSum) { consistent = false; break; }
       }
       if (consistent) continue;
 
-      incPlus.push_back({idx});
+      // A fact about every pair of operands, where one is on offer and the
+      // record has schema allowance left. The exact adder behind it is
+      // cheap and unconditional, so this is the one operation where the
+      // fallback is at least as good as the fact -- which is why `add` is
+      // off, and why nothing here changes unless it is turned on.
+      AddSchemaChoice addSchema;
+      const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
+      if (bm->UserFlags.bv_term_abstraction_schemas &&
+          (schemaLimit == 0 || abs.schemaRounds < schemaLimit))
+        addSchema = chooseAddSchema(
+            leftBits, rightBits, sumBits, lNeg, rNeg, abs.installedSchemas,
+            bm->UserFlags.bv_term_abstraction_schema_groups);
+
+      incPlus.push_back({idx, addSchema});
     }
     else if (abs.opKind == ITE)
     {
@@ -2024,6 +2115,29 @@ unsigned BVAbstractionRefiner::refineTerms(
     const bool lNeg = abs.operandNegated[0];
     const bool rNeg = abs.operandNegated[1];
     const bool carryInit = (lNeg != rNeg);
+
+    // A fact instead of the adder, where the chooser found one. The record
+    // is not defined by it -- the sum stays free and a later round may take
+    // another fact or the adder itself.
+    if (inc.schema.found)
+    {
+      const unsigned chosen = inc.schema.operand;
+      const std::vector<unsigned>* opVars[2] = {&leftVars, &rightVars};
+      const bool negated[2] = {lNeg, rNeg};
+      BVExactEncoder(bm).encodeAddLemma(
+          solver, inc.schema.lemma, abs.width, *opVars[chosen],
+          *opVars[1 - chosen], resultVars, negated[chosen],
+          negated[1 - chosen]);
+      abs.installedSchemas |=
+          addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
+      abs.schemaRounds++;
+      countSchemaLemma(bm, BVSchemaGroup::ADD);
+      if (bm->UserFlags.stats_flag)
+        std::cerr << "BV abstraction: BVPLUS " << addLemmaName(inc.schema.lemma)
+                  << " lemma over operand " << chosen << std::endl;
+      refined++;
+      continue;
+    }
 
     unsigned carryVar = solver.newVar();
     solver.setFrozen(carryVar);

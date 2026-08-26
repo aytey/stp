@@ -67,6 +67,7 @@ using BBNodeSet = std::unordered_set<BBNodeAIG>;
 enum class DivLemma;
 enum class RemLemma;
 enum class MulLemma;
+enum class AddLemma;
 
 class BitBlaster
 {
@@ -542,6 +543,14 @@ public:
   // is written rather than the order the multiplication holds them.
   BBNode BBMulLemma(MulLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
                     const BBNodeVec& t, BBNodeSet& support);
+
+  // ... and one about `t = x + s`. The two flags say whether the record
+  // folded a two's complement into that operand; the negation is applied
+  // here, where BBUminus is, rather than by the caller, which does not have
+  // it.
+  BBNode BBAddLemma(AddLemma lemma, const BBNodeVec& x, const BBNodeVec& s,
+                    const BBNodeVec& t, bool xNegated, bool sNegated,
+                    BBNodeSet& support);
 
   // The division identity `x = t*s + r`, which is about two abstractions at
   // once. `product` is the BVMULT node standing for `t*s`, read the way

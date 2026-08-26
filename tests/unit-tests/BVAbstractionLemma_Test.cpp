@@ -122,6 +122,11 @@ unsigned referenceMul(unsigned x, unsigned s, unsigned width)
   return (x * s) & ((1u << width) - 1);
 }
 
+unsigned referenceAdd(unsigned x, unsigned s, unsigned width)
+{
+  return (x + s) & ((1u << width) - 1);
+}
+
 struct Family
 {
   const char* what;
@@ -192,7 +197,30 @@ std::vector<Family> families()
          }});
   }
 
-  return {quotients, remainders, products};
+  Family sums{"BVPLUS", referenceAdd, {}};
+  const AddLemma* addTable = addLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const AddLemma lemma = addTable[i];
+    sums.facts.push_back(
+        {addLemmaName(lemma),
+         [lemma](unsigned width) { return addLemmaApplicable(lemma, width); },
+         [lemma](const std::vector<bool>& x, const std::vector<bool>& s,
+                 const std::vector<bool>& t) {
+           return addLemmaHolds(lemma, x, s, t);
+         },
+         [lemma](BVExactEncoder& enc, SATSolver& solver, unsigned width,
+                 const std::vector<unsigned>& xv,
+                 const std::vector<unsigned>& sv,
+                 const std::vector<unsigned>& tv) {
+           // Both operands as written. The lowering that folds a two's
+           // complement into one of them has its own regression; what is
+           // checked here is the fact itself.
+           enc.encodeAddLemma(solver, lemma, width, xv, sv, tv, false, false);
+         }});
+  }
+
+  return {quotients, remainders, products, sums};
 }
 
 std::vector<bool> bitsOf(unsigned value, unsigned width)

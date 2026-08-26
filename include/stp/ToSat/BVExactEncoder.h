@@ -349,6 +349,63 @@ DLL_PUBLIC const char* mulLemmaName(MulLemma lemma);
 // bits it rules out nine in ten of the (quotient, remainder) pairs that both
 // records' own facts admit. What it costs is a multiplier, which is why it
 // goes through the bit-blaster like the rest.
+// The algebraic facts about `t = x + s`, which is the source's complete ADD
+// registry and the one family here that has never been anything but off.
+//
+// Three reasons, and they compound. The source ships its own addition
+// abstraction disabled. None of these fired on the corpus the division facts
+// were ranked on. And the trade addition offers is not the trade division
+// does: an inconsistent BVPLUS is refined by encoding the adder exactly, in
+// one round, and an exact adder is linear -- so a fact that defers it saves
+// almost nothing and can easily cost a round. Measured over a 1,550-file
+// sweep the family took the solve count down.
+//
+// They are here so that stays a measurement rather than an assumption: the
+// facts are transcribed, tested and reachable behind `add`, and nothing
+// offers them unless someone asks.
+//
+// Written over the operands the record effectively adds. STP folds a
+// syntactic negation into the record, so an operand may stand for its own
+// two's complement; the encoder is told which, and negates inside the
+// circuit rather than leaving the caller to build a second vector.
+enum class AddLemma
+{
+  // s = 0 -> t = x
+  AddZero,
+  // x = s -> t[0] = 0
+  AddSame,
+  // s = ~x -> t = ~0
+  AddInv,
+  // msb(x) = msb(s) = 1 -> t <u (x & s)
+  AddOverflow,
+  // msb(x) = msb(s) = 0 -> t >=u (x | s)
+  AddNoOverflow,
+  // x & s = 0 -> t = x | s
+  AddOr,
+  // 0 = x & s & t & 1
+  AddRef6,
+  // (1 & (s | t)) >=u (x & 1)
+  AddRef7,
+  // (1 & (x | t)) >=u (s & 1)
+  AddRef8,
+  // (1 & (x | s)) >=u (t & 1)
+  AddRef9,
+  // 1 != (t | ~(x & s)). Restricted; see addLemmaApplicable().
+  AddRef10,
+  // t != ~(t | (x & s)). Restricted; see addLemmaApplicable().
+  AddRef11,
+  // 1 != (x | s | ~t). Restricted; see addLemmaApplicable().
+  AddRef12
+};
+
+DLL_PUBLIC bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& xBits,
+                              const std::vector<bool>& sBits,
+                              const std::vector<bool>& tBits);
+
+DLL_PUBLIC bool addLemmaApplicable(AddLemma lemma, unsigned width);
+
+DLL_PUBLIC const char* addLemmaName(AddLemma lemma);
+
 DLL_PUBLIC bool divModIdentityHolds(const std::vector<bool>& xBits,
                                     const std::vector<bool>& sBits,
                                     const std::vector<bool>& tBits,
@@ -408,6 +465,17 @@ public:
                       const std::vector<unsigned>& xVars,
                       const std::vector<unsigned>& sVars,
                       const std::vector<unsigned>& resultVars);
+
+  // ... and one about `t = x + s`. `xNegated` and `sNegated` say whether the
+  // record folded a two's complement into that operand: the fact is about
+  // what is actually added, and the negation is built into the circuit
+  // rather than asked of the caller, so that the operand variables spliced
+  // here are the same ones every other refinement of this record splices.
+  void encodeAddLemma(SATSolver& solver, AddLemma lemma, unsigned width,
+                      const std::vector<unsigned>& xVars,
+                      const std::vector<unsigned>& sVars,
+                      const std::vector<unsigned>& resultVars, bool xNegated,
+                      bool sNegated);
 
   // `x = t*s + r`, over four sets of variables rather than three: the two
   // operands, the abstracted quotient and the abstracted remainder.

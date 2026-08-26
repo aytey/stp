@@ -3673,6 +3673,93 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
   return BBFalse;
 }
 
+BBNode BitBlaster::BBAddLemma(AddLemma lemma, const BBNodeVec& xIn,
+                              const BBNodeVec& sIn, const BBNodeVec& t,
+                              bool xNegated, bool sNegated, BBNodeSet& support)
+{
+  const unsigned width = (unsigned)xIn.size();
+  assert(sIn.size() == width);
+  assert(t.size() == width);
+  (void)support;
+
+  // What the record actually adds. STP folds a syntactic negation into the
+  // record and adds the two's complement, so a fact written about `x + s`
+  // is about these and not about the operands as they were written.
+  const BBNodeVec x = xNegated ? BBUminus(xIn) : xIn;
+  const BBNodeVec s = sNegated ? BBUminus(sIn) : sIn;
+
+  const BBNodeVec zero = BBfill(width, BBFalse);
+  const BBNodeVec ones = BBfill(width, BBTrue);
+  BBNodeVec one = zero;
+  one[0] = BBTrue;
+
+  switch (lemma)
+  {
+    case AddLemma::AddZero:
+      // s = 0 -> t = x
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(s, zero)),
+                            BBEQ(t, x));
+
+    case AddLemma::AddSame:
+      // x = s -> t[0] = 0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(x, s)),
+                            nf->CreateNode(NOT, t[0]));
+
+    case AddLemma::AddInv:
+      // s = ~x -> t = ~0
+      return nf->CreateNode(OR, nf->CreateNode(NOT, BBEQ(s, BBNeg(x))),
+                            BBEQ(t, ones));
+
+    case AddLemma::AddOverflow:
+      // msb(x) = msb(s) = 1 -> t <u (x & s)
+      return nf->CreateNode(OR, nf->CreateNode(NOT, x[width - 1]),
+                            nf->CreateNode(NOT, s[width - 1]),
+                            nf->CreateNode(NOT, BBBVLE(BBAnd(x, s), t, false)));
+
+    case AddLemma::AddNoOverflow:
+      // msb(x) = msb(s) = 0 -> t >=u (x | s)
+      return nf->CreateNode(OR, x[width - 1], s[width - 1],
+                            BBBVLE(BBOr(x, s), t, false));
+
+    case AddLemma::AddOr:
+      // x & s = 0 -> t = x | s
+      return nf->CreateNode(OR,
+                            nf->CreateNode(NOT, BBEQ(BBAnd(x, s), zero)),
+                            BBEQ(t, BBOr(x, s)));
+
+    case AddLemma::AddRef6:
+      // 0 = x & s & t & 1
+      return BBEQ(zero, BBAnd(x, BBAnd(s, BBAnd(t, one))));
+
+    case AddLemma::AddRef7:
+      // (1 & (s | t)) >=u (x & 1)
+      return BBBVLE(BBAnd(x, one), BBAnd(one, BBOr(s, t)), false);
+
+    case AddLemma::AddRef8:
+      // (1 & (x | t)) >=u (s & 1)
+      return BBBVLE(BBAnd(s, one), BBAnd(one, BBOr(x, t)), false);
+
+    case AddLemma::AddRef9:
+      // (1 & (x | s)) >=u (t & 1)
+      return BBBVLE(BBAnd(t, one), BBAnd(one, BBOr(x, s)), false);
+
+    case AddLemma::AddRef10:
+      // 1 != (t | ~(x & s))
+      return nf->CreateNode(NOT, BBEQ(one, BBOr(t, BBNeg(BBAnd(x, s)))));
+
+    case AddLemma::AddRef11:
+      // t != ~(t | (x & s))
+      return nf->CreateNode(NOT, BBEQ(t, BBNeg(BBOr(t, BBAnd(x, s)))));
+
+    case AddLemma::AddRef12:
+      // 1 != (x | s | ~t)
+      return nf->CreateNode(NOT, BBEQ(one, BBOr(x, BBOr(s, BBNeg(t)))));
+  }
+
+  FatalError("BBAddLemma: unknown lemma");
+  return BBFalse;
+}
+
 BBNode BitBlaster::BBDivModIdentity(const ASTNode& product, const BBNodeVec& x,
                                     const BBNodeVec& s, const BBNodeVec& t,
                                     const BBNodeVec& r, BBNodeSet& support)

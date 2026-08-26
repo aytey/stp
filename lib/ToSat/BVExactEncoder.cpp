@@ -777,6 +777,113 @@ const char* mulLemmaName(MulLemma lemma)
   return "unknown";
 }
 
+bool addLemmaApplicable(AddLemma lemma, unsigned width)
+{
+  switch (lemma)
+  {
+    // `1 != (t | ~(x & s))` and `1 != (x | s | ~t)` are false at one and two
+    // bits, where the vector "1" and the vector "~0" are close enough
+    // together for the disjunction to reach it.
+    case AddLemma::AddRef10:
+    case AddLemma::AddRef12:
+      return width > 2;
+
+    // `t != ~(t | (x & s))` is false at one bit.
+    case AddLemma::AddRef11:
+      return width > 1;
+
+    default:
+      return true;
+  }
+}
+
+bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& x,
+                   const std::vector<bool>& s, const std::vector<bool>& t)
+{
+  const unsigned W = (unsigned)x.size();
+  const std::vector<bool> zero(W, false);
+  std::vector<bool> ones(W, true);
+  std::vector<bool> one(W, false);
+  one[0] = true;
+
+  switch (lemma)
+  {
+    case AddLemma::AddZero:
+      // s = 0 -> t = x
+      return !allZero(s) || t == x;
+
+    case AddLemma::AddSame:
+      // x = s -> t[0] = 0
+      return x != s || !t[0];
+
+    case AddLemma::AddInv:
+      // s = ~x -> t = ~0
+      return s != notOf(x) || t == ones;
+
+    case AddLemma::AddOverflow:
+      // msb(x) = msb(s) = 1 -> t <u (x & s)
+      return !(x[W - 1] && s[W - 1]) || !ule(andOf(x, s), t);
+
+    case AddLemma::AddNoOverflow:
+      // msb(x) = msb(s) = 0 -> t >=u (x | s)
+      return x[W - 1] || s[W - 1] || ule(orOf(x, s), t);
+
+    case AddLemma::AddOr:
+      // x & s = 0 -> t = x | s
+      return !allZero(andOf(x, s)) || t == orOf(x, s);
+
+    case AddLemma::AddRef6:
+      // 0 = x & s & t & 1
+      return zero == andOf(x, andOf(s, andOf(t, one)));
+
+    case AddLemma::AddRef7:
+      // (1 & (s | t)) >=u (x & 1)
+      return ule(andOf(x, one), andOf(one, orOf(s, t)));
+
+    case AddLemma::AddRef8:
+      // (1 & (x | t)) >=u (s & 1)
+      return ule(andOf(s, one), andOf(one, orOf(x, t)));
+
+    case AddLemma::AddRef9:
+      // (1 & (x | s)) >=u (t & 1)
+      return ule(andOf(t, one), andOf(one, orOf(x, s)));
+
+    case AddLemma::AddRef10:
+      // 1 != (t | ~(x & s))
+      return one != orOf(t, notOf(andOf(x, s)));
+
+    case AddLemma::AddRef11:
+      // t != ~(t | (x & s))
+      return t != notOf(orOf(t, andOf(x, s)));
+
+    case AddLemma::AddRef12:
+      // 1 != (x | s | ~t)
+      return one != orOf(x, orOf(s, notOf(t)));
+  }
+  return true;
+}
+
+const char* addLemmaName(AddLemma lemma)
+{
+  switch (lemma)
+  {
+    case AddLemma::AddZero: return "add-zero";
+    case AddLemma::AddSame: return "add-same";
+    case AddLemma::AddInv: return "add-inv";
+    case AddLemma::AddOverflow: return "add-overflow";
+    case AddLemma::AddNoOverflow: return "add-no-overflow";
+    case AddLemma::AddOr: return "add-or";
+    case AddLemma::AddRef6: return "add-ref6";
+    case AddLemma::AddRef7: return "add-ref7";
+    case AddLemma::AddRef8: return "add-ref8";
+    case AddLemma::AddRef9: return "add-ref9";
+    case AddLemma::AddRef10: return "add-ref10";
+    case AddLemma::AddRef11: return "add-ref11";
+    case AddLemma::AddRef12: return "add-ref12";
+  }
+  return "unknown";
+}
+
 namespace
 {
 
@@ -913,6 +1020,22 @@ void BVExactEncoder::encodeMulLemma(SATSolver& solver, MulLemma lemma,
               [lemma](BitBlaster& bb, const std::vector<BBNodeVec>& in,
                       BBNodeSet& support) {
                 return bb.BBMulLemma(lemma, in[0], in[1], in[2], support);
+              });
+}
+
+void BVExactEncoder::encodeAddLemma(SATSolver& solver, AddLemma lemma,
+                                    unsigned width,
+                                    const std::vector<unsigned>& xVars,
+                                    const std::vector<unsigned>& sVars,
+                                    const std::vector<unsigned>& resultVars,
+                                    bool xNegated, bool sNegated)
+{
+  spliceLemma(bm, solver, width, {&xVars, &sVars, &resultVars},
+              [lemma, xNegated, sNegated](BitBlaster& bb,
+                                          const std::vector<BBNodeVec>& in,
+                                          BBNodeSet& support) {
+                return bb.BBAddLemma(lemma, in[0], in[1], in[2], xNegated,
+                                     sNegated, support);
               });
 }
 
