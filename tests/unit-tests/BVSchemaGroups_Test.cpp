@@ -91,6 +91,7 @@ TEST(BVSchemaGroups, every_group_has_a_name_and_the_names_are_distinct)
 TEST(BVSchemaGroups, format_and_parse_round_trip)
 {
   const uint32_t masks[] = {0u, BV_SCHEMA_GROUP_ALL, BV_SCHEMA_GROUP_DEFAULT,
+                            BV_SCHEMA_GROUP_QUALIFIED,
                             bvSchemaGroupBit(BVSchemaGroup::UREM),
                             bvSchemaGroupBit(BVSchemaGroup::BASE) |
                                 bvSchemaGroupBit(BVSchemaGroup::ADD)};
@@ -128,6 +129,13 @@ TEST(BVSchemaGroups, aliases_and_whitespace)
   ASSERT_TRUE(parseBVSchemaGroups("none", mask, error));
   EXPECT_EQ(mask, 0u);
 
+  ASSERT_TRUE(parseBVSchemaGroups("qualified", mask, error));
+  EXPECT_EQ(mask, BV_SCHEMA_GROUP_QUALIFIED);
+  // The conservative mask is a proper subset of the default rather than
+  // something beside it: everything it offers, the default offers too.
+  EXPECT_EQ(BV_SCHEMA_GROUP_QUALIFIED & BV_SCHEMA_GROUP_DEFAULT,
+            BV_SCHEMA_GROUP_QUALIFIED);
+
   ASSERT_TRUE(parseBVSchemaGroups("  base , urem ,base", mask, error));
   EXPECT_EQ(mask, bvSchemaGroupBit(BVSchemaGroup::BASE) |
                       bvSchemaGroupBit(BVSchemaGroup::UREM));
@@ -137,8 +145,10 @@ TEST(BVSchemaGroups, aliases_and_whitespace)
 // than no mask: it is a run whose configuration nobody wrote down.
 TEST(BVSchemaGroups, a_rejected_list_changes_nothing)
 {
-  const char* bad[] = {"", "base,", ",base", "nonsense", "base,nonsense",
-                       "all,base", "base,none", "none,all"};
+  const char* bad[] = {"",          "base,",     ",base",
+                       "nonsense",  "base,nonsense", "all,base",
+                       "base,none", "none,all",  "qualified,base",
+                       "all,qualified"};
 
   for (const char* text : bad)
   {

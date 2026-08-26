@@ -71,6 +71,11 @@ std::string trim(const std::string& text)
   return text.substr(first, last - first);
 }
 
+bool isWholeMaskAlias(const std::string& token)
+{
+  return token == "all" || token == "none" || token == "qualified";
+}
+
 std::string expectedGroups()
 {
   std::ostringstream out;
@@ -80,7 +85,7 @@ std::string expectedGroups()
       out << ", ";
     out << GROUP_NAMES[i];
   }
-  out << ", all, or none";
+  out << ", all, none, or qualified";
   return out.str();
 }
 
@@ -115,13 +120,14 @@ bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
     begin = comma + 1;
   }
 
-  // `all` and `none` say something about the whole mask, so a list holding
-  // one of them alongside a family name is asking for two different things
-  // and is refused rather than resolved by an ordering rule.
+  // `all`, `none` and `qualified` say something about the whole mask, so a
+  // list holding one of them alongside a family name is asking for two
+  // different things and is refused rather than resolved by an ordering
+  // rule.
   for (const std::string& token : tokens)
-    if ((token == "all" || token == "none") && tokens.size() != 1)
+    if (isWholeMaskAlias(token) && tokens.size() != 1)
     {
-      error = "'all' and 'none' must be used alone";
+      error = "'all', 'none' and 'qualified' must be used alone";
       return false;
     }
 
@@ -135,6 +141,13 @@ bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
   if (tokens.size() == 1 && tokens[0] == "none")
   {
     mask = 0;
+    error.clear();
+    return true;
+  }
+
+  if (tokens.size() == 1 && tokens[0] == "qualified")
+  {
+    mask = BV_SCHEMA_GROUP_QUALIFIED;
     error.clear();
     return true;
   }
@@ -172,6 +185,10 @@ std::string formatBVSchemaGroups(uint32_t mask)
     return "none";
   if ((mask & BV_SCHEMA_GROUP_ALL) == BV_SCHEMA_GROUP_ALL)
     return "all";
+  // Not spelled out, because the point of the alias is that a comparison
+  // against the other catalogue is one word rather than a transcription.
+  if (mask == BV_SCHEMA_GROUP_QUALIFIED)
+    return "qualified";
 
   std::ostringstream out;
   bool first = true;

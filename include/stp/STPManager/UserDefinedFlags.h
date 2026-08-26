@@ -96,6 +96,22 @@ constexpr uint32_t bvSchemaGroupBit(BVSchemaGroup group)
 constexpr uint32_t BV_SCHEMA_GROUP_ALL =
     (uint32_t{1} << BV_SCHEMA_GROUP_COUNT) - 1;
 
+// The conservative mask: what a corpus qualification over the imported
+// catalogue justified on its own, before any of the facts this branch
+// measures separately. Named because the comparison against that catalogue
+// is a thing worth being able to run in one word rather than transcribing
+// eight family names and getting one of them wrong.
+//
+// It is not this branch's recommendation -- over the 219 `QF_BV/spear` files
+// that abstract a division it takes 1170 refinement rounds and 401 blocking
+// lemmas against the default's 1063 and 209 -- and it is not paired with a
+// different round allowance, because there is no allowance it wants that the
+// default does not; see bv_term_abstraction_rounds.
+constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
+    bvSchemaGroupBit(BVSchemaGroup::BASE) |
+    bvSchemaGroupBit(BVSchemaGroup::UREM) |
+    bvSchemaGroupBit(BVSchemaGroup::MUL6);
+
 // What an explicitly enabled BV term abstraction inherits: everything that
 // has been measured to pay, which is everything except the three families
 // imported for completeness and measured not to.
@@ -123,8 +139,9 @@ constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 
 DLL_PUBLIC const char* bvSchemaGroupName(BVSchemaGroup group);
 
-// Parse the comma-separated command-line spelling. `all` and `none` are
-// aliases for the complete and the empty mask and have to stand alone.
+// Parse the comma-separated command-line spelling. `all`, `none` and
+// `qualified` are aliases for the complete, the empty and the conservative
+// mask, and each has to stand alone.
 // Whitespace and repeats are accepted; a malformed list is rejected without
 // changing `mask` at all, so a caller that ignores the return value is left
 // with what it had rather than with half of what it asked for.
@@ -587,10 +604,21 @@ public:
   // over the 219 `QF_BV/spear` consumers it converges in 1063 refinement
   // rounds and 209 blocking lemmas against 1127 and 273 at thirty-two.
   //
-  // The same experiment on a profile carrying only the base facts finds no
-  // difference at all, which is consistent rather than contradictory: what a
-  // round is worth depends on how many facts are on offer to spend it, and
-  // that is the argument for sixteen rather than any single measurement.
+  // One allowance, and the same one, whatever the mask. That was worth
+  // checking rather than assuming, because a round allowance chosen against
+  // one set of facts need not suit another -- and if it did not, this option
+  // and the family mask would have to be set together to be set correctly.
+  // Over the same 219 consumers, refinement rounds and blocking lemmas:
+  //
+  //                    rounds=16     rounds=32     rounds=64
+  //   qualified       1170 / 401    1322 / 558
+  //   default         1063 / 209    1127 / 273
+  //   all             1302 / 150    1350 / 198    1446 / 294
+  //
+  // Sixteen wins on every one of them, and sixty-four is worse again, so
+  // there is no mask here that wants a different number and no pairing to
+  // get wrong. A caller who turns families on does not also have to think
+  // about this.
   //
   // One number still bounds two purses, the blocking lemmas and the schema
   // lemmas, and there is no measurement saying they want the same bound.

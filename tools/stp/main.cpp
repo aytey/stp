@@ -395,7 +395,8 @@ void ExtraMain::create_options()
                  "divisor-magnitude, quotient-one, divrem-identity, "
                  "udiv-extra, mul-extra, add, quotient-thresholds, "
                  "low-prefix, divrem-prefix, urem7; 'all' takes every family "
-                 "implemented and 'none' takes none, and both stand alone")
+                 "implemented, 'none' takes none and 'qualified' takes the "
+                 "conservative base/urem/mul6 mask, and each stands alone")
       ->group(refinement_group)
       ->capture_default_str();
   app.add_option("--bv-term-abstraction-rounds",
