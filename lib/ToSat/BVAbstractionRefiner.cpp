@@ -107,11 +107,20 @@ void BVAbstractionRefiner::freezeVariables(
 
   for (const auto& a : terms_)
   {
-    auto resultIt = nodeToSATVar.find(a.termNode);
-    if (resultIt != nodeToSATVar.end())
-      for (unsigned v : resultIt->second)
+    if (!a.resultSATVars.empty())
+    {
+      for (unsigned v : a.resultSATVars)
         if (v != BV_ABSTRACTION_NO_VAR)
           satSolver.setFrozen(v);
+    }
+    else
+    {
+      auto resultIt = nodeToSATVar.find(a.termNode);
+      if (resultIt != nodeToSATVar.end())
+        for (unsigned v : resultIt->second)
+          if (v != BV_ABSTRACTION_NO_VAR)
+            satSolver.setFrozen(v);
+    }
     for (unsigned i = 0; i < a.numOperands; i++)
     {
       auto opIt = nodeToSATVar.find(a.operands[i]);
@@ -191,6 +200,31 @@ encodedBitsOf(const ASTNode& node, unsigned width,
                  node, (int)i);
 
   return vars;
+}
+
+// A term record's own free result, rather than whichever result was most
+// recently registered under the same AST node. Whole-formula batch blasting
+// creates one result per term and retains its historical node map; the
+// incremental blaster can encounter the same rewritten node in distinct
+// retractable roots, and those records must remain independently checkable.
+static const std::vector<unsigned>& encodedResultBitsOf(
+    const BVTermAbstraction& abstraction,
+    const ToSATBase::ASTNodeToSATVar& nodeToSATVar)
+{
+  if (abstraction.resultSATVars.empty())
+    return encodedBitsOf(abstraction.termNode, abstraction.width,
+                         nodeToSATVar);
+
+  if (abstraction.resultSATVars.size() < abstraction.width)
+    FatalError("BV abstraction: a term record has fewer direct result "
+               "variables than its width: ",
+               abstraction.termNode, (int)abstraction.width);
+  for (unsigned i = 0; i < abstraction.width; ++i)
+    if (abstraction.resultSATVars[i] == BV_ABSTRACTION_NO_VAR)
+      FatalError("BV abstraction: a term record's direct result bit never "
+                 "reached the CNF: ",
+                 abstraction.termNode, (int)i);
+  return abstraction.resultSATVars;
 }
 
 // A record's own variable: the Boolean an equality became, or the condition
@@ -1285,7 +1319,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     }
 
     const std::vector<unsigned>& resultVars =
-        encodedBitsOf(abs.termNode, abs.width, nodeToSATVar);
+        encodedResultBitsOf(abs, nodeToSATVar);
 
     if (abs.opKind == BVPLUS)
     {
@@ -1507,7 +1541,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, leftVars);
     getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, rightVars);
     const std::vector<unsigned>& resultVars =
-        encodedBitsOf(abs.termNode, abs.width, nodeToSATVar);
+        encodedResultBitsOf(abs, nodeToSATVar);
     const bool lNeg = abs.operandNegated[0];
     const bool rNeg = abs.operandNegated[1];
     const bool carryInit = (lNeg != rNeg);
@@ -1585,7 +1619,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, thenVars);
     getOperandVars(abs.operands[2], abs.width, nodeToSATVar, solver, elseVars);
     const std::vector<unsigned>& resultVars =
-        encodedBitsOf(abs.termNode, abs.width, nodeToSATVar);
+        encodedResultBitsOf(abs, nodeToSATVar);
     unsigned c = abs.condSATVar;
 
     for (unsigned bit = 0; bit < abs.width; ++bit)
@@ -1613,7 +1647,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, aVars);
     getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, bVars);
     const std::vector<unsigned>& resultVars =
-        encodedBitsOf(abs.termNode, abs.width, nodeToSATVar);
+        encodedResultBitsOf(abs, nodeToSATVar);
     unsigned W = abs.width;
 
     // An algebraic fact the candidate contradicts, where there is one.

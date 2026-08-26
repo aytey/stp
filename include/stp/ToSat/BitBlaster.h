@@ -459,6 +459,11 @@ public:
     unsigned width;
     bool operandNegated[3] = {false, false, false};
     int condCISymbolIndex = -1;
+    // The result inputs belonging to THIS record. Incremental preprocessing
+    // can rebuild two source terms to the same AST node and blast each in a
+    // different retractable root. symbolToBBNode is keyed by that shared AST
+    // identity, so its later entry cannot identify the earlier result.
+    std::vector<int> resultCISymbolIndices;
   };
 
 private:

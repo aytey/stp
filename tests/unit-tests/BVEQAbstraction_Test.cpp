@@ -604,6 +604,62 @@ TEST_F(BVEQAbstractionTest, FreezeVariablesCoversEveryLemmaVariable)
   EXPECT_EQ(expected, solver.frozen);
 }
 
+// Persistent incremental blasting can create more than one abstraction
+// record for the same rewritten AST term. The AST-keyed registry names only
+// the newest result. Each record must therefore read and refine the free
+// result inputs it was created with, or an older result that still feeds an
+// active root can escape candidate checking.
+TEST_F(BVEQAbstractionTest, DuplicateTermsKeepTheirOwnResultVariables)
+{
+  mgr.UserFlags.bv_term_abstraction_schemas = false;
+
+  ASTNode a = makeSymbol("duplicate_result_a", 4);
+  ASTNode b = makeSymbol("duplicate_result_b", 4);
+  ASTNode product = factory->CreateTerm(BVMULT, 4, a, b);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction older;
+  older.termNode = product;
+  older.opKind = BVMULT;
+  older.operands[0] = a;
+  older.operands[1] = b;
+  older.numOperands = 2;
+  older.width = 4;
+  older.resultSATVars = std::vector<unsigned>{40, 41, 42, 43};
+  refiner.terms().push_back(older);
+
+  BVTermAbstraction newer = older;
+  newer.resultSATVars = std::vector<unsigned>{30, 31, 32, 33};
+  refiner.terms().push_back(newer);
+
+  ToSATBase::ASTNodeToSATVar bits;
+  bits[a] = std::vector<unsigned>{10, 11, 12, 13};
+  bits[b] = std::vector<unsigned>{20, 21, 22, 23};
+  // The historical map has necessarily been overwritten by the newer
+  // record. It cannot identify the result still used by the older root.
+  bits[product] = newer.resultSATVars;
+
+  RecordingSolver solver;
+  // Both operands are 3, so their four-bit product is 9. The newer result is
+  // correct while the older result says zero. Looking up both records by AST
+  // would call the whole candidate consistent; record-owned variables expose
+  // and block the older inconsistency.
+  const bool operand[4] = {true, true, false, false};
+  const bool expected[4] = {true, false, false, true};
+  for (unsigned i = 0; i < 4; ++i)
+  {
+    solver.model[10 + i] = operand[i];
+    solver.model[20 + i] = operand[i];
+    solver.model[30 + i] = expected[i];
+    solver.model[40 + i] = false;
+  }
+
+  EXPECT_EQ(1u, refiner.refine(solver, bits));
+  EXPECT_EQ(1u, refiner.terms()[0].blockedRounds);
+  EXPECT_EQ(0u, refiner.terms()[1].blockedRounds);
+  EXPECT_TRUE(solver.someClauseBlocksModel());
+}
+
 // A partial prefix says nothing to a candidate that called the equality
 // false over agreeing bits: every prefix clause is conditioned on the
 // Boolean being true, so the identical candidate could come back round

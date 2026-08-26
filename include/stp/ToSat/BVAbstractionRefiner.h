@@ -316,6 +316,11 @@ struct BVTermAbstraction
   ASTNode operands[3];
   unsigned numOperands;
   unsigned width;
+  // Direct variables for this record's free result bits. The batch path may
+  // leave this empty and use nodeToSATVar; the persistent incremental path
+  // fills it because several records can share termNode while owning distinct
+  // combinational inputs.
+  std::vector<unsigned> resultSATVars;
   bool operandNegated[3] = {false, false, false};
   unsigned condSATVar = BV_ABSTRACTION_NO_VAR;
   bool defined = false;

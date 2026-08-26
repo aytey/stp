@@ -49,6 +49,18 @@ static bool allBBNodesAreCIs(const BBNodeVec& vec)
   return !vec.empty();
 }
 
+static std::vector<int> ciSymbolIndices(const BBNodeVec& bits)
+{
+  std::vector<int> indices;
+  indices.reserve(bits.size());
+  for (const BBNode& bit : bits)
+  {
+    assert(!bit.IsNull() && bit.symbol_index >= 0);
+    indices.push_back(bit.symbol_index);
+  }
+  return indices;
+}
+
 // For operands that contain internal AIG nodes (e.g. BVAND results),
 // create fresh proxy CIs with biconditional side constraints so that
 // downstream abstraction can proceed.
@@ -1052,6 +1064,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         raw.numOperands = 3;
         raw.width = num_bits;
         raw.condCISymbolIndex = condCI.symbol_index;
+        raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
         abstractedTerms_.push_back(raw);
         result = abstracted;
       }
@@ -1233,6 +1246,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           raw.width = num_bits;
           raw.operandNegated[0] = negated[0];
           raw.operandNegated[1] = negated[1];
+          raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
           abstractedTerms_.push_back(raw);
           result = abstracted;
           break;
@@ -1344,6 +1358,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         raw.operands[1] = term[1];
         raw.numOperands = 2;
         raw.width = num_bits;
+        raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
         abstractedTerms_.push_back(raw);
         result = abstracted;
       }
@@ -1395,6 +1410,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         raw.operands[1] = term[1];
         raw.numOperands = 2;
         raw.width = num_bits;
+        raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
         abstractedTerms_.push_back(raw);
         result = abstracted;
       }
