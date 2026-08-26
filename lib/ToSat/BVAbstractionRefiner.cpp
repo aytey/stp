@@ -1801,8 +1801,8 @@ unsigned BVAbstractionRefiner::refineTerms(
       getOperandVars(q.operands[1], q.width, nodeToSATVar, solver, bVars);
       BVExactEncoder(bm).encodeDivModIdentity(
           solver, product, q.width, aVars, bVars,
-          encodedBitsOf(q.termNode, q.width, nodeToSATVar),
-          encodedBitsOf(r.termNode, r.width, nodeToSATVar));
+          encodedResultBitsOf(q, nodeToSATVar),
+          encodedResultBitsOf(r, nodeToSATVar));
 
       q.divModIdentity = r.divModIdentity = true;
       bm->UserFlags.coverage.bv_schema_lemmas++;
