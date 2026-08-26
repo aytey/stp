@@ -44,7 +44,10 @@ const char* const GROUP_NAMES[] = {"base",
                                    "quotient-thresholds",
                                    "low-prefix",
                                    "quotient-one-rem",
-                                   "divrem-pair"};
+                                   "divrem-pair",
+                                   "quotient-one-quot",
+                                   "divisor-magnitude",
+                                   "divrem-full"};
 
 static_assert(sizeof(GROUP_NAMES) / sizeof(GROUP_NAMES[0]) ==
                   BV_SCHEMA_GROUP_COUNT,

@@ -1451,7 +1451,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       if (num_bits >= uf->bv_abstraction_width)
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_DIVMOD]++;
 
-      if (uf->bv_term_abstraction && uf->bv_term_abstraction_mult &&
+      if (uf->bv_term_abstraction && uf->bv_term_abstraction_divmod &&
           num_bits >= uf->bv_abstraction_width)
       {
         {
@@ -3529,6 +3529,25 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
 
   FatalError("BBMulLemma: unknown lemma");
   return BBFalse;
+}
+
+BBNode BitBlaster::BBDivRemIdentity(const ASTNode& product,
+                                    const BBNodeVec& x,
+                                    const BBNodeVec& s,
+                                    const BBNodeVec& q,
+                                    const BBNodeVec& r,
+                                    BBNodeSet& support)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(s.size() == width);
+  assert(q.size() == width);
+  assert(r.size() == width);
+  assert(product.GetKind() == BVMULT);
+  assert(product.GetValueWidth() == width);
+
+  BBNodeVec sum = BBMult(q, s, support, product);
+  BBPlus2(sum, r, BBFalse);
+  return BBEQ(x, sum);
 }
 
 BBNode BitBlaster::BBAddLemma(AddLemma lemma, const BBNodeVec& x,

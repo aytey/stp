@@ -368,10 +368,13 @@ void ExtraMain::create_options()
            "replace an assertion where it occurs inside another assertion",
            refinement_group);
   bool_arg("--bv-term-abstraction-mult", bm->UserFlags.bv_term_abstraction_mult,
-           "include BVMULT, BVDIV and BVMOD in BV term abstraction; they are "
-           "the ones refined by ruling out one pair of operand values at a "
-           "time, so turning them off leaves only the operations that define "
-           "themselves in a single round",
+           "include BVMULT in BV term abstraction; turning it off leaves "
+           "multiplication encoded exactly from the start",
+           refinement_group);
+  bool_arg("--bv-term-abstraction-divmod",
+           bm->UserFlags.bv_term_abstraction_divmod,
+           "include BVDIV and BVMOD in BV term abstraction; turning it off "
+           "leaves division and remainder encoded exactly from the start",
            refinement_group);
   bool_arg("--bv-term-abstraction-schemas",
            bm->UserFlags.bv_term_abstraction_schemas,
@@ -383,8 +386,9 @@ void ExtraMain::create_options()
                  "comma-separated schema families allowed by "
                  "--bv-term-abstraction-schemas: base, udiv15, udiv-extra, "
                  "urem, mul8, mul-ref3, mul-extra, add, "
-                 "quotient-thresholds, low-prefix, quotient-one-rem, or "
-                 "divrem-pair; 'all' selects the complete experimental "
+                 "quotient-thresholds, low-prefix, quotient-one-rem, "
+                 "divrem-pair, quotient-one-quot, divisor-magnitude, or "
+                 "divrem-full; 'all' selects the complete experimental "
                  "stack and 'none' selects no schemas")
       ->group(refinement_group)
       ->capture_default_str();

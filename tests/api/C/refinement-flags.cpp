@@ -46,6 +46,10 @@ THE SOFTWARE.
 #include "stp/c_interface.h"
 #include <gtest/gtest.h>
 
+static_assert(BV_TERM_ABSTRACTION_DIVMOD ==
+                  BV_TERM_ABSTRACTION_SCHEMA_GROUPS + 1,
+              "new interface flags must be appended to preserve the C ABI");
+
 namespace
 {
 const stp::UserDefinedFlags& flags(VC vc)
@@ -84,6 +88,7 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_EQ(0u, flags(vc).bv_eq_refine_width);
   EXPECT_FALSE(flags(vc).bv_term_abstraction);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
   EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
   EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT),
@@ -139,6 +144,11 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
+
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 1);
+  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
 
   // Any nonzero enables, as everywhere else in this call.
   vc_setInterfaceFlags(vc, BV_EQ_ABSTRACTION, 2);
@@ -226,7 +236,7 @@ TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
                        STP_BV_SCHEMA_GROUP_BASE);
-  const int invalid[] = {-1, 1 << 12, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
+  const int invalid[] = {-1, 1 << 15, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
   for (const int value : invalid)
   {
     vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, value);

@@ -1,15 +1,15 @@
 # Bit-vector abstraction work: final handoff
 
-Date: 2026-08-25
+Date: 2026-08-26
 
-Branch: `cegar-variable-shift-udiv15`
+Branch: `cegar-next-codex`
 
-Code stack documented through: `9d763349`
+Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
-Base: `87be10ce` (`upstream/master`, merge of PR #990)
+Additional source reviewed: `1351a312` (`pr-lemmas`)
 
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-lemmas`
+`/home/avj/clones/stp/cegar-next-codex`
 
 ## Executive summary
 
@@ -22,10 +22,11 @@ complete:
   also transcribed and tested, but deliberately remains disabled in STP.
 - STP's older divisor-value, bound, power-of-two, trailing-zero, odd-product,
   and exact/value-pair fallbacks remain in place.
-- Four STP-specific facts have been added after completing the imported
+- Seven STP-specific schema groups have been added after completing the imported
   registries: quotient magnitude thresholds, exact low prefixes for addition
   and multiplication, a quotient-one remainder band, and paired DIV/REM
-  low-prefix recomposition.
+  low-prefix recomposition, plus the hybrid's quotient-one quotient band,
+  capped divisor-magnitude bound, and full-width paired recomposition.
 - Candidate predicates, emitted circuits or clauses, applicability
   restrictions, totalised zero-divisor behaviour, and complete end-to-end
   regressions are tested.
@@ -42,11 +43,10 @@ families behind one named group mask:
 - the master `--bv-term-abstraction-schemas=0` still overrides every group;
 - BV term abstraction itself remains off by default.
 
-This is the stopping point for inventing or importing more algebraic facts.
-The complete implementation remains useful for controlled experiments, but
-the corpus evidence does not justify enabling ADD, MUL8, the registry tails,
-low prefixes, quotient thresholds, quotient-one remainder, paired DIV/REM,
-or UDIV15 in the inherited profile.
+The hybrid retains that qualified profile unchanged. Its three additional
+families have compelling targeted regressions but no broad isolated corpus
+qualification, so they are available for controlled experiments and remain
+off in the inherited profile.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
@@ -59,8 +59,9 @@ initial division work merged in PR #989:
 - `--bv-term-abstraction=1` abstracts sufficiently wide `BVPLUS`,
   `BVMULT`, `BVDIV`, `BVMOD`, ITE, and signed/unsigned inequalities.
 - `--bv-abstraction-width=N` sets the shared width floor; its default is 64.
-- `--bv-term-abstraction-mult=0` excludes the expensive multiplication,
-  division, and remainder family.
+- `--bv-term-abstraction-mult=0` excludes multiplication.
+- `--bv-term-abstraction-divmod=0` independently excludes division and
+  remainder. Both scope flags default on, preserving the earlier behaviour.
 - The ITE, addition, and comparison families have their own scope flags.
 - `--bv-term-abstraction-schemas=1` enables algebraic schemas. The schema
   flag defaults to true, but term abstraction itself defaults to false.
@@ -95,6 +96,21 @@ The named groups and their disposition are:
 | `low-prefix` | Exact low-three-bit ADD and MUL facts | no |
 | `quotient-one-rem` | Remainder in the quotient-one band | no |
 | `divrem-pair` | Paired DIV/REM low-prefix recomposition | no |
+| `quotient-one-quot` | Quotient equals one in the one-subtraction band | no |
+| `divisor-magnitude` | Capped divisor-magnitude quotient bound | no |
+| `divrem-full` | Paired DIV/REM full modular recomposition | no |
+
+The paired scheduler gives the low-prefix relation first refusal only when
+the current model violates it. If those bits already agree, emitting the
+prefix would make no progress, so an enabled `divrem-full` relation may fire
+directly. Either relation consumes one schema round from both records and
+prevents their individual schemas from also firing in that pass. The
+divisor-magnitude family is limited to two instances per BVDIV record, the
+cap that removed its observed exponent-walking regression.
+
+The C API values for all pre-existing interface flags and counters remain
+stable. `BV_TERM_ABSTRACTION_DIVMOD` and the three new group counters were
+appended; they were not inserted into the published enum prefixes.
 
 This partition is deliberately coarser than individual lemmas. It supports
 qualified defaults and controlled experiments without making every
@@ -118,7 +134,7 @@ build/stp -s --bv-term-abstraction=1 input.smt2
 
 `-t` reports candidates, abstractions, refinement rounds, blocking lemmas,
 aggregate schema lemmas, and the exact partition of schema firings over the
-twelve groups. `-s` prints each selected schema by name and the SAT/backend
+fifteen groups. `-s` prints each selected schema by name and the SAT/backend
 telemetry. The C counter API likewise exposes one counter for every group;
 the group counts always sum to the aggregate schema count.
 

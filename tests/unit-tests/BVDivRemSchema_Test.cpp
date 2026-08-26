@@ -22,6 +22,7 @@ THE SOFTWARE.
 // alone: x = q*s+r. The production rule keeps only the low three bits, so
 // test both the relation and its deliberately unconstrained high bit.
 #include "stp/ToSat/BVAbstractionRefiner.h"
+#include "stp/ToSat/BVExactEncoder.h"
 
 #include "stp/AST/AST.h"
 #include "stp/STPManager/STPManager.h"
@@ -41,7 +42,6 @@ namespace
 const unsigned WIDTH = 4;
 const unsigned PREFIX = 3;
 const unsigned VALUES = 1u << WIDTH;
-const unsigned MASK = (1u << PREFIX) - 1;
 
 std::vector<bool> bitsOf(unsigned value, unsigned width = WIDTH)
 {
@@ -62,10 +62,12 @@ unsigned remainder(unsigned dividend, unsigned divisor)
 }
 
 bool referenceRelation(unsigned dividend, unsigned divisor,
-                       unsigned quotientValue, unsigned remainderValue)
+                       unsigned quotientValue, unsigned remainderValue,
+                       unsigned prefix = PREFIX)
 {
-  return (dividend & MASK) ==
-         ((quotientValue * divisor + remainderValue) & MASK);
+  const unsigned mask = (1u << prefix) - 1;
+  return (dividend & mask) ==
+         ((quotientValue * divisor + remainderValue) & mask);
 }
 
 class BVDivRemSchemaTest : public ::testing::Test
@@ -87,6 +89,14 @@ protected:
       solver.setFrozen(vars[i]);
     }
     return vars;
+  }
+
+  ASTNode productNode(unsigned width = WIDTH)
+  {
+    const ASTNode quotient = mgr.CreateSymbol("dr_q", 0, width);
+    const ASTNode divisor = mgr.CreateSymbol("dr_s", 0, width);
+    return mgr.defaultNodeFactory->CreateTerm(BVMULT, width, quotient,
+                                               divisor);
   }
 
   void pin(SATSolver& solver, const std::vector<unsigned>& vars,
@@ -112,13 +122,34 @@ TEST(BVDivRemSchema, actual_results_satisfy_recomposition_at_small_widths)
     const unsigned prefix = std::min(PREFIX, width);
     for (unsigned dividend = 0; dividend < values; ++dividend)
       for (unsigned divisor = 0; divisor < values; ++divisor)
+      {
         ASSERT_TRUE(divRemLowPrefixHolds(
             bitsOf(dividend, width), bitsOf(divisor, width),
             bitsOf(quotient(dividend, divisor, width), width),
             bitsOf(remainder(dividend, divisor), width), prefix))
             << "width=" << width << " dividend=" << dividend
             << " divisor=" << divisor;
+        ASSERT_TRUE(divRemLowPrefixHolds(
+            bitsOf(dividend, width), bitsOf(divisor, width),
+            bitsOf(quotient(dividend, divisor, width), width),
+            bitsOf(remainder(dividend, divisor), width), width))
+            << "full identity at width=" << width
+            << " dividend=" << dividend << " divisor=" << divisor;
+      }
   }
+}
+
+TEST(BVDivRemSchema, value_predicate_matches_full_modular_recomposition)
+{
+  for (unsigned dividend = 0; dividend < VALUES; ++dividend)
+    for (unsigned divisor = 0; divisor < VALUES; ++divisor)
+      for (unsigned q = 0; q < VALUES; ++q)
+        for (unsigned r = 0; r < VALUES; ++r)
+          ASSERT_EQ(referenceRelation(dividend, divisor, q, r, WIDTH),
+                    divRemLowPrefixHolds(bitsOf(dividend), bitsOf(divisor),
+                                         bitsOf(q), bitsOf(r), WIDTH))
+              << "dividend=" << dividend << " divisor=" << divisor
+              << " q=" << q << " r=" << r;
 }
 
 TEST(BVDivRemSchema, value_predicate_matches_modular_recomposition)
@@ -171,13 +202,53 @@ TEST_F(BVDivRemSchemaTest, clauses_match_modular_recomposition)
         }
 }
 
+TEST_F(BVDivRemSchemaTest, full_clauses_match_modular_recomposition)
+{
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  ASSERT_TRUE(solver->supportsAssumptions());
+
+  const std::vector<unsigned> dividendVars = makeVars(*solver);
+  const std::vector<unsigned> divisorVars = makeVars(*solver);
+  const std::vector<unsigned> quotientVars = makeVars(*solver);
+  const std::vector<unsigned> remainderVars = makeVars(*solver);
+  BVExactEncoder(&mgr).encodeDivRemIdentity(
+      *solver, productNode(), WIDTH, dividendVars, divisorVars, quotientVars,
+      remainderVars);
+
+  const std::vector<unsigned>* vars[4] = {
+      &dividendVars, &divisorVars, &quotientVars, &remainderVars};
+  for (unsigned dividend = 0; dividend < VALUES; ++dividend)
+    for (unsigned divisor = 0; divisor < VALUES; ++divisor)
+      for (unsigned q = 0; q < VALUES; ++q)
+        for (unsigned r = 0; r < VALUES; ++r)
+        {
+          const unsigned values[4] = {dividend, divisor, q, r};
+          SATSolver::vec_literals assumptions;
+          for (unsigned v = 0; v < 4; ++v)
+            for (unsigned i = 0; i < WIDTH; ++i)
+              assumptions.push(SATSolver::mkLit(
+                  (*vars[v])[i], ((values[v] >> i) & 1u) == 0));
+
+          bool timedOut = false;
+          const bool satisfiable =
+              solver->solveWithAssumptions(assumptions, timedOut);
+          ASSERT_FALSE(timedOut);
+          ASSERT_EQ(referenceRelation(dividend, divisor, q, r, WIDTH),
+                    satisfiable)
+              << "dividend=" << dividend << " divisor=" << divisor
+              << " q=" << q << " r=" << r;
+        }
+}
+
 TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
 {
-  // This family is deliberately outside the qualified default profile; the
-  // test selects it alone so a pass caused by an individual division schema
-  // cannot masquerade as coverage of the pair gate.
+  // Both pair families are deliberately outside the qualified default
+  // profile. Selecting them together checks the staging rule: where the low
+  // prefix rejects the candidate it gets first refusal over the full circuit.
   mgr.UserFlags.bv_term_abstraction_schema_groups =
-      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR) |
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
   NodeFactory* factory = mgr.defaultNodeFactory;
   const ASTNode dividend = mgr.CreateSymbol("dr_dividend", 0, WIDTH);
   const ASTNode divisor = mgr.CreateSymbol("dr_divisor", 0, WIDTH);
@@ -230,6 +301,8 @@ TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
   EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
   EXPECT_TRUE(refiner.terms()[0].divRemLowPrefixInstalled);
   EXPECT_TRUE(refiner.terms()[1].divRemLowPrefixInstalled);
+  EXPECT_FALSE(refiner.terms()[0].divRemFullInstalled);
+  EXPECT_FALSE(refiner.terms()[1].divRemFullInstalled);
   EXPECT_EQ(1u, refiner.terms()[0].schemaRounds);
   EXPECT_EQ(1u, refiner.terms()[1].schemaRounds);
   EXPECT_EQ(0u, refiner.terms()[0].blockedRounds);
@@ -241,6 +314,85 @@ TEST_F(BVDivRemSchemaTest, refiner_pairs_identical_division_operands)
   for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
   {
     if (i == static_cast<unsigned>(BVSchemaGroup::DIVREM_PAIR))
+      continue;
+    EXPECT_EQ(0u, mgr.UserFlags.coverage.bv_schema_group_lemmas[i]);
+  }
+
+  EXPECT_FALSE(solver->solve(timedOut));
+  EXPECT_FALSE(timedOut);
+}
+
+TEST_F(BVDivRemSchemaTest,
+       refiner_uses_full_identity_when_the_low_prefix_already_holds)
+{
+  mgr.UserFlags.bv_term_abstraction_schema_groups =
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR) |
+      bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
+  NodeFactory* factory = mgr.defaultNodeFactory;
+  const ASTNode dividend = mgr.CreateSymbol("full_dividend", 0, WIDTH);
+  const ASTNode divisor = mgr.CreateSymbol("full_divisor", 0, WIDTH);
+  const ASTNode div = factory->CreateTerm(BVDIV, WIDTH, dividend, divisor);
+  const ASTNode rem = factory->CreateTerm(BVMOD, WIDTH, dividend, divisor);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction divRecord;
+  divRecord.termNode = div;
+  divRecord.opKind = BVDIV;
+  divRecord.operands[0] = dividend;
+  divRecord.operands[1] = divisor;
+  divRecord.numOperands = 2;
+  divRecord.width = WIDTH;
+  refiner.terms().push_back(divRecord);
+
+  BVTermAbstraction remRecord;
+  remRecord.termNode = rem;
+  remRecord.opKind = BVMOD;
+  remRecord.operands[0] = dividend;
+  remRecord.operands[1] = divisor;
+  remRecord.numOperands = 2;
+  remRecord.width = WIDTH;
+  refiner.terms().push_back(remRecord);
+
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  const std::vector<unsigned> dividendVars = makeVars(*solver);
+  const std::vector<unsigned> divisorVars = makeVars(*solver);
+  const std::vector<unsigned> quotientVars = makeVars(*solver);
+  const std::vector<unsigned> remainderVars = makeVars(*solver);
+
+  ToSATBase::ASTNodeToSATVar nodeToVars;
+  nodeToVars[dividend] = dividendVars;
+  nodeToVars[divisor] = divisorVars;
+  nodeToVars[div] = quotientVars;
+  nodeToVars[rem] = remainderVars;
+
+  // x=8 and q*s+r=0 agree in their low three bits but not at full width.
+  // Emitting the prefix would not reject this model, so the full identity
+  // must take the round directly.
+  pin(*solver, dividendVars, 8);
+  pin(*solver, divisorVars, 3);
+  pin(*solver, quotientVars, 0);
+  pin(*solver, remainderVars, 0);
+  bool timedOut = false;
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+  EXPECT_FALSE(refiner.terms()[0].divRemLowPrefixInstalled);
+  EXPECT_FALSE(refiner.terms()[1].divRemLowPrefixInstalled);
+  EXPECT_TRUE(refiner.terms()[0].divRemFullInstalled);
+  EXPECT_TRUE(refiner.terms()[1].divRemFullInstalled);
+  EXPECT_EQ(1u, refiner.terms()[0].schemaRounds);
+  EXPECT_EQ(1u, refiner.terms()[1].schemaRounds);
+  EXPECT_EQ(0u, refiner.terms()[0].blockedRounds);
+  EXPECT_EQ(0u, refiner.terms()[1].blockedRounds);
+  EXPECT_EQ(1u, mgr.UserFlags.coverage.bv_schema_lemmas);
+  EXPECT_EQ(1u,
+            mgr.UserFlags.coverage.bv_schema_group_lemmas[static_cast<unsigned>(
+                BVSchemaGroup::DIVREM_FULL)]);
+  for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    if (i == static_cast<unsigned>(BVSchemaGroup::DIVREM_FULL))
       continue;
     EXPECT_EQ(0u, mgr.UserFlags.coverage.bv_schema_group_lemmas[i]);
   }

@@ -282,6 +282,12 @@ enum class DivSchema
   // make the premise false for b = 0, so SMT-LIB's totalised zero-divisor
   // result needs no separate case.
   RemainderQuotientOne,
+  // The quotient half of the same band:
+  //   b <=u a and (a - b) <u b -> q = 1.
+  // This names the quotient exactly where one subtraction, but not two,
+  // fits. It is kept in a separate group from the remainder fact so corpus
+  // qualification can decide on each cost independently.
+  QuotientOne,
   // b != 0 -> t <=u a. Dividing by one leaves the dividend and dividing by
   // more only shrinks it; the premise is there for the zero divisor, whose
   // totalised all-ones quotient is the one case that breaks it.
@@ -294,6 +300,13 @@ enum class DivSchema
   // One violated threshold rules out a whole quotient-magnitude band with a
   // fixed shift and one comparison, rather than constructing a divider.
   QuotientPow2Threshold,
+  // If the divisor has magnitude at least 2^k, the quotient cannot exceed
+  // the dividend shifted right by k:
+  //   b >=u 2^k -> q <=u (a >> k).
+  // The chooser takes k from the candidate divisor's top bit and caps this
+  // family at two instances per abstraction; without that cap a search can
+  // walk through one divisor magnitude per refinement round.
+  DivisorMagnitudeBound,
   // One of the DivLemma facts, named by DivSchemaChoice::lemmaIndex. They
   // are inequalities over the quotient rather than statements of what it
   // is, and several shift by a variable amount, so unlike everything above
@@ -307,6 +320,7 @@ enum class DivSchema
 // addition flags, which is safe because an abstraction has only one kind.
 enum : uint64_t
 {
+  DIV_SCHEMA_INSTALLED_QUOTIENT_ONE = 1ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE = 4ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
   DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16ull,
@@ -322,6 +336,29 @@ inline uint64_t divLemmaInstalledBit(unsigned index)
   return DIV_LEMMA_INSTALLED_FIRST << index;
 }
 
+// The divisor-magnitude schema deliberately gets only two attempts. Its
+// facts are guarded by a magnitude rather than a single divisor value, and
+// an uncapped search was observed stepping through dozens of magnitudes.
+// Keep these bits above the complete imported registry.
+enum : uint64_t
+{
+  DIV_SCHEMA_MAGNITUDE_BOUND_FIRST = 1ull << 60,
+  DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE = 2
+};
+
+inline uint64_t divMagnitudeBoundBit(unsigned index)
+{
+  return DIV_SCHEMA_MAGNITUDE_BOUND_FIRST << index;
+}
+
+inline bool divMagnitudeBoundsLeft(uint64_t installedSchemas)
+{
+  for (unsigned i = 0; i < DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE; ++i)
+    if ((installedSchemas & divMagnitudeBoundBit(i)) == 0)
+      return true;
+  return false;
+}
+
 // The DivLemma facts the chooser offers, in the order it offers them, and
 // how many there are. Exposed so a test can walk the same table the refiner
 // does rather than keeping a second copy of it in step with this one.
@@ -334,8 +371,8 @@ DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
 struct DivSchemaChoice
 {
   DivSchema schema = DivSchema::None;
-  // log2 of the divisor for Pow2Divisor, or the quotient threshold exponent
-  // for QuotientPow2Threshold.
+  // log2 of the divisor for Pow2Divisor, or the exponent used by one of the
+  // two power-of-two quotient bounds.
   unsigned shift = 0;
   // Set when `schema` is Lemma: which DivLemma or RemLemma fact to install,
   // as an index into the operation's table.
@@ -401,9 +438,23 @@ DLL_PUBLIC void encodeRemQuotientOne(
     const std::vector<unsigned>& divisorVars,
     const std::vector<unsigned>& remainderVars, unsigned width);
 
-// The low-prefix quotient/remainder recomposition theorem:
+// b <=u a and (a - b) <u b -> q = 1.
+DLL_PUBLIC void encodeDivQuotientOne(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars, unsigned width);
+
+// b >=u 2^shift -> q <=u (a >> shift).
+DLL_PUBLIC void encodeDivisorMagnitudeBound(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars, unsigned width,
+    unsigned shift);
+
+// The prefix quotient/remainder recomposition theorem:
 //   low(x) = low((q * s) + r).
-// It holds for the SMT-LIB zero-divisor values as well as ordinary division.
+// It holds for the SMT-LIB zero-divisor values as well as ordinary division;
+// asking for the complete width is the full modular identity.
 DLL_PUBLIC bool divRemLowPrefixHolds(
     const std::vector<bool>& dividendBits,
     const std::vector<bool>& divisorBits,
@@ -471,6 +522,11 @@ struct BVTermAbstraction
   // low-prefix recomposition lemma. It cannot use installedSchemas because
   // that field describes one operation, while this fact belongs to two.
   bool divRemLowPrefixInstalled = false;
+  // Set on both records after the stronger full-width modular recomposition
+  // identity has been installed. The low-prefix fact may precede it, but
+  // does not have to: if the current model already satisfies the prefix,
+  // emitting it would make no progress and the full fact gets the round.
+  bool divRemFullInstalled = false;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
   // until the first piece, and equal to the width once `defined` is set.

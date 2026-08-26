@@ -190,10 +190,13 @@ enum bv_schema_group_t
   STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 9,
   STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 10,
   STP_BV_SCHEMA_GROUP_DIVREM_PAIR = 1 << 11,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT = 1 << 12,
+  STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 13,
+  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 14,
   STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_BASE |
                                 STP_BV_SCHEMA_GROUP_UREM |
                                 STP_BV_SCHEMA_GROUP_MUL_REF3,
-  STP_BV_SCHEMA_GROUP_ALL = (1 << 12) - 1
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 15) - 1
 };
 
 //! Interface-only flags.
@@ -431,10 +434,12 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION,
 
-  //! Whether BV_TERM_ABSTRACTION covers BVMULT, BVDIV and BVMOD as well.
+  //! Whether BV_TERM_ABSTRACTION covers BVMULT as well.
   //!
-  //! `param_value` nonzero includes them (the default), zero leaves them
-  //! encoded exactly from the start. This is the C API's way to reach
+  //! `param_value` nonzero includes it (the default), zero leaves
+  //! multiplication encoded exactly from the start. Division and remainder
+  //! have the separately appended BV_TERM_ABSTRACTION_DIVMOD flag. This is
+  //! the C API's way to reach
   //! --bv-term-abstraction-mult.
   //!
   BV_TERM_ABSTRACTION_MULT,
@@ -554,7 +559,18 @@ enum ifaceflag_t
   //! the published ordinals of every older interface flag stable. This is
   //! the C API's way to reach --bv-term-abstraction-schema-groups.
   //!
-  BV_TERM_ABSTRACTION_SCHEMA_GROUPS
+  BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
+
+  //! Whether BV_TERM_ABSTRACTION covers BVDIV and BVMOD.
+  //!
+  //! Division and remainder historically followed
+  //! BV_TERM_ABSTRACTION_MULT. `param_value` nonzero includes them (the
+  //! default), while zero leaves them encoded exactly from the start. This
+  //! value is appended so every previously published interface-flag ordinal
+  //! remains unchanged. This is the C API's way to reach
+  //! --bv-term-abstraction-divmod.
+  //!
+  BV_TERM_ABSTRACTION_DIVMOD
 
 };
 
@@ -839,7 +855,10 @@ enum stp_counter_t
   STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
   STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX,
   STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
-  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR
+  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR,
+  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
+  STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
+  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL
 };
 
 //! \brief Reads one of the counters above.

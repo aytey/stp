@@ -539,6 +539,9 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_MULT:
       b->UserFlags.bv_term_abstraction_mult = param_value != 0;
       break;
+    case BV_TERM_ABSTRACTION_DIVMOD:
+      b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
+      break;
     case BV_TERM_ABSTRACTION_SCHEMAS:
       b->UserFlags.bv_term_abstraction_schemas = param_value != 0;
       break;
@@ -944,6 +947,9 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX:
     case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM:
     case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR:
+    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT:
+    case STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE:
+    case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL:
       return c.bv_schema_group_lemmas[static_cast<unsigned>(counter) -
                                       static_cast<unsigned>(
                                           STP_COUNTER_BV_SCHEMA_GROUP_BASE)];

@@ -165,6 +165,18 @@ bool remainderQuotientOneHolds(unsigned a, unsigned b, unsigned r)
   return !premise || r == a - b;
 }
 
+bool quotientOneHolds(unsigned a, unsigned b, unsigned q)
+{
+  const bool premise = b <= a && ((a - b) & (VALUES - 1)) < b;
+  return !premise || q == 1;
+}
+
+bool divisorMagnitudeBoundHolds(unsigned a, unsigned b, unsigned q,
+                                unsigned k)
+{
+  return b < (1u << k) || q <= (a >> k);
+}
+
 } // namespace
 
 // Every lemma this can install is true of the operation it is installed
@@ -258,6 +270,28 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
             continue;
           }
 
+          if (choice.schema == DivSchema::QuotientOne)
+          {
+            ASSERT_EQ(opKind, BVDIV);
+            ASSERT_FALSE(quotientOneHolds(a, b, t))
+                << "quotient-one band at a=" << a << " b=" << b
+                << " q=" << t << " is already satisfied by the candidate";
+            continue;
+          }
+
+          if (choice.schema == DivSchema::DivisorMagnitudeBound)
+          {
+            ASSERT_EQ(opKind, BVDIV);
+            ASSERT_GT(choice.shift, 0u);
+            ASSERT_LT(choice.shift, WIDTH);
+            ASSERT_FALSE(
+                divisorMagnitudeBoundHolds(a, b, t, choice.shift))
+                << "divisor-magnitude bound k=" << choice.shift
+                << " at a=" << a << " b=" << b << " q=" << t
+                << " is already satisfied by the candidate";
+            continue;
+          }
+
           if (!namesADivisor(choice.schema))
           {
             ASSERT_FALSE(boundHolds(choice.schema, a, b, t))
@@ -304,7 +338,9 @@ TEST(BVDivSchema, schema_groups_gate_division_before_selection)
                              {BVSchemaGroup::UDIV_EXTRA, BVDIV},
                              {BVSchemaGroup::UREM, BVMOD},
                              {BVSchemaGroup::QUOTIENT_THRESHOLDS, BVDIV},
-                             {BVSchemaGroup::QUOTIENT_ONE_REM, BVMOD}};
+                             {BVSchemaGroup::QUOTIENT_ONE_REM, BVMOD},
+                             {BVSchemaGroup::QUOTIENT_ONE_QUOT, BVDIV},
+                             {BVSchemaGroup::DIVISOR_MAGNITUDE, BVDIV}};
 
   for (const GroupCase& groupCase : cases)
   {
@@ -383,10 +419,20 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
           // ... and every operation-specific wider fact too.
           if (opKind == BVDIV)
           {
+            ASSERT_TRUE(quotientOneHolds(a, b, t))
+                << "the quotient-one band was available at a=" << a
+                << " b=" << b << " q=" << t << " and was not offered";
+
             for (unsigned k = 1; k < WIDTH; ++k)
+            {
               ASSERT_TRUE(quotientThresholdHolds(a, b, t, k))
                   << "threshold k=" << k << " was available at a=" << a
                   << " b=" << b << " q=" << t << " and was not offered";
+              ASSERT_TRUE(divisorMagnitudeBoundHolds(a, b, t, k))
+                  << "divisor-magnitude bound k=" << k
+                  << " was available at a=" << a << " b=" << b
+                  << " q=" << t << " and was not offered";
+            }
 
             unsigned n = 0;
             const DivLemma* table = divLemmaTable(n);
@@ -602,9 +648,12 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
   uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
                  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
                  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND |
-                 DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE;
+                 DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE |
+                 DIV_SCHEMA_INSTALLED_QUOTIENT_ONE;
   for (unsigned i = 0; i < lemmaCount; ++i)
     all |= divLemmaInstalledBit(i);
+  for (unsigned i = 0; i < DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE; ++i)
+    all |= divMagnitudeBoundBit(i);
 
   for (Kind opKind : KINDS)
     for (unsigned a = 0; a < VALUES; a++)
@@ -806,6 +855,34 @@ TEST(BVDivSchemaQuotientOne,
           << "a=" << a << " b=" << b;
 }
 
+TEST(BVDivSchemaQuotientOne,
+     every_real_quotient_satisfies_the_quotient_one_band)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      ASSERT_TRUE(quotientOneHolds(a, b, referenceDiv(a, b)))
+          << "a=" << a << " b=" << b;
+}
+
+TEST(BVDivSchemaMagnitude,
+     every_real_quotient_satisfies_every_divisor_magnitude_bound)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      for (unsigned k = 1; k < WIDTH; ++k)
+        ASSERT_TRUE(
+            divisorMagnitudeBoundHolds(a, b, referenceDiv(a, b), k))
+            << "k=" << k << " a=" << a << " b=" << b;
+}
+
+TEST(BVDivSchemaMagnitude, allowance_is_exactly_two_instances)
+{
+  EXPECT_TRUE(divMagnitudeBoundsLeft(0));
+  EXPECT_TRUE(divMagnitudeBoundsLeft(divMagnitudeBoundBit(0)));
+  EXPECT_FALSE(divMagnitudeBoundsLeft(divMagnitudeBoundBit(0) |
+                                      divMagnitudeBoundBit(1)));
+}
+
 TEST_F(BVDivBoundEncodingTest,
        quotient_one_clauses_match_the_conditional_remainder)
 {
@@ -838,4 +915,73 @@ TEST_F(BVDivBoundEncodingTest,
         ASSERT_EQ(remainderQuotientOneHolds(a, b, r), satisfiable)
             << "a=" << a << " b=" << b << " r=" << r;
       }
+}
+
+TEST_F(BVDivBoundEncodingTest,
+       quotient_one_clauses_match_the_conditional_quotient)
+{
+  for (unsigned a = 0; a < VALUES; ++a)
+    for (unsigned b = 0; b < VALUES; ++b)
+      for (unsigned q = 0; q < VALUES; ++q)
+      {
+        std::unique_ptr<SATSolver> solver = makeSolver();
+        ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+        std::vector<unsigned> aVars(WIDTH), bVars(WIDTH), qVars(WIDTH);
+        for (unsigned i = 0; i < WIDTH; ++i)
+        {
+          aVars[i] = solver->newVar();
+          bVars[i] = solver->newVar();
+          qVars[i] = solver->newVar();
+          solver->setFrozen(aVars[i]);
+          solver->setFrozen(bVars[i]);
+          solver->setFrozen(qVars[i]);
+        }
+
+        encodeDivQuotientOne(*solver, aVars, bVars, qVars, WIDTH);
+        pin(*solver, aVars, a);
+        pin(*solver, bVars, b);
+        pin(*solver, qVars, q);
+
+        bool timedOut = false;
+        const bool satisfiable = solver->solve(timedOut);
+        ASSERT_FALSE(timedOut);
+        ASSERT_EQ(quotientOneHolds(a, b, q), satisfiable)
+            << "a=" << a << " b=" << b << " q=" << q;
+      }
+}
+
+TEST_F(BVDivBoundEncodingTest,
+       divisor_magnitude_clauses_match_the_conditional_bound)
+{
+  for (unsigned k = 1; k < WIDTH; ++k)
+    for (unsigned a = 0; a < VALUES; ++a)
+      for (unsigned b = 0; b < VALUES; ++b)
+        for (unsigned q = 0; q < VALUES; ++q)
+        {
+          std::unique_ptr<SATSolver> solver = makeSolver();
+          ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+          std::vector<unsigned> aVars(WIDTH), bVars(WIDTH), qVars(WIDTH);
+          for (unsigned i = 0; i < WIDTH; ++i)
+          {
+            aVars[i] = solver->newVar();
+            bVars[i] = solver->newVar();
+            qVars[i] = solver->newVar();
+            solver->setFrozen(aVars[i]);
+            solver->setFrozen(bVars[i]);
+            solver->setFrozen(qVars[i]);
+          }
+
+          encodeDivisorMagnitudeBound(*solver, aVars, bVars, qVars, WIDTH, k);
+          pin(*solver, aVars, a);
+          pin(*solver, bVars, b);
+          pin(*solver, qVars, q);
+
+          bool timedOut = false;
+          const bool satisfiable = solver->solve(timedOut);
+          ASSERT_FALSE(timedOut);
+          ASSERT_EQ(divisorMagnitudeBoundHolds(a, b, q, k), satisfiable)
+              << "k=" << k << " a=" << a << " b=" << b << " q=" << q;
+        }
 }

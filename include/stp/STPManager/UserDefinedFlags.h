@@ -50,6 +50,9 @@ enum class BVSchemaGroup : unsigned
   LOW_PREFIX,
   QUOTIENT_ONE_REM,
   DIVREM_PAIR,
+  QUOTIENT_ONE_QUOT,
+  DIVISOR_MAGNITUDE,
+  DIVREM_FULL,
   COUNT
 };
 
@@ -444,11 +447,16 @@ public:
   unsigned bv_abstraction_width = 64;
   unsigned bv_eq_refine_width = 0;
   bool bv_term_abstraction = false;
-  // BVMULT, BVDIV and BVMOD are the operations whose refinement has no compact
-  // exact lemma: it rules out one pair of operand values at a time. They are
-  // abstracted with everything else, and this turns just those three off for a
-  // query that would rather not pay for the rounds at all.
+  // BVMULT is one of the operations whose fallback rules out one pair of
+  // operand values at a time. Keep its scope independent of division: the
+  // circuit costs and the workloads which benefit from abstracting them are
+  // materially different.
   bool bv_term_abstraction_mult = true;
+  // BVDIV and BVMOD share an implementation and a refinement catalogue, but
+  // no longer share BVMULT's scope switch. A caller can therefore leave the
+  // expensive dividers abstract while encoding multiplication exactly, or
+  // vice versa. Both switches default on, preserving the historical scope.
+  bool bv_term_abstraction_divmod = true;
 
   // Which of the other abstractable kinds --bv-term-abstraction takes.
   //

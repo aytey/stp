@@ -801,20 +801,22 @@ const char* addLemmaName(AddLemma lemma)
 namespace
 {
 
-// Blast one theorem over two operands and an abstract result, splice the
-// resulting CNF onto the three live SAT vectors, and assert it. The operation
-// families differ only in the theorem they ask the BitBlaster to build; the
-// delicate CI/CNF variable mapping belongs in one place.
+// Blast one theorem, splice the resulting CNF onto its live SAT vectors, and
+// assert it. Most facts have two operands and one abstract result; paired
+// DIV/REM recomposition has four vectors. The delicate CI/CNF variable
+// mapping belongs in one arity-independent place.
 template <typename BuildClaim>
-void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
-                        const std::vector<unsigned>& xVars,
-                        const std::vector<unsigned>& sVars,
-                        const std::vector<unsigned>& tVars,
-                        BuildClaim buildClaim)
+void encodeNaryLemma(
+    STPMgr* bm, SATSolver& solver, unsigned width,
+    const std::vector<const std::vector<unsigned>*>& liveVars,
+    BuildClaim buildClaim)
 {
-  assert(xVars.size() >= width);
-  assert(sVars.size() >= width);
-  assert(tVars.size() >= width);
+  assert(!liveVars.empty());
+  for (const std::vector<unsigned>* vars : liveVars)
+  {
+    assert(vars != NULL);
+    assert(vars->size() >= width);
+  }
 
   AbstractionOff scope(bm->UserFlags);
 
@@ -824,21 +826,18 @@ void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
   Simplifier simp(bm, &sm);
   BitBlaster bb(&mgr, &simp, bm->defaultNodeFactory, &bm->UserFlags);
 
-  // Three input vectors this time, in the order the splice reads them back:
-  // the dividend, the divisor, then the abstraction's own result bits. The
-  // result is an input here and not an output -- the lemma constrains it
-  // without defining it, which is the whole difference from `encode`.
-  BBNodeVec x(width), s(width), t(width);
-  BBNodeVec* const ins[3] = {&x, &s, &t};
-  for (unsigned v = 0; v < 3; v++)
+  // Every live vector is an input here. Abstract results are not circuit
+  // outputs: the theorem constrains them without defining the operations.
+  std::vector<BBNodeVec> inputs(liveVars.size(), BBNodeVec(width));
+  for (unsigned v = 0; v < inputs.size(); ++v)
     for (unsigned i = 0; i < width; i++)
     {
-      (*ins[v])[i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
-      (*ins[v])[i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
+      inputs[v][i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
+      inputs[v][i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
     }
 
   BBNodeSet support;
-  const BBNodeAIG claim = buildClaim(bb, x, s, t, support);
+  const BBNodeAIG claim = buildClaim(bb, inputs, support);
 
   Aig_ObjCreateCo(mgr.aigMgr, claim.n);
   for (const BBNodeAIG& c : support)
@@ -854,14 +853,12 @@ void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
   assert(cnf != NULL);
 
   std::vector<unsigned> cnfToSolver(cnf->nVars, ~((unsigned)0));
-  for (unsigned i = 0; i < 3 * width; i++)
+  for (unsigned i = 0; i < liveVars.size() * width; ++i)
   {
     const int var = cnf->pVarNums[Aig_ManCi(mgr.aigMgr, (int)i)->Id];
     if (var < 0)
       continue;
-    cnfToSolver[var] = (i < width)         ? xVars[i]
-                       : (i < 2 * width)   ? sVars[i - width]
-                                           : tVars[i - 2 * width];
+    cnfToSolver[var] = (*liveVars[i / width])[i % width];
   }
 
   for (int var = 0; var < cnf->nVars; var++)
@@ -894,6 +891,25 @@ void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
   }
 
   Cnf_DataFree(cnf);
+}
+
+template <typename BuildClaim>
+void encodeTernaryLemma(STPMgr* bm, SATSolver& solver, unsigned width,
+                        const std::vector<unsigned>& xVars,
+                        const std::vector<unsigned>& sVars,
+                        const std::vector<unsigned>& tVars,
+                        BuildClaim buildClaim)
+{
+  std::vector<const std::vector<unsigned>*> liveVars;
+  liveVars.push_back(&xVars);
+  liveVars.push_back(&sVars);
+  liveVars.push_back(&tVars);
+  encodeNaryLemma(
+      bm, solver, width, liveVars,
+      [&buildClaim](BitBlaster& bb, const std::vector<BBNodeVec>& inputs,
+                    BBNodeSet& support) {
+        return buildClaim(bb, inputs[0], inputs[1], inputs[2], support);
+      });
 }
 
 } // namespace
@@ -951,6 +967,27 @@ void BVExactEncoder::encodeAddLemma(SATSolver& solver, AddLemma lemma,
       [lemma](BitBlaster& bb, const BBNodeVec& x, const BBNodeVec& s,
               const BBNodeVec& t, BBNodeSet& support) {
         return bb.BBAddLemma(lemma, x, s, t, support);
+      });
+}
+
+void BVExactEncoder::encodeDivRemIdentity(
+    SATSolver& solver, const ASTNode& product, unsigned width,
+    const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars,
+    const std::vector<unsigned>& quotientVars,
+    const std::vector<unsigned>& remainderVars)
+{
+  std::vector<const std::vector<unsigned>*> liveVars;
+  liveVars.push_back(&dividendVars);
+  liveVars.push_back(&divisorVars);
+  liveVars.push_back(&quotientVars);
+  liveVars.push_back(&remainderVars);
+  encodeNaryLemma(
+      bm, solver, width, liveVars,
+      [&product](BitBlaster& bb, const std::vector<BBNodeVec>& inputs,
+                 BBNodeSet& support) {
+        return bb.BBDivRemIdentity(product, inputs[0], inputs[1], inputs[2],
+                                   inputs[3], support);
       });
 }
 
