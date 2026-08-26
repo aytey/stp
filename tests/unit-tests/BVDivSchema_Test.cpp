@@ -745,6 +745,50 @@ TEST(BVDivSchemaBounds, the_shift_bound_is_chosen_at_the_divisors_top_bit)
       }
 }
 
+// The capped family is offered before the uncapped one, and that ordering is
+// the whole of what keeps it reachable.
+//
+// The divisor-magnitude bound has an allowance of two per abstraction; the
+// quotient thresholds have none, because there is a k for every bit and a
+// candidate that keeps moving its quotient's magnitude keeps supplying one.
+// Offered second, the bound can be starved outright -- with both families
+// enabled the query pinned for it went from five rounds to not finishing
+// inside a minute. So: every candidate that the bound would be chosen for
+// with the thresholds off is still answered by the bound with them on.
+TEST(BVDivSchemaBounds, the_capped_bound_is_not_starved_by_the_thresholds)
+{
+  const uint32_t withBound =
+      bvSchemaGroupBit(BVSchemaGroup::BASE) |
+      bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE);
+  const uint32_t withBoth =
+      withBound | bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_THRESHOLDS);
+
+  unsigned offered = 0;
+  for (unsigned a = 0; a < VALUES; a++)
+    for (unsigned b = 0; b < VALUES; b++)
+      for (unsigned t = 0; t < VALUES; t++)
+      {
+        const DivSchemaChoice alone =
+            chooseDivSchema(BVDIV, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                            withBound);
+        if (alone.schema != DivSchema::DivisorAtLeastPow2)
+          continue;
+        offered++;
+
+        const DivSchemaChoice both =
+            chooseDivSchema(BVDIV, bitsOf(a), bitsOf(b), bitsOf(t), 0,
+                            withBoth);
+        ASSERT_EQ(both.schema, DivSchema::DivisorAtLeastPow2)
+            << "the divisor-magnitude bound at a=" << a << " b=" << b
+            << " t=" << t << " was displaced by the quotient thresholds";
+        ASSERT_EQ(both.shift, alone.shift);
+      }
+
+  EXPECT_GT(offered, 0u)
+      << "the bound was never offered, so this test is not checking what it "
+         "claims to";
+}
+
 // The quotient's magnitude band, q >=u 2^k <-> b <=u (a >> k), is true of
 // division at every pair of operands and every exponent -- not only the
 // exponent the candidate chose. It is a biconditional, so a reading that was

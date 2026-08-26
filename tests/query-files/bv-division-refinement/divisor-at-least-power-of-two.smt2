@@ -12,6 +12,16 @@
 ; does not come back inside a minute; with it, four rounds and no blocking
 ; lemma at all.
 ; RUN: %solver --incremental=off --bv-term-abstraction=1 %s | %OutputCheck %s
+;
+; The second leg is the one that catches an ordering mistake rather than a
+; missing fact. This bound has an allowance of two per abstraction; the
+; quotient thresholds beside it have none, because there is a k for every bit
+; and a candidate that keeps moving its quotient's magnitude keeps supplying
+; a fresh one. Offered second, the bound is starved -- with both families
+; enabled this query went from five rounds to not finishing inside a minute.
+; A capped family cannot do the same in reverse: after two instances it stops
+; offering. So the mask is what makes this leg a regression, not the query.
+; RUN: %solver --incremental=off --bv-term-abstraction=1 --bv-term-abstraction-schema-groups=all %s | %OutputCheck %s
 (set-logic QF_BV)
 (declare-fun a () (_ BitVec 256))
 (declare-fun b () (_ BitVec 256))

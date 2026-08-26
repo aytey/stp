@@ -1322,6 +1322,47 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         return {DivSchema::Lemma, 0, i, group};
     }
 
+    // Then b >=u 2^k -> t <=u (a >> k), at the largest k the guard allows,
+    // which is where the candidate divisor's top bit sits.
+    //
+    // Behind the tables because it is the one fact here that a candidate can
+    // break over and over: the guard names a magnitude, and a search that
+    // has been told about one magnitude answers with another. Offered ahead
+    // of the wider facts it fired 28 times on a query those facts settle in
+    // six rounds, and they never got a turn. Behind them it is what it
+    // should be -- the thing that is tried when nothing sharper applies.
+    //
+    // But ahead of the thresholds below, and that ordering is not a
+    // preference. This family has an allowance of two per abstraction and
+    // the thresholds have none: there is a k for every bit, and a candidate
+    // that keeps moving its quotient's magnitude keeps supplying one. Tried
+    // second, this bound can be starved outright -- with both families on,
+    // the query pinned for it goes from five rounds to not finishing inside
+    // a minute, because the allowance is gone before its turn arrives. The
+    // capped family cannot do the same to the uncapped one: after two
+    // instances it stops offering.
+    //
+    // `a >> k` only falls as k rises, so a candidate that breaks the bound at
+    // any k breaks it at every k above, and the smallest of those has the
+    // broadest guard -- which looks like the better buy and measures as the
+    // worse one. Each round installs one k, and a search that has been told
+    // `b >=u 2` moves to a quotient that only breaks the bound at k = 2, then
+    // at k = 3: it walks the exponent upward one round at a time and wants k
+    // rounds to settle a query about 2^k. At 64 bits that converges in 23
+    // rounds; at 128 it does not, because the round allowance runs out first.
+    //
+    // The top bit costs one round for a divisor whose magnitude the query
+    // pins, which is the case this is for.
+    //
+    // A zero divisor has no top bit and the fact says nothing about it.
+    const int top = divisorZero ? -1 : topSetBit(bBits);
+    if (bvSchemaGroupEnabled(enabledGroups,
+                             BVSchemaGroup::DIVISOR_MAGNITUDE) &&
+        top >= 1 && divShiftBoundsLeft(installedSchemas) &&
+        !valueLessOrEqual(tBits, shiftedRight(aBits, (unsigned)top)))
+      return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0,
+              BVSchemaGroup::DIVISOR_MAGNITUDE};
+
     // q >=u 2^k  <->  s <=u (a >> k), at the two k around the candidate
     // quotient's top bit.
     //
@@ -1356,37 +1397,6 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         return {DivSchema::QuotientPow2Threshold, above, 0,
                 BVSchemaGroup::QUOTIENT_THRESHOLDS};
     }
-
-    // Last of all, b >=u 2^k -> t <=u (a >> k), at the largest k the guard
-    // allows, which is where the candidate divisor's top bit sits.
-    //
-    // Last because it is the one fact here that a candidate can break over
-    // and over: the guard names a magnitude, and a search that has been told
-    // about one magnitude answers with another. Offered ahead of the wider
-    // facts it fired 28 times on a query those facts settle in six rounds,
-    // and they never got a turn. Behind them it is what it should be -- the
-    // thing that is tried when nothing sharper applies.
-    //
-    // `a >> k` only falls as k rises, so a candidate that breaks the bound at
-    // any k breaks it at every k above, and the smallest of those has the
-    // broadest guard -- which looks like the better buy and measures as the
-    // worse one. Each round installs one k, and a search that has been told
-    // `b >=u 2` moves to a quotient that only breaks the bound at k = 2, then
-    // at k = 3: it walks the exponent upward one round at a time and wants k
-    // rounds to settle a query about 2^k. At 64 bits that converges in 23
-    // rounds; at 128 it does not, because the round allowance runs out first.
-    //
-    // The top bit costs one round for a divisor whose magnitude the query
-    // pins, which is the case this is for.
-    //
-    // A zero divisor has no top bit and the fact says nothing about it.
-    const int top = divisorZero ? -1 : topSetBit(bBits);
-    if (bvSchemaGroupEnabled(enabledGroups,
-                             BVSchemaGroup::DIVISOR_MAGNITUDE) &&
-        top >= 1 && divShiftBoundsLeft(installedSchemas) &&
-        !valueLessOrEqual(tBits, shiftedRight(aBits, (unsigned)top)))
-      return {DivSchema::DivisorAtLeastPow2, (unsigned)top, 0,
-              BVSchemaGroup::DIVISOR_MAGNITUDE};
   }
 
   return DivSchemaChoice();
