@@ -643,9 +643,9 @@ static void addEquivalence(SATSolver& solver, unsigned x, unsigned y)
 // j is set. Below the lowest set bit nothing flips, at it the 1 survives,
 // and above it every bit is complemented -- which is the same three cases
 // read off the addition.
-static std::vector<unsigned> encodeNegate(SATSolver& solver,
-                                          const std::vector<unsigned>& x,
-                                          unsigned width)
+std::vector<unsigned> encodeNegate(SATSolver& solver,
+                                   const std::vector<unsigned>& x,
+                                   unsigned width)
 {
   std::vector<unsigned> neg(width);
   unsigned lower = pinnedVar(solver, false);
@@ -757,6 +757,63 @@ bool exactLowPrefixHolds(Kind opKind, const std::vector<bool>& aBits,
   return true;
 }
 
+bool mulSchemaHolds(MulSchema schema, unsigned operand, unsigned shift,
+                    const std::vector<bool>& aBits,
+                    const std::vector<bool>& bBits,
+                    const std::vector<bool>& tBits)
+{
+  assert(aBits.size() == bBits.size());
+  assert(aBits.size() == tBits.size());
+  assert(operand < 2);
+
+  const std::vector<bool>* ops[2] = {&aBits, &bBits};
+  const std::vector<bool>& chosen = *ops[operand];
+  const std::vector<bool>& other = *ops[1 - operand];
+
+  switch (schema)
+  {
+    case MulSchema::Odd:
+      // t[0] = a[0] & b[0].
+      return tBits[0] == (aBits[0] && bBits[0]);
+
+    case MulSchema::TrailingZeros:
+    {
+      // The product carries at least as many trailing zeros as the operand.
+      // The circuit says the same thing one bit at a time -- t[i] holds only
+      // if some bit of the operand at or below i does -- and the two agree:
+      // a product bit below the operand's lowest set bit has no such j.
+      const unsigned zeros = trailingZeros(chosen);
+      for (unsigned bit = 0; bit < zeros; ++bit)
+        if (tBits[bit])
+          return false;
+      return true;
+    }
+
+    case MulSchema::Pow2:
+      // a = 2^shift -> t = b << shift. Vacuous for any other operand value,
+      // which is what makes it a theorem rather than a reading of this
+      // candidate.
+      return powerOfTwoExponent(chosen) != (int)shift ||
+             productIsShift(other, shift, tBits);
+
+    case MulSchema::NegPow2:
+      // a = -2^shift -> t = (-b) << shift.
+      return powerOfTwoExponent(negatedValue(chosen)) != (int)shift ||
+             productIsShift(negatedValue(other), shift, tBits);
+
+    case MulSchema::LowPrefix:
+      return exactLowPrefixHolds(BVMULT, aBits, bBits, tBits, shift);
+
+    case MulSchema::Lemma:
+    case MulSchema::None:
+      break;
+  }
+
+  FatalError("mulSchemaHolds: asked about a schema that is not one of the "
+             "hand-written ones");
+  return true;
+}
+
 bool divRemIdentityHolds(const std::vector<bool>& dividendBits,
                          const std::vector<bool>& divisorBits,
                          const std::vector<bool>& quotientBits,
@@ -851,7 +908,8 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
     for (unsigned i = 0; i < 2; ++i)
     {
       const int k = powerOfTwoExponent(*ops[i]);
-      if (k >= 0 && !productIsShift(*ops[1 - i], (unsigned)k, tBits))
+      if (k >= 0 &&
+          !mulSchemaHolds(MulSchema::Pow2, i, (unsigned)k, aBits, bBits, tBits))
         return {MulSchema::Pow2, i, (unsigned)k};
     }
 
@@ -864,8 +922,8 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       if (powerOfTwoExponent(*ops[i]) >= 0)
         continue;
       const int k = powerOfTwoExponent(negatedValue(*ops[i]));
-      if (k >= 0 &&
-          !productIsShift(negatedValue(*ops[1 - i]), (unsigned)k, tBits))
+      if (k >= 0 && !mulSchemaHolds(MulSchema::NegPow2, i, (unsigned)k, aBits,
+                                    bBits, tBits))
         return {MulSchema::NegPow2, i, (unsigned)k};
     }
 
@@ -881,15 +939,13 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       const unsigned i = 1 - pass;
       if ((installedSchemas & tzInstalled[i]) != 0)
         continue;
-      const unsigned zeros = trailingZeros(*ops[i]);
-      for (unsigned bit = 0; bit < zeros; ++bit)
-        if (tBits[bit])
-          return {MulSchema::TrailingZeros, i, 0};
+      if (!mulSchemaHolds(MulSchema::TrailingZeros, i, 0, aBits, bBits, tBits))
+        return {MulSchema::TrailingZeros, i, 0};
     }
 
   // t[0] = a[0] & b[0].
   if (base && (installedSchemas & MUL_SCHEMA_INSTALLED_ODD) == 0 &&
-      tBits[0] != (aBits[0] && bBits[0]))
+      !mulSchemaHolds(MulSchema::Odd, 0, 0, aBits, bBits, tBits))
     return {MulSchema::Odd, 0, 0};
 
   // The registry facts are unconditional but asymmetric expressions over a
@@ -918,7 +974,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   const unsigned prefix = std::min(3u, (unsigned)tBits.size());
   if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
       (installedSchemas & MUL_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
-      !exactLowPrefixHolds(BVMULT, aBits, bBits, tBits, prefix))
+      !mulSchemaHolds(MulSchema::LowPrefix, 0, prefix, aBits, bBits, tBits))
     return {MulSchema::LowPrefix, 0, prefix, 0, BVSchemaGroup::LOW_PREFIX};
 
   return MulSchemaChoice();
@@ -1002,6 +1058,114 @@ static bool valueIsZero(const std::vector<bool>& bits)
   return true;
 }
 
+// The dividend shifted right by `shift`, which is what the two
+// magnitude-guarded facts compare the quotient against.
+static std::vector<bool> shiftedRight(const std::vector<bool>& bits,
+                                      unsigned shift)
+{
+  const unsigned width = (unsigned)bits.size();
+  std::vector<bool> out(width, false);
+  for (unsigned i = 0; i + shift < width; ++i)
+    out[i] = bits[i + shift];
+  return out;
+}
+
+// 2^shift, as a vector of this width.
+static std::vector<bool> powerOfTwoValue(unsigned width, unsigned shift)
+{
+  std::vector<bool> out(width, false);
+  if (shift < width)
+    out[shift] = true;
+  return out;
+}
+
+bool divSchemaHolds(Kind opKind, DivSchema schema, unsigned shift,
+                    const std::vector<bool>& aBits,
+                    const std::vector<bool>& bBits,
+                    const std::vector<bool>& tBits)
+{
+  assert(opKind == BVDIV || opKind == BVMOD);
+  assert(aBits.size() == bBits.size());
+  assert(aBits.size() == tBits.size());
+
+  const unsigned width = (unsigned)tBits.size();
+  const bool divisorZero = valueIsZero(bBits);
+  // The three parameterised arms are theorems only for an exponent the width
+  // has room for. Past it the two magnitude guards become vacuously true --
+  // every divisor is at least a 2^shift that does not fit -- and what is left
+  // is a claim that the quotient is zero, which is not a fact about anything.
+  assert(schema != DivSchema::Pow2Divisor || shift < width);
+  assert(schema != DivSchema::QuotientPow2Threshold || shift < width);
+  assert(schema != DivSchema::DivisorMagnitudeBound || shift < width);
+
+  switch (schema)
+  {
+    case DivSchema::DivisorZero:
+    {
+      // b = 0 -> t is what SMT-LIB totalises it to. Vacuous over any other
+      // divisor.
+      if (!divisorZero)
+        return true;
+      const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
+      return resultMatchesSources(divSchemaSources(opKind, width, choice),
+                                  aBits, tBits);
+    }
+
+    case DivSchema::Pow2Divisor:
+    {
+      // b = 2^shift -> t = a >> shift, or a & (2^shift - 1) for the
+      // remainder.
+      if (powerOfTwoExponent(bBits) != (int)shift)
+        return true;
+      const DivSchemaChoice choice{DivSchema::Pow2Divisor, shift};
+      return resultMatchesSources(divSchemaSources(opKind, width, choice),
+                                  aBits, tBits);
+    }
+
+    case DivSchema::RemainderAtMostDividend:
+      // r <=u a, over a zero divisor as well, where the remainder is the
+      // dividend. No premise at all.
+      assert(opKind == BVMOD);
+      return valueLessOrEqual(tBits, aBits);
+
+    case DivSchema::RemainderBelowDivisor:
+      // b != 0 -> r <u b.
+      assert(opKind == BVMOD);
+      return divisorZero || !valueLessOrEqual(bBits, tBits);
+
+    case DivSchema::QuotientAtMostDividend:
+      // b != 0 -> q <=u a.
+      assert(opKind == BVDIV);
+      return divisorZero || valueLessOrEqual(tBits, aBits);
+
+    case DivSchema::QuotientPow2Threshold:
+    {
+      // q >= 2^shift <-> b <=u (a >> shift). Both sides are true over a zero
+      // divisor, so this one needs no premise either.
+      assert(opKind == BVDIV);
+      bool quotientAboveThreshold = false;
+      for (unsigned i = shift; i < width; ++i)
+        quotientAboveThreshold = quotientAboveThreshold || tBits[i];
+      return quotientAboveThreshold ==
+             valueLessOrEqual(bBits, shiftedRight(aBits, shift));
+    }
+
+    case DivSchema::DivisorMagnitudeBound:
+      // b >=u 2^shift -> q <=u (a >> shift).
+      assert(opKind == BVDIV);
+      return !valueLessOrEqual(powerOfTwoValue(width, shift), bBits) ||
+             valueLessOrEqual(tBits, shiftedRight(aBits, shift));
+
+    case DivSchema::Lemma:
+    case DivSchema::None:
+      break;
+  }
+
+  FatalError("divSchemaHolds: asked about a schema that is not one of the "
+             "hand-written ones");
+  return true;
+}
+
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -1021,8 +1185,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   if (base && divisorValueLeft && divisorZero)
   {
     const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
-    if (!resultMatchesSources(divSchemaSources(opKind, width, choice), aBits,
-                              tBits))
+    if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
+                        tBits))
       return choice;
   }
   else if (base && divisorValueLeft)
@@ -1031,8 +1195,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     if (k >= 0)
     {
       const DivSchemaChoice choice{DivSchema::Pow2Divisor, (unsigned)k};
-      if (!resultMatchesSources(divSchemaSources(opKind, width, choice), aBits,
-                                tBits))
+      if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
+                          tBits))
         return choice;
     }
   }
@@ -1049,14 +1213,16 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     if (base &&
         (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND) ==
             0 &&
-        !valueLessOrEqual(tBits, aBits))
+        !divSchemaHolds(opKind, DivSchema::RemainderAtMostDividend, 0, aBits,
+                        bBits, tBits))
       return {DivSchema::RemainderAtMostDividend, 0};
 
     // b != 0 -> r <u b.
     if (base &&
         (installedSchemas & DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR) ==
             0 &&
-        !divisorZero && valueLessOrEqual(bBits, tBits))
+        !divSchemaHolds(opKind, DivSchema::RemainderBelowDivisor, 0, aBits,
+                        bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
 
     unsigned remCount = 0;
@@ -1080,7 +1246,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     if (base &&
         (installedSchemas & DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND) ==
             0 &&
-        !divisorZero && !valueLessOrEqual(tBits, aBits))
+        !divSchemaHolds(opKind, DivSchema::QuotientAtMostDividend, 0, aBits,
+                        bBits, tBits))
       return {DivSchema::QuotientAtMostDividend, 0, 0};
 
     // Try the ranked, fixed family before the synthesised thresholds below.
@@ -1123,16 +1290,11 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
           break;
         }
 
-      if (divisorTop >= 1)
-      {
-        std::vector<bool> shiftedDividend(width, false);
-        for (unsigned i = 0; i + (unsigned)divisorTop < width; ++i)
-          shiftedDividend[i] = aBits[i + (unsigned)divisorTop];
-        if (!valueLessOrEqual(tBits, shiftedDividend))
-          return {DivSchema::DivisorMagnitudeBound,
-                  (unsigned)divisorTop, 0,
-                  BVSchemaGroup::DIVISOR_MAGNITUDE};
-      }
+      if (divisorTop >= 1 &&
+          !divSchemaHolds(opKind, DivSchema::DivisorMagnitudeBound,
+                          (unsigned)divisorTop, aBits, bBits, tBits))
+        return {DivSchema::DivisorMagnitudeBound, (unsigned)divisorTop, 0,
+                BVSchemaGroup::DIVISOR_MAGNITUDE};
     }
 
     // q >= 2^k iff b <= (a >> k). The right side is just a comparison over
@@ -1141,17 +1303,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // installed bit is needed: once one threshold is in the permanent
     // solver clauses, no later candidate can contradict that same k.
     const auto thresholdMismatch = [&](unsigned k) {
-      std::vector<bool> shiftedDividend(width, false);
-      for (unsigned i = 0; i + k < width; ++i)
-        shiftedDividend[i] = aBits[i + k];
-      const bool divisorBelowShiftedDividend =
-          valueLessOrEqual(bBits, shiftedDividend);
-      // The caller chooses only the two boundaries around the candidate's
-      // highest set bit, so whether q >= 2^k is known from which one it is.
-      bool quotientAboveThreshold = false;
-      for (unsigned i = k; i < width; ++i)
-        quotientAboveThreshold = quotientAboveThreshold || tBits[i];
-      return quotientAboveThreshold != divisorBelowShiftedDividend;
+      return !divSchemaHolds(opKind, DivSchema::QuotientPow2Threshold, k, aBits,
+                             bBits, tBits);
     };
 
     // Every threshold below or at q's highest set bit has a true left side;
@@ -1421,9 +1574,9 @@ static const char* mulSchemaName(MulSchema schema)
 }
 
 // result[0] <-> a[0] & b[0].
-static void encodeMulOdd(SATSolver& solver, const std::vector<unsigned>& a,
-                         const std::vector<unsigned>& b,
-                         const std::vector<unsigned>& result)
+void encodeMulOdd(SATSolver& solver, const std::vector<unsigned>& a,
+                  const std::vector<unsigned>& b,
+                  const std::vector<unsigned>& result)
 {
   SATSolver::vec_literals cl;
   cl.clear(); cl.push(SATSolver::mkLit(result[0], true));  cl.push(SATSolver::mkLit(a[0], false)); solver.addClause(cl);
@@ -1520,10 +1673,9 @@ void encodeMulLowPrefix(SATSolver& solver,
 // product cannot have fewer trailing zeros than an operand, and truncating
 // it to the width does not change its low bits, so this holds of the
 // truncated product too.
-static void encodeMulTrailingZeros(SATSolver& solver,
-                                   const std::vector<unsigned>& op,
-                                   const std::vector<unsigned>& result,
-                                   unsigned width)
+void encodeMulTrailingZeros(SATSolver& solver, const std::vector<unsigned>& op,
+                            const std::vector<unsigned>& result,
+                            unsigned width)
 {
   for (unsigned bit = 0; bit < width; ++bit)
   {
@@ -1541,12 +1693,12 @@ static void encodeMulTrailingZeros(SATSolver& solver,
 // exactly on the candidate's own operand value -- and that is the whole
 // difference between the two: this leaves the other operand free, so it
 // rules out 2^W pairs where the blocking lemma rules out one.
-static void encodeMulShiftUnderValue(SATSolver& solver,
-                                     const std::vector<unsigned>& fixedVars,
-                                     const std::vector<bool>& fixedBits,
-                                     const std::vector<unsigned>& source,
-                                     const std::vector<unsigned>& result,
-                                     unsigned width, unsigned shift)
+void encodeMulShiftUnderValue(SATSolver& solver,
+                              const std::vector<unsigned>& fixedVars,
+                              const std::vector<bool>& fixedBits,
+                              const std::vector<unsigned>& source,
+                              const std::vector<unsigned>& result,
+                              unsigned width, unsigned shift)
 {
   const auto guard = [&](SATSolver::vec_literals& cl) {
     cl.clear();

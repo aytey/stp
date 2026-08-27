@@ -205,8 +205,63 @@ chooseMulSchema(const std::vector<bool>& aBits, const std::vector<bool>& bBits,
                 const std::vector<bool>& tBits, uint64_t installedSchemas,
                 uint32_t enabledGroups = BV_SCHEMA_GROUP_ALL);
 
+// Whether one hand-written multiplication schema holds of these values.
+//
+// The registry facts get their five faces from BVLemmaCatalogue: one
+// enumerator, one predicate, one circuit, one name, one group, one table row
+// apiece, and an exhaustive test that reconciles the predicate with the
+// circuit. The schemas here and the division ones below are not table rows --
+// each is parameterised by something the candidate supplies (an operand
+// reading, an exponent, a prefix length, a divisor value) and each has a
+// circuit of its own shape, so a row would have to carry a different
+// signature per arm. The reason the table exists applies to them unchanged
+// though: what the chooser reads off a candidate and what the clauses go on
+// to say have to be the same claim, and the only way to know that is to have
+// one predicate and check the circuit against it.
+//
+// So the claim is written once, here, the chooser calls exactly these, and
+// BVSchemaCircuit_Test drives the same functions against the circuits the
+// refiner installs. Each is a theorem of the operation on its own -- the
+// value-guarded arms carry their guard rather than assuming the caller has
+// checked it -- which is what lets the same test ask both questions of them.
+//
+// `operand` selects the reading of the commutative operation; `shift` carries
+// the exponent for Pow2 and NegPow2 and the prefix length for LowPrefix, and
+// is ignored by the arms that take no parameter.
+DLL_PUBLIC bool mulSchemaHolds(MulSchema schema, unsigned operand,
+                               unsigned shift,
+                               const std::vector<bool>& aBits,
+                               const std::vector<bool>& bBits,
+                               const std::vector<bool>& tBits);
+
+// The circuits those schemas install, over the operand proxies and the
+// abstraction's own result bits. Exposed for the same reason the division
+// encoders below are: whether the clauses say what the predicate above claims
+// is a question only a solver can answer.
+DLL_PUBLIC void encodeMulOdd(SATSolver& solver,
+                             const std::vector<unsigned>& aVars,
+                             const std::vector<unsigned>& bVars,
+                             const std::vector<unsigned>& resultVars);
+DLL_PUBLIC void encodeMulTrailingZeros(SATSolver& solver,
+                                       const std::vector<unsigned>& opVars,
+                                       const std::vector<unsigned>& resultVars,
+                                       unsigned width);
+DLL_PUBLIC void encodeMulShiftUnderValue(
+    SATSolver& solver, const std::vector<unsigned>& fixedVars,
+    const std::vector<bool>& fixedBits, const std::vector<unsigned>& sourceVars,
+    const std::vector<unsigned>& resultVars, unsigned width, unsigned shift);
+
+// The bits of -x. The negated-power-of-two schema is this composed with the
+// shift circuit above, so what it claims can only be checked against the two
+// together.
+DLL_PUBLIC std::vector<unsigned> encodeNegate(SATSolver& solver,
+                                              const std::vector<unsigned>& x,
+                                              unsigned width);
+
 // Whether the candidate result agrees with the exact low `prefixBits` of an
 // addition or multiplication. All vectors are least-significant-bit first.
+// This is the predicate for both prefix schemas; `mulSchemaHolds` delegates
+// its LowPrefix arm here and `chooseAddSchema` calls it directly.
 DLL_PUBLIC bool exactLowPrefixHolds(Kind opKind,
                                     const std::vector<bool>& aBits,
                                     const std::vector<bool>& bBits,
@@ -451,6 +506,26 @@ enum : int
 
 DLL_PUBLIC std::vector<int> divSchemaSources(Kind opKind, unsigned width,
                                              const DivSchemaChoice& choice);
+
+// Whether one hand-written division or remainder schema holds of these
+// values -- the same single-predicate arrangement `mulSchemaHolds` describes,
+// for the arms of DivSchema that are not registry rows.
+//
+// Every arm here is a theorem about the operation on its own. The three that
+// name a divisor or a magnitude carry their own guard: `DivisorZero` is
+// vacuous over a nonzero divisor, `Pow2Divisor` over a divisor that is not
+// 2^shift, `DivisorMagnitudeBound` over one below 2^shift. The chooser
+// reaches them only where the guard is already true, so asking this is the
+// same question it used to ask inline -- and it is now the same question the
+// circuit is checked against.
+//
+// `opKind` is BVDIV or BVMOD; `shift` carries the exponent for the three
+// parameterised arms and is ignored by the rest. `DivSchema::Lemma` is a
+// registry row and belongs to `divLemmaHolds`/`remLemmaHolds`, not here.
+DLL_PUBLIC bool divSchemaHolds(Kind opKind, DivSchema schema, unsigned shift,
+                               const std::vector<bool>& aBits,
+                               const std::vector<bool>& bBits,
+                               const std::vector<bool>& tBits);
 
 // The first of the facts above that this candidate contradicts, or None.
 // Pure, and called under the same conditions as chooseMulSchema: `tBits` is
