@@ -308,7 +308,9 @@ void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,
                             unsigned width,
                             const std::vector<unsigned>& aVars,
                             const std::vector<unsigned>& bVars,
-                            const std::vector<unsigned>& resultVars)
+                            const std::vector<unsigned>& resultVars,
+                            const std::vector<signed char>& knownA,
+                            const std::vector<signed char>& knownB)
 {
   assert(aVars.size() >= width);
   assert(bVars.size() >= width);
@@ -324,22 +326,52 @@ void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,
   BitBlaster bb(&mgr, scratch_.get(), bm->defaultNodeFactory, &bm->UserFlags, NULL,
                 /*allowAbstraction=*/false);
 
-  // The operand bits, as combinational inputs, in the order the splice
-  // below reads them back: the first operand's `width` bits, then the
-  // second's. Nothing else creates an input, so their positions are their
-  // indices for the whole of this function -- which is what makes them
-  // findable after ABC has renumbered every object in the manager.
-  BBNodeVec x(width), y(width);
-  for (unsigned i = 0; i < width; i++)
-  {
-    x[i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
-    x[i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
-  }
-  for (unsigned i = 0; i < width; i++)
-  {
-    y[i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
-    y[i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
-  }
+  // The operand bits: a constant where the query's own blast had one, and a
+  // combinational input everywhere else.
+  //
+  // The constants are what make this the encoding the query would have had.
+  // Every constant shortcut in the operations reachable from here reads the
+  // bit vector rather than the AST -- mult_normal skips a false multiplier
+  // bit, Booth recoding classifies through convert(), and Aig_And folds a
+  // constant argument structurally -- so an operand rebuilt entirely out of
+  // free inputs gets none of them. A 64-bit multiply against a literal of
+  // popcount 8 built 64 partial-product rows rather than 8.
+  //
+  // Dropping the operand variable that a constant bit displaces is sound.
+  // The abstraction reads its operands through proxy inputs that
+  // ensureProxyCIs minted precisely because the vector was not all inputs,
+  // and each of those proxies is tied to its bit by a side constraint -- so
+  // the variable this circuit no longer mentions is already pinned to the
+  // same constant that replaced it.
+  //
+  // `ciVars` therefore carries the solver variable of each input actually
+  // created, in creation order, because that is the order the splice below
+  // reads them back in -- their positions are their indices for the whole of
+  // this function, which is what makes them findable after ABC has
+  // renumbered every object in the manager.
+  std::vector<unsigned> ciVars;
+  ciVars.reserve(2 * width);
+
+  const std::vector<signed char>* known[2] = {&knownA, &knownB};
+  const std::vector<unsigned>* opVars[2] = {&aVars, &bVars};
+  BBNodeVec operands[2] = {BBNodeVec(width), BBNodeVec(width)};
+
+  for (unsigned op = 0; op < 2; op++)
+    for (unsigned i = 0; i < width; i++)
+    {
+      const signed char bit = i < known[op]->size() ? (*known[op])[i] : -1;
+      if (bit >= 0)
+      {
+        operands[op][i] = bit != 0 ? mgr.getTrue() : mgr.getFalse();
+        continue;
+      }
+      operands[op][i] = BBNodeAIG(Aig_ObjCreateCi(mgr.aigMgr));
+      operands[op][i].symbol_index = mgr.aigMgr->vCis->nSize - 1;
+      ciVars.push_back((*opVars[op])[i]);
+    }
+
+  const BBNodeVec& x = operands[0];
+  const BBNodeVec& y = operands[1];
 
   BBNodeSet support;
   const BBNodeVec result = bb.BBExactBinaryOp(term, x, y, support);
@@ -360,7 +392,7 @@ void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,
   rewrite(mgr, bm->UserFlags.AIG_rewrites_iterations);
   assert(Aig_ManCheck(mgr.aigMgr));
   assert((unsigned)Aig_ManCoNum(mgr.aigMgr) == outputs);
-  assert((unsigned)Aig_ManCiNum(mgr.aigMgr) == 2 * width);
+  assert((unsigned)Aig_ManCiNum(mgr.aigMgr) == ciVars.size());
 
   // Use the query's selected CNF strategy. All outputs are named rather than
   // asserted because the splice below connects each result bit explicitly
@@ -376,14 +408,14 @@ void BVExactEncoder::encode(SATSolver& solver, const ASTNode& term,
   // the query talks about.
   std::vector<unsigned> cnfToSolver(cnf->nVars, ~((unsigned)0));
 
-  for (unsigned i = 0; i < 2 * width; i++)
+  for (unsigned i = 0; i < ciVars.size(); i++)
   {
     const int var = cnf->pVarNums[Aig_ManCi(mgr.aigMgr, (int)i)->Id];
     // An input the circuit never reads is given no variable, and needs
     // none: nothing the CNF says mentions it.
     if (var < 0)
       continue;
-    cnfToSolver[var] = (i < width) ? aVars[i] : bVars[i - width];
+    cnfToSolver[var] = ciVars[i];
   }
 
   for (int var = 0; var < cnf->nVars; var++)

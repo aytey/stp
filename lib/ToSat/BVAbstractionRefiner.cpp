@@ -2771,8 +2771,13 @@ unsigned BVAbstractionRefiner::refineTerms(
       const uint32_t exactVariablesBefore = solver.nVars();
       const std::chrono::steady_clock::time_point exactStarted =
           std::chrono::steady_clock::now();
-      exact_.encode(solver, encodeAs, upto, aVars, bVars,
-                                resultVars);
+      // With the operand bits the blast already knew, so the circuit this
+      // falls back on is the one the query would have had rather than a
+      // fully symbolic one. A narrowed piece reads the same vectors: it is
+      // the low `upto` bits of the same operands, and the encoder only looks
+      // that far.
+      exact_.encode(solver, encodeAs, upto, aVars, bVars, resultVars,
+                    abs.operandKnownBits[0], abs.operandKnownBits[1]);
       const uint64_t exactMicros = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - exactStarted)

@@ -706,6 +706,13 @@ struct BVTermAbstraction
   // semantic operand and kept so later schemas do not pay for the same
   // negation circuit again.
   std::vector<unsigned> negatedOperand[2];
+  // What the blast knew about each operand's bits before the abstraction
+  // replaced them with proxy inputs: -1 for a live node, 0 or 1 for a
+  // constant. Carried so that an escalation can rebuild the operation over
+  // the same constants the query would have blasted it with, rather than
+  // over 2W free inputs; see BitBlaster::RawBVTermAbstraction for what that
+  // costs when it is thrown away. Empty means nothing is known.
+  std::vector<signed char> operandKnownBits[2];
 };
 
 class DLL_PUBLIC BVAbstractionRefiner

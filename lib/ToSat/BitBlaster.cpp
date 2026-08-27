@@ -49,6 +49,29 @@ static bool allBBNodesAreCIs(const BBNodeVec& vec)
   return !vec.empty();
 }
 
+// Which of an operand's bits the blast had already folded to a constant, in
+// the form BVExactEncoder reads back: -1 for a live node, 0 or 1 for a
+// constant. Read off the same vector ensureProxyCIs is about to replace, so
+// what is recorded is what the query's own encoding knew.
+static std::vector<signed char> knownBitsOf(BBNodeManagerAIG* nf,
+                                            const BBNodeVec& bits)
+{
+  const BBNodeAIG constTrue = nf->getTrue();
+  const BBNodeAIG constFalse = nf->getFalse();
+
+  std::vector<signed char> known(bits.size(), -1);
+  for (unsigned i = 0; i < bits.size(); i++)
+  {
+    if (bits[i].IsNull())
+      continue;
+    if (bits[i] == constTrue)
+      known[i] = 1;
+    else if (bits[i] == constFalse)
+      known[i] = 0;
+  }
+  return known;
+}
+
 static std::vector<int> ciSymbolIndices(const BBNodeVec& bits)
 {
   std::vector<int> indices;
@@ -1428,6 +1451,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         raw.numOperands = 2;
         raw.width = num_bits;
         raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
+        raw.operandKnownBits[0] = knownBitsOf(nf, mpcd1);
+        raw.operandKnownBits[1] = knownBitsOf(nf, mpcd2);
         abstractedTerms_.push_back(raw);
         result = abstracted;
       }
@@ -1488,6 +1513,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         raw.numOperands = 2;
         raw.width = num_bits;
         raw.resultCISymbolIndices = ciSymbolIndices(abstracted);
+        raw.operandKnownBits[0] = knownBitsOf(nf, dvdd);
+        raw.operandKnownBits[1] = knownBitsOf(nf, dvsr);
         abstractedTerms_.push_back(raw);
         result = abstracted;
       }

@@ -294,6 +294,8 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
     {
       a.operands[i] = raw.operands[i];
       a.operandNegated[i] = raw.operandNegated[i];
+      if (i < 2)
+        a.operandKnownBits[i] = raw.operandKnownBits[i];
     }
     a.numOperands = raw.numOperands;
     a.width = raw.width;
