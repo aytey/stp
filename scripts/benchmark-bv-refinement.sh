@@ -11,11 +11,14 @@ export LC_ALL=C
 usage()
 {
   cat <<'EOF'
-Usage: benchmark-bv-refinement.sh --solver PATH --corpus DIR [options] [-- STP_ARG ...]
+Usage: benchmark-bv-refinement.sh --solver PATH (--corpus DIR | --list FILE) [options] [-- STP_ARG ...]
 
 Required:
   --solver PATH          STP executable to measure
   --corpus DIR           directory containing *.smt2 query files
+  --list FILE            file of query paths, one per line, instead of a
+                         directory -- for measuring a population selected out
+                         of a corpus too large to copy or to walk
 
 Options:
   --output DIR           new result directory (default: a directory in /tmp)
@@ -24,6 +27,13 @@ Options:
   --limits LIST          comma-separated value limits (default: 4,8,16,32)
   --profiles LIST        compare named profiles instead of value limits; the
                          first comma-separated profile is the reference
+  --variant NAME:FLAGS   one configuration given as literal STP flags, named;
+                         repeatable, order kept, first is the reference. Use
+                         this for a comparison the named profiles cannot
+                         express -- an abstraction-kind mask, say. Nothing is
+                         added to what you write, so a variant that wants the
+                         abstraction on must say so, and an empty flag list is
+                         a perfectly good "off" arm
   --width BITS           abstraction width floor (default: 53)
   --backend NAME         minisat, cadical, or default (default: minisat)
   --no-exact-control     omit the abstraction-off control
@@ -50,6 +60,9 @@ die()
 
 solver=
 corpus=
+list=
+free_names=()
+free_flags=()
 output=
 repetitions=1
 timeout_seconds=20
@@ -68,6 +81,20 @@ while (($# > 0)); do
       (($# >= 2)) || die '--solver needs a path'
       solver=$2
       shift 2
+      ;;
+    --list)
+      (($# >= 2)) || die '--list needs a file'
+      list=$2
+      shift 2
+      continue
+      ;;
+    --variant)
+      (($# >= 2)) || die '--variant needs NAME:FLAGS'
+      [[ $2 == *:* ]] || die "--variant wants NAME:FLAGS, got: $2"
+      free_names+=("${2%%:*}")
+      free_flags+=("${2#*:}")
+      shift 2
+      continue
       ;;
     --corpus)
       (($# >= 2)) || die '--corpus needs a directory'
@@ -135,8 +162,17 @@ done
 
 [[ -n $solver ]] || die '--solver is required'
 [[ -x $solver ]] || die "solver is not executable: $solver"
-[[ -n $corpus ]] || die '--corpus is required'
-[[ -d $corpus ]] || die "corpus is not a directory: $corpus"
+if [[ -n $list ]]; then
+  [[ -z $corpus ]] || die '--corpus and --list are mutually exclusive'
+  [[ -r $list ]] || die "query list is not readable: $list"
+else
+  [[ -n $corpus ]] || die 'one of --corpus or --list is required'
+  [[ -d $corpus ]] || die "corpus is not a directory: $corpus"
+fi
+if ((${#free_names[@]} > 0)); then
+  [[ -z $profiles_csv ]] || die '--variant and --profiles are mutually exclusive'
+  ((limits_explicit == 0)) || die '--variant and --limits are mutually exclusive'
+fi
 [[ $repetitions =~ ^[1-9][0-9]*$ ]] || die '--repetitions must be positive'
 [[ $timeout_seconds =~ ^[1-9][0-9]*([.][0-9]+)?$ ]] ||
   die '--timeout must be positive'
@@ -180,8 +216,20 @@ else
   ((${#limits[@]} > 0)) || die '--limits supplied no values'
 fi
 
-mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
-((${#queries[@]} > 0)) || die "no *.smt2 files found in $corpus"
+if [[ -n $list ]]; then
+  # Order is the file's, not sorted: a caller who shuffled a population so a
+  # partial run samples all of it rather than one family gets to keep that.
+  queries=()
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    [[ -r $line ]] || die "query in --list is not readable: $line"
+    queries+=("$line")
+  done < "$list"
+  ((${#queries[@]} > 0)) || die "no queries read from $list"
+else
+  mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
+  ((${#queries[@]} > 0)) || die "no *.smt2 files found in $corpus"
+fi
 
 if [[ -z $output ]]; then
   output=$(mktemp -d /tmp/stp-bv-refinement.XXXXXX) ||
@@ -216,10 +264,26 @@ esac
 
 variants=()
 reference_variant=
-if ((include_exact)); then
+if ((${#free_names[@]} > 0)); then
+  # Free variants stand alone. The exact and v4 controls exist to give the
+  # profile and allowance modes a baseline they did not have to write down;
+  # here the caller writes every arm out, so adding one would be a variant
+  # they did not ask for and did not name.
+  for name in "${free_names[@]}"; do
+    [[ $name =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die "invalid variant name: $name"
+    for old in "${variants[@]}"; do
+      [[ $old == "free-$name" ]] && die "duplicate variant name: $name"
+    done
+    variants+=("free-$name")
+  done
+  reference_variant=free-${free_names[0]}
+fi
+if ((include_exact)) && ((${#free_names[@]} == 0)); then
   variants+=(exact)
 fi
-if ((${#profiles[@]} > 0)); then
+if ((${#free_names[@]} > 0)); then
+  :
+elif ((${#profiles[@]} > 0)); then
   for profile in "${profiles[@]}"; do
     variants+=("profile-$profile")
   done
@@ -239,6 +303,19 @@ variant_args()
 {
   local variant=$1
   VARIANT_ARGS=()
+  if [[ $variant == free-* ]]; then
+    # Verbatim, and nothing else. A free variant is the caller's whole
+    # configuration; silently adding the abstraction switches here would make
+    # an "off" arm impossible to write and a kind mask impossible to trust.
+    local wanted=${variant#free-} i
+    for ((i = 0; i < ${#free_names[@]}; i++)); do
+      if [[ ${free_names[i]} == "$wanted" ]]; then
+        read -r -a VARIANT_ARGS <<< "${free_flags[i]}"
+        return
+      fi
+    done
+    die "internal: no flags recorded for variant $wanted"
+  fi
   if [[ $variant == exact ]]; then
     VARIANT_ARGS+=(--bv-eq-abstraction=0 --bv-term-abstraction=0)
     return
@@ -278,7 +355,8 @@ rm -f "$smoke" "$output"/smoke-*.log
 {
   printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'solver=%s\n' "$solver"
-  printf 'corpus=%s\n' "$corpus"
+  printf 'corpus=%s\n' "${corpus:-none}"
+  printf 'query_list=%s\n' "${list:-none}"
   printf 'query_count=%d\n' "${#queries[@]}"
   printf 'repetitions=%s\n' "$repetitions"
   printf 'timeout_seconds=%s\n' "$timeout_seconds"
@@ -286,6 +364,14 @@ rm -f "$smoke" "$output"/smoke-*.log
   printf 'backend=%s\n' "$backend"
   printf 'variants=%s\n' "${variants[*]}"
   printf 'profiles=%s\n' "${profiles[*]:-none}"
+  # Recorded per line rather than joined, because a free variant's flags
+  # contain spaces and a run whose configuration cannot be read back off the
+  # metadata is a run that has to be taken on trust.
+  if ((${#free_names[@]} > 0)); then
+    for ((fi = 0; fi < ${#free_names[@]}; fi++)); do
+      printf 'variant_flags[%s]=%s\n' "${free_names[fi]}" "${free_flags[fi]}"
+    done
+  fi
   printf 'comparison_reference=%s\n' "${reference_variant:-none}"
   printf 'common_args='; printf ' %q' "${common_args[@]}"; printf '\n'
   printf 'extra_args='; printf ' %q' "${extra_args[@]}"; printf '\n'
