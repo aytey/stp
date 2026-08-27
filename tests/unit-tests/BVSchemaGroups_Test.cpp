@@ -98,42 +98,47 @@ TEST(BVSchemaGroups, rejected_lists_are_atomic)
   }
 }
 
-TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
+// Every group name the diagnostics print is a name the parser accepts, and
+// selects that group alone.
+//
+// The C interface has no schema-group constants: a client names a group
+// through vc_setSchemaGroups and reads one back through vc_schemaGroupName,
+// so the two vocabularies being the same one is the contract, and this is it
+// at the level both are built on. Checking it by round-trip rather than
+// against a written-out table means a family added tomorrow is covered
+// without anyone remembering to come back here.
+TEST(BVSchemaGroups, every_group_name_round_trips_through_the_parser)
 {
-  // In BVSchemaGroup order. The C bits carry no meaning of their own -- they
-  // are the C++ enum, published -- so what has to hold is that the i'th of
-  // each is the same group, name for name.
-  const uint32_t cBits[] = {
-      STP_BV_SCHEMA_GROUP_BASE,
-      STP_BV_SCHEMA_GROUP_UDIV15,
-      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED,
-      STP_BV_SCHEMA_GROUP_UDIV_TAIL,
-      STP_BV_SCHEMA_GROUP_UREM,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
-      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-      STP_BV_SCHEMA_GROUP_DIVREM_FULL,
-      STP_BV_SCHEMA_GROUP_MUL8,
-      STP_BV_SCHEMA_GROUP_MUL_REF3,
-      STP_BV_SCHEMA_GROUP_MUL_TAIL,
-      STP_BV_SCHEMA_GROUP_ADD,
-      STP_BV_SCHEMA_GROUP_LOW_PREFIX};
-
-  ASSERT_EQ(BV_SCHEMA_GROUP_COUNT, sizeof(cBits) / sizeof(cBits[0]));
   for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
-    EXPECT_EQ(bvSchemaGroupBit(static_cast<BVSchemaGroup>(i)), cBits[i]);
+  {
+    const BVSchemaGroup group = static_cast<BVSchemaGroup>(i);
+    const char* name = bvSchemaGroupName(group);
+    ASSERT_TRUE(name != NULL) << "index " << i;
+    EXPECT_STRNE("unknown", name) << "index " << i;
 
-  EXPECT_EQ(BV_SCHEMA_GROUP_QUALIFIED,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_QUALIFIED));
-  EXPECT_EQ(BV_SCHEMA_GROUP_AGGRESSIVE,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_AGGRESSIVE));
-  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD));
-  EXPECT_EQ(BV_SCHEMA_GROUP_DEFAULT,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT));
-  EXPECT_EQ(BV_SCHEMA_GROUP_ALL,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_ALL));
+    uint32_t mask = 0;
+    std::string error;
+    EXPECT_TRUE(parseBVSchemaGroups(name, mask, error)) << name << ": " << error;
+    EXPECT_EQ(bvSchemaGroupBit(group), mask)
+        << name << " does not select itself";
+  }
+}
+
+// And the round trip runs the other way: formatting a mask gives names the
+// parser reads back as the same mask.
+TEST(BVSchemaGroups, formatting_a_mask_gives_a_list_the_parser_accepts)
+{
+  const uint32_t masks[] = {BV_SCHEMA_GROUP_QUALIFIED, BV_SCHEMA_GROUP_BROAD,
+                            BV_SCHEMA_GROUP_AGGRESSIVE, BV_SCHEMA_GROUP_ALL};
+  for (const uint32_t original : masks)
+  {
+    const std::string text = formatBVSchemaGroups(original);
+    uint32_t mask = 0;
+    std::string error;
+    EXPECT_TRUE(parseBVSchemaGroups(text, mask, error))
+        << text << ": " << error;
+    EXPECT_EQ(original, mask) << text;
+  }
 }
 
 // Sweep every four-bit candidate under each family in isolation. Any chooser

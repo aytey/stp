@@ -580,16 +580,6 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_INC_BITBLAST:
       b->UserFlags.bv_term_abstraction_inc_bitblast = param_value != 0;
       break;
-    case BV_TERM_ABSTRACTION_SCHEMA_GROUPS:
-      if (param_value < 0 ||
-          (static_cast<unsigned>(param_value) &
-           ~static_cast<unsigned>(STP_BV_SCHEMA_GROUP_ALL)) != 0)
-        reportCAPIError("BV_TERM_ABSTRACTION_SCHEMA_GROUPS contains an "
-                        "unknown schema-group bit");
-      else
-        b->UserFlags.bv_term_abstraction_schema_groups =
-            static_cast<uint32_t>(param_value);
-      break;
     case INCREMENTAL_PIECE_REWRITING:
       b->UserFlags.incremental_piece_rewriting = param_value != 0;
       break;
@@ -997,11 +987,37 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
 static_assert(STP_BV_SCHEMA_GROUP_COUNT == stp::BV_SCHEMA_GROUP_COUNT,
               "the C schema-group count is out of step with BVSchemaGroup");
 
+int vc_setSchemaGroups(VC vc, const char* groups)
+{
+  if (groups == NULL)
+  {
+    reportCAPIError("vc_setSchemaGroups: no group list");
+    return 0;
+  }
+
+  // The same parser --bv-term-abstraction-schema-groups uses, so the two
+  // doors accept one vocabulary rather than two that can drift.
+  uint32_t mask = 0;
+  std::string error;
+  if (!stp::parseBVSchemaGroups(groups, mask, error))
+  {
+    reportCAPIError(("vc_setSchemaGroups: " + error).c_str());
+    return 0;
+  }
+
+  // Only on success: a caller that mistypes one group in a list should not
+  // end up running with a narrower catalogue than it asked for.
+  stp::STP* b = (stp::STP*)vc;
+  b->bm->UserFlags.bv_term_abstraction_schema_groups = mask;
+  return 1;
+}
+
 unsigned long long vc_getSchemaGroupCounter(VC vc, unsigned group)
 {
   if (group >= stp::BV_SCHEMA_GROUP_COUNT)
   {
-    reportCAPIError("vc_getSchemaGroupCounter: schema group out of range");
+    reportCAPIError("vc_getSchemaGroupCounter: schema group index out of "
+                    "range");
     return 0;
   }
   stp::STP* b = (stp::STP*)vc;
@@ -1012,7 +1028,7 @@ const char* vc_schemaGroupName(unsigned group)
 {
   if (group >= stp::BV_SCHEMA_GROUP_COUNT)
   {
-    reportCAPIError("vc_schemaGroupName: schema group out of range");
+    reportCAPIError("vc_schemaGroupName: schema group index out of range");
     return NULL;
   }
   return stp::bvSchemaGroupName(static_cast<stp::BVSchemaGroup>(group));

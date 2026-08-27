@@ -100,11 +100,15 @@ static_assert(INCREMENTAL_PIECE_REWRITING == 28,
 static_assert(CNF_AUTO_THRESHOLD == 29,
               "published interface-flag ordinal changed");
 // The published prefix ends at CNF_AUTO_THRESHOLD. Everything this feature
-// adds -- the four interface flags, the sixteen schema-group bits and the four
-// profile ordinals -- is new in this series and deliberately NOT pinned here:
-// nothing outside the tree has linked against it, so it stays free to be
-// renumbered until it ships. What is worth checking is that the C and C++
-// spellings agree with each other, and BVSchemaGroups_Test does that by name.
+// adds -- three interface flags and three profile ordinals -- is new in this
+// series and deliberately NOT pinned here: nothing outside the tree has linked
+// against it, so it stays free to be renumbered until it ships.
+//
+// The schema groups are not in that list because they are not ordinals at
+// all. They are named, through vc_setSchemaGroups and vc_schemaGroupName, so
+// that adding, renaming or merging a family costs nothing an installed header
+// has committed to. What is worth checking is that the two spellings agree,
+// and the round-trip test below does that.
 
 namespace
 {
@@ -149,8 +153,6 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
             flags(vc).bv_term_abstraction_rounds);
   EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
-  EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT),
-            flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
             flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
@@ -242,16 +244,14 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMAS, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
 
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
-                       STP_BV_SCHEMA_GROUP_ALL);
+  EXPECT_EQ(1, vc_setSchemaGroups(vc, "all"));
   EXPECT_EQ(stp::BV_SCHEMA_GROUP_ALL,
             flags(vc).bv_term_abstraction_schema_groups);
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
-                       STP_BV_SCHEMA_GROUP_UREM | STP_BV_SCHEMA_GROUP_MUL_REF3);
+  EXPECT_EQ(1, vc_setSchemaGroups(vc, "urem,mul-ref3"));
   EXPECT_EQ(stp::bvSchemaGroupBit(stp::BVSchemaGroup::UREM) |
                 stp::bvSchemaGroupBit(stp::BVSchemaGroup::MUL_REF3),
             flags(vc).bv_term_abstraction_schema_groups);
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, 0);
+  EXPECT_EQ(1, vc_setSchemaGroups(vc, "none"));
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups);
 
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
@@ -355,22 +355,32 @@ TEST(refinement_flags, TheDivModScopeResolvesTheSameWayInEitherOrder)
   vc_Destroy(vc);
 }
 
-TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
+// A group list the parser refuses leaves the selection alone.
+//
+// The list is all-or-nothing on purpose: a caller that mistypes one name in a
+// list of five should not end up running with a catalogue narrower than the
+// one it asked for and no way to tell. `groups` is also the one string this
+// interface parses, so a null pointer is refused rather than dereferenced.
+TEST(refinement_flags, AnUnknownSchemaGroupNameIsRefused)
 {
   vc_registerErrorHandler(countError);
   errors = 0;
 
   VC vc = vc_createValidityChecker();
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
-                       STP_BV_SCHEMA_GROUP_BASE);
-  const int invalid[] = {-1, 1 << 15, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
-  for (const int value : invalid)
+  EXPECT_EQ(1, vc_setSchemaGroups(vc, "base"));
+  const uint32_t base = stp::bvSchemaGroupBit(stp::BVSchemaGroup::BASE);
+  ASSERT_EQ(base, flags(vc).bv_term_abstraction_schema_groups);
+
+  const char* refused[] = {"", "nonesuch", "urem,nonesuch", "all,urem",
+                           "urem,,mul8", NULL};
+  for (const char* value : refused)
   {
-    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, value);
-    EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BASE),
-              flags(vc).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(0, vc_setSchemaGroups(vc, value))
+        << "list [" << (value ? value : "(null)") << "]";
+    EXPECT_EQ(base, flags(vc).bv_term_abstraction_schema_groups)
+        << "list [" << (value ? value : "(null)") << "] changed the selection";
   }
-  EXPECT_EQ(3, errors);
+  EXPECT_EQ((int)(sizeof(refused) / sizeof(refused[0])), errors);
 
   vc_Destroy(vc);
   vc_registerErrorHandler(nullptr);
@@ -412,15 +422,38 @@ TEST(refinement_flags, EachSchemaGroupIndexReadsItsOwnCounterAndName)
   for (unsigned i = 0; i < STP_BV_SCHEMA_GROUP_COUNT; ++i)
   {
     EXPECT_EQ(100u + i, vc_getSchemaGroupCounter(vc, i));
-    EXPECT_STREQ(
-        stp::bvSchemaGroupName(static_cast<stp::BVSchemaGroup>(i)),
-        vc_schemaGroupName(i));
+    EXPECT_STREQ(stp::bvSchemaGroupName(static_cast<stp::BVSchemaGroup>(i)),
+                 vc_schemaGroupName(i));
   }
   vc_Destroy(vc);
 }
 
-// Out of range is a diagnostic and a zero, not an out-of-bounds read.
-TEST(refinement_flags, AnOutOfRangeSchemaGroupIsRefused)
+// The name a breakdown reports has to be a name the selector accepts, and it
+// has to select that group and no other.
+//
+// This is the whole contract now that the taxonomy is not in the header. The
+// two calls are the only spellings of a group a C client ever sees, and if
+// they drift apart a client that reads a breakdown and feeds one line of it
+// back in gets a different family than the one it named. Checking it by
+// round-trip rather than against a written-out table is what keeps a family
+// added tomorrow covered without anyone remembering to add it here.
+TEST(refinement_flags, EverySchemaGroupNameRoundTripsThroughTheSelector)
+{
+  VC vc = vc_createValidityChecker();
+  for (unsigned i = 0; i < STP_BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    const char* name = vc_schemaGroupName(i);
+    ASSERT_TRUE(name != NULL) << "index " << i;
+    EXPECT_EQ(1, vc_setSchemaGroups(vc, name)) << name;
+    EXPECT_EQ(stp::bvSchemaGroupBit(static_cast<stp::BVSchemaGroup>(i)),
+              flags(vc).bv_term_abstraction_schema_groups)
+        << name << " does not select itself";
+  }
+  vc_Destroy(vc);
+}
+
+// An index past the end is a diagnostic and a zero, not an out-of-bounds read.
+TEST(refinement_flags, AnOutOfRangeSchemaGroupIndexIsRefused)
 {
   vc_registerErrorHandler(countError);
   errors = 0;

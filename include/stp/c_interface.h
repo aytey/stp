@@ -172,49 +172,6 @@ DLL_PUBLIC void vc_setFlags(VC vc, char c,
 //!
 DLL_PUBLIC void vc_setFlag(VC vc, char c);
 
-//! Named bits accepted by BV_TERM_ABSTRACTION_SCHEMA_GROUPS. They mirror the
-//! command-line names in ordinal order; combine any of them with bitwise OR.
-//! The default is QUALIFIED, the base/UREM/MulRef3 subset the corpus
-//! qualification justified; the broader masks below are experiments a caller
-//! asks for, and ALL retains every schema implemented by the library.
-enum bv_schema_group_t
-{
-  STP_BV_SCHEMA_GROUP_BASE = 1 << 0,
-  STP_BV_SCHEMA_GROUP_UDIV15 = 1 << 1,
-  STP_BV_SCHEMA_GROUP_UDIV_OBSERVED = 1 << 2,
-  STP_BV_SCHEMA_GROUP_UDIV_TAIL = 1 << 3,
-  STP_BV_SCHEMA_GROUP_UREM = 1 << 4,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT = 1 << 5,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 6,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 7,
-  STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 8,
-  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 9,
-  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 10,
-  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 11,
-  STP_BV_SCHEMA_GROUP_MUL_TAIL = 1 << 12,
-  STP_BV_SCHEMA_GROUP_ADD = 1 << 13,
-  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 14,
-
-  //! The mask an enabled abstraction inherits.
-  STP_BV_SCHEMA_GROUP_QUALIFIED = STP_BV_SCHEMA_GROUP_BASE |
-                                  STP_BV_SCHEMA_GROUP_UREM |
-                                  STP_BV_SCHEMA_GROUP_MUL_REF3,
-  //! The broad observed catalogue: every schema that speaks about a single
-  //! operation, and no relation spanning a quotient and its remainder.
-  STP_BV_SCHEMA_GROUP_BROAD =
-      STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
-      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
-      STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
-      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-  //! The same catalogue plus the full-width paired DIV/REM identity.
-  STP_BV_SCHEMA_GROUP_AGGRESSIVE =
-      STP_BV_SCHEMA_GROUP_BROAD | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
-  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_QUALIFIED,
-  STP_BV_SCHEMA_GROUP_ALL = (1 << 15) - 1
-};
-
 //! Atomic mask/round pairs accepted by BV_TERM_ABSTRACTION_PROFILE.
 enum bv_term_abstraction_profile_t
 {
@@ -583,15 +540,6 @@ enum ifaceflag_t
   //!
   CNF_AUTO_THRESHOLD,
 
-  //! Selects which families of algebraic facts
-  //! BV_TERM_ABSTRACTION_SCHEMAS may offer. `param_value` is a bitwise OR of
-  //! bv_schema_group_t values; zero selects none. Unknown or negative bits
-  //! are refused and leave the current mask unchanged. Appended here to keep
-  //! the published ordinals of every older interface flag stable. This is
-  //! the C API's way to reach --bv-term-abstraction-schema-groups.
-  //!
-  BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
-
   //! Whether BV_TERM_ABSTRACTION covers BVDIV and BVMOD.
   //!
   //! `param_value` nonzero includes them (the default), zero leaves them
@@ -918,27 +866,55 @@ enum stp_counter_t
 //! library.
 DLL_PUBLIC unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter);
 
-//! How many BV schema groups there are. The group index accepted by
-//! vc_getSchemaGroupCounter and vc_schemaGroupName runs from zero to one
-//! below this, in bv_schema_group_t order.
+//! \brief Selects which families of algebraic facts
+//! BV_TERM_ABSTRACTION_SCHEMAS may offer.
+//!
+//! `groups` is spelled the way --bv-term-abstraction-schema-groups spells it:
+//! a comma-separated list of group names, or "all", or "none". The same
+//! parser answers both, so the two doors accept the same vocabulary,
+//! including its aliases, and reject with the same message.
+//!
+//! Returns 1 if the list was accepted. An unknown name is refused with a
+//! nonfatal diagnostic naming the valid set, and leaves the current selection
+//! unchanged -- so a caller that mistypes one group does not silently run
+//! with a narrower catalogue than it asked for.
+//!
+//! Names rather than published constants because the partition is a research
+//! instrument: which families exist, and how finely they are cut, is expected
+//! to change, and none of that should turn into an installed-header ABI
+//! break. BV_TERM_ABSTRACTION_PROFILE is the stable surface -- three levels
+//! that keep their meaning as the families beneath them move.
+DLL_PUBLIC int vc_setSchemaGroups(VC vc, const char* groups);
+
+//! How many BV schema groups there are, for sizing an array with one slot per
+//! group. It is also the bound on the index the two calls below take: an
+//! index runs from zero to one below this, in the order
+//! vc_schemaGroupName reports.
 #define STP_BV_SCHEMA_GROUP_COUNT 15
 
-//! \brief STP_COUNTER_BV_SCHEMA_LEMMAS, partitioned by schema group.
+//! \brief STP_COUNTER_BV_SCHEMA_LEMMAS, restricted to one schema group.
 //!
 //! The groups partition the aggregate exactly: every schema lemma the
-//! refinement installs increments the total and precisely one group. An index
-//! at or above STP_BV_SCHEMA_GROUP_COUNT reads 0 and reports a nonfatal
-//! diagnostic.
+//! refinement installs increments the total and precisely one group. Read the
+//! breakdown with
 //!
-//! This is an array rather than one published ordinal per group because the
-//! partition is a research instrument: which families exist, and how finely
-//! they are cut, is expected to change, and none of that should cost a
-//! renumbering of stp_counter_t.
+//!     for (unsigned i = 0; i < STP_BV_SCHEMA_GROUP_COUNT; i++)
+//!         printf("%s: %llu\n", vc_schemaGroupName(i),
+//!                vc_getSchemaGroupCounter(vc, i));
+//!
+//! An index at or above STP_BV_SCHEMA_GROUP_COUNT reads 0 and reports a
+//! nonfatal diagnostic, so a caller built against a later header keeps
+//! working against an earlier library.
+//!
+//! An index rather than one published ordinal per group, for the same reason
+//! vc_setSchemaGroups takes names: a family added, renamed or merged should
+//! not renumber stp_counter_t.
 DLL_PUBLIC unsigned long long vc_getSchemaGroupCounter(VC vc, unsigned group);
 
-//! \brief The command-line spelling of one schema group, or NULL if the
-//! index is out of range. The same names --bv-term-abstraction-schema-groups
-//! accepts.
+//! \brief The command-line spelling of the group at this index, or NULL if
+//! the index is out of range. These are the names vc_setSchemaGroups and
+//! --bv-term-abstraction-schema-groups accept, so a breakdown can be fed
+//! straight back in.
 DLL_PUBLIC const char* vc_schemaGroupName(unsigned group);
 
 //! \brief Returns why the last query had no answer.
