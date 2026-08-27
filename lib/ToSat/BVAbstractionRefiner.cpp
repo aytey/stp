@@ -2301,6 +2301,21 @@ unsigned BVAbstractionRefiner::refineTerms(
                             std::move(expected), schema, divSchema,
                             lowestWrongBit});
     }
+    else
+    {
+      // Falling off the end here would be the one failure this file argues
+      // against everywhere else -- see encodedBitsOf. A record nothing checks
+      // is a record no candidate can contradict, and an abstraction no
+      // candidate can contradict is one the search may give any value it
+      // likes, so an unsatisfiable query comes back sat with no diagnostic.
+      // The blaster mints six kinds and the five branches above take all of
+      // them, so this cannot fire today; a seventh added tomorrow would
+      // otherwise arrive silently.
+      FatalError("BV abstraction: an abstracted operation is of a kind the "
+                 "refinement does not know how to check against its "
+                 "operands: ",
+                 abs.termNode);
+    }
   }
 
   // Phase 2: Add refinement clauses (no model reads needed).

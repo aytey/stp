@@ -1173,6 +1173,43 @@ TEST_F(BVEQAbstractionTest, RefusesAnAdditionWhoseOperandsAreNotEncoded)
   EXPECT_DEATH(refiner.refine(solver, bits), "did not encode");
 }
 
+// A record of a kind the scan has no branch for is refused, not skipped.
+//
+// The scan dispatches on the record's kind and every branch ends in a
+// `continue` or a push onto one of the inconsistency lists. Without a final
+// else, a kind none of them claimed would fall off the end of the loop body:
+// nothing pushed, nothing refined, the abstraction never compared against its
+// operands. That is the failure the FatalErrors above exist to prevent,
+// reached by falling through rather than by a missing map entry -- a record
+// no candidate can contradict is one the search may answer from freely, so an
+// unsatisfiable query comes back sat with exit status zero.
+//
+// The blaster mints six kinds and the scan handles all six, so this is
+// unreachable through the ordinary path. It is reachable here because the
+// records are the refiner's public surface, which is also how a seventh kind
+// would arrive.
+TEST_F(BVEQAbstractionTest, RefusesARecordOfAnUnhandledKind)
+{
+  ASTNode x = makeSymbol("uk_x", 8);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction record;
+  // BVUMINUS is not one of the six the blaster abstracts, and is the shape
+  // the next family added would have.
+  record.termNode = factory->CreateTerm(BVUMINUS, 8, x);
+  record.opKind = BVUMINUS;
+  record.operands[0] = x;
+  record.numOperands = 1;
+  record.width = 8;
+  refiner.terms().push_back(record);
+
+  NoModelSolver solver;
+  ToSATBase::ASTNodeToSATVar bits;
+  bits[x] = std::vector<unsigned>(8, 3);
+  bits[record.termNode] = std::vector<unsigned>(8, 4);
+  EXPECT_DEATH(refiner.refine(solver, bits), "does not know how to check");
+}
+
 TEST_F(BVEQAbstractionTest, RefusesAComparisonWithNoInputOfItsOwn)
 {
   ASTNode x = makeSymbol("nk_x", 8);
