@@ -669,16 +669,32 @@ struct BVTermAbstraction
   bool operandNegated[3] = {false, false, false};
   unsigned condSATVar = BV_ABSTRACTION_NO_VAR;
   bool defined = false;
-  // Blocking lemmas spent on this one abstraction so far; see
-  // bv_term_abstraction_rounds.
+  // Blocking lemmas spent on this one abstraction over its whole life, and
+  // algebraic schemas likewise -- counted separately, because a schema is
+  // both cheaper and stronger than a blocking lemma and should not bring the
+  // escalation forward. These are what the diagnostics report; the two
+  // below are what the budgets are spent from.
   unsigned blockedRounds = 0;
-  // Algebraic schemas spent on it, counted separately: a schema is both
-  // cheaper and stronger than a blocking lemma, so it does not eat the
-  // budget that decides when to give up and encode the operation exactly.
-  // It is bounded by the same number, though, because a candidate that
-  // keeps landing on fresh powers of two would otherwise buy a solve for
-  // each one.
   unsigned schemaRounds = 0;
+  // The same two, since this query began.
+  //
+  // bv_term_abstraction_rounds is a ceiling on what one abstraction may
+  // spend, and the number it defaults to was calibrated a query at a time.
+  // A record's life is one query in the batch pipeline -- ToSATAIG, and the
+  // record vector with it, is a local of the call that solves -- but a whole
+  // session under the incremental driver, where records are dropped only by
+  // a rebuild. Spending the ceiling from the lifetime counts would therefore
+  // mean two different things on the two drivers, and the incremental one
+  // would give up on an abstraction after thirty-two blocking lemmas spread
+  // over thirty-two queries rather than thirty-two within one.
+  //
+  // So the budgets are spent from these, and BVAbstractionRefiner::beginQuery
+  // resets them. Nothing a round bought is reset with them: installed schema
+  // bits, exact encodings and `defined` are permanent, and a fact each
+  // record can receive only once is still received only once, because what
+  // bounds that is its installed bit and not the purse.
+  unsigned blockedThisQuery = 0;
+  unsigned schemasThisQuery = 0;
   // Which of the unconditional schemas are already in the solver.
   uint64_t installedSchemas = 0;
   // Set on both records once this BVDIV/BVMOD pair has received its shared
@@ -758,6 +774,29 @@ public:
   {
     eqs_.clear();
     terms_.clear();
+  }
+
+  // A new query begins over the same records.
+  //
+  // The blocking allowance and the schema ceiling are spent per record, and
+  // the defaults behind them were calibrated a query at a time. A record's
+  // life is one query in the batch pipeline, so there the two units coincide
+  // and nothing has to call this; under the incremental driver a record
+  // outlives the query that minted it, and without this the same flag would
+  // mean "per session" there and "per query" here.
+  //
+  // Only the purses are reset. What a round bought is permanent and stays --
+  // installed schema bits, exact encodings, `defined` -- so this cannot buy a
+  // record a second copy of a fact it already has: what bounds a fact to one
+  // installation is its own installed bit or its family's instance cap, and
+  // the purse only ever limits that further.
+  void beginQuery()
+  {
+    for (BVTermAbstraction& term : terms_)
+    {
+      term.blockedThisQuery = 0;
+      term.schemasThisQuery = 0;
+    }
   }
 
   uint64_t refinements() const { return refinements_; }

@@ -187,3 +187,60 @@ TEST(bv_value_lemma_allowance, ItIsMonotoneInEveryArgument)
     EXPECT_LE(allowance(8, 8, width), allowance(16, 8, width));
   }
 }
+
+// The allowance is spent per query, and a query is not the same span on the
+// two drivers.
+//
+// A record's life is one query in the batch pipeline -- ToSATAIG, and the
+// record vector with it, is a local of the call that solves -- but a whole
+// session under the incremental driver, where records are dropped only by a
+// rebuild. Spending the ceiling from a lifetime count therefore meant two
+// different things on the two drivers, and every number these defaults were
+// calibrated from was measured on the batch one: a session that spent one
+// blocking lemma per query gave up on the abstraction after thirty-two
+// queries rather than never.
+//
+// So the budgets have counters of their own and beginQuery resets them. What
+// a round bought does not reset with them, which is the half that matters:
+// an exact encoding is permanent, and a fact a record can receive once is
+// still received once, because what bounds that is the installed bit and not
+// the purse.
+TEST(bv_value_lemma_allowance, BeginningAQueryResetsOnlyTheBudgets)
+{
+  STPMgr mgr;
+  BVAbstractionRefiner refiner(&mgr);
+
+  BVTermAbstraction spent;
+  spent.termNode = mgr.CreateSymbol("spent", 0, 64);
+  spent.opKind = BVMULT;
+  spent.width = 64;
+  spent.numOperands = 2;
+  spent.blockedRounds = 9;
+  spent.schemaRounds = 7;
+  spent.blockedThisQuery = 4;
+  spent.schemasThisQuery = 3;
+  spent.installedSchemas = MUL_SCHEMA_INSTALLED_ODD |
+                           bvSchemaFamilyRecordInstance(
+                               0, BVSchemaFamily::DivisorMagnitude);
+  spent.defined = true;
+  spent.blastedBits = 64;
+  spent.exactEscalations = 1;
+  spent.exactClauses = 33968;
+  refiner.terms().push_back(spent);
+
+  refiner.beginQuery();
+
+  const BVTermAbstraction& after = refiner.terms()[0];
+  EXPECT_EQ(0u, after.blockedThisQuery);
+  EXPECT_EQ(0u, after.schemasThisQuery);
+
+  // Everything else is what the record has already been given, and a new
+  // query does not take any of it back.
+  EXPECT_EQ(9u, after.blockedRounds);
+  EXPECT_EQ(7u, after.schemaRounds);
+  EXPECT_EQ(spent.installedSchemas, after.installedSchemas);
+  EXPECT_TRUE(after.defined);
+  EXPECT_EQ(64u, after.blastedBits);
+  EXPECT_EQ(1u, after.exactEscalations);
+  EXPECT_EQ(33968u, after.exactClauses);
+}

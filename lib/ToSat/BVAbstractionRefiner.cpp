@@ -2102,7 +2102,8 @@ unsigned BVAbstractionRefiner::refineTerms(
         continue;
       const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
       if (schemaLimit != 0 &&
-          (div.schemaRounds >= schemaLimit || rem.schemaRounds >= schemaLimit))
+          (div.schemasThisQuery >= schemaLimit ||
+           rem.schemasThisQuery >= schemaLimit))
         continue;
 
       std::vector<bool> dividendBits, divisorBits, quotientBits, remainderBits;
@@ -2203,7 +2204,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       AddSchemaChoice schema;
       const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
       if (bm->UserFlags.bv_term_abstraction_schemas &&
-          (schemaLimit == 0 || abs.schemaRounds < schemaLimit))
+          (schemaLimit == 0 || abs.schemasThisQuery < schemaLimit))
         schema =
             chooseAddSchema(leftBits, rightBits, actual, abs.installedSchemas,
                             bm->UserFlags.bv_term_abstraction_schema_groups);
@@ -2357,7 +2358,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
       const bool schemaAllowance =
           bm->UserFlags.bv_term_abstraction_schemas &&
-          (schemaLimit == 0 || abs.schemaRounds < schemaLimit);
+          (schemaLimit == 0 || abs.schemasThisQuery < schemaLimit);
       if (schemaAllowance)
       {
         if (abs.opKind == BVMULT)
@@ -2439,6 +2440,8 @@ unsigned BVAbstractionRefiner::refineTerms(
     rem.divRemFullInstalled = true;
     div.schemaRounds++;
     rem.schemaRounds++;
+    div.schemasThisQuery++;
+    rem.schemasThisQuery++;
     countSchemaLemma(bm->UserFlags, BVSchemaGroup::DIVREM_FULL);
     if (bm->UserFlags.stats_flag)
       std::cerr << "BV abstraction: paired BVDIV/BVMOD recomposition lemma "
@@ -2491,6 +2494,7 @@ unsigned BVAbstractionRefiner::refineTerms(
         abs.blastedBits = inc.schema.prefixBits;
         abs.defined = (inc.schema.prefixBits == abs.width);
         abs.schemaRounds++;
+        abs.schemasThisQuery++;
         countSchemaLemma(bm->UserFlags, inc.schema.group);
         if (bm->UserFlags.stats_flag)
           std::cerr << "BV abstraction: BVPLUS exact-low-prefix lemma over "
@@ -2517,6 +2521,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       abs.installedSchemas |=
           addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
       abs.schemaRounds++;
+      abs.schemasThisQuery++;
       countSchemaLemma(bm->UserFlags, inc.schema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVPLUS "
@@ -2655,6 +2660,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
+      abs.schemasThisQuery++;
       countSchemaLemma(bm->UserFlags, inc.divSchema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
@@ -2736,6 +2742,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
 
       abs.schemaRounds++;
+      abs.schemasThisQuery++;
       countSchemaLemma(bm->UserFlags, inc.schema.group);
       if (bm->UserFlags.stats_flag)
       {
@@ -2770,7 +2777,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     // today are two that can stop agreeing, and these two already had: the
     // written-out one and BBDivMod disagreed about a zero divisor.
     const unsigned limit = valueLemmaAllowance(bm->UserFlags, W, abs.opKind);
-    if (limit != 0 && abs.blockedRounds >= limit)
+    if (limit != 0 && abs.blockedThisQuery >= limit)
     {
       // All of it, unless the piece-at-a-time escalation is on and this is
       // a multiplication. A piece reaches past the lowest bit the candidate
@@ -2852,6 +2859,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       continue;
     }
     abs.blockedRounds++;
+    abs.blockedThisQuery++;
     bm->UserFlags.coverage.bv_blocking_lemmas++;
 
     for (unsigned bit = 0; bit < W; ++bit)

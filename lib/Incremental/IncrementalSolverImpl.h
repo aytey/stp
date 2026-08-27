@@ -3765,6 +3765,11 @@ struct IncrementalSolver::Impl
     liveAbstractionRoots.clear();
     liveAbstractionRootsKnown = false;
     abstractionScopeStale = true;
+
+    // A query begins here, which is what the refinement budgets are counted
+    // in. Records outlive a query on this driver and do not on the batch one,
+    // so without this the same ceiling would mean two different things.
+    bvAbstraction.beginQuery();
   }
 
   // Every bit a record can be checked against gets its SAT variable here,
