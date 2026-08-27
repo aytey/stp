@@ -509,6 +509,20 @@ private:
   std::unordered_map<ASTNode, BBNode, ASTNode::ASTNodeHasher,
                      ASTNode::ASTNodeEqual>
       abstractedFormulas_;
+  // Nodes whose blasted vector IS an abstraction's own result inputs.
+  //
+  // Constant-bit propagation must not rewrite one of these. The record was
+  // filed against those inputs and resolves them through the registry, while
+  // updateTerm rewrites the term MEMO -- so a bit it replaced with a constant
+  // would leave every parent that reads the term using a bit the record does
+  // not name, and the refinement pinning an input nothing reads.
+  //
+  // Nothing is lost by declining. Refinement pins the abstraction to the
+  // operands underneath it, which is a stronger statement than any single bit
+  // constant-bit propagation could fix, and the operands keep their own
+  // propagation either way.
+  std::unordered_set<ASTNode, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>
+      abstractedResults_;
   std::vector<BBNode> sideConstraints_;
 
 public:

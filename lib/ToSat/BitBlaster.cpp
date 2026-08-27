@@ -637,6 +637,29 @@ void BitBlaster::updateTerm(const ASTNode& n,
     return;
   }
 
+  // Never over an abstraction's own result inputs.
+  //
+  // The record was filed against those inputs and resolves them through
+  // symbolToBBNode, while this rewrites the term MEMO -- so a bit replaced
+  // here with a constant would leave every parent that reads the term using a
+  // bit the record does not name, and the refinement pinning an input nothing
+  // reads. The two would still agree about the value, because constant-bit
+  // propagation is sound, but the record would have stopped describing what
+  // the CNF computes, which is the property everything else in the refiner is
+  // written to preserve.
+  //
+  // This is a guard on an ordering, not a repair of an observed fault: on
+  // every query I could build, this function IS reached for abstracted
+  // results and constant-bit propagation DOES hold a FixedBits record for
+  // them, but that record has no fixed bit in it, so no rewrite ever
+  // happened. What the guard removes is the dependence on that staying true.
+  //
+  // Nothing is lost by declining. Refinement pins the abstraction to the
+  // operands underneath it, which is a stronger statement than any single bit
+  // this could fix, and the operands keep their own propagation regardless.
+  if (abstractedResults_.count(n) != 0)
+    return;
+
   bool bbFixed = false;
   for (int i = 0; i < (int)bb.size(); i++)
   {
@@ -1124,6 +1147,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         sideConstraints_.push_back(BBNodeAIG(bicond));
 
         nf->symbolToBBNode[term] = abstracted;
+        abstractedResults_.insert(term);
 
         RawBVTermAbstraction raw;
         raw.termNode = term;
@@ -1322,6 +1346,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           }
           uf->coverage.bv_abstracted[UserDefinedFlags::ABSTRACT_PLUS]++;
           nf->symbolToBBNode[term] = abstracted;
+        abstractedResults_.insert(term);
           // Constants included, as every other abstracted family does it: a
           // constant operand gets a vector of inputs pinned to it. Left out,
           // it is not in the registry refinement reads, and every round that
@@ -1453,6 +1478,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
         }
         nf->symbolToBBNode[term] = abstracted;
+        abstractedResults_.insert(term);
 
         RawBVTermAbstraction raw;
         raw.termNode = term;
@@ -1515,6 +1541,7 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
           abstracted[i].symbol_index = nf->aigMgr->vCis->nSize - 1;
         }
         nf->symbolToBBNode[term] = abstracted;
+        abstractedResults_.insert(term);
 
         RawBVTermAbstraction raw;
         raw.termNode = term;
