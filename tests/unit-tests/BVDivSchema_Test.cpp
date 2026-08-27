@@ -1202,3 +1202,34 @@ TEST_F(BVDivBoundEncodingTest,
               << "k=" << k << " a=" << a << " b=" << b << " q=" << q;
         }
 }
+
+// The bound encoder answers for the three bounds and refuses everything else.
+//
+// It used to be two tests and a fall-through, so a schema it was not asked
+// about got the remainder bound. That clause is a theorem, which is why
+// nothing would have caught it: the solver would have taken it, the round
+// would have been counted as the schema the chooser picked, and the violation
+// that chose it would have gone unaddressed -- a round that bought nothing
+// and a diagnostic naming a fact the solver never received. Every other
+// dispatch over these enumerators in the refiner is a switch that a new
+// enumerator breaks the build on; this one now is too, and what falls past it
+// says so rather than encoding something plausible.
+TEST_F(BVDivBoundEncodingTest, a_schema_that_is_not_a_bound_is_refused)
+{
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+
+  std::vector<unsigned> aVars(WIDTH), bVars(WIDTH), rVars(WIDTH);
+  for (unsigned i = 0; i < WIDTH; ++i)
+  {
+    aVars[i] = solver->newVar();
+    bVars[i] = solver->newVar();
+    rVars[i] = solver->newVar();
+  }
+
+  // Pow2Divisor is a real schema with a real encoder of its own, and it is
+  // exactly the shape of mistake the fall-through used to absorb.
+  EXPECT_DEATH(encodeDivBound(*solver, DivSchema::Pow2Divisor, aVars, bVars,
+                              rVars, WIDTH),
+               "not one of the three bounds");
+}

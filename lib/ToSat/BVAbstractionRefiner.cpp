@@ -2001,43 +2001,68 @@ void encodeDivBound(SATSolver& solver, DivSchema schema,
 {
   SATSolver::vec_literals cl;
 
-  if (schema == DivSchema::RemainderAtMostDividend)
+  // A switch, and not two tests and a fall-through. Every other dispatch over
+  // these enumerators in this file is one, so a new bound breaks the build
+  // rather than arriving somewhere; this one silently encoded the remainder
+  // bound for whatever it was not asked about, which is a clause that is
+  // still a theorem and still the wrong fact -- installed, counted as the
+  // schema the chooser picked, and leaving that schema's own violation
+  // unaddressed so the round bought nothing.
+  switch (schema)
   {
-    // r <= a, unconditionally: a unit clause on the chain's answer.
-    const unsigned le =
-        encodeLessOrEqual(solver, resultVars, dividendVars, width, false);
-    cl.clear();
-    cl.push(SATSolver::mkLit(le, false));
-    solver.addClause(cl);
-    return;
-  }
-
-  if (schema == DivSchema::QuotientAtMostDividend)
-  {
-    // b != 0 -> t <= a, i.e. t > a -> b = 0.
-    const unsigned le =
-        encodeLessOrEqual(solver, resultVars, dividendVars, width, false);
-    for (unsigned i = 0; i < width; ++i)
+    case DivSchema::RemainderAtMostDividend:
     {
+      // r <= a, unconditionally: a unit clause on the chain's answer.
+      const unsigned le =
+          encodeLessOrEqual(solver, resultVars, dividendVars, width, false);
       cl.clear();
       cl.push(SATSolver::mkLit(le, false));
-      cl.push(SATSolver::mkLit(divisorVars[i], true));
       solver.addClause(cl);
+      return;
     }
-    return;
+
+    case DivSchema::QuotientAtMostDividend:
+    {
+      // b != 0 -> t <= a, i.e. t > a -> b = 0.
+      const unsigned le =
+          encodeLessOrEqual(solver, resultVars, dividendVars, width, false);
+      for (unsigned i = 0; i < width; ++i)
+      {
+        cl.clear();
+        cl.push(SATSolver::mkLit(le, false));
+        cl.push(SATSolver::mkLit(divisorVars[i], true));
+        solver.addClause(cl);
+      }
+      return;
+    }
+
+    case DivSchema::RemainderBelowDivisor:
+    {
+      // b != 0 -> r < b. `r < b` is `not (b <= r)`, so the chain is run the
+      // other way round and its answer is the one that must be false.
+      const unsigned bLeR =
+          encodeLessOrEqual(solver, divisorVars, resultVars, width, false);
+      for (unsigned i = 0; i < width; ++i)
+      {
+        cl.clear();
+        cl.push(SATSolver::mkLit(bLeR, true));
+        cl.push(SATSolver::mkLit(divisorVars[i], true));
+        solver.addClause(cl);
+      }
+      return;
+    }
+
+    case DivSchema::None:
+    case DivSchema::DivisorZero:
+    case DivSchema::Pow2Divisor:
+    case DivSchema::QuotientPow2Threshold:
+    case DivSchema::DivisorMagnitudeBound:
+    case DivSchema::Lemma:
+      break;
   }
 
-  // b != 0 -> r < b. `r < b` is `not (b <= r)`, so the chain is run the
-  // other way round and its answer is the one that must be false.
-  const unsigned bLeR =
-      encodeLessOrEqual(solver, divisorVars, resultVars, width, false);
-  for (unsigned i = 0; i < width; ++i)
-  {
-    cl.clear();
-    cl.push(SATSolver::mkLit(bLeR, true));
-    cl.push(SATSolver::mkLit(divisorVars[i], true));
-    solver.addClause(cl);
-  }
+  FatalError("encodeDivBound: asked for a schema that is not one of the "
+             "three bounds");
 }
 
 void encodeDivPow2Threshold(SATSolver& solver,
