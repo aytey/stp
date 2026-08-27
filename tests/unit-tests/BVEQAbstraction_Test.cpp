@@ -1085,6 +1085,53 @@ TEST_F(BVEQAbstractionTest, BatchLoweringFreezesAbstractionVariables)
   EXPECT_GE(solver.frozen.size(), 513u);
 }
 
+// ... and it has to file each term record's own result variables while it is
+// there.
+//
+// The blaster computes them for every abstracted term, and the refiner
+// prefers them over the AST-keyed registry precisely because the registry
+// holds one vector per node and so names only the newest result registered
+// for it. The incremental lowering carried them across; this one dropped
+// them, leaving that registry as the single answer -- which is the shape
+// DuplicateTermsKeepTheirOwnResultVariables above shows going wrong.
+//
+// Nothing changes for a run where canonical reuse holds, which is what the
+// second half checks: the record's variables are the ones the registry has.
+TEST_F(BVEQAbstractionTest, BatchLoweringFilesEachTermsOwnResultVariables)
+{
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_abstraction_width = 64;
+
+  ASTNode a = makeSymbol("br_a", 128);
+  ASTNode b = makeSymbol("br_b", 128);
+  ASTNode product = factory->CreateTerm(BVMULT, 128, a, b);
+  ASTNode query = factory->CreateNode(EQ, product, a);
+
+  stp::SubstitutionMap sm(&mgr);
+  Simplifier simp(&mgr, &sm);
+  ArrayTransformer at(&mgr, &simp);
+  ToSATAIG tosat(&mgr, &at);
+
+  RecordingSolver solver;
+  EXPECT_TRUE(tosat.CallSAT(solver, query, true));
+  ASSERT_TRUE(tosat.hasBVTermAbstractions());
+
+  const ToSATBase::ASTNodeToSATVar& registry = tosat.SATVar_to_SymbolIndexMap();
+  bool sawProduct = false;
+  for (const BVTermAbstraction& record : tosat.termRecordsForTesting())
+  {
+    ASSERT_EQ(record.width, record.resultSATVars.size())
+        << "a record was filed without its own result variables";
+    const auto it = registry.find(record.termNode);
+    ASSERT_TRUE(it != registry.end());
+    for (unsigned i = 0; i < record.width; ++i)
+      EXPECT_EQ(it->second[i], record.resultSATVars[i])
+          << "record and registry disagree at bit " << i;
+    sawProduct = sawProduct || record.termNode == product;
+  }
+  EXPECT_TRUE(sawProduct) << "the multiplication was not abstracted";
+}
+
 TEST_F(BVEQAbstractionTest, RefusesAnEqualityWhoseOperandsAreNotEncoded)
 {
   ASTNode x = makeSymbol("nb_x", 8);

@@ -303,6 +303,25 @@ Cnf_Dat_t* ToSATAIG::bitblast(const ASTNode& input, bool needAbsRef)
           mgr.aigMgr->vCis, raw.condCISymbolIndex);
       a.condSATVar = cnfData->pVarNums[condObj->Id];
     }
+    // The record's own result inputs, resolved the same way the condition
+    // above is. The blaster files them for every term family; the persistent
+    // incremental lowering has always carried them across and this one used
+    // to drop them, leaving the AST-keyed registry as the only answer to
+    // which variables a result is.
+    //
+    // That registry holds one vector per node, so it names only the newest
+    // one registered. Canonical reuse normally means there is only ever one,
+    // and nothing here relies on that any more: an unmapped input reads back
+    // as ~0u exactly as fill_node_to_var records it, so the values are the
+    // ones refinement would have found anyway, and a duplicate that ever did
+    // arise costs work rather than a verdict.
+    a.resultSATVars.reserve(raw.resultCISymbolIndices.size());
+    for (const int index : raw.resultCISymbolIndices)
+    {
+      Aig_Obj_t* resultObj =
+          (Aig_Obj_t*)Vec_PtrEntry(mgr.aigMgr->vCis, index);
+      a.resultSATVars.push_back(cnfData->pVarNums[resultObj->Id]);
+    }
     abstraction_.terms().push_back(std::move(a));
   }
 

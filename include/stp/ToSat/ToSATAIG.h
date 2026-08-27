@@ -135,6 +135,17 @@ public:
 
   bool hasBVEQAbstractions() const { return abstraction_.hasEqualities(); }
   bool hasBVTermAbstractions() const { return abstraction_.hasTerms(); }
+
+  // Test-only inspection: the term records this lowering filed. The invariant
+  // under test is that each carries its own result variables rather than
+  // relying on the AST-keyed registry, which holds one vector per node and so
+  // can name only the newest result registered for it. Nothing observable
+  // changes while canonical reuse holds, which is why it needs pinning here
+  // rather than by a query that would answer the same either way.
+  const std::vector<BVTermAbstraction>& termRecordsForTesting() const
+  {
+    return abstraction_.terms();
+  }
   void reportBVAbstractionRecords(std::ostream& out) const
   {
     abstraction_.reportRecords(out);

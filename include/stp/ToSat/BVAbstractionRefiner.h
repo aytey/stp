@@ -720,6 +720,7 @@ public:
   // solver or its bit-blast has to discard these too.
   std::vector<BVEQAbstraction>& equalities() { return eqs_; }
   std::vector<BVTermAbstraction>& terms() { return terms_; }
+  const std::vector<BVTermAbstraction>& terms() const { return terms_; }
 
   void clear()
   {
