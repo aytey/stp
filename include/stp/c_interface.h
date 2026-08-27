@@ -929,7 +929,16 @@ enum stp_counter_t
   //! ordinal.
   STP_COUNTER_BV_EXACT_ESCALATIONS,
   STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
-  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD
+  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD,
+
+  //! What those escalations cost: clauses and variables the exact circuits
+  //! added to the solver, and the wall-clock microseconds spent building
+  //! them. Read from the solver's own totals across each encode, not
+  //! estimated from the circuit. Appended to preserve every published
+  //! counter ordinal.
+  STP_COUNTER_BV_EXACT_CLAUSES,
+  STP_COUNTER_BV_EXACT_VARIABLES,
+  STP_COUNTER_BV_EXACT_MICROSECONDS
 };
 
 //! \brief Reads one of the counters above.

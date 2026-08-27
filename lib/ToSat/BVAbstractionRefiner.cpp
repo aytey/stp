@@ -2988,6 +2988,11 @@ unsigned BVAbstractionRefiner::refineTerms(
         assert(abs.opKind == BVDIV || abs.opKind == BVMOD);
         bm->UserFlags.coverage.bv_exact_escalations_divmod++;
       }
+      bm->UserFlags.coverage.bv_exact_clauses +=
+          solver.submittedClauses() - exactClausesBefore;
+      bm->UserFlags.coverage.bv_exact_variables +=
+          solver.nVars() - exactVariablesBefore;
+      bm->UserFlags.coverage.bv_exact_microseconds += exactMicros;
 
       if (bm->UserFlags.stats_flag)
       {

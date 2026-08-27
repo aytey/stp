@@ -1166,6 +1166,14 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
                 << " exact-mult=" << c.bv_exact_escalations_mult
                 << " exact-divmod=" << c.bv_exact_escalations_divmod
                 << std::endl;
+      // Printed whenever anything escalated. Zero escalations means the
+      // three figures are zero too, and a line of zeroes says nothing the
+      // line above has not already said.
+      if (c.bv_exact_escalations != 0)
+        std::cerr << "Abstraction escalation cost: clauses="
+                  << c.bv_exact_clauses << " variables="
+                  << c.bv_exact_variables << " microseconds="
+                  << c.bv_exact_microseconds << std::endl;
       std::cerr << "Abstraction schemas by group:";
       for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
         std::cerr << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i))

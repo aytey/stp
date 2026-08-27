@@ -1048,6 +1048,22 @@ public:
     uint64_t bv_exact_escalations = 0;
     uint64_t bv_exact_escalations_mult = 0;
     uint64_t bv_exact_escalations_divmod = 0;
+    // What giving up cost. The counts above say how often a refinement was
+    // abandoned; these say what was handed to the solver in exchange, summed
+    // over every escalation. The per-record fields already carry this for the
+    // benchmark harness -- these are the same figures where `-t` and the C
+    // API can reach them, so the question can be asked of an ordinary run.
+    //
+    // Worth having separately from the counts because the two escalations are
+    // not the same trade. An exact multiplier is affordable and an exact
+    // divider is not, so equal counts can mean very different clause totals,
+    // and it is the clauses the solver actually pays for.
+    //
+    // Taken from the solver's own totals across the encode rather than from
+    // an estimate of the circuit, because what matters is what was submitted.
+    uint64_t bv_exact_clauses = 0;
+    uint64_t bv_exact_variables = 0;
+    uint64_t bv_exact_microseconds = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.
