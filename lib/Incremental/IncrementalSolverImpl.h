@@ -556,6 +556,11 @@ struct IncrementalSolver::Impl
   // profiling counters this is always maintained: the late-FP trail policy
   // uses it to avoid throwing away a substantial refined search state.
   uint64_t currentRefinementClauseMass = 0;
+  // Bit-vector abstraction clauses charged to the permanent buckets but still
+  // inside a window an outer accounting has yet to close. The outer window
+  // subtracts them rather than charging them to its owner; see
+  // accountPermanentRefinementClauses.
+  uint64_t unattributedAbstractionMass = 0;
 
   // The actual AIG root encoded under each formula key. Newly submitted
   // clause deltas are a cheap live-mass estimate, but not an exact one: a
@@ -1874,12 +1879,61 @@ struct IncrementalSolver::Impl
   {
     const uint64_t submittedAfter = solver->submittedClauses();
     assert(submittedAfter >= submittedBefore);
-    const uint64_t delta = submittedAfter - submittedBefore;
+    uint64_t delta = submittedAfter - submittedBefore;
+
+    // The abstraction's share of this window has already been charged, and
+    // charged somewhere else; see accountPermanentRefinementClauses. Every
+    // window a refinement round can happen inside runs through here, so
+    // taking it off here is what keeps it from being counted twice, and no
+    // caller has to know which of the two kinds of refinement it ran.
+    const uint64_t alreadyCharged =
+        std::min(delta, unattributedAbstractionMass);
+    delta -= alreadyCharged;
+    unattributedAbstractionMass -= alreadyCharged;
+
     if (delta == 0)
       return 0;
     refinementMassOf[owner] = addMass(refinementMassOf[owner], delta);
     currentRefinementClauseMass =
         addMass(currentRefinementClauseMass, delta);
+    if (profile.enabled)
+      profile.refinementClauses =
+          addMass(profile.refinementClauses, delta);
+    return delta;
+  }
+
+  // What a round of bit-vector abstraction refinement pinned.
+  //
+  // These clauses are not the array and UF lemmas the accounting above was
+  // written for. A read axiom is owed to the stack that provoked it, and
+  // charging it to that stack is what lets the relief valve read it as dead
+  // once the stack is gone. An abstraction's clauses are definitional facts
+  // about the circuit -- this abstraction variable means these operand bits
+  // -- true whatever is asserted, never retracted, and paid for by every
+  // later solve in the session. Charged to a stack-shaped owner they were
+  // read as dead the moment the stack changed shape, so a session that had
+  // retracted nothing could still measure as mostly dead and be rebuilt from
+  // scratch: reproduced as a clean A/B, one relief rebuild with the
+  // abstraction on and none with it off, on the same file at the same limit.
+  //
+  // So they go where the rest of the permanent content goes: into the live
+  // estimate every solve starts from, and into the non-structural mass the
+  // exact cone walk is completed with. Neither is structural -- the splice
+  // puts clauses straight into the solver rather than into the encoding's
+  // AIG -- so the walk cannot find them and they have to be carried.
+  uint64_t accountPermanentRefinementClauses(uint64_t submittedBefore)
+  {
+    const uint64_t submittedAfter = solver->submittedClauses();
+    assert(submittedAfter >= submittedBefore);
+    const uint64_t delta = submittedAfter - submittedBefore;
+    if (delta == 0)
+      return 0;
+    baseLiveMass = addMass(baseLiveMass, delta);
+    permanentUnitMass = addMass(permanentUnitMass, delta);
+    currentRefinementClauseMass =
+        addMass(currentRefinementClauseMass, delta);
+    unattributedAbstractionMass =
+        addMass(unattributedAbstractionMass, delta);
     if (profile.enabled)
       profile.refinementClauses =
           addMass(profile.refinementClauses, delta);
@@ -3090,6 +3144,7 @@ struct IncrementalSolver::Impl
     walks.reclaimSymbolSets();
     refinementMassOf.clear();
     currentRefinementClauseMass = 0;
+    unattributedAbstractionMass = 0;
     aigRootOf.clear();
     pendingLiveCone.clear();
     activationMassOf.clear();
@@ -3983,8 +4038,17 @@ struct IncrementalSolver::Impl
       for (unsigned j = 0; j < terms[i].numOperands; j++)
         addAbstractionOperand(operands, terms[i].operands[j]);
     }
-    return bvAbstraction.refine(satSolver, operands, abstractionEqScope,
-                                abstractionTermScope);
+
+    // Every abstraction clause the session ever pins is submitted inside this
+    // call, so this is where they are charged -- to the permanent buckets,
+    // because that is what they are. The windows they happen inside belong to
+    // whatever route is solving and are keyed by the shape of its stack; they
+    // subtract this again rather than owning it.
+    const uint64_t before = solver->submittedClauses();
+    const unsigned refined = bvAbstraction.refine(
+        satSolver, operands, abstractionEqScope, abstractionTermScope);
+    accountPermanentRefinementClauses(before);
+    return refined;
   }
 
   // Decide how this block holds the injectivity guard, and keep the manager's
