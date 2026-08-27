@@ -850,10 +850,16 @@ enum stp_counter_t
   STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
   STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD,
 
-  //! What those escalations cost: clauses and variables the exact circuits
-  //! added to the solver, and the wall-clock microseconds spent building
-  //! them. Read from the solver's own totals across each encode, not
-  //! estimated from the circuit.
+  //! What the refinement's circuits cost: clauses and variables they added to
+  //! the solver, and the wall-clock microseconds spent building them. Read
+  //! from the solver's own totals across each encode, not estimated from the
+  //! circuit.
+  //!
+  //! Wider than the escalations above. The paired DIV/REM recomposition lemma
+  //! builds a full-width multiplier without any abstraction being given up,
+  //! so it is counted here and not there -- it costs as much as an escalation
+  //! and is the reason the aggressive profile is the slowest, which is the
+  //! trade these exist to expose.
   STP_COUNTER_BV_EXACT_CLAUSES,
   STP_COUNTER_BV_EXACT_VARIABLES,
   STP_COUNTER_BV_EXACT_MICROSECONDS

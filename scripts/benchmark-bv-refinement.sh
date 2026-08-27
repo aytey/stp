@@ -550,7 +550,7 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
       fi
 
       escalation_cost=$(awk '
-        /^Abstraction escalation cost:/ {
+        /^Abstraction circuit cost:/ {
           for (i = 4; i <= NF; ++i) {
             split($i, kv, "="); v[kv[1]] = kv[2]
           }

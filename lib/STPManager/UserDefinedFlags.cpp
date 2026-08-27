@@ -261,10 +261,12 @@ void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
       << " exact-mult=" << c.bv_exact_escalations_mult
       << " exact-divmod=" << c.bv_exact_escalations_divmod << std::endl;
 
-  // Keep the established refinement line stable. With no escalation every
-  // cost is zero, so a second zero-only line would add no information.
-  if (c.bv_exact_escalations != 0)
-    out << "Abstraction escalation cost: clauses=" << c.bv_exact_clauses
+  // Keep the established refinement line stable, and print this one whenever
+  // there is a cost to report rather than whenever a refinement gave up: the
+  // paired DIV/REM identity splices a full-width multiplier without any
+  // escalation, and a run whose only cost was that used to report none.
+  if (c.bv_exact_clauses != 0 || c.bv_exact_variables != 0)
+    out << "Abstraction circuit cost: clauses=" << c.bv_exact_clauses
         << " variables=" << c.bv_exact_variables
         << " microseconds=" << c.bv_exact_microseconds << std::endl;
 

@@ -1079,16 +1079,24 @@ public:
     uint64_t bv_exact_escalations = 0;
     uint64_t bv_exact_escalations_mult = 0;
     uint64_t bv_exact_escalations_divmod = 0;
-    // What giving up cost. The counts above say how often a refinement was
-    // abandoned; these say what was handed to the solver in exchange, summed
-    // over every escalation. The per-record fields already carry the same
-    // figures for the benchmark harness; publishing the totals makes the
-    // question answerable from ordinary statistics and the C API too.
+    // What the refinement's circuit splices cost. The counts above say how
+    // often a refinement was abandoned; these say what was handed to the
+    // solver, summed over every splice BVExactEncoder makes. Publishing the
+    // totals makes the question answerable from ordinary statistics and the C
+    // API rather than only from the per-record fields the benchmark harness
+    // reads.
     //
     // Equal escalation counts can hide very different trades: an exact
     // multiplier is affordable where an exact divider may not be. Clauses and
     // variables come from the solver's own totals across the encode rather
     // than a circuit estimate, and microseconds measure only that encode.
+    //
+    // Wider than the escalations, because one lemma costs as much as one. The
+    // paired DIV/REM recomposition builds a full-width multiplier, and it is
+    // why the aggressive profile is the slowest; leaving it out would have
+    // hidden the trade these were added to expose. It is counted here and not
+    // in the escalation counts above, which mean something narrower: a
+    // refinement that gave up and said what the operation is.
     uint64_t bv_exact_clauses = 0;
     uint64_t bv_exact_variables = 0;
     uint64_t bv_exact_microseconds = 0;

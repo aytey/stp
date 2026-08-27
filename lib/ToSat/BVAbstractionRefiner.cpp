@@ -2334,8 +2334,34 @@ unsigned BVAbstractionRefiner::refineTerms(
     const std::vector<unsigned>& remainderVars =
         encodedResultBitsOf(rem, nodeToSATVar);
 
+    // Measured like an escalation, because it is the same trade: a full-width
+    // multiplier spliced through BVExactEncoder into a solver that is already
+    // running. It is what makes the aggressive profile the slowest one, and
+    // the totals exist to answer exactly that -- what a refinement handed the
+    // solver, where the counts alone cannot say. It is not counted as an
+    // escalation, because nothing was given up: the abstraction stays an
+    // abstraction and the fact constrains it.
+    //
+    // Only the totals. The per-record fields say what one record's own
+    // escalations cost, and this cost belongs to two records rather than
+    // either -- the same reason divRemFullInstalled cannot live in
+    // installedSchemas. Charging it to both would double it in any sum over
+    // records, and to one would misattribute it.
+    const uint64_t pairClausesBefore = solver.submittedClauses();
+    const uint32_t pairVariablesBefore = solver.nVars();
+    const std::chrono::steady_clock::time_point pairStarted =
+        std::chrono::steady_clock::now();
     exact_.encodeDivRemIdentity(solver, inc.product, div.width, dividendVars,
                                 divisorVars, quotientVars, remainderVars);
+    UserDefinedFlags::EncodingCoverage& pairCoverage = bm->UserFlags.coverage;
+    pairCoverage.bv_exact_clauses +=
+        solver.submittedClauses() - pairClausesBefore;
+    pairCoverage.bv_exact_variables += solver.nVars() - pairVariablesBefore;
+    pairCoverage.bv_exact_microseconds += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - pairStarted)
+            .count());
+
     div.divRemFullInstalled = true;
     rem.divRemFullInstalled = true;
     div.schemaRounds++;
