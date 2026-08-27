@@ -1232,7 +1232,6 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       // modulo 2^n, so the tree computes the same value; the sort keeps the
       // shape it takes deterministic.
       if (termAbstractionAllowed() && uf->bv_term_abstraction_plus &&
-          uf->bvplus_variant &&
           term.Degree() > 2 && num_bits >= uf->bv_abstraction_width)
       {
         std::deque<ASTNode> names(term.begin(), term.end());
@@ -1258,15 +1257,27 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       // number comparable between a run with the flag and a run without,
       // which is the whole use of it: a zero has to mean "no wide addition
       // here", not "the flag that lowers them was off".
+      //
+      // Exactly the negation of the gate above, so the two cannot disagree
+      // about which additions the decomposition took. Restated in different
+      // terms they did: this one omitted bv_term_abstraction_plus, so turning
+      // that off alone gave the unreadable zero the count exists to prevent.
       if (term.Degree() > 2 && num_bits >= uf->bv_abstraction_width &&
-          !(termAbstractionAllowed() && uf->bvplus_variant))
+          !(termAbstractionAllowed() && uf->bv_term_abstraction_plus))
       {
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_PLUS] +=
             term.Degree() - 1;
       }
 
+      // Not conditioned on bvplus_variant. That flag chooses between the two
+      // adder lowerings below -- pairwise BBPlus2 accumulation and the
+      // addition network -- and the abstraction reaches neither: it returns
+      // before them, and what it escalates to is spliced in at CNF level
+      // through BVExactEncoder. It sat in this condition by adjacency to the
+      // `if (uf->bvplus_variant)` block underneath, and the effect was that
+      // --bb.add-v2=0 silently abstracted no additions at all, which the fuzz
+      // harness draws often enough to have stopped covering this family.
       if (termAbstractionAllowed() && uf->bv_term_abstraction_plus &&
-          uf->bvplus_variant &&
           term.Degree() == 2 &&
           num_bits >= uf->bv_abstraction_width)
       {
