@@ -477,8 +477,8 @@ void ToSATAIG::mark_variables_as_frozen(SATSolver& satSolver)
 // that spreading unconstrained scalars out is worth anything, so its default
 // phase puts many of them on the same value at once and each collision is
 // paid for with a lemma and another full solve. Counting the scalars off
-// against an increasing value is the same trick Bitwuzla plays for DISTINCT,
-// applied to what the congruence checker reads.
+// against an increasing value is the ordinary way to seed a distinctness
+// constraint, pointed here at what the congruence checker reads.
 //
 // This is only a hint: it reorders the search and cannot change which answers
 // are reachable, so no soundness argument rests on the choice being good. A
