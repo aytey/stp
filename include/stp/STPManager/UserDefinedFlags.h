@@ -69,9 +69,16 @@ enum class BVSchemaGroup : unsigned
   MUL_REF3,
   MUL_TAIL,
 
-  // Addition, and the exact low-prefix mechanism both it and multiplication
-  // share.
+  // Addition. Measured, and deliberately not adopted: over 497 queries
+  // chosen because they abstract a wide addition -- this family's best case
+  // -- enabling it installed 30,519 lemmas and cost 19.9% and seven solves
+  // against the inherited mask, regressing 162 queries and improving 15. It
+  // stays selectable so that result stays reproducible, and stays out of
+  // every profile.
   ADD,
+  // The exact low-prefix mechanism addition and multiplication share. On the
+  // same 497 queries it fired 9,525 times and moved nothing: +0.4%, with the
+  // solved and timeout counts identical to the inherited mask.
   LOW_PREFIX,
 
   COUNT
