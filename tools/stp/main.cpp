@@ -125,6 +125,13 @@ public:
   CLI::Option* bv_term_abstraction_mult_option = nullptr;
   CLI::Option* bv_term_abstraction_divmod_option = nullptr;
 
+  // And whether the round ceiling was given, for the same kind of reason:
+  // --bv-term-abstraction-profile carries a ceiling of its own, and the two
+  // options exclude each other here, so this records what a run named for
+  // bv_term_abstraction_rounds_explicit -- which is what the C interface
+  // resolves the same pair with, where they do not exclude each other.
+  CLI::Option* bv_rounds_option = nullptr;
+
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
   bool interactive = false;
@@ -409,7 +416,7 @@ void ExtraMain::create_options()
                      "quotient-one and divrem-identity")
           ->group(refinement_group)
           ->capture_default_str();
-  CLI::Option* const bv_rounds_option =
+  bv_rounds_option =
       app.add_option("--bv-term-abstraction-rounds",
                      bm->UserFlags.bv_term_abstraction_rounds,
                      "ceiling on the blocking lemmas one abstracted "
@@ -978,6 +985,13 @@ int ExtraMain::parse_options(int argc, char** argv)
     cerr << "Please give '--help' to get help" << endl;
     exit(-1);
   }
+
+  // The command line cannot reach the profile-versus-ceiling conflict at all
+  // -- the two options exclude each other -- but a run that named the ceiling
+  // records it anyway, so the flag means the same thing whichever front end
+  // set it.
+  if (bv_rounds_option->count() != 0)
+    bm->UserFlags.bv_term_abstraction_rounds_explicit = true;
 
   if (bv_term_abstraction_divmod_option->count() != 0)
     bm->UserFlags.bv_term_abstraction_divmod_explicit = true;

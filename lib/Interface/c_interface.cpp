@@ -482,6 +482,18 @@ void vc_setFlag(VC vc, char c)
   process_argument(c, vc);
 }
 
+// A profile is an atomic mask/round pair, but a ceiling the caller named is
+// theirs. Without this the two halves of the pair would resolve differently
+// depending on call order: ROUNDS then PROFILE lost the ceiling, PROFILE then
+// ROUNDS kept it. The command line cannot reach that -- the two options
+// exclude each other there -- so this is the C interface holding to the same
+// answer the command line gives.
+static void applyProfileRounds(stp::STPMgr* b, unsigned rounds)
+{
+  if (!b->UserFlags.bv_term_abstraction_rounds_explicit)
+    b->UserFlags.bv_term_abstraction_rounds = rounds;
+}
+
 void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
 {
   stp::STPMgr* b = mgr(vc);
@@ -553,22 +565,19 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
       {
         b->UserFlags.bv_term_abstraction_schema_groups =
             stp::BV_SCHEMA_GROUP_QUALIFIED;
-        b->UserFlags.bv_term_abstraction_rounds =
-            stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
+        applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS);
       }
       else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE)
       {
         b->UserFlags.bv_term_abstraction_schema_groups =
             stp::BV_SCHEMA_GROUP_AGGRESSIVE;
-        b->UserFlags.bv_term_abstraction_rounds =
-            stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
+        applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS);
       }
       else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_BROAD)
       {
         b->UserFlags.bv_term_abstraction_schema_groups =
             stp::BV_SCHEMA_GROUP_BROAD;
-        b->UserFlags.bv_term_abstraction_rounds =
-            stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS;
+        applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS);
       }
       else
         reportCAPIError("BV_TERM_ABSTRACTION_PROFILE takes a "
@@ -613,8 +622,11 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
       break;
     case BV_TERM_ABSTRACTION_ROUNDS:
       if (nonNegativeFlag(param_value, "BV_TERM_ABSTRACTION_ROUNDS"))
+      {
         b->UserFlags.bv_term_abstraction_rounds =
             static_cast<unsigned>(param_value);
+        b->UserFlags.bv_term_abstraction_rounds_explicit = true;
+      }
       break;
     case BV_TERM_ABSTRACTION_VALUE_DIVISOR:
       if (nonNegativeFlag(param_value, "BV_TERM_ABSTRACTION_VALUE_DIVISOR"))

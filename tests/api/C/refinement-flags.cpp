@@ -254,26 +254,36 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_EQ(1, vc_setSchemaGroups(vc, "none"));
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups);
 
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_AGGRESSIVE,
-            flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
-            flags(vc).bv_term_abstraction_rounds);
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
-            flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS,
-            flags(vc).bv_term_abstraction_rounds);
-  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups &
-                    stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_FULL));
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
-            flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS,
-            flags(vc).bv_term_abstraction_rounds);
+  // Each profile on a checker of its own. This one has named a ceiling of
+  // four above, and a profile no longer overwrites one the caller named --
+  // see AProfileDoesNotOverwriteACeilingTheCallerNamed. What is under test
+  // here is that both halves of the pair reach their fields, which needs a
+  // caller that has not already settled one of them.
+  {
+    VC profiles = vc_createValidityChecker();
+    vc_setInterfaceFlags(profiles, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_AGGRESSIVE,
+              flags(profiles).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
+              flags(profiles).bv_term_abstraction_rounds);
+    vc_setInterfaceFlags(profiles, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
+              flags(profiles).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS,
+              flags(profiles).bv_term_abstraction_rounds);
+    EXPECT_EQ(0u, flags(profiles).bv_term_abstraction_schema_groups &
+                      stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_FULL));
+    vc_setInterfaceFlags(profiles, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
+              flags(profiles).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS,
+              flags(profiles).bv_term_abstraction_rounds);
+    vc_Destroy(profiles);
+  }
+  EXPECT_EQ(4u, flags(vc).bv_term_abstraction_rounds);
 
   // Zero is a meaning of its own here too: do not scale, and leave the flat
   // ceiling above as the allowance.
@@ -353,6 +363,60 @@ TEST(refinement_flags, TheDivModScopeResolvesTheSameWayInEitherOrder)
   EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
   vc_Destroy(vc);
+}
+
+// A profile does not overwrite a ceiling the caller named, whichever order
+// the two calls arrive in.
+//
+// A profile is an atomic mask/round pair, so applying one writes the round
+// ceiling as well as the schema mask. That made the pair order-dependent:
+// naming the ceiling and then choosing a profile silently discarded the
+// ceiling, while doing the two the other way round kept it -- the same
+// asymmetry bv_term_abstraction_divmod_explicit exists to remove between
+// BV_TERM_ABSTRACTION_MULT and BV_TERM_ABSTRACTION_DIVMOD.
+//
+// The command line refuses --bv-term-abstraction-profile alongside
+// --bv-term-abstraction-rounds outright, so it never had the question to
+// answer. A C client configures over a sequence of calls and does, and both
+// orders now give what the client asked for on each.
+TEST(refinement_flags, AProfileDoesNotOverwriteACeilingTheCallerNamed)
+{
+  const unsigned broadRounds = stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS;
+  ASSERT_NE(64u, broadRounds) << "pick a ceiling the profile does not set";
+
+  // Ceiling first.
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, 64);
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(64u, flags(vc).bv_term_abstraction_rounds);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
+              flags(vc).bv_term_abstraction_schema_groups)
+        << "the profile's mask half must still apply";
+    vc_Destroy(vc);
+  }
+
+  // Profile first.
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_ROUNDS, 64);
+    EXPECT_EQ(64u, flags(vc).bv_term_abstraction_rounds);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
+              flags(vc).bv_term_abstraction_schema_groups);
+    vc_Destroy(vc);
+  }
+
+  // A caller who never names one still gets the profile's own ceiling.
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(broadRounds, flags(vc).bv_term_abstraction_rounds);
+    vc_Destroy(vc);
+  }
 }
 
 // A group list the parser refuses leaves the selection alone.

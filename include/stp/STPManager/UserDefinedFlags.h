@@ -603,6 +603,19 @@ public:
   // A ceiling and no longer the allowance itself: see the divisor below, and
   // valueLemmaAllowance() for how the two compose.
   unsigned bv_term_abstraction_rounds = BV_TERM_ABSTRACTION_DEFAULT_ROUNDS;
+  // Interface bookkeeping rather than a solver knob: whether a caller named
+  // the round ceiling itself, in the same shape and for the same reason as
+  // bv_term_abstraction_divmod_explicit above.
+  //
+  // A profile is an atomic mask/round pair, so applying one writes this field
+  // as well as the schema mask -- which means a caller who set the ceiling and
+  // then chose a profile silently lost the ceiling, while one who did the two
+  // the other way round kept it. The command line cannot reach that, because
+  // CLI11 refuses --bv-term-abstraction-profile alongside
+  // --bv-term-abstraction-rounds outright; only the C interface can, where a
+  // configuration is a sequence of calls rather than one line. Once the
+  // ceiling is named it survives a profile, whichever order the two arrive in.
+  bool bv_term_abstraction_rounds_explicit = false;
   // Optionally make that a rate instead: `width / this`, floored at one and
   // capped by the ceiling above. The argument for it is that a blocking
   // lemma rules out one pair of operand values, so what one is worth falls
