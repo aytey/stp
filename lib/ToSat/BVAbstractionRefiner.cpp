@@ -2994,6 +2994,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
       coverage.bv_exact_clauses += exactClauses;
       coverage.bv_exact_variables += exactVariables;
+      coverage.bv_exact_microseconds += exactMicros;
 
       if (bm->UserFlags.stats_flag)
       {

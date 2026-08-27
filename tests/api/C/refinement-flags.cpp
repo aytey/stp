@@ -441,8 +441,10 @@ TEST(refinement_flags, ExactCostCountersReachTheCInterface)
   VC vc = vc_createValidityChecker();
   mutableFlags(vc).coverage.bv_exact_clauses = 1234;
   mutableFlags(vc).coverage.bv_exact_variables = 567;
+  mutableFlags(vc).coverage.bv_exact_microseconds = 89012;
   EXPECT_EQ(1234u, vc_getCounter(vc, STP_COUNTER_BV_EXACT_CLAUSES));
   EXPECT_EQ(567u, vc_getCounter(vc, STP_COUNTER_BV_EXACT_VARIABLES));
+  EXPECT_EQ(89012u, vc_getCounter(vc, STP_COUNTER_BV_EXACT_MICROSECONDS));
   vc_Destroy(vc);
 }
 

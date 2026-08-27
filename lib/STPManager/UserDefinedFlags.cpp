@@ -265,7 +265,8 @@ void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
       << " exact-mult=" << c.bv_exact_escalations_mult
       << " exact-divmod=" << c.bv_exact_escalations_divmod
       << " exact-clauses=" << c.bv_exact_clauses
-      << " exact-vars=" << c.bv_exact_variables << std::endl;
+      << " exact-vars=" << c.bv_exact_variables
+      << " exact-us=" << c.bv_exact_microseconds << std::endl;
 
   // Preserve Codex's always-present partition: a zero says that an enabled
   // family fired nothing, and can be interpreted alongside the selected mask.

@@ -935,7 +935,10 @@ enum stp_counter_t
   //! exhausts its value-pair allowance. Appended to preserve every published
   //! counter ordinal.
   STP_COUNTER_BV_EXACT_CLAUSES,
-  STP_COUNTER_BV_EXACT_VARIABLES
+  STP_COUNTER_BV_EXACT_VARIABLES,
+  //! Microseconds spent constructing those exact circuits. Appended so the
+  //! two ordinals above keep the values they were published with.
+  STP_COUNTER_BV_EXACT_MICROSECONDS
 };
 
 //! \brief Reads one of the counters above.

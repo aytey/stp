@@ -1062,6 +1062,14 @@ public:
     // available to embedders through vc_getCounter.
     uint64_t bv_exact_clauses = 0;
     uint64_t bv_exact_variables = 0;
+    // And what it took to build them. Clauses and variables say how much the
+    // solver was handed; this says how long handing it over took, which is
+    // not recoverable from the other two -- a wide divider's circuit costs
+    // time to construct as well as time to search, and on a query where the
+    // abstraction loses without ever escalating far it is the construction
+    // that shows up. Already kept per record; summed here for the same
+    // reason as the two above.
+    uint64_t bv_exact_microseconds = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.
