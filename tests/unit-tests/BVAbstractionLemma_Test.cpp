@@ -637,6 +637,128 @@ TEST(BVAbstractionLemma, the_candidate_oracle_is_the_operation_when_sampled_wide
   }
 }
 
+// The symmetry flag says what the predicate does, in both directions.
+//
+// Multiplication and addition are commutative, so the chooser offers each
+// catalogue row over both operands -- but most of these expressions are not
+// syntactically symmetric, and the ones that are were being offered twice for
+// nothing: evaluated, found to hold, and skipped, on every call, for the life
+// of the record. Fifteen of the twenty-seven rows.
+//
+// Marking them is a claim about a predicate, so it is checked like one. A row
+// marked symmetric must agree with itself over exchanged operands at every
+// triple, or the chooser has dropped a reading that could have fired; a row
+// left unmarked must disagree somewhere, or the mark is missing and the waste
+// is still there. Exhaustive below seven bits and sampled to sixty-four, from
+// the same pool the facts themselves are sampled from.
+TEST(BVAbstractionLemma, every_symmetric_fact_is_marked_and_no_other)
+{
+  struct Reading
+  {
+    const char* family;
+    const char* name;
+    bool marked;
+    unsigned minWidth;
+    unsigned excludedWidth;
+    std::function<bool(const std::vector<bool>&, const std::vector<bool>&,
+                       const std::vector<bool>&)>
+        holds;
+  };
+
+  std::vector<Reading> readings;
+  unsigned count = 0;
+  const BVLemmaEntry<MulLemma>* mul = mulLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const MulLemma lemma = mul[i].lemma;
+    readings.push_back({"BVMULT", mul[i].name, mul[i].symmetric,
+                        mul[i].minWidth, mul[i].excludedWidth,
+                        [lemma](const std::vector<bool>& x,
+                                const std::vector<bool>& s,
+                                const std::vector<bool>& t) {
+                          return mulLemmaHolds(lemma, x, s, t);
+                        }});
+  }
+  const BVLemmaEntry<AddLemma>* add = addLemmaTable(count);
+  for (unsigned i = 0; i < count; ++i)
+  {
+    const AddLemma lemma = add[i].lemma;
+    readings.push_back({"BVPLUS", add[i].name, add[i].symmetric,
+                        add[i].minWidth, add[i].excludedWidth,
+                        [lemma](const std::vector<bool>& x,
+                                const std::vector<bool>& s,
+                                const std::vector<bool>& t) {
+                          return addLemmaHolds(lemma, x, s, t);
+                        }});
+  }
+
+  // Five bits rather than six: this compares TRIPLES, so the exhaustive pass
+  // is 2^(3W) per row where the fact checks above are 2^(2W), and the sixth
+  // bit alone costs more than the rest of the file.
+  const unsigned SWAP_MAX_WIDTH = 5;
+
+  for (const Reading& reading : readings)
+  {
+    bool swapAgrees = true;
+    for (unsigned width = 1; width <= SWAP_MAX_WIDTH; ++width)
+    {
+      if (width < reading.minWidth || width == reading.excludedWidth)
+        continue;
+      const unsigned values = 1u << width;
+      for (unsigned x = 0; x < values; ++x)
+        for (unsigned s = 0; s < values; ++s)
+          for (unsigned t = 0; t < values; ++t)
+          {
+            const bool straight = reading.holds(
+                bitsOf(x, width), bitsOf(s, width), bitsOf(t, width));
+            const bool swapped = reading.holds(
+                bitsOf(s, width), bitsOf(x, width), bitsOf(t, width));
+            if (straight == swapped)
+              continue;
+            swapAgrees = false;
+            ASSERT_FALSE(reading.marked)
+                << reading.family << " " << reading.name
+                << " is marked symmetric but disagrees at width " << width
+                << ", x=" << x << " s=" << s << " result=" << t;
+          }
+    }
+
+    EXPECT_EQ(reading.marked, swapAgrees)
+        << reading.family << " " << reading.name
+        << (reading.marked ? " is marked symmetric and is not"
+                           : " is symmetric and is not marked");
+  }
+
+  // ... and at the widths the abstraction actually runs at, where a row that
+  // agreed below seven bits could still part company.
+  for (const unsigned width : SAMPLED_PREDICATE_WIDTHS)
+  {
+    const std::vector<uint64_t> pool = samplePool(width, SAMPLES_PER_FACT);
+    for (const Reading& reading : readings)
+    {
+      if (!reading.marked || width < reading.minWidth ||
+          width == reading.excludedWidth)
+        continue;
+      // One result per operand pair, drawn from the same pool: symmetry is a
+      // statement about exchanging the operands, so sweeping the result as
+      // well multiplies the work by the pool without asking anything new of
+      // the claim.
+      for (size_t i = 0; i < pool.size(); ++i)
+        for (size_t j = i % 7; j < pool.size(); j += 7)
+        {
+          const std::vector<bool> t = bitsOf(pool[(i + j) % pool.size()], width);
+          ASSERT_EQ(reading.holds(bitsOf(pool[i], width),
+                                  bitsOf(pool[j], width), t),
+                    reading.holds(bitsOf(pool[j], width),
+                                  bitsOf(pool[i], width), t))
+              << reading.family << " " << reading.name
+              << " is marked symmetric but disagrees at width " << width
+              << ", x=" << pool[i] << " s=" << pool[j];
+        }
+    }
+  }
+}
+
 TEST(BVAbstractionLemma, every_refused_width_has_a_real_counterexample)
 {
   for (const Family& family : families())

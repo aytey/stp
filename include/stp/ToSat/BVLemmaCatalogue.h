@@ -274,6 +274,27 @@ template <typename Lemma> struct BVLemmaEntry
   BVSchemaGroup group;
   unsigned minWidth;
   unsigned excludedWidth;
+  // Whether this fact says the same thing with its two operands exchanged.
+  //
+  // Multiplication and addition are commutative but most synthesised
+  // expressions are not syntactically so, which is why the chooser offers each
+  // row in both readings. For a row that IS syntactically symmetric the second
+  // reading is a fact the first already installed: it is evaluated, found to
+  // hold, and skipped, on every call, for the life of the record -- fifteen of
+  // the twenty-seven multiplication and addition rows.
+  //
+  // Only meaningful for those two catalogues. Division is not commutative and
+  // its chooser offers one reading, so the flag is left false there and read
+  // by nobody.
+  //
+  // The claim is checked rather than trusted:
+  // BVAbstractionLemma.every_symmetric_fact_is_marked_and_no_other compares it
+  // against the predicate over every triple below seven bits and by sampling
+  // up to sixty-four, in both directions -- a row wrongly marked would lose a
+  // reading that can fire, and a row wrongly unmarked is the waste this is
+  // for. Unset is the safe default: it offers both readings, which is what
+  // every row did before.
+  bool symmetric = false;
 
   bool applicable(unsigned width) const
   {

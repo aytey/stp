@@ -692,7 +692,7 @@ const BVLemmaEntry<MulLemma> MUL_LEMMAS[] = {
     {MulLemma::FactorUnchangedByMaskedShift,
      "factor-unchanged-by-masked-shift", BVSchemaGroup::MUL8, 1, 0}, // 75
     {MulLemma::FactorAndProductNotOr, "factor-and-product-not-or",
-     BVSchemaGroup::MUL_REF3, 2, 0}, // 5
+     BVSchemaGroup::MUL_REF3, 2, 0, true}, // 5
     {MulLemma::ProductNotOddFactorShiftedByShiftedProduct, "product-not-odd-factor-shifted-by-shifted-product",
      BVSchemaGroup::MUL_TAIL, 2, 0}, // 4
 
@@ -700,13 +700,13 @@ const BVLemmaEntry<MulLemma> MUL_LEMMAS[] = {
     {MulLemma::FactorNotNegatedProductOrLowBit, "factor-not-negated-product-or-low-bit",
      BVSchemaGroup::MUL_TAIL, 2, 0},
     {MulLemma::ProductAboveMaskedShiftedFactors, "product-above-masked-shifted-factors",
-     BVSchemaGroup::MUL_TAIL, 1, 2},
+     BVSchemaGroup::MUL_TAIL, 1, 2, true},
     {MulLemma::FactorNotOneXorFactorShiftedByXor, "factor-not-one-xor-factor-shifted-by-xor",
      BVSchemaGroup::MUL_TAIL, 1, 0},
     {MulLemma::ProductNotOneOrNegatedXor, "product-not-one-or-negated-xor",
-     BVSchemaGroup::MUL_TAIL, 2, 0},
+     BVSchemaGroup::MUL_TAIL, 2, 0, true},
     {MulLemma::ProductNotHighOnesOrXor, "product-not-high-ones-or-xor",
-     BVSchemaGroup::MUL_TAIL, 2, 0},
+     BVSchemaGroup::MUL_TAIL, 2, 0, true},
     {MulLemma::FactorNotShiftedFactorLessOne, "factor-not-shifted-factor-less-one",
      BVSchemaGroup::MUL_TAIL, 1, 0},
     {MulLemma::FactorNotOneLessShiftedFactor, "factor-not-one-less-shifted-factor",
@@ -718,23 +718,23 @@ const BVLemmaEntry<MulLemma> MUL_LEMMAS[] = {
     {MulLemma::FactorNotOnePlusShiftedFactorReversed, "factor-not-one-plus-shifted-factor-reversed",
      BVSchemaGroup::MUL_TAIL, 1, 0},
     {MulLemma::ProductNotOneOrSum, "product-not-one-or-sum", BVSchemaGroup::MUL_TAIL, 2,
-     0},
+     0, true},
     {MulLemma::FactorNotNegatedShiftedFactor, "factor-not-negated-shifted-factor",
      BVSchemaGroup::MUL_TAIL, 1, 0}};
 
 const BVLemmaEntry<AddLemma> ADD_LEMMAS[] = {
     {AddLemma::AddZero, "add-zero", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddSame, "add-same", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddInv, "add-inverse", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddOverflow, "add-overflow", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddNoOverflow, "add-no-overflow", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddOr, "add-or", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::LowBitsNotAllSet, "add-low-bits-not-all-set", BVSchemaGroup::ADD, 1, 0},
+    {AddLemma::AddSame, "add-same", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::AddInv, "add-inverse", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::AddOverflow, "add-overflow", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::AddNoOverflow, "add-no-overflow", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::AddOr, "add-or", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::LowBitsNotAllSet, "add-low-bits-not-all-set", BVSchemaGroup::ADD, 1, 0, true},
     {AddLemma::LowBitNeedsOtherOrSum, "add-low-bit-needs-other-or-sum", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::SumLowBitNeedsAnOperand, "add-sum-low-bit-needs-an-operand", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::SumOrNegatedAndNotOne, "add-sum-or-negated-and-not-one", BVSchemaGroup::ADD, 3, 0},
-    {AddLemma::SumNotNegatedSumOrAnd, "add-sum-not-negated-sum-or-and", BVSchemaGroup::ADD, 2, 0},
-    {AddLemma::OperandsOrNegatedSumNotOne, "add-operands-or-negated-sum-not-one", BVSchemaGroup::ADD, 3, 0}};
+    {AddLemma::SumLowBitNeedsAnOperand, "add-sum-low-bit-needs-an-operand", BVSchemaGroup::ADD, 1, 0, true},
+    {AddLemma::SumOrNegatedAndNotOne, "add-sum-or-negated-and-not-one", BVSchemaGroup::ADD, 3, 0, true},
+    {AddLemma::SumNotNegatedSumOrAnd, "add-sum-not-negated-sum-or-and", BVSchemaGroup::ADD, 2, 0, true},
+    {AddLemma::OperandsOrNegatedSumNotOne, "add-operands-or-negated-sum-not-one", BVSchemaGroup::ADD, 3, 0, true}};
 
 static_assert(sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]) ==
                   BV_DIV_LEMMA_COUNT,

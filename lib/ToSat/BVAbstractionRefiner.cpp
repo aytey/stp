@@ -1017,7 +1017,12 @@ AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
       continue;
     if (!entry.applicable((unsigned)tBits.size()))
       continue;
-    for (unsigned operand = 0; operand < 2; ++operand)
+    // One reading for a fact that says the same thing either way round: the
+    // second is one the first already installed, and offering it costs an
+    // evaluation on every call for the life of the record. See
+    // BVLemmaEntry::symmetric for what checks the claim.
+    const unsigned readings = entry.symmetric ? 1u : 2u;
+    for (unsigned operand = 0; operand < readings; ++operand)
     {
       if ((installedSchemas & addLemmaInstalledBit(lemmaIndex, operand)) != 0)
         continue;
@@ -1086,7 +1091,9 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       continue;
     if (!entry.applicable((unsigned)tBits.size()))
       continue;
-    for (unsigned operand = 0; operand < 2; ++operand)
+    // As in chooseAddSchema: a symmetric row has one reading, not two.
+    const unsigned readings = entry.symmetric ? 1u : 2u;
+    for (unsigned operand = 0; operand < readings; ++operand)
     {
       if ((installedSchemas &
            mulLemmaInstalledBit(lemmaIndex, operand)) != 0)
