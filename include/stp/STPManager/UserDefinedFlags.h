@@ -767,6 +767,18 @@ public:
   // experimental stack, and an empty mask leaves the operation-specific
   // fallback exactly as the master switch being off does.
   uint32_t bv_term_abstraction_schema_groups = BV_SCHEMA_GROUP_DEFAULT;
+  // Interface bookkeeping, the twin of bv_term_abstraction_rounds_explicit
+  // above and for the same reason.
+  //
+  // A profile is an atomic mask/round pair, and the ceiling half has been the
+  // caller's once they name it since the ordering was fixed. The mask half was
+  // left last-writer-wins, so the two halves of one pair resolved by opposite
+  // rules: naming a ceiling and then choosing a profile kept the ceiling,
+  // naming a group list and then choosing a profile lost the list. Whichever
+  // rule is right, they should be the same rule, and first-wins is the one
+  // that treats a caller's explicit choice as a choice -- which is what
+  // vc_setSchemaGroups is: a list of families spelled out by name.
+  bool bv_term_abstraction_schema_groups_explicit = false;
 
   // You can select these with any combination you want of true & false.
   bool division_variant_1 = true;

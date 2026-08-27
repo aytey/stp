@@ -494,6 +494,16 @@ static void applyProfileRounds(stp::STPMgr* b, unsigned rounds)
     b->UserFlags.bv_term_abstraction_rounds = rounds;
 }
 
+// ... and the mask half by the same rule, which it was not. Left
+// last-writer-wins, the two halves of one atomic pair resolved by opposite
+// rules: a ceiling named before a profile survived it, a group list named
+// before a profile did not.
+static void applyProfileGroups(stp::STPMgr* b, uint32_t groups)
+{
+  if (!b->UserFlags.bv_term_abstraction_schema_groups_explicit)
+    b->UserFlags.bv_term_abstraction_schema_groups = groups;
+}
+
 void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
 {
   stp::STPMgr* b = mgr(vc);
@@ -563,20 +573,17 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
     case BV_TERM_ABSTRACTION_PROFILE:
       if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED)
       {
-        b->UserFlags.bv_term_abstraction_schema_groups =
-            stp::BV_SCHEMA_GROUP_QUALIFIED;
+        applyProfileGroups(b, stp::BV_SCHEMA_GROUP_QUALIFIED);
         applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS);
       }
       else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE)
       {
-        b->UserFlags.bv_term_abstraction_schema_groups =
-            stp::BV_SCHEMA_GROUP_AGGRESSIVE;
+        applyProfileGroups(b, stp::BV_SCHEMA_GROUP_AGGRESSIVE);
         applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS);
       }
       else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_BROAD)
       {
-        b->UserFlags.bv_term_abstraction_schema_groups =
-            stp::BV_SCHEMA_GROUP_BROAD;
+        applyProfileGroups(b, stp::BV_SCHEMA_GROUP_BROAD);
         applyProfileRounds(b, stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS);
       }
       else
@@ -1025,6 +1032,7 @@ int vc_setSchemaGroups(VC vc, const char* groups)
   // end up running with a narrower catalogue than it asked for.
   stp::STP* b = (stp::STP*)vc;
   b->bm->UserFlags.bv_term_abstraction_schema_groups = mask;
+  b->bm->UserFlags.bv_term_abstraction_schema_groups_explicit = true;
   return 1;
 }
 

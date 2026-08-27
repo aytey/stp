@@ -131,6 +131,9 @@ public:
   // bv_term_abstraction_rounds_explicit -- which is what the C interface
   // resolves the same pair with, where they do not exclude each other.
   CLI::Option* bv_rounds_option = nullptr;
+  // ... and the group list, for the same reason: it is the other half of the
+  // pair a profile applies, and resolves the same way.
+  CLI::Option* bv_schema_groups_option = nullptr;
 
   // Tri-state: UserFlags.interactive_read is only overridden when the
   // option was given, so the value needs its own presence check.
@@ -403,7 +406,7 @@ void ExtraMain::create_options()
            "with algebraic facts that hold for every pair of operands before "
            "their operation-specific fallback",
            refinement_group);
-  CLI::Option* const bv_schema_groups_option =
+  bv_schema_groups_option =
       app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
                      "comma-separated schema families allowed by "
                      "--bv-term-abstraction-schemas: base, udiv15, "
@@ -989,9 +992,12 @@ int ExtraMain::parse_options(int argc, char** argv)
   // The command line cannot reach the profile-versus-ceiling conflict at all
   // -- the two options exclude each other -- but a run that named the ceiling
   // records it anyway, so the flag means the same thing whichever front end
-  // set it.
+  // set it. Likewise for the group list, which is the other half of the same
+  // pair and now resolves by the same rule.
   if (bv_rounds_option->count() != 0)
     bm->UserFlags.bv_term_abstraction_rounds_explicit = true;
+  if (bv_schema_groups_option->count() != 0)
+    bm->UserFlags.bv_term_abstraction_schema_groups_explicit = true;
 
   if (bv_term_abstraction_divmod_option->count() != 0)
     bm->UserFlags.bv_term_abstraction_divmod_explicit = true;

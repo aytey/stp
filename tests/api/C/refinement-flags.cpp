@@ -419,6 +419,78 @@ TEST(refinement_flags, AProfileDoesNotOverwriteACeilingTheCallerNamed)
   }
 }
 
+// ... and it does not overwrite a group list the caller named either.
+//
+// A profile is one atomic mask/round pair, so its two halves should resolve by
+// one rule. The ceiling half became first-wins when the ordering was fixed and
+// the mask half was left last-writer-wins, which meant naming a ceiling before
+// a profile kept the ceiling while naming a group list before a profile lost
+// the list -- the same pair of calls meaning two different things depending on
+// which half of it the caller had settled.
+//
+// First-wins for both. vc_setSchemaGroups is a caller spelling out families by
+// name, which is as explicit as a ceiling is, and a profile that quietly
+// discarded it would be the defect the ceiling rule exists to remove.
+TEST(refinement_flags, AProfileDoesNotOverwriteAGroupListTheCallerNamed)
+{
+  const uint32_t named = stp::bvSchemaGroupBit(stp::BVSchemaGroup::UREM) |
+                         stp::bvSchemaGroupBit(stp::BVSchemaGroup::MUL8);
+  ASSERT_NE(stp::BV_SCHEMA_GROUP_BROAD, named)
+      << "pick a list the profile does not select";
+
+  // Group list first.
+  {
+    VC vc = vc_createValidityChecker();
+    EXPECT_EQ(1, vc_setSchemaGroups(vc, "urem,mul8"));
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(named, flags(vc).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS,
+              flags(vc).bv_term_abstraction_rounds)
+        << "the profile's ceiling half must still apply";
+    vc_Destroy(vc);
+  }
+
+  // Profile first: a direct setter still wins, because the profile's mask was
+  // not the caller naming one.
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(1, vc_setSchemaGroups(vc, "urem,mul8"));
+    EXPECT_EQ(named, flags(vc).bv_term_abstraction_schema_groups);
+    EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS,
+              flags(vc).bv_term_abstraction_rounds);
+    vc_Destroy(vc);
+  }
+
+  // A caller who never names one still gets the profile's own mask.
+  {
+    VC vc = vc_createValidityChecker();
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
+              flags(vc).bv_term_abstraction_schema_groups);
+    vc_Destroy(vc);
+  }
+
+  // A list the parser refuses is not a list the caller named, so a later
+  // profile still applies its mask.
+  {
+    vc_registerErrorHandler(countError);
+    errors = 0;
+    VC vc = vc_createValidityChecker();
+    EXPECT_EQ(0, vc_setSchemaGroups(vc, "urem,not-a-group"));
+    EXPECT_EQ(1, errors);
+    vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
+                         STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+    EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
+              flags(vc).bv_term_abstraction_schema_groups);
+    vc_Destroy(vc);
+    vc_registerErrorHandler(NULL);
+  }
+}
+
 // A group list the parser refuses leaves the selection alone.
 //
 // The list is all-or-nothing on purpose: a caller that mistypes one name in a
