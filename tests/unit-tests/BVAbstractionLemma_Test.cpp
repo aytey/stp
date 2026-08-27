@@ -46,6 +46,17 @@ namespace
 const unsigned MAX_WIDTH = 6;
 const unsigned CIRCUIT_WIDTHS[] = {3, 4};
 
+// Widths the circuit and the predicate are compared at by sampling rather
+// than exhaustively. Four bits is not a wide enough net on its own: the
+// barrel shifters inside these circuits gain a stage at five bits and
+// another at nine, and every adder and comparator in them widens with the
+// operands, so a circuit that stopped agreeing with its predicate above four
+// bits would go unnoticed. Exhaustive is out of reach up here -- twelve bits
+// is 2^36 triples -- and unnecessary: what has to be exercised is the
+// structure, and the structure repeats.
+const unsigned SAMPLED_CIRCUIT_WIDTHS[] = {5, 9, 12};
+const unsigned SAMPLES_PER_FACT = 400;
+
 std::vector<bool> bitsOf(unsigned value, unsigned width)
 {
   std::vector<bool> bits(width);
@@ -385,6 +396,73 @@ TEST(BVAbstractionLemma, every_fact_rules_out_a_candidate)
       EXPECT_GT(refuted, 0u)
           << family.name << " " << fact.name << " excludes no triple";
     }
+}
+
+// The values a sampled comparison draws from.
+//
+// Uniformly random operands would prove very little: almost every fact here
+// is an implication, and almost every random triple leaves the premise false
+// and the fact vacuously true. Zero, one, the all-ones word, each power of
+// two and its neighbours are what turn those premises on, so the pool is
+// those first and random words after.
+std::vector<unsigned> samplePool(unsigned width, unsigned count)
+{
+  const unsigned mask = (1u << width) - 1;
+  std::vector<unsigned> pool;
+  pool.push_back(0);
+  pool.push_back(1);
+  pool.push_back(2);
+  pool.push_back(3);
+  pool.push_back(mask);
+  pool.push_back(mask - 1);
+  for (unsigned k = 0; k < width; ++k)
+  {
+    pool.push_back(1u << k);          // 2^k
+    pool.push_back((1u << k) - 1);    // the mask below it
+    pool.push_back((~(1u << k)) & mask);  // its complement
+    pool.push_back(((~(1u << k)) + 1) & mask); // -2^k
+  }
+
+  // A fixed generator, so a failure is reproducible and a green run is not
+  // green by luck of the day.
+  unsigned state = 0x9e3779b9u ^ (width * 2654435761u);
+  while (pool.size() < count)
+  {
+    state = state * 1664525u + 1013904223u;
+    pool.push_back((state >> 8) & mask);
+  }
+  return pool;
+}
+
+TEST_F(BVAbstractionLemmaTest, every_circuit_agrees_with_its_predicate_when_sampled_wide)
+{
+  for (const unsigned width : SAMPLED_CIRCUIT_WIDTHS)
+  {
+    const std::vector<unsigned> pool = samplePool(width, SAMPLES_PER_FACT);
+    for (const Family& family : families())
+      for (const Fact& fact : family.facts)
+      {
+        if (!fact.applicable(width))
+          continue;
+        Circuit circuit = build(fact, width);
+        for (unsigned i = 0; i < SAMPLES_PER_FACT; ++i)
+        {
+          // Rotate the three positions independently so the same value does
+          // not sit in all three on every draw.
+          const unsigned x = pool[i % pool.size()];
+          const unsigned s = pool[(i * 7 + 3) % pool.size()];
+          // Every third triple gets the operation's real answer, which is
+          // where the implications with a determined conclusion live.
+          const unsigned t = (i % 3 == 0) ? family.reference(x, s, width)
+                                          : pool[(i * 13 + 5) % pool.size()];
+          const bool expected =
+              fact.holds(bitsOf(x, width), bitsOf(s, width), bitsOf(t, width));
+          ASSERT_EQ(expected, permits(circuit, x, s, t))
+              << family.name << " " << fact.name << " at width " << width
+              << ", x=" << x << " s=" << s << " t=" << t;
+        }
+      }
+  }
 }
 
 TEST_F(BVAbstractionLemmaTest, every_circuit_matches_its_value_predicate)
