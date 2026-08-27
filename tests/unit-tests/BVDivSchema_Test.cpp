@@ -994,6 +994,58 @@ TEST(BVDivSchemaMagnitude, allowance_is_exactly_two_instances)
   EXPECT_EQ(2u, bvSchemaFamilyInstances(two, BVSchemaFamily::DivisorMagnitude));
 }
 
+// No family's counter reaches its neighbours, at any allowance the layout
+// admits.
+//
+// The test above walks one family to its cap. This walks every family to the
+// largest count its nibble can hold, which is what an allowance raised to
+// take up the slack would do, and checks the three things that would break
+// silently: the count reads back, no other family's count moves, and nothing
+// below bit 48 -- where every installed-lemma flag lives -- is disturbed.
+//
+// The compile-time guard is what stops an allowance being set past that in
+// the first place; this is what makes the reason visible if it ever fires.
+TEST(BVSchemaFamilyCounters, no_family_reaches_another_or_the_lemma_bits)
+{
+  static_assert(bvSchemaFamilyAllowancesFit(),
+                "the header's guard is not in force here");
+
+  // Every installed-lemma flag set, so a carry downwards would show.
+  const uint64_t lemmaBits =
+      (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_FIRST) - 1;
+
+  for (unsigned f = 0; f < BV_SCHEMA_FAMILY_COUNT; ++f)
+  {
+    const BVSchemaFamily family = static_cast<BVSchemaFamily>(f);
+    ASSERT_LE(bvSchemaFamilyAllowance(family), BV_SCHEMA_FAMILY_COUNTER_MASK)
+        << "family " << f;
+
+    // An uncapped family is deliberately not counted at all, so its nibble
+    // stays at zero however many instances it installs.
+    const bool capped = bvSchemaFamilyAllowance(family) != 0;
+
+    uint64_t installed = lemmaBits;
+    for (unsigned n = 1; n <= BV_SCHEMA_FAMILY_COUNTER_MASK; ++n)
+    {
+      installed = bvSchemaFamilyRecordInstance(installed, family);
+      EXPECT_EQ(capped ? n : 0u, bvSchemaFamilyInstances(installed, family))
+          << "family " << f << " after " << n << " instances";
+
+      for (unsigned g = 0; g < BV_SCHEMA_FAMILY_COUNT; ++g)
+      {
+        if (g == f)
+          continue;
+        EXPECT_EQ(0u, bvSchemaFamilyInstances(
+                          installed, static_cast<BVSchemaFamily>(g)))
+            << "family " << f << " reached family " << g << " after " << n;
+      }
+
+      EXPECT_EQ(lemmaBits, installed & lemmaBits)
+          << "family " << f << " disturbed an installed-lemma bit after " << n;
+    }
+  }
+}
+
 TEST_F(BVDivBoundEncodingTest,
        quotient_one_clauses_match_the_conditional_remainder)
 {

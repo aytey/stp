@@ -448,6 +448,29 @@ constexpr unsigned bvSchemaFamilyAllowance(BVSchemaFamily family)
                                                       : 0u;
 }
 
+// Every allowance has to fit the nibble that counts it.
+//
+// Five static assertions above guard the bit *layout* -- that the catalogues
+// have not outgrown their per-entry bits, that the low-prefix flags do not
+// overlap the counters, that the counters fit the word. The one thing the
+// counter arithmetic actually depends on was not among them, and it is the
+// one the header invites changing: raise an allowance past fifteen and
+// bvSchemaFamilyRecordInstance carries out of the nibble into the next
+// family's, so the family it belongs to becomes uncapped -- its count wraps
+// to zero and never reaches the allowance again -- while its neighbour loses
+// budget it was never asked to spend. Both failures are silent.
+constexpr bool bvSchemaFamilyAllowancesFit(unsigned family = 0)
+{
+  return family >= BV_SCHEMA_FAMILY_COUNT ||
+         (bvSchemaFamilyAllowance(static_cast<BVSchemaFamily>(family)) <=
+              BV_SCHEMA_FAMILY_COUNTER_MASK &&
+          bvSchemaFamilyAllowancesFit(family + 1));
+}
+
+static_assert(bvSchemaFamilyAllowancesFit(),
+              "a schema-family allowance does not fit its counter, so "
+              "recording an instance would carry into the next family");
+
 constexpr unsigned bvSchemaFamilyInstances(uint64_t installedSchemas,
                                            BVSchemaFamily family)
 {
