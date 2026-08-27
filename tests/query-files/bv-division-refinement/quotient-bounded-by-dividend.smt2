@@ -10,7 +10,7 @@
 ; refiner rather than spliced through the bit-blaster. Both have to be
 ; reported, because which one a family happens to use is not something a
 ; reader comparing profiles should have to know. See
-; dividend-above-shifted-double-quotient.smt2 for the spliced half.
+; quotient-not-negated-and.smt2 for the spliced half.
 ;
 ; RUN: %solver -t --incremental=off --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=base %s 2>&1 | %OutputCheck --check-prefix=COST %s
 ; COST: Abstraction refinement: rounds=1 blocking=0 schema=1 exact=0
