@@ -49,17 +49,29 @@ static void countSchemaLemma(UserDefinedFlags& flags, BVSchemaGroup group)
 // without reading a single bit. A round that refined an equality stops
 // there rather than going on to the terms -- the term scan reads the same
 // model, and what it would find in it has already been ruled out.
+// Whether a record the caller has said nothing about, or has said is
+// reachable, must be checked. An index past the end of the list is in scope:
+// a caller with nothing to say leaves the list empty, and a record nothing
+// checks is a record no candidate can contradict, so the direction to fail in
+// is towards checking.
+static bool recordInScope(const std::vector<bool>& inScope, size_t idx)
+{
+  return idx >= inScope.size() || inScope[idx];
+}
+
 unsigned BVAbstractionRefiner::refine(
-    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar)
+    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+    const std::vector<bool>& equalitiesInScope,
+    const std::vector<bool>& termsInScope)
 {
   unsigned refined = 0;
   if (hasEqualities())
-    refined = refineEqualities(solver, nodeToSATVar);
+    refined = refineEqualities(solver, nodeToSATVar, equalitiesInScope);
   if (refined == 0 && hasTerms())
   {
     try
     {
-      refined = refineTerms(solver, nodeToSATVar);
+      refined = refineTerms(solver, nodeToSATVar, termsInScope);
     }
     catch (const AIGBudgetExhausted& e)
     {
@@ -273,7 +285,8 @@ static unsigned recordedVar(unsigned var, const ASTNode& node,
 }
 
 unsigned BVAbstractionRefiner::refineEqualities(
-    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar)
+    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+    const std::vector<bool>& inScope)
 {
   // Phase 1: Congruence closure — detect transitivity conflicts at word level.
   //
@@ -291,17 +304,28 @@ unsigned BVAbstractionRefiner::refineEqualities(
     std::unordered_map<ASTNode, unsigned, ASTNode::ASTNodeHasher,
                        ASTNode::ASTNodeEqual> symbolToIdx;
     unsigned nextIdx = 0;
-    for (const auto& abs : eqs_)
+    for (size_t idx = 0; idx < eqs_.size(); ++idx)
     {
+      if (!recordInScope(inScope, idx))
+        continue;
+      const auto& abs = eqs_[idx];
       if (symbolToIdx.find(abs.leftSymbol) == symbolToIdx.end())
         symbolToIdx[abs.leftSymbol] = nextIdx++;
       if (symbolToIdx.find(abs.rightSymbol) == symbolToIdx.end())
         symbolToIdx[abs.rightSymbol] = nextIdx++;
     }
 
+    // Out-of-scope records are left out of the chains as well as out of the
+    // scan. Their Booleans are free, so a chain through one would build a
+    // conflict out of a value nothing in the query chose, and the
+    // explanation clause would be spent constraining a record the query
+    // cannot see.
     std::vector<BVEQCongruenceClosure::EqInfo> eqInfos;
-    for (const auto& abs : eqs_)
+    for (size_t idx = 0; idx < eqs_.size(); ++idx)
     {
+      if (!recordInScope(inScope, idx))
+        continue;
+      const auto& abs = eqs_[idx];
       // Read once and checked once: the closure both reads this variable's
       // value and writes the explanation clause over it.
       const unsigned eqVar = recordedVar(
@@ -343,6 +367,8 @@ unsigned BVAbstractionRefiner::refineEqualities(
   for (size_t idx = 0; idx < eqs_.size(); ++idx)
   {
     auto& abs = eqs_[idx];
+    if (!recordInScope(inScope, idx))
+      continue;
     if (abs.defined)
       continue;
 
@@ -2007,7 +2033,8 @@ void encodeDivUnderDivisorValue(
 }
 
 unsigned BVAbstractionRefiner::refineTerms(
-    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar)
+    SATSolver& solver, const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+    const std::vector<bool>& inScope)
 {
   // Phase 1: Scan all abstractions, reading model values to find inconsistencies.
   // Cache the data needed for clause generation so we don't need modelValue later.
@@ -2062,6 +2089,11 @@ unsigned BVAbstractionRefiner::refineTerms(
     {
       const BVTermAbstraction& div = terms_[pair.divIdx];
       const BVTermAbstraction& rem = terms_[pair.remIdx];
+      // The relation belongs to both records, so it is spent only where the
+      // query can see both.
+      if (!recordInScope(inScope, pair.divIdx) ||
+          !recordInScope(inScope, pair.remIdx))
+        continue;
       // Two exact records cannot disagree with the relation between them, so
       // there is nothing here to read a model for.
       if (div.defined && rem.defined)
@@ -2103,6 +2135,8 @@ unsigned BVAbstractionRefiner::refineTerms(
   for (size_t idx = 0; idx < terms_.size(); ++idx)
   {
     auto& abs = terms_[idx];
+    if (!recordInScope(inScope, idx))
+      continue;
     if (handledByDivRemPair[idx])
       continue;
     if (abs.defined)

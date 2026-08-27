@@ -734,9 +734,11 @@ class DLL_PUBLIC BVAbstractionRefiner
   uint64_t refinements_ = 0;
 
   unsigned refineEqualities(SATSolver& solver,
-                            const ToSATBase::ASTNodeToSATVar& nodeToSATVar);
+                            const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+                            const std::vector<bool>& inScope);
   unsigned refineTerms(SATSolver& solver,
-                       const ToSATBase::ASTNodeToSATVar& nodeToSATVar);
+                       const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+                       const std::vector<bool>& inScope);
 
 public:
   explicit BVAbstractionRefiner(STPMgr* bm_) : bm(bm_), exact_(bm_) {}
@@ -785,8 +787,32 @@ public:
   // Check every record against the current SAT model and pin the ones the
   // model contradicts. Returns how many were pinned: zero means the
   // candidate is faithful and may be handed on.
+  //
+  // `equalitiesInScope` and `termsInScope` say, per record, whether the query
+  // the caller is solving can reach it. Both are optional and an index past
+  // the end counts as in scope, so a caller with nothing to say leaves them
+  // empty and every record is checked -- which is what the batch pipeline
+  // does, since its records live exactly as long as the one query that minted
+  // them.
+  //
+  // The incremental driver has something to say. Its records are appended and
+  // never retired, so a pop leaves behind records for operations no live
+  // assertion mentions, and their inputs are still decision variables: the
+  // search assigns them freely, they disagree with their operands, and this
+  // pins them -- rounds spent, and eventually a full exact circuit installed
+  // permanently, over an operation the query does not contain.
+  //
+  // Passing over such a record is sound. What still mentions it is the
+  // definitional encoding of the cone it was minted in, which no assumption
+  // asserts and which is satisfiable whatever the record holds, and the
+  // theorems earlier rounds installed over it, which are likewise
+  // satisfiable. Nothing the current query asserts reaches it, so no value it
+  // takes can change the answer. The safe direction is to check too much,
+  // which is why an unlisted record is checked rather than skipped.
   unsigned refine(SATSolver& solver,
-                  const ToSATBase::ASTNodeToSATVar& nodeToSATVar);
+                  const ToSATBase::ASTNodeToSATVar& nodeToSATVar,
+                  const std::vector<bool>& equalitiesInScope = {},
+                  const std::vector<bool>& termsInScope = {});
 };
 }
 

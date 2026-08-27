@@ -588,6 +588,10 @@ IncrementalSolver::Impl::exactStackCheckSat(
   // blaster made are this driver's to refine. Taken across here, once this
   // round's block is encoded and before any search.
   syncAbstractions();
+  // This round asserts one root: the block. Both routes below refine against
+  // it, so the abstraction scope is named here rather than in each of them.
+  if (!bvAbstraction.empty())
+    setLiveAbstractionRoots(std::vector<Aig_Obj_t*>(1, blockRegular));
 
   applySolveBudgets(*solver, uf);
   bm->soft_timeout_expired = false;

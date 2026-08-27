@@ -321,6 +321,29 @@ struct IncrementalSolver::Impl
   size_t harvestedTermAbstractions = 0;
   size_t assertedSideConstraints = 0;
 
+  // Which records this solve's assertions reach, per record, parallel to the
+  // refiner's two lists; see refreshAbstractionScope. Empty means every
+  // record is in scope, which is the state before the first walk and the
+  // answer whenever the walk cannot be trusted.
+  std::vector<bool> abstractionEqScope;
+  std::vector<bool> abstractionTermScope;
+  // Whether the cone walk has ever reached each record. A record it has
+  // never reached is one it cannot speak for; see refreshAbstractionScope.
+  std::vector<bool> abstractionEqEverLive;
+  std::vector<bool> abstractionTermEverLive;
+  bool abstractionScopeStale = true;
+  // The AIG roots this solve asserts, as the route that is solving names
+  // them -- they are not the same set on every route, and there is no
+  // reading of the scope state that gets them right for all of them. The
+  // ordinary stack asserts one root per active semantic key; a preprocessed
+  // exact block asserts the single root of the block. So each route says,
+  // and a route that says nothing gets no scoping rather than a guess:
+  // narrowing the scope on a root set that is missing something leaves a
+  // live record unchecked, which is the one failure the whole file is
+  // written against.
+  std::vector<Aig_Obj_t*> liveAbstractionRoots;
+  bool liveAbstractionRootsKnown = false;
+
   // conjunct -> root literal (2*var + sign). Epoch-persistent: the encoding
   // of a formula is a definition, valid in every context using this AIG/SAT
   // epoch.
@@ -3044,6 +3067,13 @@ struct IncrementalSolver::Impl
     harvestedEQAbstractions = 0;
     harvestedTermAbstractions = 0;
     assertedSideConstraints = 0;
+    abstractionEqScope.clear();
+    abstractionTermScope.clear();
+    abstractionEqEverLive.clear();
+    abstractionTermEverLive.clear();
+    liveAbstractionRoots.clear();
+    liveAbstractionRootsKnown = false;
+    abstractionScopeStale = true;
     rootLitOf.clear();
     actLitOf.clear();
     everAssumedLits.clear();
@@ -3728,6 +3758,13 @@ struct IncrementalSolver::Impl
       encodeAbstractionNode(a.termNode);
       bvAbstraction.terms().push_back(std::move(a));
     }
+
+    // The record lists and the live stack have both just moved, so what this
+    // solve reaches has to be worked out again -- and what the last solve
+    // said its roots were does not carry over to this one.
+    liveAbstractionRoots.clear();
+    liveAbstractionRootsKnown = false;
+    abstractionScopeStale = true;
   }
 
   // Every bit a record can be checked against gets its SAT variable here,
@@ -3785,26 +3822,164 @@ struct IncrementalSolver::Impl
     out.insert(std::make_pair(n, vars));
   }
 
-  // Check the candidate the solver is holding against every abstraction and
-  // pin the ones it contradicts; the count is how many were pinned, so zero
-  // means the candidate is faithful and may be handed on.
+  // Which abstraction records this solve's assertions can actually reach.
+  //
+  // Records are appended by syncAbstractions and dropped only by a rebuild,
+  // never by a pop, so a stack that has popped carries records for operations
+  // no live assertion mentions. encodeAbstractionNode has deliberately put
+  // every record's bits into CNF before the search, so those are decision
+  // variables like any others: the search assigns them freely, they disagree
+  // with their operands, and refinement pins them. Measured on a 64-bit
+  // BVMULT asserted inside a push/pop and then driven only by solves that
+  // pin its operands: it walked through its whole blocking allowance and
+  // installed a permanent 33,968-clause exact multiplier, for an operation
+  // that had been retracted five solves earlier.
+  //
+  // An abstraction's own inputs are combinational inputs of the encoding, so
+  // reachability is a cone walk from the roots this solve asserts -- the
+  // permanent prefix, which is asserted unconditionally, and whatever the
+  // route solving named through setLiveAbstractionRoots. The operand proxies
+  // are in the permanent prefix and so always reachable; that is why the
+  // question is asked of a record's own result and condition inputs, which
+  // are in no cone but the one they were minted in.
+  //
+  // Walked once per solve. syncAbstractions marks the answer stale, and the
+  // refinement loop reuses it: refining adds clauses but no AIG, so what the
+  // roots reach does not move between rounds.
+  void refreshAbstractionScope()
+  {
+    abstractionEqScope.clear();
+    abstractionTermScope.clear();
+
+    // No route named its roots, so nothing is out of scope.
+    if (!liveAbstractionRootsKnown)
+      return;
+
+    std::vector<Aig_Obj_t*> pending;
+    pending.reserve(permanentAigRoots.size() + liveAbstractionRoots.size());
+    pending.insert(pending.end(), permanentAigRoots.begin(),
+                   permanentAigRoots.end());
+    pending.insert(pending.end(), liveAbstractionRoots.begin(),
+                   liveAbstractionRoots.end());
+
+    std::unordered_set<int> liveInputs;
+    std::unordered_set<unsigned> seen;
+    while (!pending.empty())
+    {
+      Aig_Obj_t* node = Aig_Regular(pending.back());
+      pending.pop_back();
+      if (node == NULL || !seen.insert(Aig_ObjId(node)).second)
+        continue;
+      if (Aig_ObjIsCi(node))
+      {
+        const int var = varOfAig(node);
+        if (var != -1)
+          liveInputs.insert(var);
+        continue;
+      }
+      if (!Aig_ObjIsAnd(node))
+        continue;
+      pending.push_back(Aig_ObjFanin0(node));
+      pending.push_back(Aig_ObjFanin1(node));
+    }
+
+    const auto reaches = [&liveInputs](unsigned var) {
+      return var != BV_ABSTRACTION_NO_VAR &&
+             liveInputs.find((int)var) != liveInputs.end();
+    };
+
+    // Only a record the walk has reached before may be declared out of scope.
+    //
+    // The walk answers "does anything this solve asserts mention this
+    // record", and its useful answer is the one for a record that was
+    // asserted and has since been retracted. A record it has never reached is
+    // a different thing: the driver blasts more than it ends up asserting --
+    // a block it prepares and does not use, an encoding it replaces -- and
+    // syncAbstractions harvests every record the blaster made, including
+    // those. Those records name inputs no encoded root has ever reached, so
+    // the walk cannot tell them apart from retracted ones, and treating them
+    // as retracted stops the refinement checking a record that some route may
+    // still be resolving through the registry.
+    //
+    // So deadness is only ever a transition. A record starts in scope and
+    // leaves it after a solve in which it was reachable and a later one in
+    // which it is not, which is exactly what a pop does and nothing else
+    // does.
+    const std::vector<BVEQAbstraction>& eqs = bvAbstraction.equalities();
+    abstractionEqEverLive.resize(eqs.size(), false);
+    abstractionEqScope.assign(eqs.size(), true);
+    for (size_t i = 0; i < eqs.size(); i++)
+    {
+      const bool live = reaches(eqs[i].abstractionSATVar);
+      abstractionEqEverLive[i] = abstractionEqEverLive[i] || live;
+      abstractionEqScope[i] = live || !abstractionEqEverLive[i];
+    }
+
+    const std::vector<BVTermAbstraction>& terms = bvAbstraction.terms();
+    abstractionTermEverLive.resize(terms.size(), false);
+    abstractionTermScope.assign(terms.size(), true);
+    for (size_t i = 0; i < terms.size(); i++)
+    {
+      bool live = reaches(terms[i].condSATVar);
+      for (unsigned var : terms[i].resultSATVars)
+        live = live || reaches(var);
+      abstractionTermEverLive[i] = abstractionTermEverLive[i] || live;
+      abstractionTermScope[i] = live || !abstractionTermEverLive[i];
+    }
+  }
+
+  // The AIG roots this solve asserts, from the route that knows them. Called
+  // after syncAbstractions and before the first search; syncAbstractions has
+  // cleared whatever the last solve said, so forgetting to call this costs
+  // scoping rather than correctness.
+  void setLiveAbstractionRoots(std::vector<Aig_Obj_t*> roots)
+  {
+    liveAbstractionRoots = std::move(roots);
+    liveAbstractionRootsKnown = true;
+    abstractionScopeStale = true;
+  }
+
+  // Check the candidate the solver is holding against every abstraction this
+  // solve can reach and pin the ones it contradicts; the count is how many
+  // were pinned, so zero means the candidate is faithful and may be handed
+  // on.
   unsigned refineAbstractions(SATSolver& satSolver)
   {
     if (bvAbstraction.empty())
       return 0;
+    if (abstractionScopeStale)
+    {
+      refreshAbstractionScope();
+      abstractionScopeStale = false;
+    }
+
+    // The operand map is cut to the same scope, so a solve that reaches no
+    // record does no work at all rather than resolving every operand any
+    // record has ever named. The two must agree: a record the scan checks
+    // whose operands the map left out reaches encodedBitsOf with nothing to
+    // read, which is a FatalError. They cannot disagree, because both read
+    // this one pair of lists and both treat an index past their end as in
+    // scope.
     ToSATBase::ASTNodeToSATVar operands;
-    for (const BVEQAbstraction& a : bvAbstraction.equalities())
+    const std::vector<BVEQAbstraction>& eqs = bvAbstraction.equalities();
+    for (size_t i = 0; i < eqs.size(); i++)
     {
-      addAbstractionOperand(operands, a.leftSymbol);
-      addAbstractionOperand(operands, a.rightSymbol);
+      if (i < abstractionEqScope.size() && !abstractionEqScope[i])
+        continue;
+      addAbstractionOperand(operands, eqs[i].leftSymbol);
+      addAbstractionOperand(operands, eqs[i].rightSymbol);
     }
-    for (const BVTermAbstraction& a : bvAbstraction.terms())
+    const std::vector<BVTermAbstraction>& terms = bvAbstraction.terms();
+    for (size_t i = 0; i < terms.size(); i++)
     {
-      addAbstractionOperand(operands, a.termNode);
-      for (unsigned i = 0; i < a.numOperands; i++)
-        addAbstractionOperand(operands, a.operands[i]);
+      if (i < abstractionTermScope.size() && !abstractionTermScope[i])
+        continue;
+      addAbstractionOperand(operands, terms[i].termNode);
+      for (unsigned j = 0; j < terms[i].numOperands; j++)
+        addAbstractionOperand(operands, terms[i].operands[j]);
     }
-    return bvAbstraction.refine(satSolver, operands);
+    return bvAbstraction.refine(satSolver, operands, abstractionEqScope,
+                                abstractionTermScope);
   }
 
   // Decide how this block holds the injectivity guard, and keep the manager's

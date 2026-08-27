@@ -462,6 +462,18 @@ IncrementalSolver::checkSatBody(const ASTVec& assertionsSMT2,
       if (trackOrdinaryRoots)
         ordinaryCurrentRoots.push_back(impl->aigRoot(k));
     }
+    // The same roots, for the abstraction refinement's scope. Built even when
+    // the relief valve is not tracking them, because a root set that is
+    // missing something narrows the scope on a record the query does reach --
+    // and cheaply, since it is one map lookup per active key.
+    if (!impl->bvAbstraction.empty())
+    {
+      std::vector<Aig_Obj_t*> abstractionRoots;
+      abstractionRoots.reserve(activeEncodedKeys.size());
+      for (const ASTNode& k : activeEncodedKeys)
+        abstractionRoots.push_back(impl->aigRoot(k));
+      impl->setLiveAbstractionRoots(std::move(abstractionRoots));
+    }
     ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, activationMass);
     ordinaryLiveMass = Impl::addMass(ordinaryLiveMass, oldRefinementMass);
     uint64_t nonStructuralMass =
