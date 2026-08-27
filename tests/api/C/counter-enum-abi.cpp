@@ -36,8 +36,8 @@ static_assert(STP_COUNTER_BV_SCHEMA_LEMMAS == 17,
               "new counters must follow the published counter prefix");
 // The counters this feature adds are new in this series and not pinned: the
 // per-group totals are read through vc_getSchemaGroupCounter() rather than a
-// published ordinal apiece, and the six escalation-cost counters follow the
-// published prefix without being frozen to it yet.
+// published ordinal apiece, and the nine escalation- and schema-cost counters
+// follow the published prefix without being frozen to it yet.
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {

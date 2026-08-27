@@ -989,6 +989,10 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_EXACT_VARIABLES: return c.bv_exact_variables;
     case STP_COUNTER_BV_EXACT_MICROSECONDS:
       return c.bv_exact_microseconds;
+    case STP_COUNTER_BV_SCHEMA_CLAUSES: return c.bv_schema_clauses;
+    case STP_COUNTER_BV_SCHEMA_VARIABLES: return c.bv_schema_variables;
+    case STP_COUNTER_BV_SCHEMA_MICROSECONDS:
+      return c.bv_schema_microseconds;
   }
   reportCAPIError("vc_getCounter: unrecognised counter");
   return 0;

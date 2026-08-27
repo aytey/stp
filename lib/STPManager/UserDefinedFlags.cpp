@@ -270,6 +270,16 @@ void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
         << " variables=" << c.bv_exact_variables
         << " microseconds=" << c.bv_exact_microseconds << std::endl;
 
+  // Reported separately from the line above, because a profile is a choice of
+  // which schema families to enable and this is what that choice costs. Rolled
+  // into the full-width installs it would be invisible next to one exact
+  // divider; reported on its own a run whose only refinement was schema
+  // lemmas has a price rather than a blank.
+  if (c.bv_schema_clauses != 0 || c.bv_schema_variables != 0)
+    out << "Abstraction schema cost: clauses=" << c.bv_schema_clauses
+        << " variables=" << c.bv_schema_variables
+        << " microseconds=" << c.bv_schema_microseconds << std::endl;
+
   // Always the complete partition, zeros included: a zero says that an
   // enabled family fired nothing, which is only readable next to the mask
   // that was selected. Omitting the empty ones would make the two runs a

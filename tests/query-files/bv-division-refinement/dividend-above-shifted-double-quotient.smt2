@@ -11,6 +11,21 @@
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$
 ;
+; ... and what that one lemma cost. This fact is three barrel shifters spliced
+; through BVExactEncoder -- the same encoder an escalation goes through -- and
+; for a while the cost line covered the escalations only, so a run whose whole
+; refinement was schema lemmas reported no price at all. A profile is a choice
+; of which schema families to enable, so this is the number a profile
+; comparison most needs. Regexes rather than the measured 229,374 clauses:
+; what has to hold is that a price is reported and is not zero, and pinning
+; ABC's cut choices would make this a test of the mapper.
+;
+; RUN: %solver -t --incremental=off --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv15 %s 2>&1 | %OutputCheck --check-prefix=COST %s
+; COST: Abstraction refinement: rounds=1 blocking=0 schema=1 exact=0
+; COST: Abstraction schema cost: clauses=[1-9][0-9]* variables=[1-9][0-9]* microseconds=[0-9]+
+; COST: udiv15=1
+; COST: ^unsat$
+;
 ; There is no exact control leg here, and there cannot be an affordable one:
 ; the assertion is the negation of the fact, so anything that does not install
 ; the fact has to prove a 256-bit divider unsatisfiable, which does not finish.

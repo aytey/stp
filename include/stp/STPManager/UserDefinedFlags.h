@@ -1079,27 +1079,56 @@ public:
     uint64_t bv_exact_escalations = 0;
     uint64_t bv_exact_escalations_mult = 0;
     uint64_t bv_exact_escalations_divmod = 0;
-    // What the refinement's circuit splices cost. The counts above say how
-    // often a refinement was abandoned; these say what was handed to the
-    // solver, summed over every splice BVExactEncoder makes. Publishing the
-    // totals makes the question answerable from ordinary statistics and the C
-    // API rather than only from the per-record fields the benchmark harness
-    // reads.
+    // What the refinement's FULL-WIDTH installs cost: an escalation, and the
+    // paired DIV/REM recomposition, whose multiplier is as wide as one. The
+    // counts above say how often a refinement was abandoned; these say what
+    // was handed to the solver when it was. Publishing the totals makes the
+    // question answerable from ordinary statistics and the C API rather than
+    // only from the per-record fields the benchmark harness reads.
     //
     // Equal escalation counts can hide very different trades: an exact
     // multiplier is affordable where an exact divider may not be. Clauses and
     // variables come from the solver's own totals across the encode rather
     // than a circuit estimate, and microseconds measure only that encode.
     //
-    // Wider than the escalations, because one lemma costs as much as one. The
-    // paired DIV/REM recomposition builds a full-width multiplier, and it is
-    // why the aggressive profile is the slowest; leaving it out would have
-    // hidden the trade these were added to expose. It is counted here and not
-    // in the escalation counts above, which mean something narrower: a
-    // refinement that gave up and said what the operation is.
+    // Wider than the escalations, because the paired identity costs as much as
+    // one without any abstraction being given up -- it is why the aggressive
+    // profile is the slowest, and leaving it out would have hidden the trade
+    // these were added to expose. It is counted here and not in the escalation
+    // counts above, which mean something narrower: a refinement that gave up
+    // and said what the operation is.
+    //
+    // What is NOT here is the algebraic schemas, which have their own totals
+    // below. They are the thing the profiles vary, so putting them in one
+    // bucket with the full-width installs would make exactly the comparison
+    // these exist for unreadable.
     uint64_t bv_exact_clauses = 0;
     uint64_t bv_exact_variables = 0;
     uint64_t bv_exact_microseconds = 0;
+    // What the algebraic schemas cost, on the same terms.
+    //
+    // bv_schema_lemmas counts how many were installed, and one lemma is not
+    // one price: the hand-written bounds are a comparison chain, the exact
+    // prefixes are three columns of a multiplier, and a registry fact like
+    // UDIV15 is three barrel shifters spliced through BVExactEncoder -- at
+    // 256 bits, 229,374 clauses for that one fact, and 2,376,088 for the whole
+    // UDIV registry. A profile is a choice of which schema families to enable,
+    // so a schema total that does not say what they cost cannot answer the
+    // question the profiles were built to ask, and for a while this one
+    // reported nothing at all: the four registry splices went through the same
+    // encoder as an escalation and were counted as neither.
+    //
+    // Written at every schema install, whichever mechanism installs it -- the
+    // clause emitters in the refiner and the circuit splices alike -- because
+    // which of the two a family happens to use is not something a reader
+    // comparing profiles should have to know.
+    //
+    // Value-pair blocking lemmas are in neither total. They are W clauses over
+    // known vectors, so reportRecords derives their cost from the round count
+    // rather than measuring it.
+    uint64_t bv_schema_clauses = 0;
+    uint64_t bv_schema_variables = 0;
+    uint64_t bv_schema_microseconds = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.

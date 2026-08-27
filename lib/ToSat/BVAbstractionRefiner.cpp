@@ -36,12 +36,57 @@ THE SOFTWARE.
 namespace stp
 {
 
-static void countSchemaLemma(UserDefinedFlags& flags, BVSchemaGroup group)
+// The solver's totals before one schema install, so that the site which
+// counts the lemma also charges what it cost.
+//
+// One lemma is not one price. The hand-written bounds are a comparison chain,
+// the exact prefixes are three columns of a multiplier, and a registry fact
+// like UDIV15 is three barrel shifters spliced through BVExactEncoder --
+// 229,374 clauses at 256 bits for that one fact. A profile is a choice of
+// which schema families to enable, so the lemma count alone cannot answer the
+// question the profiles exist to ask.
+struct SchemaInstallCost
+{
+  uint64_t clauses;
+  uint32_t variables;
+  std::chrono::steady_clock::time_point started;
+
+  explicit SchemaInstallCost(SATSolver& solver)
+      : clauses(solver.submittedClauses()), variables(solver.nVars()),
+        started(std::chrono::steady_clock::now())
+  {
+  }
+};
+
+// Count a schema lemma without charging it, for the one whose cost belongs in
+// another bucket: the paired DIV/REM identity builds a full-width multiplier
+// and is measured as the full-width install it is.
+static void countFullWidthSchemaLemma(UserDefinedFlags& flags,
+                                      BVSchemaGroup group)
 {
   const unsigned index = static_cast<unsigned>(group);
   assert(index < BV_SCHEMA_GROUP_COUNT);
   flags.coverage.bv_schema_lemmas++;
   flags.coverage.bv_schema_group_lemmas[index]++;
+}
+
+// Count a schema lemma and charge what installing it cost, on the terms the
+// full-width installs are measured on: the backend's own totals across the
+// install, and the wall clock spent building it. Taking the count and the
+// price in one call is what keeps a family from being counted without its
+// cost, which is how the registry splices came to report nothing at all.
+static void countSchemaLemma(UserDefinedFlags& flags, BVSchemaGroup group,
+                             SATSolver& solver,
+                             const SchemaInstallCost& before)
+{
+  countFullWidthSchemaLemma(flags, group);
+  flags.coverage.bv_schema_clauses +=
+      solver.submittedClauses() - before.clauses;
+  flags.coverage.bv_schema_variables += solver.nVars() - before.variables;
+  flags.coverage.bv_schema_microseconds += static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - before.started)
+          .count());
 }
 
 // Both families in one call, equalities first: theirs is the cheaper scan,
@@ -2490,7 +2535,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     rem.schemaRounds++;
     div.schemasThisQuery++;
     rem.schemasThisQuery++;
-    countSchemaLemma(bm->UserFlags, BVSchemaGroup::DIVREM_FULL);
+    countFullWidthSchemaLemma(bm->UserFlags, BVSchemaGroup::DIVREM_FULL);
     if (bm->UserFlags.stats_flag)
       std::cerr << "BV abstraction: paired BVDIV/BVMOD recomposition lemma "
                 << "over " << div.width << " bits" << std::endl;
@@ -2536,6 +2581,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     {
       if (inc.schema.prefixBits != 0)
       {
+        const SchemaInstallCost cost(solver);
         encodeAddLowPrefix(solver, leftVars, rightVars, resultVars, abs.width,
                            inc.schema.prefixBits, lNeg, rNeg);
         abs.installedSchemas |= ADD_SCHEMA_INSTALLED_LOW_PREFIX;
@@ -2543,7 +2589,7 @@ unsigned BVAbstractionRefiner::refineTerms(
         abs.defined = (inc.schema.prefixBits == abs.width);
         abs.schemaRounds++;
         abs.schemasThisQuery++;
-        countSchemaLemma(bm->UserFlags, inc.schema.group);
+        countSchemaLemma(bm->UserFlags, inc.schema.group, solver, cost);
         if (bm->UserFlags.stats_flag)
           std::cerr << "BV abstraction: BVPLUS exact-low-prefix lemma over "
                     << inc.schema.prefixBits << " bits" << std::endl;
@@ -2551,6 +2597,7 @@ unsigned BVAbstractionRefiner::refineTerms(
         continue;
       }
 
+      const SchemaInstallCost cost(solver);
       const std::vector<unsigned>* rawVars[2] = {&leftVars, &rightVars};
       const bool negated[2] = {lNeg, rNeg};
       const std::vector<unsigned>* effectiveVars[2] = {rawVars[0], rawVars[1]};
@@ -2580,7 +2627,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       {
         abs.schemaRounds++;
         abs.schemasThisQuery++;
-        countSchemaLemma(bm->UserFlags, inc.schema.group);
+        countSchemaLemma(bm->UserFlags, inc.schema.group, solver, cost);
         if (bm->UserFlags.stats_flag)
           std::cerr << "BV abstraction: BVPLUS "
                     << addLemmaAt(inc.schema.lemmaIndex).name
@@ -2652,6 +2699,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     bool schemaSpliced = true;
     if (inc.divSchema.schema != DivSchema::None)
     {
+      const SchemaInstallCost cost(solver);
       switch (inc.divSchema.schema)
       {
         case DivSchema::DivisorZero:
@@ -2732,7 +2780,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       {
         abs.schemaRounds++;
         abs.schemasThisQuery++;
-        countSchemaLemma(bm->UserFlags, inc.divSchema.group);
+        countSchemaLemma(bm->UserFlags, inc.divSchema.group, solver, cost);
         if (bm->UserFlags.stats_flag)
           std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
                     << (inc.divSchema.schema == DivSchema::Lemma
@@ -2748,6 +2796,7 @@ unsigned BVAbstractionRefiner::refineTerms(
 
     if (inc.schema.schema != MulSchema::None)
     {
+      const SchemaInstallCost cost(solver);
       const unsigned chosen = inc.schema.operand;
       const std::vector<unsigned>* opVars[2] = {&aVars, &bVars};
       const std::vector<bool>* opBits[2] = {&inc.aBits, &inc.bBits};
@@ -2824,7 +2873,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       {
         abs.schemaRounds++;
         abs.schemasThisQuery++;
-        countSchemaLemma(bm->UserFlags, inc.schema.group);
+        countSchemaLemma(bm->UserFlags, inc.schema.group, solver, cost);
         if (bm->UserFlags.stats_flag)
         {
           std::cerr << "BV abstraction: BVMULT "

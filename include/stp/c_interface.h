@@ -850,10 +850,10 @@ enum stp_counter_t
   STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
   STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD,
 
-  //! What the refinement's circuits cost: clauses and variables they added to
-  //! the solver, and the wall-clock microseconds spent building them. Read
-  //! from the solver's own totals across each encode, not estimated from the
-  //! circuit.
+  //! What the refinement's FULL-WIDTH installs cost: clauses and variables
+  //! they added to the solver, and the wall-clock microseconds spent building
+  //! them. Read from the solver's own totals across each encode, not
+  //! estimated from the circuit.
   //!
   //! Wider than the escalations above. The paired DIV/REM recomposition lemma
   //! builds a full-width multiplier without any abstraction being given up,
@@ -862,7 +862,21 @@ enum stp_counter_t
   //! trade these exist to expose.
   STP_COUNTER_BV_EXACT_CLAUSES,
   STP_COUNTER_BV_EXACT_VARIABLES,
-  STP_COUNTER_BV_EXACT_MICROSECONDS
+  STP_COUNTER_BV_EXACT_MICROSECONDS,
+
+  //! What the algebraic schemas cost, on the same terms and in their own
+  //! bucket.
+  //!
+  //! STP_COUNTER_BV_SCHEMA_LEMMAS counts how many were installed, and one
+  //! lemma is not one price: a bound is a comparison chain and a registry fact
+  //! such as UDIV15 is three barrel shifters, which at 256 bits is 229,374
+  //! clauses. A schema profile is a choice of which families to enable, so a
+  //! count without a price cannot answer the question the profiles exist to
+  //! ask. Kept apart from the full-width totals above because rolled in with
+  //! one exact divider it would be invisible.
+  STP_COUNTER_BV_SCHEMA_CLAUSES,
+  STP_COUNTER_BV_SCHEMA_VARIABLES,
+  STP_COUNTER_BV_SCHEMA_MICROSECONDS
 };
 
 //! \brief Reads one of the counters above.
