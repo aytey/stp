@@ -258,6 +258,22 @@ DLL_PUBLIC std::vector<unsigned> encodeNegate(SATSolver& solver,
                                               const std::vector<unsigned>& x,
                                               unsigned width);
 
+// What the operation really is at these operand values: the oracle the whole
+// refinement rests on, since a candidate is faithful exactly when its result
+// agrees with this.
+//
+// It is STP's own constant evaluator rather than a second implementation kept
+// beside the loop -- `opKind` is BVMULT, BVDIV or BVMOD, and the two
+// totalisations SMT-LIB asks for over a zero divisor come from there rather
+// than from a special case written here. The one that was written here
+// answered zero for a division by zero, which made a bogus candidate look
+// consistent and left the loop with nothing to say about a model it had
+// already rejected. Exposed so that the oracle can be checked on its own
+// rather than only through the loop that depends on it.
+DLL_PUBLIC std::vector<bool> bvOperationValue(Kind opKind,
+                                              const std::vector<bool>& aBits,
+                                              const std::vector<bool>& bBits);
+
 // Whether the candidate result agrees with the exact low `prefixBits` of an
 // addition or multiplication. All vectors are least-significant-bit first.
 // This is the predicate for both prefix schemas; `mulSchemaHolds` delegates

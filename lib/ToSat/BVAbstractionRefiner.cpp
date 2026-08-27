@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include "stp/ToSat/BBNodeManagerAIG.h"
 #include "stp/ToSat/BVEQCongruenceClosure.h"
 #include "stp/ToSat/BVExactEncoder.h"
+#include "stp/Simplifier/Simplifier.h"
 
 #include <algorithm>
 #include <chrono>
@@ -594,6 +595,41 @@ unsigned BVAbstractionRefiner::refineEqualities(
   return refined;
 }
 
+// A bit vector as the constant evaluator wants it, and back again.
+static CBV toConstant(const std::vector<bool>& bits)
+{
+  CBV value = CONSTANTBV::BitVector_Create((unsigned)bits.size(), true);
+  for (unsigned i = 0; i < bits.size(); ++i)
+    if (bits[i])
+      CONSTANTBV::BitVector_Bit_On(value, i);
+  return value;
+}
+
+std::vector<bool> bvOperationValue(Kind opKind,
+                                   const std::vector<bool>& aBits,
+                                   const std::vector<bool>& bBits)
+{
+  assert(aBits.size() == bBits.size());
+  assert(!aBits.empty());
+
+  const unsigned width = (unsigned)aBits.size();
+  CBV a = toConstant(aBits);
+  CBV b = toConstant(bBits);
+  std::vector<CBV> args;
+  args.push_back(a);
+  args.push_back(b);
+
+  CBV computed = NonMemberBVConstEvaluator(opKind, args, width);
+  std::vector<bool> result(width);
+  for (unsigned i = 0; i < width; ++i)
+    result[i] = CONSTANTBV::BitVector_bit_test(computed, i);
+
+  CONSTANTBV::BitVector_Destroy(computed);
+  CONSTANTBV::BitVector_Destroy(b);
+  CONSTANTBV::BitVector_Destroy(a);
+  return result;
+}
+
 static void readModelBits(const std::vector<unsigned>& satVars,
                           unsigned width, SATSolver& solver,
                           std::vector<bool>& bits)
@@ -1157,19 +1193,16 @@ static bool resultMatchesSources(const std::vector<int>& source,
   return true;
 }
 
-// Unsigned comparison over the bit vectors a candidate holds, least
-// significant bit first. Written here rather than reusing computeBVLE
-// because that one is about the operands of an abstracted comparison and
-// this one is about a result the abstraction chose.
+// Unsigned comparison over the bit vectors a candidate holds. A name for the
+// reading the division bounds want -- `<=u` over a result the abstraction
+// chose rather than over the operands of an abstracted comparison -- and not
+// a second statement of it: two independently written comparisons in one file
+// is how this file's own comment records a comparison chain coming out
+// backwards.
 static bool valueLessOrEqual(const std::vector<bool>& left,
                              const std::vector<bool>& right)
 {
-  for (int i = (int)left.size() - 1; i >= 0; --i)
-  {
-    if (left[i] != right[i])
-      return right[i];
-  }
-  return true;
+  return computeBVLE(left, right, false);
 }
 
 static bool valueIsZero(const std::vector<bool>& bits)
@@ -2327,89 +2360,17 @@ unsigned BVAbstractionRefiner::refineTerms(
       getOperandBits(abs.operands[1], abs.width, nodeToSATVar, solver, bBits);
 
       unsigned W = abs.width;
-      std::vector<bool> expected(W, false);
-      if (abs.opKind == BVMULT)
-      {
-        for (unsigned i = 0; i < W; ++i)
-          if (aBits[i])
-            for (unsigned j = 0; j < W && i + j < W; ++j)
-              if (bBits[j])
-              {
-                bool carry = false;
-                for (unsigned p = i + j; p < W; ++p)
-                {
-                  if (p == i + j)
-                  {
-                    bool sum = expected[p] ^ true ^ carry;
-                    carry = (expected[p] && true) || (expected[p] && carry) || (true && carry);
-                    expected[p] = sum;
-                  }
-                  else
-                  {
-                    bool sum = expected[p] ^ false ^ carry;
-                    carry = (expected[p] && carry);
-                    expected[p] = sum;
-                  }
-                  if (!carry) break;
-                }
-              }
-      }
-      else
-      {
-        bool divisorZero = true;
-        for (unsigned i = 0; i < W; ++i)
-          if (bBits[i]) { divisorZero = false; break; }
-
-        if (divisorZero)
-        {
-          // Both are totalised, and not to the same thing: division by zero
-          // is all ones, while the remainder is the dividend. That is what
-          // SMT-LIB says and what the unabstracted BBDivMod answers -- its
-          // restoring loop finds every shifted remainder at or above a zero
-          // divisor, subtracts nothing each time, and hands the dividend
-          // back. Left at zero, this reference agreed with an abstraction
-          // holding a value the query does not give it, so a bogus candidate
-          // was called consistent: no lemma, and the refinement loop ran out
-          // of things to say about a model it had already rejected.
-          if (abs.opKind == BVDIV)
-            for (unsigned i = 0; i < W; ++i) expected[i] = true;
-          else
-            expected = aBits;
-        }
-        else
-        {
-          std::vector<bool> quotient(W, false);
-          std::vector<bool> remainder(W, false);
-          for (int i = (int)W - 1; i >= 0; --i)
-          {
-            for (int j = (int)W - 1; j > 0; --j)
-              remainder[j] = remainder[j - 1];
-            remainder[0] = aBits[i];
-
-            bool geq = true;
-            for (int j = (int)W - 1; j >= 0; --j)
-            {
-              if (!remainder[j] && bBits[j]) { geq = false; break; }
-              if (remainder[j] && !bBits[j]) break;
-            }
-
-            if (geq)
-            {
-              quotient[i] = true;
-              bool borrow = false;
-              for (unsigned j = 0; j < W; ++j)
-              {
-                bool sub = remainder[j] ^ bBits[j] ^ borrow;
-                borrow = (!remainder[j] && bBits[j]) ||
-                         (!remainder[j] && borrow) ||
-                         (bBits[j] && borrow);
-                remainder[j] = sub;
-              }
-            }
-          }
-          expected = (abs.opKind == BVDIV) ? quotient : remainder;
-        }
-      }
+      // What the operation really is at these operand values. This is the
+      // oracle the whole loop rests on -- a candidate is faithful exactly
+      // when its result matches it -- so it is STP's own constant evaluator
+      // rather than a second implementation kept here. The one that used to
+      // be here answered zero for a division by zero, which SMT-LIB totalises
+      // to all ones, and called a bogus candidate consistent for it; the
+      // evaluator gets that by construction, along with the remainder's
+      // different totalisation, and is the same code every constant fold in
+      // the solver goes through.
+      const std::vector<bool> expected =
+          bvOperationValue(abs.opKind, aBits, bBits);
 
       // Read out in full rather than stopping at the first disagreement:
       // the schemas below are chosen by what the candidate's own product

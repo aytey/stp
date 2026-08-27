@@ -559,6 +559,84 @@ TEST(BVAbstractionLemma, every_fact_is_true_of_its_operation_when_sampled_wide)
   }
 }
 
+// The oracle every one of the facts above is measured against.
+//
+// A candidate is faithful exactly when its result agrees with what the
+// operation really is at the operand values it holds, so bvOperationValue is
+// what the whole refinement loop rests on -- and unlike a fact, nothing else
+// in the tree checks it. It used to be a schoolbook multiplier and a restoring
+// divider written beside the loop, and the divider answered zero for a
+// division by zero where SMT-LIB says all ones, which made a bogus candidate
+// look consistent and left the loop with nothing to say about a model it had
+// already rejected. It is STP's own constant evaluator now, which the rest of
+// the solver folds constants with.
+//
+// Checked against the same references the facts are, so this is the evaluator
+// against an independently written one and not against itself. Exhaustive
+// where the facts are exhaustive, including every zero divisor, which is the
+// case that went wrong.
+TEST(BVAbstractionLemma, the_candidate_oracle_is_the_operation)
+{
+  const struct
+  {
+    Kind kind;
+    const char* name;
+    uint64_t (*reference)(uint64_t, uint64_t, unsigned);
+  } operations[] = {{BVMULT, "BVMULT", referenceMul},
+                    {BVDIV, "BVDIV", referenceDiv},
+                    {BVMOD, "BVMOD", referenceRem}};
+
+  for (const auto& operation : operations)
+    for (unsigned width = 1; width <= MAX_WIDTH; ++width)
+    {
+      const unsigned values = 1u << width;
+      for (unsigned x = 0; x < values; ++x)
+        for (unsigned s = 0; s < values; ++s)
+        {
+          const uint64_t want = operation.reference(x, s, width);
+          ASSERT_EQ(bitsOf(want, width),
+                    bvOperationValue(operation.kind, bitsOf(x, width),
+                                     bitsOf(s, width)))
+              << operation.name << " at width " << width << ", x=" << x
+              << " s=" << s;
+        }
+    }
+}
+
+// ... and at the widths the abstraction is actually for, from the same pool
+// the facts are sampled from. A wrong answer up here is the one that matters:
+// bv_abstraction_width defaults to sixty-four, so six bits is not where the
+// oracle is ever asked anything.
+TEST(BVAbstractionLemma, the_candidate_oracle_is_the_operation_when_sampled_wide)
+{
+  const struct
+  {
+    Kind kind;
+    const char* name;
+    uint64_t (*reference)(uint64_t, uint64_t, unsigned);
+  } operations[] = {{BVMULT, "BVMULT", referenceMul},
+                    {BVDIV, "BVDIV", referenceDiv},
+                    {BVMOD, "BVMOD", referenceRem}};
+
+  for (const unsigned width : SAMPLED_PREDICATE_WIDTHS)
+  {
+    const std::vector<uint64_t> pool = samplePool(width, SAMPLES_PER_FACT);
+    for (const auto& operation : operations)
+      for (size_t i = 0; i < pool.size(); ++i)
+        for (size_t j = i % 7; j < pool.size(); j += 7)
+        {
+          const uint64_t x = pool[i];
+          const uint64_t s = pool[j];
+          const uint64_t want = operation.reference(x, s, width);
+          ASSERT_EQ(bitsOf(want, width),
+                    bvOperationValue(operation.kind, bitsOf(x, width),
+                                     bitsOf(s, width)))
+              << operation.name << " at width " << width << ", x=" << x
+              << " s=" << s;
+        }
+  }
+}
+
 TEST(BVAbstractionLemma, every_refused_width_has_a_real_counterexample)
 {
   for (const Family& family : families())
