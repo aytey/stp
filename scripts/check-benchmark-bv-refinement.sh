@@ -65,8 +65,10 @@ disagreements=$scratch/results/disagreements.tsv
 
 [[ $(awk 'END { print NR - 1 }' "$runs") == 4 ]] ||
   fail 'expected four blocked runs'
-[[ $(awk 'END { print NR - 1 }' "$records") == 4 ]] ||
-  fail 'expected one record from every run'
+# Three records from each of the four runs: the escalated multiplication and
+# the BVDIV/BVMOD pair that shares a recomposition.
+[[ $(awk 'END { print NR - 1 }' "$records") == 12 ]] ||
+  fail 'expected three records from every run'
 [[ $(awk 'END { print NR - 1 }' "$comparisons") == 2 ]] ||
   fail 'equal basenames collapsed in the matched comparison'
 [[ $(awk 'END { print NR }' "$disagreements") == 1 ]] ||
@@ -85,21 +87,35 @@ awk -F '\t' -v first="$scratch/first/query.smt2" \
          !("candidate" in variant)
   }' "$runs" || fail 'manifest paths or custom variant names were not preserved'
 
-# The global line and the sum of record lines describe the same encode. Pin
-# both the separate-line parser and every output-column position.
+# The global cost lines and the sum of the record lines do NOT describe the
+# same encode, and the check used to say they did. A paired BVDIV/BVMOD
+# recomposition belongs to two records rather than either, so its circuit is
+# charged to the totals and to neither record's own fields -- the aggregate is
+# therefore at least the per-record sum and strictly above it whenever a pair
+# fired. The equality passed only because the fixture had no pair in it; it has
+# one now, so the relation is exercised rather than asserted into a corner.
+#
+# The schema cost is the second global line, and the one a variant comparison
+# actually turns on: a variant is usually a different set of schema families.
+# Pin both parsers and every output-column position.
 awk -F '\t' '
-  NF != 34 { bad=1 }
+  NF != 37 { bad=1 }
   NR == 1 { next }
-  $28 != 123 || $29 != 45 || $30 != 67 ||
-  $28 != $31 || $29 != $32 || $30 != $33 { bad=1 }
+  $28 != 123 || $29 != 45 || $30 != 67 { bad=1 }
+  $31 != 1123 || $32 != 1045 || $33 != 1067 { bad=1 }
+  $31 < $28 || $32 < $29 || $33 < $30 { bad=1 }
+  $31 <= $28 { bad=1 }
+  $34 != 500 || $35 != 60 || $36 != 70 { bad=1 }
   END { exit bad }
-  ' "$runs" || fail 'aggregate exact cost does not match per-record cost'
+  ' "$runs" || fail 'aggregate cost columns do not describe the fixture run'
 awk -F '\t' '
-  NF != 23 { bad=1 }
+  NF != 26 { bad=1 }
   NR == 1 { next }
-  $18 != $21 || $19 != $22 || $20 != $23 { bad=1 }
+  $21 < $18 || $22 < $19 || $23 < $20 { bad=1 }
+  $21 <= $18 { bad=1 }
+  $24 < 1 || $25 < 1 || $26 < 1 { bad=1 }
   END { exit bad }
-  ' "$summary" || fail 'summary lost aggregate/per-record cost consistency'
+  ' "$summary" || fail 'summary lost the aggregate cost columns'
 
 expect_rejected()
 {
