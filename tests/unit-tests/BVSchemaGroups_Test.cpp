@@ -73,8 +73,7 @@ TEST(BVSchemaGroups, every_group_has_a_unique_round_tripping_name)
                             BV_SCHEMA_GROUP_ALL,
                             BV_SCHEMA_GROUP_DEFAULT,
                             BV_SCHEMA_GROUP_AGGRESSIVE,
-                            BV_SCHEMA_GROUP_BROAD_NO_PAIR,
-                            BV_SCHEMA_GROUP_BROAD_PREFIX};
+                            BV_SCHEMA_GROUP_BROAD};
   for (uint32_t mask : masks)
   {
     uint32_t parsed = ~0u;
@@ -114,7 +113,6 @@ TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
       STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
       STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-      STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
       STP_BV_SCHEMA_GROUP_DIVREM_FULL,
       STP_BV_SCHEMA_GROUP_MUL8,
       STP_BV_SCHEMA_GROUP_MUL_REF3,
@@ -130,10 +128,8 @@ TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_QUALIFIED));
   EXPECT_EQ(BV_SCHEMA_GROUP_AGGRESSIVE,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_AGGRESSIVE));
-  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR));
-  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_PREFIX,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD_PREFIX));
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD,
+            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD));
   EXPECT_EQ(BV_SCHEMA_GROUP_DEFAULT,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT));
   EXPECT_EQ(BV_SCHEMA_GROUP_ALL,
@@ -193,41 +189,34 @@ TEST(BVSchemaGroups, disabled_families_are_never_chosen)
         }
   }
 
-  // Paired relations are scheduled across records and tested by
+  // The paired identity is scheduled across records and tested by
   // BVDivRemSchema_Test. Every single-record family must be reachable here.
   for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
   {
     const BVSchemaGroup group = static_cast<BVSchemaGroup>(i);
-    if (group == BVSchemaGroup::DIVREM_PAIR ||
-        group == BVSchemaGroup::DIVREM_FULL)
+    if (group == BVSchemaGroup::DIVREM_FULL)
       continue;
     EXPECT_TRUE(sawChoice[i]) << bvSchemaGroupName(group);
   }
 }
 
-TEST(BVSchemaGroups, broad_no_pair_profile_excludes_both_paired_relations)
+TEST(BVSchemaGroups, broad_profile_excludes_the_paired_identity)
 {
-  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS);
+  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_ROUNDS);
   EXPECT_FALSE(
-      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR, BVSchemaGroup::DIVREM_PAIR));
-  EXPECT_FALSE(
-      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR, BVSchemaGroup::DIVREM_FULL));
-  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
+      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD, BVSchemaGroup::DIVREM_FULL));
+  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD,
                                    BVSchemaGroup::QUOTIENT_ONE_REM));
-  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
+  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD,
                                    BVSchemaGroup::QUOTIENT_ONE_QUOT));
 }
 
-TEST(BVSchemaGroups, broad_prefix_profile_adds_only_the_cheap_paired_relation)
+TEST(BVSchemaGroups, aggressive_profile_adds_only_the_paired_identity)
 {
-  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS);
-  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_NO_PAIR |
-                bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR),
-            BV_SCHEMA_GROUP_BROAD_PREFIX);
-  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
-                                   BVSchemaGroup::DIVREM_PAIR));
-  EXPECT_FALSE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
-                                    BVSchemaGroup::DIVREM_FULL));
+  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS);
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD |
+                bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL),
+            BV_SCHEMA_GROUP_AGGRESSIVE);
 }
 
 // Nothing an enabled abstraction inherits may come from a broad profile: the

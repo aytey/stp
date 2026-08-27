@@ -497,21 +497,14 @@ DLL_PUBLIC void encodeDivisorMagnitudeBound(
     const std::vector<unsigned>& quotientVars, unsigned width,
     unsigned shift);
 
-// The prefix quotient/remainder recomposition theorem:
-//   low(x) = low((q * s) + r).
-// It holds for the SMT-LIB zero-divisor values as well as ordinary division;
-// asking for the complete width is the full modular identity.
-DLL_PUBLIC bool divRemLowPrefixHolds(
-    const std::vector<bool>& dividendBits,
-    const std::vector<bool>& divisorBits,
-    const std::vector<bool>& quotientBits,
-    const std::vector<bool>& remainderBits, unsigned prefixBits);
-DLL_PUBLIC void encodeDivRemLowPrefix(
-    SATSolver& solver, const std::vector<unsigned>& dividendVars,
-    const std::vector<unsigned>& divisorVars,
-    const std::vector<unsigned>& quotientVars,
-    const std::vector<unsigned>& remainderVars, unsigned width,
-    unsigned prefixBits);
+// The modular quotient/remainder recomposition theorem:
+//   x = (q * s) + r,  taken mod 2^W.
+// It holds for the SMT-LIB zero-divisor values as well as ordinary division:
+// x /u 0 = ~0 and x %u 0 = x recompose to (~0 * 0) + x = x.
+DLL_PUBLIC bool divRemIdentityHolds(const std::vector<bool>& dividendBits,
+                                    const std::vector<bool>& divisorBits,
+                                    const std::vector<bool>& quotientBits,
+                                    const std::vector<bool>& remainderBits);
 
 // divisor = divisorBits -> every result bit is a constant or a bit of the
 // dividend, as `source` says. Exposed for the tests: what the schema claims
@@ -590,14 +583,10 @@ struct BVTermAbstraction
   unsigned schemaRounds = 0;
   // Which of the unconditional schemas are already in the solver.
   uint64_t installedSchemas = 0;
-  // Set on both records when this BVDIV/BVMOD pair has received its shared
-  // low-prefix recomposition lemma. It cannot use installedSchemas because
-  // that field describes one operation, while this fact belongs to two.
-  bool divRemLowPrefixInstalled = false;
-  // Set on both records after the stronger full-width modular recomposition
-  // identity has been installed. The low-prefix fact may precede it, but
-  // does not have to: if the current model already satisfies the prefix,
-  // emitting it would make no progress and the full fact gets the round.
+  // Set on both records once this BVDIV/BVMOD pair has received its shared
+  // full-width modular recomposition identity. It cannot use
+  // installedSchemas because that field describes one operation, while this
+  // fact belongs to two.
   bool divRemFullInstalled = false;
   // How far up the exact encoding has been pushed, for an escalation that
   // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero

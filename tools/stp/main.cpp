@@ -402,11 +402,11 @@ void ExtraMain::create_options()
                      "--bv-term-abstraction-schemas: base, udiv15, "
                      "udiv-observed, udiv-tail, urem, mul8, mul-ref3, "
                      "mul-tail, add, quotient-thresholds, low-prefix, "
-                     "quotient-one-rem, divrem-pair, quotient-one-quot, "
+                     "quotient-one-rem, quotient-one-quot, "
                      "divisor-magnitude, or divrem-full; 'all' selects the "
                      "complete experimental stack and 'none' selects no "
                      "schemas; semantic aliases are udiv, mul6, "
-                     "quotient-one, divrem-prefix and divrem-identity")
+                     "quotient-one and divrem-identity")
           ->group(refinement_group)
           ->capture_default_str();
   CLI::Option* const bv_rounds_option =
@@ -422,11 +422,10 @@ void ExtraMain::create_options()
   app.add_option("--bv-term-abstraction-profile", bv_abstraction_profile,
                  "apply an atomic schema-mask/round pair: 'qualified' is the "
                  "inherited base, UREM and MulRef3 mask at 32 rounds; "
-                 "'broad-no-pair' adds the observed UDIV and MUL8 facts, "
+                 "'broad' adds the observed UDIV and MUL8 facts, "
                  "divisor-magnitude and quotient-one facts at 16 rounds but "
-                 "no paired DIV/REM relation; 'broad-prefix' adds the cheap "
-                 "low-three-bit paired recomposition; 'aggressive' adds the "
-                 "full-width paired identity instead")
+                 "no paired DIV/REM relation; 'aggressive' adds the "
+                 "full-width paired DIV/REM identity to that")
       ->group(refinement_group)
       ->excludes(bv_schema_groups_option)
       ->excludes(bv_rounds_option);

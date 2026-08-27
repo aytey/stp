@@ -301,7 +301,7 @@ printf '%s\n' \
   $'repetition\tschedule\tvariant\tclass\tdriver\tquery\tverdict\tstatus\texit_code\twall_seconds\tmax_rss_kb\tcandidates_divmod\tabstracted_divmod\trefinement_rounds\tblocking_lemmas\tschema_lemmas\texact_escalations\texact_mult\texact_divmod\trecords\trecord_blocking_sum\trecord_blocking_max\tpaired_records\tpaired_blocking_sum\tunpaired_divmod_blocking_sum\trecord_blocking_clauses\trecord_blocking_literals\trecord_exact_clauses\trecord_exact_variables\trecord_exact_microseconds\taggregate_exact_clauses\taggregate_exact_variables\taggregate_exact_microseconds\tlog' \
   > "$runs_tsv"
 printf '%s\n' \
-  $'repetition\tvariant\tclass\tdriver\tquery\trecord\tnode\tkind\twidth\tstate\tblocking\tschemas\texact\texact_bits\tallowance\tpaired\tpair_prefix\tpair_full\tblocking_clauses\tblocking_literals\texact_clauses\texact_variables\texact_microseconds\tlog' \
+  $'repetition\tvariant\tclass\tdriver\tquery\trecord\tnode\tkind\twidth\tstate\tblocking\tschemas\texact\texact_bits\tallowance\tpaired\tpair_full\tblocking_clauses\tblocking_literals\texact_clauses\texact_variables\texact_microseconds\tlog' \
   > "$records_tsv"
 
 common_args=(--SMTLIB2 --incremental=off --cnf-auto-threshold=0 -t)
@@ -628,7 +628,7 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
           print rep, variant, class, driver, query, v["record"], v["node"],
                 v["kind"], v["width"], v["state"], v["blocking"],
                 v["schemas"], v["exact"], v["exact-bits"], v["allowance"],
-                v["paired"], v["pair-prefix"], v["pair-full"],
+                v["paired"], v["pair-full"],
                 v["blocking-clauses"], v["blocking-literals"],
                 v["exact-clauses"], v["exact-vars"], v["exact-us"], log_path
         }' "$log" >> "$records_tsv"

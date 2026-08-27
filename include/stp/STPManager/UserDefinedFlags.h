@@ -62,7 +62,6 @@ enum class BVSchemaGroup : unsigned
   QUOTIENT_ONE_REM,
   QUOTIENT_THRESHOLDS,
   DIVISOR_MAGNITUDE,
-  DIVREM_PAIR,
   DIVREM_FULL,
 
   // Multiplication.
@@ -101,11 +100,11 @@ constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
     bvSchemaGroupBit(BVSchemaGroup::UREM) |
     bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
 
-// The complete observed single-record catalogue, without either paired
-// DIV/REM relation. The paired relations stay separately selectable: the
-// low-three-bit one is cheap and belongs to the profile below, while the
-// full-width identity constructs a multiplier and remains opt-in.
-constexpr uint32_t BV_SCHEMA_GROUP_BROAD_NO_PAIR =
+// The complete observed single-record catalogue. Every schema here states a
+// fact about one division, remainder, multiplication or addition on its own;
+// the one relation that spans a quotient and its remainder together builds a
+// full-width multiplier and stays out, in AGGRESSIVE below.
+constexpr uint32_t BV_SCHEMA_GROUP_BROAD =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
     bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED) |
@@ -116,32 +115,16 @@ constexpr uint32_t BV_SCHEMA_GROUP_BROAD_NO_PAIR =
     bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
     bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE);
 
-// The same broad catalogue plus the cheap low-three-bit paired DIV/REM
-// recomposition. A lowering that produces a quotient and a remainder over one
-// pair of operands -- which is what a floating-point division becomes -- gets
-// a relation neither record can state alone, for a few gates rather than the
-// full identity's wide multiplier.
-//
-// On a 417-query floating-point-heavy population this profile's median was
-// 37% below QUALIFIED's, but the same catalogue without the paired prefix was
-// within 2.4% of it, the pure-BV control did not move, and the gain was
-// concentrated in one driver. Set against that, the broad corpus sweep put
-// several of these families at or below break-even. That is enough to keep
-// the profile selectable and not enough to inherit it: QUALIFIED is still
-// what an enabled abstraction gets.
-constexpr uint32_t BV_SCHEMA_GROUP_BROAD_PREFIX =
-    BV_SCHEMA_GROUP_BROAD_NO_PAIR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
-
-// The same catalogue with the full-width modular identity instead of the
-// prefix. It reduces blocking and exact escalation the most aggressively of
-// any profile and is still the slowest of them, because the identity builds a
-// full-width multiplier; it exists to make that trade reproducible.
+// The same catalogue plus the full-width modular identity, which ties a
+// quotient and its remainder to the dividend they came from. It reduces
+// blocking and exact escalation the most aggressively of any profile and is
+// still the slowest of them, because the identity builds a full-width
+// multiplier; it exists to make that trade reproducible.
 constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
-    BV_SCHEMA_GROUP_BROAD_NO_PAIR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
+    BV_SCHEMA_GROUP_BROAD | bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
 
 constexpr unsigned BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS = 32;
-constexpr unsigned BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS = 16;
-constexpr unsigned BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS = 16;
+constexpr unsigned BV_TERM_ABSTRACTION_BROAD_ROUNDS = 16;
 constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
 
 // These defaults matter only after a caller explicitly turns BV term

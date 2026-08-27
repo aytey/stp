@@ -261,22 +261,11 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_NO_PAIR);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_NO_PAIR,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_BROAD);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD,
             flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS,
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
-  EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups &
-                    (stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_PAIR) |
-                     stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_FULL)));
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_PREFIX,
-            flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS,
-            flags(vc).bv_term_abstraction_rounds);
-  EXPECT_NE(0u, flags(vc).bv_term_abstraction_schema_groups &
-                    stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_PAIR));
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups &
                     stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_FULL));
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
@@ -374,7 +363,7 @@ TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
   VC vc = vc_createValidityChecker();
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS,
                        STP_BV_SCHEMA_GROUP_BASE);
-  const int invalid[] = {-1, 1 << 16, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
+  const int invalid[] = {-1, 1 << 15, STP_BV_SCHEMA_GROUP_ALL | (1 << 20)};
   for (const int value : invalid)
   {
     vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_SCHEMA_GROUPS, value);

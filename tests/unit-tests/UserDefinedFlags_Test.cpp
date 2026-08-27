@@ -92,7 +92,7 @@ TEST(UserDefinedFlags_Test, bv_schema_groups_default_to_the_qualified_profile)
   // The broader catalogues are experiments a caller asks for by name, so no
   // group beyond the qualified three may reach a query that did not.
   EXPECT_FALSE(stp::bvSchemaGroupEnabled(uf.bv_term_abstraction_schema_groups,
-                                         stp::BVSchemaGroup::DIVREM_PAIR));
+                                         stp::BVSchemaGroup::DIVREM_FULL));
   EXPECT_FALSE(stp::bvSchemaGroupEnabled(uf.bv_term_abstraction_schema_groups,
                                          stp::BVSchemaGroup::UDIV_OBSERVED));
   EXPECT_FALSE(stp::bvSchemaGroupEnabled(uf.bv_term_abstraction_schema_groups,
@@ -120,24 +120,15 @@ TEST(UserDefinedFlags_Test, named_bv_profiles_apply_mask_and_rounds_atomically)
       stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::QUOTIENT_THRESHOLDS));
 
   ASSERT_TRUE(
-      stp::parseBVTermAbstractionProfile("broad-no-pair", mask, rounds, error));
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_NO_PAIR, mask);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS, rounds);
+      stp::parseBVTermAbstractionProfile("broad", mask, rounds, error));
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD, mask);
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_ROUNDS, rounds);
   EXPECT_TRUE(
       stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::UDIV_OBSERVED));
   EXPECT_TRUE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::MUL8));
   EXPECT_TRUE(
       stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVISOR_MAGNITUDE));
-  EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_PAIR));
   EXPECT_FALSE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_FULL));
-
-  ASSERT_TRUE(
-      stp::parseBVTermAbstractionProfile("broad-prefix", mask, rounds, error));
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_PREFIX, mask);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS, rounds);
-  EXPECT_TRUE(stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_PAIR));
-  EXPECT_FALSE(
-      stp::bvSchemaGroupEnabled(mask, stp::BVSchemaGroup::DIVREM_FULL));
 
   ASSERT_TRUE(
       stp::parseBVTermAbstractionProfile("qualified", mask, rounds, error));
@@ -151,8 +142,7 @@ TEST(UserDefinedFlags_Test, named_bv_profiles_apply_mask_and_rounds_atomically)
   EXPECT_EQ(0x5a5u, mask);
   EXPECT_EQ(7u, rounds);
   EXPECT_NE(std::string::npos,
-            error.find(
-                "qualified, broad-no-pair, broad-prefix, or aggressive"));
+            error.find("qualified, broad, or aggressive"));
 }
 
 TEST(UserDefinedFlags_Test, every_bv_schema_group_round_trips_by_name)
@@ -193,12 +183,11 @@ TEST(UserDefinedFlags_Test, bv_schema_group_aliases_and_lists_parse)
   EXPECT_EQ("base,urem,mul-ref3", stp::formatBVSchemaGroups(parsed));
 
   ASSERT_TRUE(stp::parseBVSchemaGroups(
-      "base,udiv,urem,mul6,mul8,divisor-magnitude,quotient-one,"
-      "divrem-prefix",
-      parsed, error));
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_PREFIX, parsed);
+      "base,udiv,urem,mul6,mul8,divisor-magnitude,quotient-one", parsed,
+      error));
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD, parsed);
   EXPECT_EQ("base,udiv15,udiv-observed,urem,quotient-one-quot,"
-            "quotient-one-rem,divisor-magnitude,divrem-pair,mul8,mul-ref3",
+            "quotient-one-rem,divisor-magnitude,mul8,mul-ref3",
             stp::formatBVSchemaGroups(parsed));
 
   ASSERT_TRUE(stp::parseBVSchemaGroups("divrem-identity", parsed, error));

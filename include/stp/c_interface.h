@@ -188,35 +188,31 @@ enum bv_schema_group_t
   STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 6,
   STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 7,
   STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 8,
-  STP_BV_SCHEMA_GROUP_DIVREM_PAIR = 1 << 9,
-  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 10,
-  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 11,
-  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 12,
-  STP_BV_SCHEMA_GROUP_MUL_TAIL = 1 << 13,
-  STP_BV_SCHEMA_GROUP_ADD = 1 << 14,
-  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 15,
+  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 9,
+  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 10,
+  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 11,
+  STP_BV_SCHEMA_GROUP_MUL_TAIL = 1 << 12,
+  STP_BV_SCHEMA_GROUP_ADD = 1 << 13,
+  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 14,
 
   //! The mask an enabled abstraction inherits.
   STP_BV_SCHEMA_GROUP_QUALIFIED = STP_BV_SCHEMA_GROUP_BASE |
                                   STP_BV_SCHEMA_GROUP_UREM |
                                   STP_BV_SCHEMA_GROUP_MUL_REF3,
-  //! The broad observed catalogue without either paired DIV/REM relationship.
-  STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR =
+  //! The broad observed catalogue: every schema that speaks about a single
+  //! operation, and no relation spanning a quotient and its remainder.
+  STP_BV_SCHEMA_GROUP_BROAD =
       STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
       STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
       STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
       STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-  //! The broad catalogue plus cheap low-three-bit paired DIV/REM
-  //! recomposition.
-  STP_BV_SCHEMA_GROUP_BROAD_PREFIX =
-      STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR | STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
-  //! The same catalogue with the full-width paired identity instead.
+  //! The same catalogue plus the full-width paired DIV/REM identity.
   STP_BV_SCHEMA_GROUP_AGGRESSIVE =
-      STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
+      STP_BV_SCHEMA_GROUP_BROAD | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
   STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_QUALIFIED,
-  STP_BV_SCHEMA_GROUP_ALL = (1 << 16) - 1
+  STP_BV_SCHEMA_GROUP_ALL = (1 << 15) - 1
 };
 
 //! Atomic mask/round pairs accepted by BV_TERM_ABSTRACTION_PROFILE.
@@ -225,13 +221,11 @@ enum bv_term_abstraction_profile_t
   //! The inherited mask: base schemas, the UREM registry and MulRef3, at a
   //! thirty-two round ceiling.
   STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED = 0,
-  //! The broad observed catalogue without either paired relation, at sixteen.
-  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_NO_PAIR = 1,
-  //! The same catalogue plus the cheap low-three-bit paired recomposition.
-  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX = 2,
+  //! The broad single-record catalogue, at sixteen.
+  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD = 1,
   //! The same catalogue plus the full-width paired identity, whose wide
   //! multiplier is the reason it is not part of the profile above.
-  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 3
+  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 2
 };
 
 //! Interface-only flags.
@@ -610,10 +604,9 @@ enum ifaceflag_t
 
   //! Applies one complete BV term-abstraction schema profile. `param_value`
   //! is a bv_term_abstraction_profile_t ordinal. QUALIFIED is the inherited
-  //! base/UREM/MulRef3 mask with a 32-round ceiling; BROAD_NO_PAIR selects the
-  //! broad single-record catalogue without either paired relation, at 16
-  //! rounds; BROAD_PREFIX adds the cheap low-three-bit paired relation; and
-  //! AGGRESSIVE adds the full-width paired identity instead. Invalid values
+  //! base/UREM/MulRef3 mask with a 32-round ceiling; BROAD selects the broad
+  //! single-record catalogue at 16 rounds; and AGGRESSIVE adds the
+  //! full-width paired DIV/REM identity to it. Invalid values
   //! are refused without changing either field. This is the C API's way to
   //! reach --bv-term-abstraction-profile.
   //!
@@ -928,7 +921,7 @@ DLL_PUBLIC unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter);
 //! How many BV schema groups there are. The group index accepted by
 //! vc_getSchemaGroupCounter and vc_schemaGroupName runs from zero to one
 //! below this, in bv_schema_group_t order.
-#define STP_BV_SCHEMA_GROUP_COUNT 16
+#define STP_BV_SCHEMA_GROUP_COUNT 15
 
 //! \brief STP_COUNTER_BV_SCHEMA_LEMMAS, partitioned by schema group.
 //!

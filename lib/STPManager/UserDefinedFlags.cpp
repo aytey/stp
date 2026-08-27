@@ -45,7 +45,6 @@ const char* const GROUP_NAMES[] = {"base",
                                    "quotient-one-rem",
                                    "quotient-thresholds",
                                    "divisor-magnitude",
-                                   "divrem-pair",
                                    "divrem-full",
                                    "mul8",
                                    "mul-ref3",
@@ -79,8 +78,7 @@ std::string expectedGroups()
       out << ", ";
     out << GROUP_NAMES[i];
   }
-  out << ", udiv, mul6, quotient-one, divrem-prefix, divrem-identity, all, or "
-         "none";
+  out << ", udiv, mul6, quotient-one, divrem-identity, all, or none";
   return out.str();
 }
 
@@ -94,8 +92,6 @@ bool groupAliasMask(const std::string& token, uint32_t& aliasMask)
   else if (token == "quotient-one")
     aliasMask = bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_REM) |
                 bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT);
-  else if (token == "divrem-prefix")
-    aliasMask = bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
   else if (token == "divrem-identity")
     aliasMask = bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
   else
@@ -222,20 +218,15 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
     parsedMask = BV_SCHEMA_GROUP_AGGRESSIVE;
     parsedRounds = BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
   }
-  else if (text == "broad-no-pair")
+  else if (text == "broad")
   {
-    parsedMask = BV_SCHEMA_GROUP_BROAD_NO_PAIR;
-    parsedRounds = BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS;
-  }
-  else if (text == "broad-prefix")
-  {
-    parsedMask = BV_SCHEMA_GROUP_BROAD_PREFIX;
-    parsedRounds = BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
+    parsedMask = BV_SCHEMA_GROUP_BROAD;
+    parsedRounds = BV_TERM_ABSTRACTION_BROAD_ROUNDS;
   }
   else
   {
     error = "unknown BV term-abstraction profile '" + text +
-            "'; expected qualified, broad-no-pair, broad-prefix, or aggressive";
+            "'; expected qualified, broad, or aggressive";
     return false;
   }
 

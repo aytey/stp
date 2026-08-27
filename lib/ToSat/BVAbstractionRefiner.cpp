@@ -757,23 +757,23 @@ bool exactLowPrefixHolds(Kind opKind, const std::vector<bool>& aBits,
   return true;
 }
 
-bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
-                          const std::vector<bool>& divisorBits,
-                          const std::vector<bool>& quotientBits,
-                          const std::vector<bool>& remainderBits,
-                          unsigned prefixBits)
+bool divRemIdentityHolds(const std::vector<bool>& dividendBits,
+                         const std::vector<bool>& divisorBits,
+                         const std::vector<bool>& quotientBits,
+                         const std::vector<bool>& remainderBits)
 {
   assert(dividendBits.size() == divisorBits.size());
   assert(dividendBits.size() == quotientBits.size());
   assert(dividendBits.size() == remainderBits.size());
-  assert(prefixBits > 0 && prefixBits <= dividendBits.size());
+  assert(!dividendBits.empty());
 
-  std::vector<bool> product(prefixBits, false);
-  for (unsigned i = 0; i < prefixBits; ++i)
+  const unsigned width = static_cast<unsigned>(dividendBits.size());
+  std::vector<bool> product(width, false);
+  for (unsigned i = 0; i < width; ++i)
     if (quotientBits[i])
     {
       bool carry = false;
-      for (unsigned j = 0; i + j < prefixBits; ++j)
+      for (unsigned j = 0; i + j < width; ++j)
       {
         const unsigned bit = i + j;
         const bool addend = divisorBits[j];
@@ -785,7 +785,7 @@ bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
     }
 
   bool carry = false;
-  for (unsigned i = 0; i < prefixBits; ++i)
+  for (unsigned i = 0; i < width; ++i)
   {
     const bool sum = (product[i] != remainderBits[i]) != carry;
     carry = (product[i] && remainderBits[i]) || (product[i] && carry) ||
@@ -1396,7 +1396,6 @@ void BVAbstractionRefiner::reportRecords(std::ostream& out) const
         << " exact-bits=" << abs.blastedBits
         << " allowance=" << allowance
         << " paired=" << (paired ? 1 : 0)
-        << " pair-prefix=" << (abs.divRemLowPrefixInstalled ? 1 : 0)
         << " pair-full=" << (abs.divRemFullInstalled ? 1 : 0)
         << " blocking-clauses=" << blockingClauses
         << " blocking-literals=" << blockingLiterals
@@ -1779,32 +1778,6 @@ void encodeDivisorMagnitudeBound(
   }
 }
 
-void encodeDivRemLowPrefix(SATSolver& solver,
-                           const std::vector<unsigned>& dividendVars,
-                           const std::vector<unsigned>& divisorVars,
-                           const std::vector<unsigned>& quotientVars,
-                           const std::vector<unsigned>& remainderVars,
-                           unsigned width, unsigned prefixBits)
-{
-  assert(width > 0);
-  assert(prefixBits > 0 && prefixBits <= width && prefixBits <= 3);
-  assert(dividendVars.size() >= width);
-  assert(divisorVars.size() >= width);
-  assert(quotientVars.size() >= width);
-  assert(remainderVars.size() >= width);
-
-  std::vector<unsigned> product(prefixBits);
-  for (unsigned i = 0; i < prefixBits; ++i)
-    product[i] = freshVar(solver);
-
-  // Both component encoders depend only on the low prefix. Passing that as
-  // their circuit width avoids minting W-prefix unused product variables.
-  encodeMulLowPrefix(solver, quotientVars, divisorVars, product, prefixBits,
-                     prefixBits);
-  encodeAddLowPrefix(solver, product, remainderVars, dividendVars, prefixBits,
-                     prefixBits);
-}
-
 void encodeDivUnderDivisorValue(
     SATSolver& solver, const std::vector<unsigned>& divisorVars,
     const std::vector<bool>& divisorBits,
@@ -1875,8 +1848,6 @@ unsigned BVAbstractionRefiner::refineTerms(
   struct InconsistentDivRemPair {
     size_t divIdx;
     size_t remIdx;
-    unsigned prefixBits;
-    BVSchemaGroup group;
     ASTNode product;
   };
 
@@ -1892,14 +1863,9 @@ unsigned BVAbstractionRefiner::refineTerms(
   // per-record scan, and give a violated recomposition fact first refusal for
   // this round. Node numbers are unique within the manager and the width is
   // part of the key, so only genuinely identical operations meet here.
-  const uint32_t enabledSchemaGroups =
-      bm->UserFlags.bv_term_abstraction_schema_groups;
-  const bool lowPairEnabled =
-      bvSchemaGroupEnabled(enabledSchemaGroups, BVSchemaGroup::DIVREM_PAIR);
-  const bool fullPairEnabled =
-      bvSchemaGroupEnabled(enabledSchemaGroups, BVSchemaGroup::DIVREM_FULL);
   if (bm->UserFlags.bv_term_abstraction_schemas &&
-      (lowPairEnabled || fullPairEnabled))
+      bvSchemaGroupEnabled(bm->UserFlags.bv_term_abstraction_schema_groups,
+                           BVSchemaGroup::DIVREM_FULL))
   {
     for (const DivRemPair& pair : divRemPairs(terms_))
     {
@@ -1909,14 +1875,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       // there is nothing here to read a model for.
       if (div.defined && rem.defined)
         continue;
-      const bool fullInstalled =
-          div.divRemFullInstalled || rem.divRemFullInstalled;
-      const bool lowAvailable =
-          lowPairEnabled && !fullInstalled &&
-          !div.divRemLowPrefixInstalled && !rem.divRemLowPrefixInstalled;
-      const bool fullAvailable =
-          fullPairEnabled && !fullInstalled;
-      if (!lowAvailable && !fullAvailable)
+      if (div.divRemFullInstalled || rem.divRemFullInstalled)
         continue;
       const unsigned schemaLimit = bm->UserFlags.bv_term_abstraction_rounds;
       if (schemaLimit != 0 &&
@@ -1933,35 +1892,18 @@ unsigned BVAbstractionRefiner::refineTerms(
       readModelBits(encodedResultBitsOf(rem, nodeToSATVar), rem.width, solver,
                     remainderBits);
 
-      const unsigned lowPrefix = std::min(3u, div.width);
-      BVSchemaGroup chosenGroup = BVSchemaGroup::COUNT;
-      ASTNode product;
-      unsigned chosenPrefix = 0;
-      if (lowAvailable &&
-          !divRemLowPrefixHolds(dividendBits, divisorBits, quotientBits,
-                                remainderBits, lowPrefix))
-      {
-        chosenGroup = BVSchemaGroup::DIVREM_PAIR;
-        chosenPrefix = lowPrefix;
-      }
-      else if (fullAvailable &&
-               !divRemLowPrefixHolds(dividendBits, divisorBits, quotientBits,
-                                     remainderBits, div.width))
-      {
-        product = bm->defaultNodeFactory->CreateTerm(
-            BVMULT, div.width, div.termNode, div.operands[1]);
-        // A folded product leaves no multiplication circuit worth splicing.
-        // The individual schemas and fallback below remain available.
-        if (product.GetKind() != BVMULT)
-          continue;
-        chosenGroup = BVSchemaGroup::DIVREM_FULL;
-        chosenPrefix = div.width;
-      }
-      else
+      if (divRemIdentityHolds(dividendBits, divisorBits, quotientBits,
+                              remainderBits))
         continue;
 
-      incDivRemPairs.push_back(
-          {pair.divIdx, pair.remIdx, chosenPrefix, chosenGroup, product});
+      const ASTNode product = bm->defaultNodeFactory->CreateTerm(
+          BVMULT, div.width, div.termNode, div.operands[1]);
+      // A folded product leaves no multiplication circuit worth splicing.
+      // The individual schemas and fallback below remain available.
+      if (product.GetKind() != BVMULT)
+        continue;
+
+      incDivRemPairs.push_back({pair.divIdx, pair.remIdx, product});
       handledByDivRemPair[pair.divIdx] = true;
       handledByDivRemPair[pair.remIdx] = true;
     }
@@ -2225,30 +2167,16 @@ unsigned BVAbstractionRefiner::refineTerms(
     const std::vector<unsigned>& remainderVars =
         encodedResultBitsOf(rem, nodeToSATVar);
 
-    if (inc.group == BVSchemaGroup::DIVREM_PAIR)
-    {
-      encodeDivRemLowPrefix(solver, dividendVars, divisorVars, quotientVars,
-                            remainderVars, div.width, inc.prefixBits);
-      div.divRemLowPrefixInstalled = true;
-      rem.divRemLowPrefixInstalled = true;
-    }
-    else
-    {
-      assert(inc.group == BVSchemaGroup::DIVREM_FULL);
-      exact_.encodeDivRemIdentity(
-          solver, inc.product, div.width, dividendVars, divisorVars,
-          quotientVars, remainderVars);
-      div.divRemFullInstalled = true;
-      rem.divRemFullInstalled = true;
-    }
+    exact_.encodeDivRemIdentity(solver, inc.product, div.width, dividendVars,
+                                divisorVars, quotientVars, remainderVars);
+    div.divRemFullInstalled = true;
+    rem.divRemFullInstalled = true;
     div.schemaRounds++;
     rem.schemaRounds++;
-    countSchemaLemma(bm->UserFlags, inc.group);
+    countSchemaLemma(bm->UserFlags, BVSchemaGroup::DIVREM_FULL);
     if (bm->UserFlags.stats_flag)
-      std::cerr << "BV abstraction: paired BVDIV/BVMOD "
-                << (inc.group == BVSchemaGroup::DIVREM_FULL ? "full " : "")
-                << "recomposition lemma over " << inc.prefixBits << " bits"
-                << std::endl;
+      std::cerr << "BV abstraction: paired BVDIV/BVMOD recomposition lemma "
+                << "over " << div.width << " bits" << std::endl;
     refined++;
   }
 
