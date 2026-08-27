@@ -276,7 +276,7 @@ TEST(BVAbstractionLemma, custom_facts_have_the_ranked_registry_positions)
   EXPECT_EQ(MulLemma::FactorAndProductNotOr, mul[1].lemma);
 }
 
-TEST(BVAbstractionLemma, descriptive_tail_names_keep_the_actual_source_ids)
+TEST(BVAbstractionLemma, every_enumerator_and_its_diagnostic_name_agree)
 {
   struct DivName
   {
@@ -284,29 +284,29 @@ TEST(BVAbstractionLemma, descriptive_tail_names_keep_the_actual_source_ids)
     const char* name;
   };
   const DivName divNames[] = {
-      {DivLemma::UdivRef10, "divisor-or-quotient-not-masked-dividend"},
-      {DivLemma::UdivRef11, "divisor-or-one-not-dividend-without-quotient"},
-      {DivLemma::UdivRef20,
+      {DivLemma::DivisorOrQuotientNotMaskedDividend, "divisor-or-quotient-not-masked-dividend"},
+      {DivLemma::DivisorOrOneNotDividendWithoutQuotient, "divisor-or-one-not-dividend-without-quotient"},
+      {DivLemma::DivisorNotNegatedSelfShiftedByHalfQuotient,
        "divisor-not-negated-self-shifted-by-half-quotient"},
-      {DivLemma::UdivRef21, "dividend-not-negated-and-doubled-quotient"},
-      {DivLemma::UdivRef23,
+      {DivLemma::DividendNotNegatedAndDoubledQuotient, "dividend-not-negated-and-doubled-quotient"},
+      {DivLemma::QuotientAboveDoubledDividendShiftedByDivisor,
        "quotient-above-doubled-dividend-shifted-by-divisor"},
-      {DivLemma::UdivRef24,
+      {DivLemma::DividendAboveDivisorShiftedByNegatedOr,
        "dividend-above-divisor-shifted-by-negated-or"},
-      {DivLemma::UdivRef25,
+      {DivLemma::DividendAboveQuotientShiftedByNegatedOr,
        "dividend-above-quotient-shifted-by-negated-or"},
-      {DivLemma::UdivRef28,
+      {DivLemma::DividendAboveDivisorShiftedByNegatedXor,
        "dividend-above-divisor-shifted-by-negated-xor"},
-      {DivLemma::UdivRef29,
+      {DivLemma::DividendAboveQuotientShiftedByNegatedXor,
        "dividend-above-quotient-shifted-by-negated-xor"},
-      {DivLemma::UdivRef30, "dividend-not-quotient-plus-divisor-or-sum"},
-      {DivLemma::UdivRef31,
+      {DivLemma::DividendNotQuotientPlusDivisorOrSum, "dividend-not-quotient-plus-divisor-or-sum"},
+      {DivLemma::DividendNotQuotientPlusOnePlusShiftedOne,
        "dividend-not-quotient-plus-one-plus-shifted-one"},
-      {DivLemma::UdivRef32, "divisor-above-sum-shifted-by-quotient"},
-      {DivLemma::UdivRef34, "divisor-xor-or-above-quotient-xor-one"},
-      {DivLemma::UdivRef36,
+      {DivLemma::DivisorAboveSumShiftedByQuotient, "divisor-above-sum-shifted-by-quotient"},
+      {DivLemma::DivisorXorOrAboveQuotientXorOne, "divisor-xor-or-above-quotient-xor-one"},
+      {DivLemma::QuotientAboveDividendShiftedByDivisorLessOne,
        "quotient-above-dividend-shifted-by-divisor-less-one"},
-      {DivLemma::UdivRef38, "dividend-not-one-less-shifted-dividend"}};
+      {DivLemma::DividendNotOneLessShiftedDividend, "dividend-not-one-less-shifted-dividend"}};
   for (const DivName& item : divNames)
     EXPECT_STREQ(item.name, divLemmaName(item.lemma));
 
@@ -316,22 +316,22 @@ TEST(BVAbstractionLemma, descriptive_tail_names_keep_the_actual_source_ids)
     const char* name;
   };
   const MulName mulNames[] = {
-      {MulLemma::MulRef1, "factor-not-negated-product-or-low-bit"},
-      {MulLemma::MulRefN3,
+      {MulLemma::FactorNotNegatedProductOrLowBit, "factor-not-negated-product-or-low-bit"},
+      {MulLemma::ProductNotOddFactorShiftedByShiftedProduct,
        "product-not-odd-factor-shifted-by-shifted-product"},
-      {MulLemma::MulRefN5, "product-above-masked-shifted-factors"},
-      {MulLemma::MulRefN6, "factor-not-one-xor-factor-shifted-by-xor"},
-      {MulLemma::MulRef14, "product-not-one-or-negated-xor"},
-      {MulLemma::MulRef15, "product-not-high-ones-or-xor"},
-      {MulLemma::MulRefN9, "factor-not-shifted-factor-less-one"},
-      {MulLemma::MulRef18, "factor-not-one-less-shifted-factor"},
-      {MulLemma::MulRefN11, "factor-not-one-plus-shifted-factor"},
-      {MulLemma::MulRefN12,
+      {MulLemma::ProductAboveMaskedShiftedFactors, "product-above-masked-shifted-factors"},
+      {MulLemma::FactorNotOneXorFactorShiftedByXor, "factor-not-one-xor-factor-shifted-by-xor"},
+      {MulLemma::ProductNotOneOrNegatedXor, "product-not-one-or-negated-xor"},
+      {MulLemma::ProductNotHighOnesOrXor, "product-not-high-ones-or-xor"},
+      {MulLemma::FactorNotShiftedFactorLessOne, "factor-not-shifted-factor-less-one"},
+      {MulLemma::FactorNotOneLessShiftedFactor, "factor-not-one-less-shifted-factor"},
+      {MulLemma::FactorNotOnePlusShiftedFactor, "factor-not-one-plus-shifted-factor"},
+      {MulLemma::FactorNotOneLessShiftedFactorReversed,
        "factor-not-one-less-shifted-factor-reversed"},
-      {MulLemma::MulRefN13,
+      {MulLemma::FactorNotOnePlusShiftedFactorReversed,
        "factor-not-one-plus-shifted-factor-reversed"},
-      {MulLemma::MulRef13, "product-not-one-or-sum"},
-      {MulLemma::MulRef12, "factor-not-negated-shifted-factor"}};
+      {MulLemma::ProductNotOneOrSum, "product-not-one-or-sum"},
+      {MulLemma::FactorNotNegatedShiftedFactor, "factor-not-negated-shifted-factor"}};
   for (const MulName& item : mulNames)
     EXPECT_STREQ(item.name, mulLemmaName(item.lemma));
 }
@@ -432,6 +432,44 @@ std::vector<unsigned> samplePool(unsigned width, unsigned count)
     pool.push_back((state >> 8) & mask);
   }
   return pool;
+}
+
+// No fact may be another fact read the other way round.
+//
+// The chooser offers every commutative operation's facts in both operand
+// readings, so a catalogue that also contains a fact's own mirror image holds
+// an entry that can never be selected: by the time the chooser reaches it,
+// both of its readings have already been offered as the original's. One such
+// entry was imported before this was checked -- the low-bit implication for
+// the second operand, which is the first operand's with x and s exchanged.
+//
+// A dead entry costs two installed-schema bits and two predicate evaluations
+// per record per round, and reads as coverage it does not provide.
+TEST(BVAbstractionLemma, no_fact_is_another_fact_with_its_operands_swapped)
+{
+  const unsigned width = 4;
+  const unsigned values = 1u << width;
+  for (const Family& family : families())
+    for (size_t i = 0; i < family.facts.size(); ++i)
+      for (size_t j = 0; j < family.facts.size(); ++j)
+      {
+        if (i == j) continue;
+        if (!family.facts[i].applicable(width) ||
+            !family.facts[j].applicable(width))
+          continue;
+        bool differs = false;
+        for (unsigned x = 0; x < values && !differs; ++x)
+          for (unsigned s = 0; s < values && !differs; ++s)
+            for (unsigned t = 0; t < values && !differs; ++t)
+              differs = family.facts[i].holds(bitsOf(x, width), bitsOf(s, width),
+                                              bitsOf(t, width)) !=
+                        family.facts[j].holds(bitsOf(s, width), bitsOf(x, width),
+                                              bitsOf(t, width));
+        EXPECT_TRUE(differs)
+            << family.name << ": " << family.facts[j].name << " is "
+            << family.facts[i].name << " with its operands exchanged, so the "
+               "chooser can never select it";
+      }
 }
 
 TEST_F(BVAbstractionLemmaTest, every_circuit_agrees_with_its_predicate_when_sampled_wide)

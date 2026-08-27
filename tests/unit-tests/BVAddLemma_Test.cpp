@@ -110,7 +110,7 @@ TEST(BVAddLemma, registry_is_complete)
 {
   unsigned count = 0;
   addLemmaTable(count);
-  EXPECT_EQ(13u, count);
+  EXPECT_EQ(BV_ADD_LEMMA_COUNT, count);
 }
 
 TEST(BVAddLemma, every_lemma_is_true_of_addition)
@@ -288,13 +288,13 @@ TEST(BVAddLemma, residual_low_bit_errors_take_the_exact_prefix)
 
 TEST(BVAddLemma, small_width_restrictions_are_explicit)
 {
-  EXPECT_FALSE(addLemmaApplicable(AddLemma::AddRef10, 2));
-  EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef10, 3));
-  EXPECT_FALSE(addLemmaApplicable(AddLemma::AddRef11, 1));
-  EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef11, 2));
-  EXPECT_FALSE(addLemmaApplicable(AddLemma::AddRef12, 2));
-  EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef12, 3));
-  EXPECT_TRUE(addLemmaApplicable(AddLemma::AddRef9, 1));
+  EXPECT_FALSE(addLemmaApplicable(AddLemma::SumOrNegatedAndNotOne, 2));
+  EXPECT_TRUE(addLemmaApplicable(AddLemma::SumOrNegatedAndNotOne, 3));
+  EXPECT_FALSE(addLemmaApplicable(AddLemma::SumNotNegatedSumOrAnd, 1));
+  EXPECT_TRUE(addLemmaApplicable(AddLemma::SumNotNegatedSumOrAnd, 2));
+  EXPECT_FALSE(addLemmaApplicable(AddLemma::OperandsOrNegatedSumNotOne, 2));
+  EXPECT_TRUE(addLemmaApplicable(AddLemma::OperandsOrNegatedSumNotOne, 3));
+  EXPECT_TRUE(addLemmaApplicable(AddLemma::SumLowBitNeedsAnOperand, 1));
 }
 
 TEST(BVAddLemma, schema_groups_gate_addition_before_selection)

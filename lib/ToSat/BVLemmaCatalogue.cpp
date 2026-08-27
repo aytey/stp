@@ -291,11 +291,11 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
       // s <=u x <u 2s -> t = 1
       return !fitsExactlyOnce(x, s) || t == one;
 
-    case DivLemma::UdivRef10:
+    case DivLemma::DivisorOrQuotientNotMaskedDividend:
       // (s | t) != (x & ~1)
       return orOf(s, t) != andOf(x, notOf(one));
 
-    case DivLemma::UdivRef11:
+    case DivLemma::DivisorOrOneNotDividendWithoutQuotient:
       // (s | 1) != (x & ~t)
     {
       std::vector<bool> sOrOne = s;
@@ -303,55 +303,55 @@ bool divLemmaHolds(DivLemma lemma, const std::vector<bool>& x,
       return sOrOne != andOf(x, notOf(t));
     }
 
-    case DivLemma::UdivRef20:
+    case DivLemma::DivisorNotNegatedSelfShiftedByHalfQuotient:
       // s != ~(s >> (t >> 1))
       return s != notOf(shrOf(s, shrOf(t, one)));
 
-    case DivLemma::UdivRef21:
+    case DivLemma::DividendNotNegatedAndDoubledQuotient:
       // x != ~(x & (t << 1))
       return x != notOf(andOf(x, shlOf(t, one)));
 
-    case DivLemma::UdivRef23:
+    case DivLemma::QuotientAboveDoubledDividendShiftedByDivisor:
       // t >=u ((x << 1) >> s)
       return ule(shrOf(shlOf(x, one), s), t);
 
-    case DivLemma::UdivRef24:
+    case DivLemma::DividendAboveDivisorShiftedByNegatedOr:
       // x >=u (s << ~(x | t))
       return ule(shlOf(s, notOf(orOf(x, t))), x);
 
-    case DivLemma::UdivRef25:
+    case DivLemma::DividendAboveQuotientShiftedByNegatedOr:
       // x >=u (t << ~(x | s))
       return ule(shlOf(t, notOf(orOf(x, s))), x);
 
-    case DivLemma::UdivRef28:
+    case DivLemma::DividendAboveDivisorShiftedByNegatedXor:
       // x >=u (s << ~(x xor t))
       return ule(shlOf(s, notOf(xorOf(x, t))), x);
 
-    case DivLemma::UdivRef29:
+    case DivLemma::DividendAboveQuotientShiftedByNegatedXor:
       // x >=u (t << ~(x xor s))
       return ule(shlOf(t, notOf(xorOf(x, s))), x);
 
-    case DivLemma::UdivRef30:
+    case DivLemma::DividendNotQuotientPlusDivisorOrSum:
       // x != t + (s | (x + s))
       return x != addOf(t, orOf(s, addOf(x, s)));
 
-    case DivLemma::UdivRef31:
+    case DivLemma::DividendNotQuotientPlusOnePlusShiftedOne:
       // x != t + (1 + (1 << x))
       return x != addOf(t, addOf(one, shlOf(one, x)));
 
-    case DivLemma::UdivRef32:
+    case DivLemma::DivisorAboveSumShiftedByQuotient:
       // s >=u ((x + t) >> t)
       return ule(shrOf(addOf(x, t), t), s);
 
-    case DivLemma::UdivRef34:
+    case DivLemma::DivisorXorOrAboveQuotientXorOne:
       // (s xor (x | t)) >=u (t xor 1)
       return ule(xorOf(t, one), xorOf(s, orOf(x, t)));
 
-    case DivLemma::UdivRef36:
+    case DivLemma::QuotientAboveDividendShiftedByDivisorLessOne:
       // t >=u (x >> (s - 1))
       return ule(shrOf(x, decOf(s)), t);
 
-    case DivLemma::UdivRef38:
+    case DivLemma::DividendNotOneLessShiftedDividend:
       // x != 1 - (x << (x - t))
       return x != subOf(one, shlOf(x, subOf(x, t)));
   }
@@ -438,7 +438,7 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
       // s = s << (x & (1 >> t))
       return s == shlOf(s, andOf(x, shrOf(one, t)));
 
-    case MulLemma::MulRef1:
+    case MulLemma::FactorNotNegatedProductOrLowBit:
       // s != ~(t | (1 & (x | s)))
       return s != notOf(orOf(t, andOf(one, orOf(x, s))));
 
@@ -446,7 +446,7 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
       // (x & t) != (s | ~t)
       return andOf(x, t) != orOf(s, notOf(t));
 
-    case MulLemma::MulRefN3:
+    case MulLemma::ProductNotOddFactorShiftedByShiftedProduct:
     {
       // t != ((s | 1) << (t << x))
       std::vector<bool> sOrOne = s;
@@ -454,47 +454,47 @@ bool mulLemmaHolds(MulLemma lemma, const std::vector<bool>& x,
       return t != shlOf(sOrOne, shlOf(t, x));
     }
 
-    case MulLemma::MulRefN5:
+    case MulLemma::ProductAboveMaskedShiftedFactors:
       // t >=u (1 & ((x & s) >> 1))
       return ule(andOf(one, shrOf(andOf(x, s), one)), t);
 
-    case MulLemma::MulRefN6:
+    case MulLemma::FactorNotOneXorFactorShiftedByXor:
       // x != (1 xor (x << (s xor t)))
       return x != xorOf(one, shlOf(x, xorOf(s, t)));
 
-    case MulLemma::MulRef14:
+    case MulLemma::ProductNotOneOrNegatedXor:
       // t != (1 | ~(x xor s))
       return t != orOf(one, notOf(xorOf(x, s)));
 
-    case MulLemma::MulRef15:
+    case MulLemma::ProductNotHighOnesOrXor:
       // t != (~1 | (x xor s))
       return t != orOf(notOf(one), xorOf(x, s));
 
-    case MulLemma::MulRefN9:
+    case MulLemma::FactorNotShiftedFactorLessOne:
       // x != (x << (s + t)) - 1
       return x != subOf(shlOf(x, addOf(s, t)), one);
 
-    case MulLemma::MulRef18:
+    case MulLemma::FactorNotOneLessShiftedFactor:
       // x != 1 - (x << (s - t))
       return x != subOf(one, shlOf(x, subOf(s, t)));
 
-    case MulLemma::MulRefN11:
+    case MulLemma::FactorNotOnePlusShiftedFactor:
       // s != 1 + (s << (t - x))
       return s != addOf(one, shlOf(s, subOf(t, x)));
 
-    case MulLemma::MulRefN12:
+    case MulLemma::FactorNotOneLessShiftedFactorReversed:
       // s != 1 - (s << (t - x))
       return s != subOf(one, shlOf(s, subOf(t, x)));
 
-    case MulLemma::MulRefN13:
+    case MulLemma::FactorNotOnePlusShiftedFactorReversed:
       // s != 1 + (s << (x - t))
       return s != addOf(one, shlOf(s, subOf(x, t)));
 
-    case MulLemma::MulRef13:
+    case MulLemma::ProductNotOneOrSum:
       // t != (1 | (x + s))
       return t != orOf(one, addOf(x, s));
 
-    case MulLemma::MulRef12:
+    case MulLemma::FactorNotNegatedShiftedFactor:
       // x != ~(x << (s + t))
       return x != notOf(shlOf(x, addOf(s, t)));
   }
@@ -540,31 +540,28 @@ bool addLemmaHolds(AddLemma lemma, const std::vector<bool>& x,
       // x & s = 0 -> t = x | s
       return !allZero(andOf(x, s)) || t == orOf(x, s);
 
-    case AddLemma::AddRef6:
+    case AddLemma::LowBitsNotAllSet:
       // 0 = x & s & t & 1
       return zero == andOf(x, andOf(s, andOf(t, one)));
 
-    case AddLemma::AddRef7:
+    case AddLemma::LowBitNeedsOtherOrSum:
       // (1 & (s | t)) >=u (x & 1)
       return ule(andOf(x, one), andOf(one, orOf(s, t)));
 
-    case AddLemma::AddRef8:
-      // (1 & (x | t)) >=u (s & 1)
-      return ule(andOf(s, one), andOf(one, orOf(x, t)));
 
-    case AddLemma::AddRef9:
+    case AddLemma::SumLowBitNeedsAnOperand:
       // (1 & (x | s)) >=u (t & 1)
       return ule(andOf(t, one), andOf(one, orOf(x, s)));
 
-    case AddLemma::AddRef10:
+    case AddLemma::SumOrNegatedAndNotOne:
       // 1 != (t | ~(x & s))
       return one != orOf(t, notOf(andOf(x, s)));
 
-    case AddLemma::AddRef11:
+    case AddLemma::SumNotNegatedSumOrAnd:
       // t != ~(t | (x & s))
       return t != notOf(orOf(t, andOf(x, s)));
 
-    case AddLemma::AddRef12:
+    case AddLemma::OperandsOrNegatedSumNotOne:
       // 1 != (x | s | ~t)
       return one != orOf(x, orOf(s, notOf(t)));
   }
@@ -632,35 +629,35 @@ const BVLemmaEntry<DivLemma> DIV_LEMMAS[] = {
      0}, // 2
 
     // The tail that did not fire on the qualification corpus.
-    {DivLemma::UdivRef10, "divisor-or-quotient-not-masked-dividend",
+    {DivLemma::DivisorOrQuotientNotMaskedDividend, "divisor-or-quotient-not-masked-dividend",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef11, "divisor-or-one-not-dividend-without-quotient",
+    {DivLemma::DivisorOrOneNotDividendWithoutQuotient, "divisor-or-one-not-dividend-without-quotient",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef20, "divisor-not-negated-self-shifted-by-half-quotient",
+    {DivLemma::DivisorNotNegatedSelfShiftedByHalfQuotient, "divisor-not-negated-self-shifted-by-half-quotient",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef21, "dividend-not-negated-and-doubled-quotient",
+    {DivLemma::DividendNotNegatedAndDoubledQuotient, "dividend-not-negated-and-doubled-quotient",
      BVSchemaGroup::UDIV_TAIL, 2, 0},
-    {DivLemma::UdivRef23, "quotient-above-doubled-dividend-shifted-by-divisor",
+    {DivLemma::QuotientAboveDoubledDividendShiftedByDivisor, "quotient-above-doubled-dividend-shifted-by-divisor",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef24, "dividend-above-divisor-shifted-by-negated-or",
+    {DivLemma::DividendAboveDivisorShiftedByNegatedOr, "dividend-above-divisor-shifted-by-negated-or",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef25, "dividend-above-quotient-shifted-by-negated-or",
+    {DivLemma::DividendAboveQuotientShiftedByNegatedOr, "dividend-above-quotient-shifted-by-negated-or",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef28, "dividend-above-divisor-shifted-by-negated-xor",
+    {DivLemma::DividendAboveDivisorShiftedByNegatedXor, "dividend-above-divisor-shifted-by-negated-xor",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef29, "dividend-above-quotient-shifted-by-negated-xor",
+    {DivLemma::DividendAboveQuotientShiftedByNegatedXor, "dividend-above-quotient-shifted-by-negated-xor",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef30, "dividend-not-quotient-plus-divisor-or-sum",
+    {DivLemma::DividendNotQuotientPlusDivisorOrSum, "dividend-not-quotient-plus-divisor-or-sum",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef31, "dividend-not-quotient-plus-one-plus-shifted-one",
+    {DivLemma::DividendNotQuotientPlusOnePlusShiftedOne, "dividend-not-quotient-plus-one-plus-shifted-one",
      BVSchemaGroup::UDIV_TAIL, 3, 0},
-    {DivLemma::UdivRef32, "divisor-above-sum-shifted-by-quotient",
+    {DivLemma::DivisorAboveSumShiftedByQuotient, "divisor-above-sum-shifted-by-quotient",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef34, "divisor-xor-or-above-quotient-xor-one",
+    {DivLemma::DivisorXorOrAboveQuotientXorOne, "divisor-xor-or-above-quotient-xor-one",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef36, "quotient-above-dividend-shifted-by-divisor-less-one",
+    {DivLemma::QuotientAboveDividendShiftedByDivisorLessOne, "quotient-above-dividend-shifted-by-divisor-less-one",
      BVSchemaGroup::UDIV_TAIL, 1, 0},
-    {DivLemma::UdivRef38, "dividend-not-one-less-shifted-dividend",
+    {DivLemma::DividendNotOneLessShiftedDividend, "dividend-not-one-less-shifted-dividend",
      BVSchemaGroup::UDIV_TAIL, 1, 2}};
 
 const BVLemmaEntry<RemLemma> REM_LEMMAS[] = {
@@ -696,33 +693,33 @@ const BVLemmaEntry<MulLemma> MUL_LEMMAS[] = {
      "factor-unchanged-by-masked-shift", BVSchemaGroup::MUL8, 1, 0}, // 75
     {MulLemma::FactorAndProductNotOr, "factor-and-product-not-or",
      BVSchemaGroup::MUL_REF3, 2, 0}, // 5
-    {MulLemma::MulRefN3, "product-not-odd-factor-shifted-by-shifted-product",
+    {MulLemma::ProductNotOddFactorShiftedByShiftedProduct, "product-not-odd-factor-shifted-by-shifted-product",
      BVSchemaGroup::MUL_TAIL, 2, 0}, // 4
 
     // The tail that did not fire, in catalogue order.
-    {MulLemma::MulRef1, "factor-not-negated-product-or-low-bit",
+    {MulLemma::FactorNotNegatedProductOrLowBit, "factor-not-negated-product-or-low-bit",
      BVSchemaGroup::MUL_TAIL, 2, 0},
-    {MulLemma::MulRefN5, "product-above-masked-shifted-factors",
+    {MulLemma::ProductAboveMaskedShiftedFactors, "product-above-masked-shifted-factors",
      BVSchemaGroup::MUL_TAIL, 1, 2},
-    {MulLemma::MulRefN6, "factor-not-one-xor-factor-shifted-by-xor",
+    {MulLemma::FactorNotOneXorFactorShiftedByXor, "factor-not-one-xor-factor-shifted-by-xor",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRef14, "product-not-one-or-negated-xor",
+    {MulLemma::ProductNotOneOrNegatedXor, "product-not-one-or-negated-xor",
      BVSchemaGroup::MUL_TAIL, 2, 0},
-    {MulLemma::MulRef15, "product-not-high-ones-or-xor",
+    {MulLemma::ProductNotHighOnesOrXor, "product-not-high-ones-or-xor",
      BVSchemaGroup::MUL_TAIL, 2, 0},
-    {MulLemma::MulRefN9, "factor-not-shifted-factor-less-one",
+    {MulLemma::FactorNotShiftedFactorLessOne, "factor-not-shifted-factor-less-one",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRef18, "factor-not-one-less-shifted-factor",
+    {MulLemma::FactorNotOneLessShiftedFactor, "factor-not-one-less-shifted-factor",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRefN11, "factor-not-one-plus-shifted-factor",
+    {MulLemma::FactorNotOnePlusShiftedFactor, "factor-not-one-plus-shifted-factor",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRefN12, "factor-not-one-less-shifted-factor-reversed",
+    {MulLemma::FactorNotOneLessShiftedFactorReversed, "factor-not-one-less-shifted-factor-reversed",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRefN13, "factor-not-one-plus-shifted-factor-reversed",
+    {MulLemma::FactorNotOnePlusShiftedFactorReversed, "factor-not-one-plus-shifted-factor-reversed",
      BVSchemaGroup::MUL_TAIL, 1, 0},
-    {MulLemma::MulRef13, "product-not-one-or-sum", BVSchemaGroup::MUL_TAIL, 2,
+    {MulLemma::ProductNotOneOrSum, "product-not-one-or-sum", BVSchemaGroup::MUL_TAIL, 2,
      0},
-    {MulLemma::MulRef12, "factor-not-negated-shifted-factor",
+    {MulLemma::FactorNotNegatedShiftedFactor, "factor-not-negated-shifted-factor",
      BVSchemaGroup::MUL_TAIL, 1, 0}};
 
 const BVLemmaEntry<AddLemma> ADD_LEMMAS[] = {
@@ -732,13 +729,12 @@ const BVLemmaEntry<AddLemma> ADD_LEMMAS[] = {
     {AddLemma::AddOverflow, "add-overflow", BVSchemaGroup::ADD, 1, 0},
     {AddLemma::AddNoOverflow, "add-no-overflow", BVSchemaGroup::ADD, 1, 0},
     {AddLemma::AddOr, "add-or", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddRef6, "add-ref6", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddRef7, "add-ref7", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddRef8, "add-ref8", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddRef9, "add-ref9", BVSchemaGroup::ADD, 1, 0},
-    {AddLemma::AddRef10, "add-ref10", BVSchemaGroup::ADD, 3, 0},
-    {AddLemma::AddRef11, "add-ref11", BVSchemaGroup::ADD, 2, 0},
-    {AddLemma::AddRef12, "add-ref12", BVSchemaGroup::ADD, 3, 0}};
+    {AddLemma::LowBitsNotAllSet, "add-low-bits-not-all-set", BVSchemaGroup::ADD, 1, 0},
+    {AddLemma::LowBitNeedsOtherOrSum, "add-low-bit-needs-other-or-sum", BVSchemaGroup::ADD, 1, 0},
+    {AddLemma::SumLowBitNeedsAnOperand, "add-sum-low-bit-needs-an-operand", BVSchemaGroup::ADD, 1, 0},
+    {AddLemma::SumOrNegatedAndNotOne, "add-sum-or-negated-and-not-one", BVSchemaGroup::ADD, 3, 0},
+    {AddLemma::SumNotNegatedSumOrAnd, "add-sum-not-negated-sum-or-and", BVSchemaGroup::ADD, 2, 0},
+    {AddLemma::OperandsOrNegatedSumNotOne, "add-operands-or-negated-sum-not-one", BVSchemaGroup::ADD, 3, 0}};
 
 static_assert(sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]) ==
                   BV_DIV_LEMMA_COUNT,

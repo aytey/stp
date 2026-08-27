@@ -62,6 +62,12 @@ namespace stp
 // and are reimplemented here against STP's own bit-blaster rather than
 // copied from anywhere.
 //
+// Each enumerator says what its fact is; the label in brackets beside it is
+// the paper's name for the same fact, so a reader can go and check. The name
+// carries the meaning and the bracket carries the provenance -- a bare
+// number does neither, and a bare number that has drifted out of step with
+// the paper is worse than none, which is what these were.
+//
 // The four with no premise are not facts anyone would derive by thinking
 // about division -- `x >=u -((-s) & (-t))` is the output of the syntax-guided
 // synthesis that paper describes -- which is the argument for taking a
@@ -72,86 +78,114 @@ namespace stp
 // not evidence that every fact should eventually be enabled by default.
 enum class DivLemma
 {
-  // x = 0 and s != 0 -> t = 0
+  // x = 0 and s != 0 -> t = 0  (UDIV4)
   DividendZero,
-  // s = x and s != 0 -> t = 1
+  // s = x and s != 0 -> t = 1  (UDIV2)
   DivisorEqualsDividend,
-  // s = ~0 and x != ~0 -> t = 0
+  // s = ~0 and x != ~0 -> t = 0  (UDIV6)
   DivisorAllOnes,
-  // t <=u -(s | 1)
+  // t <=u -(s | 1)  (UDIV8)
   QuotientBelowNegatedDivisor,
-  // x >=u -((-s) & (-t))
+  // x >=u -((-s) & (-t))  (UDIV7)
   DividendAboveNegatedAnd,
-  // s >=u (x >> t)
+  // s >=u (x >> t)  (UDIV13)
   DivisorAboveShiftedDividend,
-  // (s - 1) >=u (x >> t)
+  // (s - 1) >=u (x >> t)  (UDIV35)
   DivisorLessOneAboveShiftedDividend,
-  // x >=u ((t << 1) >> (t << s))
+  // x >=u ((t << 1) >> (t << s))  (UDIV15)
   DividendAboveShiftedDoubleQuotient,
 
-  // t != -(s & ~x)
+  // t != -(s & ~x)  (UDIV9)
   QuotientNotNegatedAnd,
-  // (x & -t) >=u (s & t)
+  // (x & -t) >=u (s & t)  (UDIV12)
   MaskedDividendAboveDivisorAndQuotient,
-  // x >=u ((s >> (s << t)) << 1)
+  // x >=u ((s >> (s << t)) << 1)  (UDIV14)
   DividendAboveDoubledShiftedDivisor,
-  // t >=u ((x >> s) << 1)
+  // t >=u ((x >> s) << 1)  (UDIV16)
   QuotientAboveDoubledShiftedDividend,
-  // x >=u ((x | t) & (s << 1))
+  // x >=u ((x | t) & (s << 1))  (UDIV17)
   DividendAboveOrAndDoubledDivisor,
-  // x >=u ((x | s) & (t << 1))
+  // x >=u ((x | s) & (t << 1))  (UDIV18)
   DividendAboveOrAndDoubledQuotient,
-  // (x >> t) != (s | t)
+  // (x >> t) != (s | t)  (UDIV19)
   ShiftedDividendNotOr,
-  // x >=u (t xor (t >> (s >> 1)))
+  // x >=u (t xor (t >> (s >> 1)))  (UDIV25)
   DividendAboveQuotientXorShifted,
-  // x >=u (s xor (s >> (t >> 1)))
+  // x >=u (s xor (s >> (t >> 1)))  (UDIV26)
   DividendAboveDivisorXorShifted,
-  // x != t + t + (x | s)
+  // x != t + t + (x | s)  (UDIV32)
   DividendNotTwiceQuotientPlusOr,
 
   // s <=u x <u 2s -> t = 1. This STP-specific exact-band fact shares its
   // premise with RemainderIsDifference and is ranked with the fixed UDIV
   // registry rather than maintained as a one-off schema.
+  // s <=u x <u 2s -> t = 1
   QuotientIsOne,
 
   // The tail that did not fire on the qualification corpus. The enumerators
   // keep the catalogue's own numbering, which is the only handle these have;
   // divLemmaName() gives each a description of its formula.
-  UdivRef10,
-  UdivRef11,
-  UdivRef20,
-  UdivRef21,
-  UdivRef23,
-  UdivRef24,
-  UdivRef25,
-  UdivRef28,
-  UdivRef29,
-  UdivRef30,
-  UdivRef31,
-  UdivRef32,
-  UdivRef34,
-  UdivRef36,
-  UdivRef38
+  // (s | t) != (x & ~1)  (UDIV10)
+  DivisorOrQuotientNotMaskedDividend,
+  // (s | 1) != (x & ~t)  (UDIV11)
+  DivisorOrOneNotDividendWithoutQuotient,
+  // s != ~(s >> (t >> 1))  (UDIV20)
+  DivisorNotNegatedSelfShiftedByHalfQuotient,
+  // x != ~(x & (t << 1))  (UDIV21)
+  DividendNotNegatedAndDoubledQuotient,
+  // t >=u ((x << 1) >> s)  (UDIV22)
+  QuotientAboveDoubledDividendShiftedByDivisor,
+  // x >=u (s << ~(x | t))  (UDIV23)
+  DividendAboveDivisorShiftedByNegatedOr,
+  // x >=u (t << ~(x | s))  (UDIV24)
+  DividendAboveQuotientShiftedByNegatedOr,
+  // x >=u (s << ~(x xor t))  (UDIV27)
+  DividendAboveDivisorShiftedByNegatedXor,
+  // x >=u (t << ~(x xor s))  (UDIV28)
+  DividendAboveQuotientShiftedByNegatedXor,
+  // x != t + (s | (x + s))  (UDIV29)
+  DividendNotQuotientPlusDivisorOrSum,
+  // x != t + (1 + (1 << x))  (UDIV30)
+  DividendNotQuotientPlusOnePlusShiftedOne,
+  // s >=u ((x + t) >> t)  (UDIV31)
+  DivisorAboveSumShiftedByQuotient,
+  // (s xor (x | t)) >=u (t xor 1)  (UDIV33)
+  DivisorXorOrAboveQuotientXorOne,
+  // t >=u (x >> (s - 1))  (UDIV34)
+  QuotientAboveDividendShiftedByDivisorLessOne,
+  // x != 1 - (x << (x - t))  (UDIV36)
+  DividendNotOneLessShiftedDividend
 };
 
 // The remainder facts, in the order the refiner offers them.
 enum class RemLemma
 {
+  // x = 0 -> t = 0  (UREM3)
   DividendZero,
+  // s = x -> t = 0  (UREM5)
   DivisorEqualsDividend,
+  // x <u s -> t = x  (UREM6)
   DividendBelowDivisor,
   // s <=u x <u 2s -> t = x - s. The remainder half of QuotientIsOne, ranked
   // with the three above because it likewise determines the result throughout
   // its premise rather than only bounding it.
+  // s <=u x <u 2s -> t = x - s
   RemainderIsDifference,
+  // x = x & (s | t | -s)  (UREM8)
   DividendWithinDivisorOrRemainder,
+  // x >=u (t | (x & s))  (UREM9)
   DividendAboveRemainderOrAnd,
+  // 1 != (t & ~(x | s))  (UREM10)
   RemainderOutsideOperandsNotOne,
+  // t != (~x | -s)  (UREM11)
   RemainderNotOrOfComplements,
+  // (t & (x | s)) >=u (t & 1)  (UREM12)
   RemainderInOperandsAboveLowBit,
+  // x != (-x | -(~t))  (UREM13)
   DividendNotOrOfNegations,
+  // (x + -s) >=u t  (UREM14)
   DifferenceAboveRemainder,
+  // ((-s) xor (x | s)) >=u t  (UREM15)
   XorAboveRemainder
 };
 
@@ -161,41 +195,66 @@ enum class RemLemma
 // expressions are not syntactically so.
 enum class MulLemma
 {
-  // s = s << (x & (1 >> t)). Its only nontrivial reading is that an odd x and
-  // a zero product force s to zero. The value predicate keeps this spelling
-  // and the bit-blaster encodes the compact equivalent implication.
+  // s = s << (x & (1 >> t))  (MUL8). Its only nontrivial reading is that an
+  // odd x and a zero product force s to zero. The value predicate keeps this
+  // spelling and the bit-blaster encodes the compact equivalent implication.
   FactorUnchangedByMaskedShift,
-  MulRef1,
+  // s != ~(t | (1 & (x | s)))  (MUL5)
+  FactorNotNegatedProductOrLowBit,
+  // (x & t) != (s | ~t)  (MUL6)
   FactorAndProductNotOr,
-  MulRefN3,
-  MulRefN5,
-  MulRefN6,
-  MulRef14,
-  MulRef15,
-  MulRefN9,
-  MulRef18,
-  MulRefN11,
-  MulRefN12,
-  MulRefN13,
-  MulRef13,
-  MulRef12
+  // t != ((s | 1) << (t << x))  (MUL7)
+  ProductNotOddFactorShiftedByShiftedProduct,
+  // t >=u (1 & ((x & s) >> 1))  (MUL9)
+  ProductAboveMaskedShiftedFactors,
+  // x != (1 xor (x << (s xor t)))  (MUL10)
+  FactorNotOneXorFactorShiftedByXor,
+  // t != (1 | ~(x xor s))  (MUL11)
+  ProductNotOneOrNegatedXor,
+  // t != (~1 | (x xor s))  (MUL12)
+  ProductNotHighOnesOrXor,
+  // x != (x << (s + t)) - 1  (MUL13)
+  FactorNotShiftedFactorLessOne,
+  // x != 1 - (x << (s - t))  (MUL14)
+  FactorNotOneLessShiftedFactor,
+  // s != 1 + (s << (t - x))  (MUL15)
+  FactorNotOnePlusShiftedFactor,
+  // s != 1 - (s << (t - x))  (MUL16)
+  FactorNotOneLessShiftedFactorReversed,
+  // s != 1 + (s << (x - t))  (MUL17)
+  FactorNotOnePlusShiftedFactorReversed,
+  // t != (1 | (x + s))  (MUL18)
+  ProductNotOneOrSum,
+  // x != ~(x << (s + t))  (MUL19)
+  FactorNotNegatedShiftedFactor
 };
 
 enum class AddLemma
 {
+  // s = 0 -> t = x  (ADD_ZERO)
   AddZero,
+  // x = s -> t[0] = 0  (ADD_SAME)
   AddSame,
+  // s = ~x -> t = ~0  (ADD_INV)
   AddInv,
+  // msb(x) = msb(s) = 1 -> t <u (x & s)  (ADD_OVFL)
   AddOverflow,
+  // msb(x) = msb(s) = 0 -> t >=u (x | s)  (ADD_NOOVFL)
   AddNoOverflow,
+  // x & s = 0 -> t = x | s  (ADD_OR)
   AddOr,
-  AddRef6,
-  AddRef7,
-  AddRef8,
-  AddRef9,
-  AddRef10,
-  AddRef11,
-  AddRef12
+  // 0 = x & s & t & 1  (ADD_REF6)
+  LowBitsNotAllSet,
+  // (1 & (s | t)) >=u (x & 1)  (ADD_REF7)
+  LowBitNeedsOtherOrSum,
+  // (1 & (x | s)) >=u (t & 1)  (ADD_REF9)
+  SumLowBitNeedsAnOperand,
+  // 1 != (t | ~(x & s))  (ADD_REF10)
+  SumOrNegatedAndNotOne,
+  // t != ~(t | (x & s))  (ADD_REF11)
+  SumNotNegatedSumOrAnd,
+  // 1 != (x | s | ~t)  (ADD_REF12)
+  OperandsOrNegatedSumNotOne
 };
 
 // One row of a catalogue: everything about a fact except how to evaluate it
@@ -230,7 +289,7 @@ template <typename Lemma> struct BVLemmaEntry
 constexpr unsigned BV_DIV_LEMMA_COUNT = 34;
 constexpr unsigned BV_REM_LEMMA_COUNT = 12;
 constexpr unsigned BV_MUL_LEMMA_COUNT = 15;
-constexpr unsigned BV_ADD_LEMMA_COUNT = 13;
+constexpr unsigned BV_ADD_LEMMA_COUNT = 12;
 
 // The catalogues, in the order the refiner offers them. Measured entries
 // come first, ranked by how often they fired on the qualification corpus;

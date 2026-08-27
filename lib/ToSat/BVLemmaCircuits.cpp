@@ -216,12 +216,12 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(OR, nf->CreateNode(NOT, BBFitsExactlyOnce(x, s)),
                             BBEQ(t, one));
 
-    case DivLemma::UdivRef10:
+    case DivLemma::DivisorOrQuotientNotMaskedDividend:
       // (s | t) != (x & ~1)
       return nf->CreateNode(
           NOT, BBEQ(BBOr(s, t), BBAnd(x, BBNeg(one))));
 
-    case DivLemma::UdivRef11:
+    case DivLemma::DivisorOrOneNotDividendWithoutQuotient:
     {
       // (s | 1) != (x & ~t)
       BBNodeVec sOrOne = s;
@@ -229,7 +229,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(NOT, BBEQ(sOrOne, BBAnd(x, BBNeg(t))));
     }
 
-    case DivLemma::UdivRef20:
+    case DivLemma::DivisorNotNegatedSelfShiftedByHalfQuotient:
     {
       // s != ~(s >> (t >> 1))
       BBNodeVec halfT = t;
@@ -239,7 +239,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
           BBEQ(s, BBNeg(BBShiftRightByVariable(s, halfT, width))));
     }
 
-    case DivLemma::UdivRef21:
+    case DivLemma::DividendNotNegatedAndDoubledQuotient:
     {
       // x != ~(x & (t << 1))
       BBNodeVec twiceT = t;
@@ -247,7 +247,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(NOT, BBEQ(x, BBNeg(BBAnd(x, twiceT))));
     }
 
-    case DivLemma::UdivRef23:
+    case DivLemma::QuotientAboveDoubledDividendShiftedByDivisor:
     {
       // t >=u ((x << 1) >> s)
       BBNodeVec twiceX = x;
@@ -255,47 +255,47 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
       return BBBVLE(BBShiftRightByVariable(twiceX, s, width), t, false);
     }
 
-    case DivLemma::UdivRef24:
+    case DivLemma::DividendAboveDivisorShiftedByNegatedOr:
       // x >=u (s << ~(x | t))
       return BBBVLE(
           BBShiftLeftByVariable(s, BBNeg(BBOr(x, t))), x, false);
 
-    case DivLemma::UdivRef25:
+    case DivLemma::DividendAboveQuotientShiftedByNegatedOr:
       // x >=u (t << ~(x | s))
       return BBBVLE(
           BBShiftLeftByVariable(t, BBNeg(BBOr(x, s))), x, false);
 
-    case DivLemma::UdivRef28:
+    case DivLemma::DividendAboveDivisorShiftedByNegatedXor:
       // x >=u (s << ~(x xor t))
       return BBBVLE(
           BBShiftLeftByVariable(s, BBNeg(BBXor(x, t))), x, false);
 
-    case DivLemma::UdivRef29:
+    case DivLemma::DividendAboveQuotientShiftedByNegatedXor:
       // x >=u (t << ~(x xor s))
       return BBBVLE(
           BBShiftLeftByVariable(t, BBNeg(BBXor(x, s))), x, false);
 
-    case DivLemma::UdivRef30:
+    case DivLemma::DividendNotQuotientPlusDivisorOrSum:
       // x != t + (s | (x + s))
       return nf->CreateNode(
           NOT, BBEQ(x, BBAdd(t, BBOr(s, BBAdd(x, s)))));
 
-    case DivLemma::UdivRef31:
+    case DivLemma::DividendNotQuotientPlusOnePlusShiftedOne:
       // x != t + (1 + (1 << x))
       return nf->CreateNode(
           NOT,
           BBEQ(x, BBAdd(t, BBAdd(one, BBShiftLeftByVariable(one, x)))));
 
-    case DivLemma::UdivRef32:
+    case DivLemma::DivisorAboveSumShiftedByQuotient:
       // s >=u ((x + t) >> t)
       return BBBVLE(
           BBShiftRightByVariable(BBAdd(x, t), t, width), s, false);
 
-    case DivLemma::UdivRef34:
+    case DivLemma::DivisorXorOrAboveQuotientXorOne:
       // (s xor (x | t)) >=u (t xor 1)
       return BBBVLE(BBXor(t, one), BBXor(s, BBOr(x, t)), false);
 
-    case DivLemma::UdivRef36:
+    case DivLemma::QuotientAboveDividendShiftedByDivisorLessOne:
     {
       // t >=u (x >> (s - 1))
       BBNodeVec sMinusOne = s;
@@ -304,7 +304,7 @@ BBNode BitBlaster::BBDivLemma(DivLemma lemma, const BBNodeVec& x,
           BBShiftRightByVariable(x, sMinusOne, width), t, false);
     }
 
-    case DivLemma::UdivRef38:
+    case DivLemma::DividendNotOneLessShiftedDividend:
     {
       // x != 1 - (x << (x - t))
       BBNodeVec xMinusT = x;
@@ -423,7 +423,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
                             nf->CreateNode(NOT, x[0]), BBEQ(s, zero));
     }
 
-    case MulLemma::MulRef1:
+    case MulLemma::FactorNotNegatedProductOrLowBit:
       // s != ~(t | (1 & (x | s)))
       return nf->CreateNode(
           NOT,
@@ -434,7 +434,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(
           NOT, BBEQ(BBAnd(x, t), BBOr(s, BBNeg(t))));
 
-    case MulLemma::MulRefN3:
+    case MulLemma::ProductNotOddFactorShiftedByShiftedProduct:
     {
       // t != ((s | 1) << (t << x))
       BBNodeVec sOrOne = s;
@@ -445,7 +445,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
                       sOrOne, BBShiftLeftByVariable(t, x))));
     }
 
-    case MulLemma::MulRefN5:
+    case MulLemma::ProductAboveMaskedShiftedFactors:
     {
       // t >=u (1 & ((x & s) >> 1))
       BBNodeVec half = BBAnd(x, s);
@@ -453,23 +453,23 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
       return BBBVLE(BBAnd(one, half), t, false);
     }
 
-    case MulLemma::MulRefN6:
+    case MulLemma::FactorNotOneXorFactorShiftedByXor:
       // x != (1 xor (x << (s xor t)))
       return nf->CreateNode(
           NOT,
           BBEQ(x, BBXor(one, BBShiftLeftByVariable(x, BBXor(s, t)))));
 
-    case MulLemma::MulRef14:
+    case MulLemma::ProductNotOneOrNegatedXor:
       // t != (1 | ~(x xor s))
       return nf->CreateNode(
           NOT, BBEQ(t, BBOr(one, BBNeg(BBXor(x, s)))));
 
-    case MulLemma::MulRef15:
+    case MulLemma::ProductNotHighOnesOrXor:
       // t != (~1 | (x xor s))
       return nf->CreateNode(
           NOT, BBEQ(t, BBOr(BBNeg(one), BBXor(x, s))));
 
-    case MulLemma::MulRefN9:
+    case MulLemma::FactorNotShiftedFactorLessOne:
     {
       // x != (x << (s + t)) - 1
       BBNodeVec rhs = BBShiftLeftByVariable(x, BBAdd(s, t));
@@ -477,7 +477,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(NOT, BBEQ(x, rhs));
     }
 
-    case MulLemma::MulRef18:
+    case MulLemma::FactorNotOneLessShiftedFactor:
     {
       // x != 1 - (x << (s - t))
       BBNodeVec amount = s;
@@ -487,7 +487,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(NOT, BBEQ(x, rhs));
     }
 
-    case MulLemma::MulRefN11:
+    case MulLemma::FactorNotOnePlusShiftedFactor:
     {
       // s != 1 + (s << (t - x))
       BBNodeVec amount = t;
@@ -496,7 +496,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
           NOT, BBEQ(s, BBAdd(one, BBShiftLeftByVariable(s, amount))));
     }
 
-    case MulLemma::MulRefN12:
+    case MulLemma::FactorNotOneLessShiftedFactorReversed:
     {
       // s != 1 - (s << (t - x))
       BBNodeVec amount = t;
@@ -506,7 +506,7 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
       return nf->CreateNode(NOT, BBEQ(s, rhs));
     }
 
-    case MulLemma::MulRefN13:
+    case MulLemma::FactorNotOnePlusShiftedFactorReversed:
     {
       // s != 1 + (s << (x - t))
       BBNodeVec amount = x;
@@ -515,11 +515,11 @@ BBNode BitBlaster::BBMulLemma(MulLemma lemma, const BBNodeVec& x,
           NOT, BBEQ(s, BBAdd(one, BBShiftLeftByVariable(s, amount))));
     }
 
-    case MulLemma::MulRef13:
+    case MulLemma::ProductNotOneOrSum:
       // t != (1 | (x + s))
       return nf->CreateNode(NOT, BBEQ(t, BBOr(one, BBAdd(x, s))));
 
-    case MulLemma::MulRef12:
+    case MulLemma::FactorNotNegatedShiftedFactor:
       // x != ~(x << (s + t))
       return nf->CreateNode(
           NOT, BBEQ(x, BBNeg(BBShiftLeftByVariable(x, BBAdd(s, t)))));
@@ -598,33 +598,30 @@ BBNode BitBlaster::BBAddLemma(AddLemma lemma, const BBNodeVec& x,
           OR, nf->CreateNode(NOT, BBEQ(BBAnd(x, s), zero)),
           BBEQ(t, BBOr(x, s)));
 
-    case AddLemma::AddRef6:
+    case AddLemma::LowBitsNotAllSet:
       // 0 = x & s & t & 1
       return BBEQ(zero, BBAnd(x, BBAnd(s, BBAnd(t, one))));
 
-    case AddLemma::AddRef7:
+    case AddLemma::LowBitNeedsOtherOrSum:
       // (1 & (s | t)) >=u (x & 1)
       return BBBVLE(BBAnd(x, one), BBAnd(one, BBOr(s, t)), false);
 
-    case AddLemma::AddRef8:
-      // (1 & (x | t)) >=u (s & 1)
-      return BBBVLE(BBAnd(s, one), BBAnd(one, BBOr(x, t)), false);
 
-    case AddLemma::AddRef9:
+    case AddLemma::SumLowBitNeedsAnOperand:
       // (1 & (x | s)) >=u (t & 1)
       return BBBVLE(BBAnd(t, one), BBAnd(one, BBOr(x, s)), false);
 
-    case AddLemma::AddRef10:
+    case AddLemma::SumOrNegatedAndNotOne:
       // 1 != (t | ~(x & s))
       return nf->CreateNode(
           NOT, BBEQ(one, BBOr(t, BBNeg(BBAnd(x, s)))));
 
-    case AddLemma::AddRef11:
+    case AddLemma::SumNotNegatedSumOrAnd:
       // t != ~(t | (x & s))
       return nf->CreateNode(
           NOT, BBEQ(t, BBNeg(BBOr(t, BBAnd(x, s)))));
 
-    case AddLemma::AddRef12:
+    case AddLemma::OperandsOrNegatedSumNotOne:
       // 1 != (x | s | ~t)
       return nf->CreateNode(
           NOT, BBEQ(one, BBOr(x, BBOr(s, BBNeg(t)))));
