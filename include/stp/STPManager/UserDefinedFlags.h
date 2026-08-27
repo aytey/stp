@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/Sat/SearchBias.h"
 #include "stp/Util/Attributes.h"
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 
 namespace stp
@@ -162,6 +163,14 @@ DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
 DLL_PUBLIC bool parseBVTermAbstractionProfile(const std::string& text,
                                               uint32_t& mask, unsigned& rounds,
                                               std::string& error);
+
+struct UserDefinedFlags;
+
+// Print the abstraction coverage, refinement and exact-escalation counters
+// reported by `-t`. The same reporter is used after an ordinary solve and by
+// --exit-after-CNF once bit-blasting has populated the coverage counters.
+DLL_PUBLIC void printAbstractionCoverage(const UserDefinedFlags& uf,
+                                         std::ostream& out);
 
 /******************************************************************
  * Struct UserDefFlags:
@@ -1048,6 +1057,11 @@ public:
     uint64_t bv_exact_escalations = 0;
     uint64_t bv_exact_escalations_mult = 0;
     uint64_t bv_exact_escalations_divmod = 0;
+    // Solver-observed cost of the exact circuits installed by those
+    // escalations. Unlike the per-record diagnostics, these totals are also
+    // available to embedders through vc_getCounter.
+    uint64_t bv_exact_clauses = 0;
+    uint64_t bv_exact_variables = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.

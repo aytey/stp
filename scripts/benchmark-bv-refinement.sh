@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Compare value-pair refinement allowances over a directory of standalone
-# SMT-LIB2 queries. Runs are blocked by (repetition, query), with the variant
-# order rotated inside each block so machine drift does not systematically
-# favour one setting.
+# Compare BV-refinement configurations over a directory or a manifest of
+# standalone SMT-LIB2 queries. Runs are blocked by (repetition, query), with
+# the variant order rotated inside each block so machine drift does not
+# systematically favour one setting.
 
 set -u
 set -o pipefail
@@ -11,11 +11,13 @@ export LC_ALL=C
 usage()
 {
   cat <<'EOF'
-Usage: benchmark-bv-refinement.sh --solver PATH --corpus DIR [options] [-- STP_ARG ...]
+Usage: benchmark-bv-refinement.sh --solver PATH (--corpus DIR | --list FILE) [options] [-- STP_ARG ...]
 
 Required:
   --solver PATH          STP executable to measure
-  --corpus DIR           directory containing *.smt2 query files
+  --corpus DIR           directory containing *.smt2 query files, or
+  --list FILE            query paths, one per line; relative paths are
+                         resolved from the list's directory
 
 Options:
   --output DIR           new result directory (default: a directory in /tmp)
@@ -24,8 +26,13 @@ Options:
   --limits LIST          comma-separated value limits (default: 4,8,16,32)
   --profiles LIST        compare named profiles instead of value limits; the
                          first comma-separated profile is the reference
+  --variant NAME:FLAGS   arbitrary named configuration; repeatable, with the
+                         first variant as reference. FLAGS are whitespace-
+                         separated STP arguments without shell quoting
   --width BITS           abstraction width floor (default: 53)
   --backend NAME         minisat, cadical, or default (default: minisat)
+  --split-fp             classify queries as fp or bv (the default)
+  --no-split-fp          put every query in one all class
   --no-exact-control     omit the abstraction-off control
   --no-v4-control        omit the uncapped v4 control
   --help                 show this text
@@ -33,12 +40,15 @@ Options:
 Allowance mode selects the qualified profile explicitly. Profile mode runs
 each requested atomic profile with its own round limit. Both modes always
 request quick statistics. Arguments after -- are passed unchanged to every
-STP run.
+STP run. Custom --variant mode runs exactly the configurations supplied and
+is mutually exclusive with allowance/profile controls; use arguments after
+-- for settings common to every custom variant.
 The result directory contains runs.tsv, records.tsv, summary.tsv,
 comparisons.tsv, comparison-summary.tsv, disagreements.tsv, metadata.txt,
 corpus.sha256, and one raw log per run. Comparisons use v4 as their reference
 in allowance mode when that control is enabled, or the first requested profile
-in profile mode.
+in profile mode. The first named custom variant is the reference in custom
+mode.
 EOF
 }
 
@@ -50,16 +60,21 @@ die()
 
 solver=
 corpus=
+list=
 output=
 repetitions=1
 timeout_seconds=20
 limits_csv=4,8,16,32
 profiles_csv=
 limits_explicit=0
+width_explicit=0
+controls_explicit=0
 width=53
 backend=minisat
 include_exact=1
 include_v4=1
+split_fp=1
+custom_variant_specs=()
 extra_args=()
 
 while (($# > 0)); do
@@ -72,6 +87,11 @@ while (($# > 0)); do
     --corpus)
       (($# >= 2)) || die '--corpus needs a directory'
       corpus=$2
+      shift 2
+      ;;
+    --list)
+      (($# >= 2)) || die '--list needs a file'
+      list=$2
       shift 2
       ;;
     --output)
@@ -100,9 +120,15 @@ while (($# > 0)); do
       profiles_csv=$2
       shift 2
       ;;
+    --variant)
+      (($# >= 2)) || die '--variant needs NAME:FLAGS'
+      custom_variant_specs+=("$2")
+      shift 2
+      ;;
     --width)
       (($# >= 2)) || die '--width needs a positive integer'
       width=$2
+      width_explicit=1
       shift 2
       ;;
     --backend)
@@ -112,10 +138,20 @@ while (($# > 0)); do
       ;;
     --no-exact-control)
       include_exact=0
+      controls_explicit=1
       shift
       ;;
     --no-v4-control)
       include_v4=0
+      controls_explicit=1
+      shift
+      ;;
+    --split-fp)
+      split_fp=1
+      shift
+      ;;
+    --no-split-fp)
+      split_fp=0
       shift
       ;;
     --help|-h)
@@ -135,8 +171,17 @@ done
 
 [[ -n $solver ]] || die '--solver is required'
 [[ -x $solver ]] || die "solver is not executable: $solver"
-[[ -n $corpus ]] || die '--corpus is required'
-[[ -d $corpus ]] || die "corpus is not a directory: $corpus"
+if [[ -n $list ]]; then
+  [[ -z $corpus ]] || die '--corpus and --list are mutually exclusive'
+  [[ -f $list ]] || die "query list is not a file: $list"
+  list_dir=$(cd "$(dirname "$list")" && pwd -P) ||
+    die "cannot resolve query-list directory: $list"
+  list=$list_dir/$(basename "$list")
+else
+  [[ -n $corpus ]] || die 'one of --corpus or --list is required'
+  [[ -d $corpus ]] || die "corpus is not a directory: $corpus"
+  corpus=$(cd "$corpus" && pwd -P) || die "cannot resolve corpus: $corpus"
+fi
 [[ $repetitions =~ ^[1-9][0-9]*$ ]] || die '--repetitions must be positive'
 [[ $timeout_seconds =~ ^[1-9][0-9]*([.][0-9]+)?$ ]] ||
   die '--timeout must be positive'
@@ -153,7 +198,33 @@ time_bin=/usr/bin/time
 
 limits=()
 profiles=()
-if [[ -n $profiles_csv ]]; then
+custom_variant_names=()
+declare -A custom_variant_flags=()
+custom_mode=0
+if ((${#custom_variant_specs[@]} > 0)); then
+  custom_mode=1
+  [[ -z $profiles_csv ]] || die '--variant and --profiles are mutually exclusive'
+  ((limits_explicit == 0)) || die '--variant and --limits are mutually exclusive'
+  ((controls_explicit == 0)) ||
+    die '--variant cannot be combined with built-in control switches'
+  ((width_explicit == 0)) ||
+    die '--variant does not imply --width; put the width in common arguments'
+
+  for spec in "${custom_variant_specs[@]}"; do
+    [[ $spec == *:* ]] || die "--variant needs NAME:FLAGS: $spec"
+    name=${spec%%:*}
+    flags=${spec#*:}
+    [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+      die "invalid variant name: $name"
+    for old in "${custom_variant_names[@]}"; do
+      [[ $old != "$name" ]] || die "duplicate variant name: $name"
+    done
+    [[ $flags != *$'\t'* && $flags != *$'\n'* ]] ||
+      die "variant flags cannot contain tabs or newlines: $name"
+    custom_variant_names+=("$name")
+    custom_variant_flags["$name"]=$flags
+  done
+elif [[ -n $profiles_csv ]]; then
   ((limits_explicit == 0)) || die '--profiles and --limits are mutually exclusive'
   IFS=, read -r -a requested_profiles <<< "$profiles_csv"
   for profile in "${requested_profiles[@]}"; do
@@ -180,8 +251,33 @@ else
   ((${#limits[@]} > 0)) || die '--limits supplied no values'
 fi
 
-mapfile -d '' queries < <(find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
-((${#queries[@]} > 0)) || die "no *.smt2 files found in $corpus"
+queries=()
+if [[ -n $list ]]; then
+  list_dir=$(dirname "$list")
+  declare -A seen_queries=()
+  while IFS= read -r query || [[ -n $query ]]; do
+    query=${query%$'\r'}
+    [[ $query =~ ^[[:space:]]*$ ]] && continue
+    [[ $query =~ ^[[:space:]]*# ]] && continue
+    [[ $query != *$'\t'* ]] || die 'query-list paths cannot contain tabs'
+    if [[ $query != /* ]]; then
+      query=$list_dir/$query
+    fi
+    [[ -f $query ]] || die "query-list entry is not a file: $query"
+    query_dir=$(cd "$(dirname "$query")" && pwd -P) ||
+      die "cannot resolve query-list entry: $query"
+    query=$query_dir/$(basename "$query")
+    [[ -z ${seen_queries["$query"]+present} ]] ||
+      die "duplicate query-list entry: $query"
+    seen_queries["$query"]=1
+    queries+=("$query")
+  done < "$list"
+  ((${#queries[@]} > 0)) || die "no query paths found in $list"
+else
+  mapfile -d '' queries < <(
+    find -L "$corpus" -maxdepth 1 -type f -name '*.smt2' -print0 | sort -z)
+  ((${#queries[@]} > 0)) || die "no *.smt2 files found in $corpus"
+fi
 
 if [[ -z $output ]]; then
   output=$(mktemp -d /tmp/stp-bv-refinement.XXXXXX) ||
@@ -202,7 +298,7 @@ metadata=$output/metadata.txt
 corpus_hashes=$output/corpus.sha256
 
 printf '%s\n' \
-  $'repetition\tschedule\tvariant\tclass\tdriver\tquery\tverdict\tstatus\texit_code\twall_seconds\tmax_rss_kb\tcandidates_divmod\tabstracted_divmod\trefinement_rounds\tblocking_lemmas\tschema_lemmas\texact_escalations\texact_mult\texact_divmod\trecords\trecord_blocking_sum\trecord_blocking_max\tpaired_records\tpaired_blocking_sum\tunpaired_divmod_blocking_sum\trecord_blocking_clauses\trecord_blocking_literals\trecord_exact_clauses\trecord_exact_variables\trecord_exact_microseconds\tlog' \
+  $'repetition\tschedule\tvariant\tclass\tdriver\tquery\tverdict\tstatus\texit_code\twall_seconds\tmax_rss_kb\tcandidates_divmod\tabstracted_divmod\trefinement_rounds\tblocking_lemmas\tschema_lemmas\texact_escalations\texact_mult\texact_divmod\trecords\trecord_blocking_sum\trecord_blocking_max\tpaired_records\tpaired_blocking_sum\tunpaired_divmod_blocking_sum\trecord_blocking_clauses\trecord_blocking_literals\trecord_exact_clauses\trecord_exact_variables\trecord_exact_microseconds\taggregate_exact_clauses\taggregate_exact_variables\tlog' \
   > "$runs_tsv"
 printf '%s\n' \
   $'repetition\tvariant\tclass\tdriver\tquery\trecord\tnode\tkind\twidth\tstate\tblocking\tschemas\texact\texact_bits\tallowance\tpaired\tpair_prefix\tpair_full\tblocking_clauses\tblocking_literals\texact_clauses\texact_variables\texact_microseconds\tlog' \
@@ -216,10 +312,15 @@ esac
 
 variants=()
 reference_variant=
-if ((include_exact)); then
+if ((custom_mode)); then
+  variants=("${custom_variant_names[@]}")
+  reference_variant=${variants[0]}
+elif ((include_exact)); then
   variants+=(exact)
 fi
-if ((${#profiles[@]} > 0)); then
+if ((custom_mode)); then
+  :
+elif ((${#profiles[@]} > 0)); then
   for profile in "${profiles[@]}"; do
     variants+=("profile-$profile")
   done
@@ -239,6 +340,14 @@ variant_args()
 {
   local variant=$1
   VARIANT_ARGS=()
+  if ((custom_mode)); then
+    local flags=${custom_variant_flags["$variant"]}
+    if [[ -n $flags ]]; then
+      read -r -a VARIANT_ARGS <<< "$flags"
+    fi
+    return
+  fi
+
   if [[ $variant == exact ]]; then
     VARIANT_ARGS+=(--bv-eq-abstraction=0 --bv-term-abstraction=0)
     return
@@ -278,15 +387,36 @@ rm -f "$smoke" "$output"/smoke-*.log
 {
   printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'solver=%s\n' "$solver"
-  printf 'corpus=%s\n' "$corpus"
+  if [[ -n $list ]]; then
+    printf 'input_kind=list\n'
+    printf 'input=%s\n' "$list"
+    printf 'input_sha256=%s\n' "$(sha256sum "$list" | awk '{print $1}')"
+  else
+    printf 'input_kind=corpus\n'
+    printf 'input=%s\n' "$corpus"
+  fi
   printf 'query_count=%d\n' "${#queries[@]}"
   printf 'repetitions=%s\n' "$repetitions"
   printf 'timeout_seconds=%s\n' "$timeout_seconds"
   printf 'width=%s\n' "$width"
   printf 'backend=%s\n' "$backend"
+  printf 'split_fp=%s\n' "$split_fp"
+  if ((custom_mode)); then
+    printf 'variant_mode=custom\n'
+  else
+    printf 'variant_mode=builtin\n'
+  fi
   printf 'variants=%s\n' "${variants[*]}"
   printf 'profiles=%s\n' "${profiles[*]:-none}"
   printf 'comparison_reference=%s\n' "${reference_variant:-none}"
+  for variant in "${variants[@]}"; do
+    variant_args "$variant"
+    printf 'variant_%s_args=' "$variant"
+    if ((${#VARIANT_ARGS[@]} > 0)); then
+      printf ' %q' "${VARIANT_ARGS[@]}"
+    fi
+    printf '\n'
+  done
   printf 'common_args='; printf ' %q' "${common_args[@]}"; printf '\n'
   printf 'extra_args='; printf ' %q' "${extra_args[@]}"; printf '\n'
   printf 'solver_sha256=%s\n' "$(sha256sum "$solver" | awk '{print $1}')"
@@ -296,9 +426,15 @@ rm -f "$smoke" "$output"/smoke-*.log
   "$solver" --version 2>&1 | sed 's/^/solver_version=/'
 } > "$metadata"
 
-for query in "${queries[@]}"; do
+for query_index in "${!queries[@]}"; do
+  query=${queries[query_index]}
+  if [[ -n $list ]]; then
+    query_key=$query
+  else
+    query_key=$(basename "$query")
+  fi
   printf '%s  %s\n' "$(sha256sum "$query" | awk '{print $1}')" \
-    "$(basename "$query")"
+    "$query_key"
 done > "$corpus_hashes"
 printf 'corpus_manifest_sha256=%s\n' \
   "$(sha256sum "$corpus_hashes" | awk '{print $1}')" >> "$metadata"
@@ -311,8 +447,15 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
   for ((query_index = 0; query_index < ${#queries[@]}; ++query_index)); do
     query=${queries[query_index]}
     query_name=$(basename "$query")
+    if [[ -n $list ]]; then
+      query_key=$query
+    else
+      query_key=$query_name
+    fi
     driver=$(sed -E 's/_[0-9]+[.]smt2$//; s/[.]smt2$//' <<< "$query_name")
-    if grep -q 'fp[.]' "$query"; then
+    if ((split_fp == 0)); then
+      query_class=all
+    elif grep -q 'fp[.]' "$query"; then
       query_class=fp
     else
       query_class=bv
@@ -390,9 +533,10 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
           for (i = 3; i <= NF; ++i) {
             split($i, kv, "="); v[kv[1]] = kv[2]
           }
-          printf "%s\t%s\t%s\t%s\t%s\t%s\n", v["rounds"],
+          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v["rounds"],
                  v["blocking"], v["schema"], v["exact"],
-                 v["exact-mult"], v["exact-divmod"]
+                 v["exact-mult"], v["exact-divmod"], v["exact-clauses"],
+                 v["exact-vars"]
           exit
         }' "$log")
       refinement_rounds=0
@@ -401,9 +545,12 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
       exact_escalations=0
       exact_mult=0
       exact_divmod=0
+      aggregate_exact_clauses=0
+      aggregate_exact_variables=0
       if [[ -n $refinement ]]; then
         IFS=$'\t' read -r refinement_rounds blocking_lemmas schema_lemmas \
-          exact_escalations exact_mult exact_divmod <<< "$refinement"
+          exact_escalations exact_mult exact_divmod aggregate_exact_clauses \
+          aggregate_exact_variables <<< "$refinement"
       fi
 
       record_stats=$(awk '
@@ -441,9 +588,9 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
         record_exact_clauses record_exact_variables record_exact_microseconds \
         <<< "$record_stats"
 
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$rep" "$schedule" "$variant" "$query_class" "$driver" \
-        "$query_name" "$verdict" "$status" "$exit_code" "$wall_seconds" \
+        "$query_key" "$verdict" "$status" "$exit_code" "$wall_seconds" \
         "$max_rss_kb" "$candidates_divmod" "$abstracted_divmod" \
         "$refinement_rounds" "$blocking_lemmas" "$schema_lemmas" \
         "$exact_escalations" "$exact_mult" "$exact_divmod" "$record_count" \
@@ -451,11 +598,12 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
         "$paired_blocking_sum" "$unpaired_divmod_blocking_sum" \
         "$record_blocking_clauses" "$record_blocking_literals" \
         "$record_exact_clauses" "$record_exact_variables" \
-        "$record_exact_microseconds" "$relative_log" \
+        "$record_exact_microseconds" "$aggregate_exact_clauses" \
+        "$aggregate_exact_variables" "$relative_log" \
         >> "$runs_tsv"
 
       awk -v OFS='\t' -v rep="$rep" -v variant="$variant" \
-        -v class="$query_class" -v driver="$driver" -v query="$query_name" \
+        -v class="$query_class" -v driver="$driver" -v query="$query_key" \
         -v log_path="$relative_log" '
         /^BV abstraction record:/ {
           delete v
@@ -492,6 +640,8 @@ awk -F '\t' -v OFS='\t' '
       exactclauses[key]+=$28
       exactvars[key]+=$29
       exactus[key]+=$30
+      aggregateexactclauses[key]+=$31
+      aggregateexactvars[key]+=$32
       if ($8 == "ok") verdicts[key]++
       else if ($8 == "timeout") timeouts[key]++
       else if ($8 == "unknown") unknowns[key]++
@@ -505,15 +655,17 @@ awk -F '\t' -v OFS='\t' '
           "paired_blocking", "unpaired_divmod_blocking",
           "record_blocking_clauses", "record_blocking_literals",
           "record_exact_clauses", "record_exact_variables",
-          "record_exact_microseconds"
+          "record_exact_microseconds", "aggregate_exact_clauses",
+          "aggregate_exact_variables"
     for (key in runs) {
       split(key, k, SUBSEP)
-      printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.6f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+      printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.6f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
              k[1], k[2], k[3], runs[key], verdicts[key], timeouts[key],
              unknowns[key], failures[key], wall[key], rss[key]/runs[key],
              blocks[key], schemas[key], exact[key], pairblocks[key],
              singlediv[key], blockclauses[key], blockliterals[key],
-             exactclauses[key], exactvars[key], exactus[key]
+             exactclauses[key], exactvars[key], exactus[key],
+             aggregateexactclauses[key], aggregateexactvars[key]
     }
   }' "$runs_tsv" | { IFS= read -r header; printf '%s\n' "$header";
                       sort -t $'\t' -k1,1 -k2,2 -k3,3; } > "$summary_tsv"

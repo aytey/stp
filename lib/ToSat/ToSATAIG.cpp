@@ -161,7 +161,13 @@ void ToSATAIG::handle_cnf_options(Cnf_Dat_t* cnfData, bool needAbsRef)
   if (bm->UserFlags.exit_after_CNF)
   {
     if (bm->UserFlags.quick_statistics_flag)
+    {
       bm->GetRunTimes()->print();
+      // Coverage is complete once bit-blasting finishes. Printing it here
+      // makes --exit-after-CNF -t a cheap population screen for queries that
+      // actually contain arithmetic wide enough to abstract.
+      printAbstractionCoverage(bm->UserFlags, cerr);
+    }
 
     if (needAbsRef)
     {

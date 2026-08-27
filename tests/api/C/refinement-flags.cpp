@@ -436,6 +436,16 @@ TEST(refinement_flags, SchemaGroupCountersFollowThePublicOrdinalBlock)
   vc_Destroy(vc);
 }
 
+TEST(refinement_flags, ExactCostCountersReachTheCInterface)
+{
+  VC vc = vc_createValidityChecker();
+  mutableFlags(vc).coverage.bv_exact_clauses = 1234;
+  mutableFlags(vc).coverage.bv_exact_variables = 567;
+  EXPECT_EQ(1234u, vc_getCounter(vc, STP_COUNTER_BV_EXACT_CLAUSES));
+  EXPECT_EQ(567u, vc_getCounter(vc, STP_COUNTER_BV_EXACT_VARIABLES));
+  vc_Destroy(vc);
+}
+
 // A negative value would wrap in every unsigned field below, silently
 // disabling an abstraction or removing the limit the caller asked for. It is
 // refused with a diagnostic and the field it would have wrecked is unchanged.

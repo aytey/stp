@@ -1,10 +1,10 @@
 # Bit-vector abstraction work: final handoff
 
-Date: 2026-08-26
+Date: 2026-08-27
 
-Branch: `cegar-next-codex-v5`
+Branch: `cegar-next-codex-v6`
 
-Based on: `cc1be2c2` (`cegar-next-codex-v4`)
+Based on: `33971c86` (`cegar-next-codex-v5`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
@@ -18,8 +18,10 @@ V4 comparison source: `438faa4c` (`cegar-next-claude-v3`)
 
 V5 comparison source: `5b453e12` (`cegar-next-claude-v4`)
 
+V6 evaluation source: `156303bb` (`cegar-next-claude-v5`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex-v5`
+`/home/avj/clones/stp/cegar-next-codex-v6`
 
 ## Executive summary
 
@@ -63,6 +65,61 @@ bits and counters retain their values.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
+
+## V6 evaluation hybrid
+
+V6 deliberately does not change the v5 policy. It ports the strongest
+evaluation facilities from `cegar-next-claude-v5` while keeping Codex's
+profiles, scheduler, compatibility rules, record telemetry and raw benchmark
+artifacts:
+
+- one coverage reporter now serves both ordinary `-t` completion and
+  `--exit-after-CNF -t`, so a large population can be screened for arithmetic
+  that actually reaches abstraction without first solving every query;
+- exact escalation now has aggregate solver-observed clause and variable
+  costs, appended to the C API as `STP_COUNTER_BV_EXACT_CLAUSES` and
+  `STP_COUNTER_BV_EXACT_VARIABLES`, alongside the existing per-record cost and
+  timing data;
+- `scripts/benchmark-bv-refinement.sh` accepts either a directory or a
+  `--list` population, repeatable arbitrary `NAME:FLAGS` variants, and an
+  explicit FP split, while retaining blocked rotation, validation, statuses,
+  timeouts, RSS, hashes, per-record TSVs and one raw log per run.
+
+The inherited policy remains easy to state:
+
+```text
+term abstraction = off globally
+after explicit opt-in = broad observed catalogue + low-three-bit DIV/REM prefix
+schema allowance = 16 rounds
+full-width DIV/REM identity = individually opt-in
+```
+
+The paired choice follows the shape of SymFPU's lowering. A binary64 division
+creates a quotient and remainder over the same roughly 107-bit operands. Full
+recomposition adds a wide multiplier even though consumers retain only part of
+the quotient and test the remainder; its three-bit prefix says the cheap part
+that commonly matters. Claude's 298-query KLEE run measured 74.77 seconds for
+the full identity, 44.86 for the prefix, 46.09 for neither and 45.84 with term
+abstraction off. Codex v5 then repeated the complete policy comparison three
+times over those 298 FP queries plus 119 pure-BV controls. The broad-prefix
+profile's 42.80-second FP median was 36.9% below the older qualified profile,
+while full recomposition took 65.85 seconds. The no-pair broad profile was
+within 2.4%, so the large gain belongs to the broad 16-round policy rather than
+to pairing or batching.
+
+For a population selected outside one directory:
+
+```text
+scripts/benchmark-bv-refinement.sh \
+  --solver /path/to/stp --list population.txt --repetitions 3 \
+  --variant off:'--bv-eq-abstraction=0 --bv-term-abstraction=0' \
+  --variant klee:'--bv-eq-abstraction=1 --bv-term-abstraction=1 --bv-term-abstraction-profile=klee' \
+  --split-fp -- --bv-abstraction-width=53
+```
+
+Relative paths in `population.txt` are resolved from the list's directory,
+and full paths are retained in result rows so equal basenames from different
+query families cannot collide.
 
 ## V5 KLEE policy qualification
 

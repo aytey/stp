@@ -167,6 +167,8 @@ TEST(bv_abstraction_mult_schemas, ExactEscalationIsCountedByFamily)
   EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS));
   EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_MULT));
   EXPECT_EQ(0u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
+  EXPECT_GT(counter(vc, STP_COUNTER_BV_EXACT_CLAUSES), 0u);
+  EXPECT_GT(counter(vc, STP_COUNTER_BV_EXACT_VARIABLES), 0u);
   vc_Destroy(vc);
 }
 
@@ -182,6 +184,8 @@ TEST(bv_abstraction_mult_schemas, DivModExactEscalationIsCountedByFamily)
   EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS));
   EXPECT_EQ(0u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_MULT));
   EXPECT_EQ(1u, counter(vc, STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
+  EXPECT_GT(counter(vc, STP_COUNTER_BV_EXACT_CLAUSES), 0u);
+  EXPECT_GT(counter(vc, STP_COUNTER_BV_EXACT_VARIABLES), 0u);
   vc_Destroy(vc);
 }
 

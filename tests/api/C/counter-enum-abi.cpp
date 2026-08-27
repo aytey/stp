@@ -46,6 +46,10 @@ static_assert(STP_COUNTER_BV_EXACT_ESCALATIONS == 34,
               "new counters must be appended");
 static_assert(STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD == 36,
               "new counter block must remain contiguous");
+static_assert(STP_COUNTER_BV_EXACT_CLAUSES == 37,
+              "exact-cost counters must be appended");
+static_assert(STP_COUNTER_BV_EXACT_VARIABLES == 38,
+              "exact-cost counter block must remain contiguous");
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {
@@ -58,4 +62,6 @@ TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
   EXPECT_EQ(33, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED));
   EXPECT_EQ(34, static_cast<int>(STP_COUNTER_BV_EXACT_ESCALATIONS));
   EXPECT_EQ(36, static_cast<int>(STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
+  EXPECT_EQ(37, static_cast<int>(STP_COUNTER_BV_EXACT_CLAUSES));
+  EXPECT_EQ(38, static_cast<int>(STP_COUNTER_BV_EXACT_VARIABLES));
 }

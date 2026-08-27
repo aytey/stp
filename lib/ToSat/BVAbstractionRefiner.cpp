@@ -2976,18 +2976,24 @@ unsigned BVAbstractionRefiner::refineTerms(
               .count());
       abs.blastedBits = upto;
       abs.defined = (upto == W);
+      const uint64_t exactClauses =
+          solver.submittedClauses() - exactClausesBefore;
+      const uint64_t exactVariables = solver.nVars() - exactVariablesBefore;
       abs.exactEscalations++;
-      abs.exactClauses += solver.submittedClauses() - exactClausesBefore;
-      abs.exactVariables += solver.nVars() - exactVariablesBefore;
+      abs.exactClauses += exactClauses;
+      abs.exactVariables += exactVariables;
       abs.exactMicroseconds += exactMicros;
-      bm->UserFlags.coverage.bv_exact_escalations++;
+      UserDefinedFlags::EncodingCoverage& coverage = bm->UserFlags.coverage;
+      coverage.bv_exact_escalations++;
       if (abs.opKind == BVMULT)
-        bm->UserFlags.coverage.bv_exact_escalations_mult++;
+        coverage.bv_exact_escalations_mult++;
       else
       {
         assert(abs.opKind == BVDIV || abs.opKind == BVMOD);
-        bm->UserFlags.coverage.bv_exact_escalations_divmod++;
+        coverage.bv_exact_escalations_divmod++;
       }
+      coverage.bv_exact_clauses += exactClauses;
+      coverage.bv_exact_variables += exactVariables;
 
       if (bm->UserFlags.stats_flag)
       {

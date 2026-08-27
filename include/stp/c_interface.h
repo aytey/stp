@@ -929,7 +929,13 @@ enum stp_counter_t
   //! ordinal.
   STP_COUNTER_BV_EXACT_ESCALATIONS,
   STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
-  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD
+  STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD,
+
+  //! Clauses and variables added by exact circuits after an abstraction
+  //! exhausts its value-pair allowance. Appended to preserve every published
+  //! counter ordinal.
+  STP_COUNTER_BV_EXACT_CLAUSES,
+  STP_COUNTER_BV_EXACT_VARIABLES
 };
 
 //! \brief Reads one of the counters above.

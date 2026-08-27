@@ -25,6 +25,7 @@ THE SOFTWARE.
 #include "stp/STPManager/UserDefinedFlags.h"
 
 #include <cctype>
+#include <ostream>
 #include <sstream>
 #include <vector>
 
@@ -240,6 +241,39 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
   rounds = parsedRounds;
   error.clear();
   return true;
+}
+
+void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
+{
+  const UserDefinedFlags::EncodingCoverage& c = uf.coverage;
+  // In AbstractionKind order; a kind added there needs a name here.
+  static const char* kindNames[] = {"eq",   "compare", "ite",
+                                    "plus", "mult",    "divmod"};
+  static_assert(sizeof(kindNames) / sizeof(kindNames[0]) ==
+                    UserDefinedFlags::EncodingCoverage::KINDS,
+                "abstraction kind names are out of step with the counters");
+
+  out << "Abstraction coverage (candidates -> abstracted):";
+  for (unsigned i = 0; i < UserDefinedFlags::EncodingCoverage::KINDS; ++i)
+    out << " " << kindNames[i] << "=" << c.bv_candidates[i] << "->"
+        << c.bv_abstracted[i];
+  out << std::endl
+      << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
+      << " blocking=" << c.bv_blocking_lemmas
+      << " schema=" << c.bv_schema_lemmas
+      << " exact=" << c.bv_exact_escalations
+      << " exact-mult=" << c.bv_exact_escalations_mult
+      << " exact-divmod=" << c.bv_exact_escalations_divmod
+      << " exact-clauses=" << c.bv_exact_clauses
+      << " exact-vars=" << c.bv_exact_variables << std::endl;
+
+  // Preserve Codex's always-present partition: a zero says that an enabled
+  // family fired nothing, and can be interpreted alongside the selected mask.
+  out << "Abstraction schemas by group:";
+  for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
+    out << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i)) << "="
+        << c.bv_schema_group_lemmas[i];
+  out << std::endl;
 }
 
 } // namespace stp
