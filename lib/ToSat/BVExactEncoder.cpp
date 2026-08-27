@@ -146,6 +146,13 @@ void encodeNaryLemma(
   rewrite(mgr, bm->UserFlags.AIG_rewrites_iterations);
   assert(Aig_ManCheck(mgr.aigMgr));
   assert((unsigned)Aig_ManCoNum(mgr.aigMgr) == outputs);
+  // The splice below finds the live vectors' inputs by position, so the claim
+  // must not have created an input of its own. None of the lemma builders
+  // can -- only BBTerm and BBForm mint symbols, and nothing here calls them
+  // -- and if one ever did, the extra input would take a fresh unconstrained
+  // solver variable and quietly weaken the lemma to something the candidate
+  // satisfies. `encode` has always checked this; the lemma path had not.
+  assert((unsigned)Aig_ManCiNum(mgr.aigMgr) == liveVars.size() * width);
 
   // No AUTO, for the reason ToCNFAIG.h gives about the exact splice below:
   // AUTO was calibrated on whole-query conversion, where the CNF is built once
