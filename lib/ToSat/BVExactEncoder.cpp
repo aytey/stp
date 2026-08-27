@@ -147,7 +147,15 @@ void encodeNaryLemma(
   assert(Aig_ManCheck(mgr.aigMgr));
   assert((unsigned)Aig_ManCoNum(mgr.aigMgr) == outputs);
 
-  Cnf_Dat_t* cnf = ToCNFAIG(bm->UserFlags).derive_cnf(mgr, outputs);
+  // No AUTO, for the reason ToCNFAIG.h gives about the exact splice below:
+  // AUTO was calibrated on whole-query conversion, where the CNF is built once
+  // and thrown away, so trading clauses for generation time costs nothing.
+  // These clauses go into a live solver and stay there for the rest of the
+  // search. The paired DIV/REM identity is a full-width multiplier, which is
+  // exactly the circuit that argument is about. An explicitly chosen level
+  // still reaches here.
+  Cnf_Dat_t* cnf =
+      ToCNFAIG(bm->UserFlags, /*allowAuto=*/false).derive_cnf(mgr, outputs);
   assert(cnf != NULL);
 
   std::vector<unsigned> cnfToSolver(cnf->nVars, ~((unsigned)0));
