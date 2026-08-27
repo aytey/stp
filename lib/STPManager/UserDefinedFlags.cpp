@@ -245,6 +245,9 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
 
 void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
 {
+  // Report what reached the bit-blaster, what abstraction accepted, and what
+  // refinement spent. Counting syntax instead would include arithmetic that
+  // simplification retired before it could cost either abstraction or SAT.
   const UserDefinedFlags::EncodingCoverage& c = uf.coverage;
   // In AbstractionKind order; a kind added there needs a name here.
   static const char* kindNames[] = {"eq",   "compare", "ite",
@@ -263,9 +266,14 @@ void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
       << " schema=" << c.bv_schema_lemmas
       << " exact=" << c.bv_exact_escalations
       << " exact-mult=" << c.bv_exact_escalations_mult
-      << " exact-divmod=" << c.bv_exact_escalations_divmod
-      << " exact-clauses=" << c.bv_exact_clauses
-      << " exact-vars=" << c.bv_exact_variables << std::endl;
+      << " exact-divmod=" << c.bv_exact_escalations_divmod << std::endl;
+
+  // Keep the established refinement line stable. With no escalation every
+  // cost is zero, so a second zero-only line would add no information.
+  if (c.bv_exact_escalations != 0)
+    out << "Abstraction escalation cost: clauses=" << c.bv_exact_clauses
+        << " variables=" << c.bv_exact_variables
+        << " microseconds=" << c.bv_exact_microseconds << std::endl;
 
   // Preserve Codex's always-present partition: a zero says that an enabled
   // family fired nothing, and can be interpreted alongside the selected mask.

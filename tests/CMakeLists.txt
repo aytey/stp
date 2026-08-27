@@ -395,6 +395,31 @@ endif()
 add_test(NAME test_fpbackend COMMAND test_fpbackend)
 add_test(NAME test_fprewrites COMMAND test_fprewrites)
 
+# The CEGAR benchmark harness is itself part of the evaluation surface: a
+# basename collision or a shifted TSV column can silently reverse a policy
+# conclusion while every solver test remains green. Exercise it with a fast,
+# deterministic fake solver when its GNU/POSIX command-line dependencies are
+# available.
+find_program(STP_HARNESS_BASH bash)
+find_program(STP_HARNESS_TIMEOUT timeout)
+find_program(STP_HARNESS_SHA256SUM sha256sum)
+mark_as_advanced(STP_HARNESS_BASH STP_HARNESS_TIMEOUT
+                 STP_HARNESS_SHA256SUM)
+if(STP_HARNESS_BASH AND STP_HARNESS_TIMEOUT AND STP_HARNESS_SHA256SUM
+   AND EXISTS "/usr/bin/time")
+    add_test(
+      NAME benchmark-bv-refinement-harness
+      COMMAND ${STP_HARNESS_BASH}
+              ${PROJECT_SOURCE_DIR}/tests/benchmark-bv-refinement-harness.sh
+              ${PROJECT_SOURCE_DIR}/scripts/benchmark-bv-refinement.sh
+              ${PROJECT_SOURCE_DIR}/tests/benchmark-bv-refinement-fake-solver.sh
+    )
+    set_tests_properties(benchmark-bv-refinement-harness PROPERTIES
+      TIMEOUT 30
+      LABELS "harness"
+    )
+endif()
+
 # -----------------------------------------------------------------------------
 # Default-off baseline differential for the array-equality feature
 #

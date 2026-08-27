@@ -298,7 +298,7 @@ metadata=$output/metadata.txt
 corpus_hashes=$output/corpus.sha256
 
 printf '%s\n' \
-  $'repetition\tschedule\tvariant\tclass\tdriver\tquery\tverdict\tstatus\texit_code\twall_seconds\tmax_rss_kb\tcandidates_divmod\tabstracted_divmod\trefinement_rounds\tblocking_lemmas\tschema_lemmas\texact_escalations\texact_mult\texact_divmod\trecords\trecord_blocking_sum\trecord_blocking_max\tpaired_records\tpaired_blocking_sum\tunpaired_divmod_blocking_sum\trecord_blocking_clauses\trecord_blocking_literals\trecord_exact_clauses\trecord_exact_variables\trecord_exact_microseconds\taggregate_exact_clauses\taggregate_exact_variables\tlog' \
+  $'repetition\tschedule\tvariant\tclass\tdriver\tquery\tverdict\tstatus\texit_code\twall_seconds\tmax_rss_kb\tcandidates_divmod\tabstracted_divmod\trefinement_rounds\tblocking_lemmas\tschema_lemmas\texact_escalations\texact_mult\texact_divmod\trecords\trecord_blocking_sum\trecord_blocking_max\tpaired_records\tpaired_blocking_sum\tunpaired_divmod_blocking_sum\trecord_blocking_clauses\trecord_blocking_literals\trecord_exact_clauses\trecord_exact_variables\trecord_exact_microseconds\taggregate_exact_clauses\taggregate_exact_variables\taggregate_exact_microseconds\tlog' \
   > "$runs_tsv"
 printf '%s\n' \
   $'repetition\tvariant\tclass\tdriver\tquery\trecord\tnode\tkind\twidth\tstate\tblocking\tschemas\texact\texact_bits\tallowance\tpaired\tpair_prefix\tpair_full\tblocking_clauses\tblocking_literals\texact_clauses\texact_variables\texact_microseconds\tlog' \
@@ -533,10 +533,9 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
           for (i = 3; i <= NF; ++i) {
             split($i, kv, "="); v[kv[1]] = kv[2]
           }
-          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v["rounds"],
+          printf "%s\t%s\t%s\t%s\t%s\t%s\n", v["rounds"],
                  v["blocking"], v["schema"], v["exact"],
-                 v["exact-mult"], v["exact-divmod"], v["exact-clauses"],
-                 v["exact-vars"]
+                 v["exact-mult"], v["exact-divmod"]
           exit
         }' "$log")
       refinement_rounds=0
@@ -545,12 +544,27 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
       exact_escalations=0
       exact_mult=0
       exact_divmod=0
-      aggregate_exact_clauses=0
-      aggregate_exact_variables=0
       if [[ -n $refinement ]]; then
         IFS=$'\t' read -r refinement_rounds blocking_lemmas schema_lemmas \
-          exact_escalations exact_mult exact_divmod aggregate_exact_clauses \
-          aggregate_exact_variables <<< "$refinement"
+          exact_escalations exact_mult exact_divmod <<< "$refinement"
+      fi
+
+      escalation_cost=$(awk '
+        /^Abstraction escalation cost:/ {
+          for (i = 4; i <= NF; ++i) {
+            split($i, kv, "="); v[kv[1]] = kv[2]
+          }
+          printf "%s\t%s\t%s\n", v["clauses"], v["variables"],
+                 v["microseconds"]
+          exit
+        }' "$log")
+      aggregate_exact_clauses=0
+      aggregate_exact_variables=0
+      aggregate_exact_microseconds=0
+      if [[ -n $escalation_cost ]]; then
+        IFS=$'\t' read -r aggregate_exact_clauses \
+          aggregate_exact_variables aggregate_exact_microseconds \
+          <<< "$escalation_cost"
       fi
 
       record_stats=$(awk '
@@ -588,7 +602,7 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
         record_exact_clauses record_exact_variables record_exact_microseconds \
         <<< "$record_stats"
 
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$rep" "$schedule" "$variant" "$query_class" "$driver" \
         "$query_key" "$verdict" "$status" "$exit_code" "$wall_seconds" \
         "$max_rss_kb" "$candidates_divmod" "$abstracted_divmod" \
@@ -599,7 +613,8 @@ for ((rep = 1; rep <= repetitions; ++rep)); do
         "$record_blocking_clauses" "$record_blocking_literals" \
         "$record_exact_clauses" "$record_exact_variables" \
         "$record_exact_microseconds" "$aggregate_exact_clauses" \
-        "$aggregate_exact_variables" "$relative_log" \
+        "$aggregate_exact_variables" "$aggregate_exact_microseconds" \
+        "$relative_log" \
         >> "$runs_tsv"
 
       awk -v OFS='\t' -v rep="$rep" -v variant="$variant" \
@@ -642,6 +657,7 @@ awk -F '\t' -v OFS='\t' '
       exactus[key]+=$30
       aggregateexactclauses[key]+=$31
       aggregateexactvars[key]+=$32
+      aggregateexactus[key]+=$33
       if ($8 == "ok") verdicts[key]++
       else if ($8 == "timeout") timeouts[key]++
       else if ($8 == "unknown") unknowns[key]++
@@ -656,16 +672,17 @@ awk -F '\t' -v OFS='\t' '
           "record_blocking_clauses", "record_blocking_literals",
           "record_exact_clauses", "record_exact_variables",
           "record_exact_microseconds", "aggregate_exact_clauses",
-          "aggregate_exact_variables"
+          "aggregate_exact_variables", "aggregate_exact_microseconds"
     for (key in runs) {
       split(key, k, SUBSEP)
-      printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.6f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+      printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.6f\t%.1f\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
              k[1], k[2], k[3], runs[key], verdicts[key], timeouts[key],
              unknowns[key], failures[key], wall[key], rss[key]/runs[key],
              blocks[key], schemas[key], exact[key], pairblocks[key],
              singlediv[key], blockclauses[key], blockliterals[key],
              exactclauses[key], exactvars[key], exactus[key],
-             aggregateexactclauses[key], aggregateexactvars[key]
+             aggregateexactclauses[key], aggregateexactvars[key],
+             aggregateexactus[key]
     }
   }' "$runs_tsv" | { IFS= read -r header; printf '%s\n' "$header";
                       sort -t $'\t' -k1,1 -k2,2 -k3,3; } > "$summary_tsv"

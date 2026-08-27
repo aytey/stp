@@ -2,9 +2,9 @@
 
 Date: 2026-08-27
 
-Branch: `cegar-next-codex-v6`
+Branch: `cegar-next-codex-v7`
 
-Based on: `33971c86` (`cegar-next-codex-v5`)
+Based on: `7686319d` (`cegar-next-codex-v6`)
 
 Hybrid based on: `b3b87580` (`cegar-variable-shift-udiv15`)
 
@@ -20,8 +20,10 @@ V5 comparison source: `5b453e12` (`cegar-next-claude-v4`)
 
 V6 evaluation source: `156303bb` (`cegar-next-claude-v5`)
 
+V7 comparison source: `689a33f2` (`cegar-next-claude-v6`)
+
 Worktree used for this stack:
-`/home/avj/clones/stp/cegar-next-codex-v6`
+`/home/avj/clones/stp/cegar-next-codex-v7`
 
 ## Executive summary
 
@@ -65,6 +67,29 @@ bits and counters retain their values.
 
 The older `/home/avj/clones/stp/NEXT_CEGAR_LEMMAS.md` described what was
 missing before this stack. It is now stale and this file supersedes it.
+
+## V7 evaluation hardening
+
+V7 changes no abstraction default, schema, allowance or scheduling decision.
+It completes the v6 evaluation surface after comparing the independent Claude
+v6 implementation:
+
+- aggregate exact-escalation cost now includes encoding microseconds, exposed
+  after the existing C counter prefix as ordinal 39;
+- the established `Abstraction refinement:` line keeps its six policy fields,
+  while a conditional `Abstraction escalation cost:` line carries clauses,
+  variables and microseconds only when an escalation occurred;
+- the benchmark harness parses that separate line and retains both its totals
+  and the independently summed per-record costs in `runs.tsv` and
+  `summary.tsv`;
+- a deterministic CTest now exercises relative manifest paths, equal basenames
+  from different query families, an unterminated final manifest entry, custom
+  option conflicts, and aggregate/per-record column consistency.
+
+The full query path remains the identity of a manifest-selected query. This is
+not cosmetic: reducing it to the basename can join unrelated results and turn
+one satisfiable query plus one unsatisfiable query into a fabricated solver
+disagreement.
 
 ## V6 evaluation hybrid
 

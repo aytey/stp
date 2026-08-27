@@ -1057,11 +1057,19 @@ public:
     uint64_t bv_exact_escalations = 0;
     uint64_t bv_exact_escalations_mult = 0;
     uint64_t bv_exact_escalations_divmod = 0;
-    // Solver-observed cost of the exact circuits installed by those
-    // escalations. Unlike the per-record diagnostics, these totals are also
-    // available to embedders through vc_getCounter.
+    // What giving up cost. The counts above say how often a refinement was
+    // abandoned; these say what was handed to the solver in exchange, summed
+    // over every escalation. The per-record fields already carry the same
+    // figures for the benchmark harness; publishing the totals makes the
+    // question answerable from ordinary statistics and the C API too.
+    //
+    // Equal escalation counts can hide very different trades: an exact
+    // multiplier is affordable where an exact divider may not be. Clauses and
+    // variables come from the solver's own totals across the encode rather
+    // than a circuit estimate, and microseconds measure only that encode.
     uint64_t bv_exact_clauses = 0;
     uint64_t bv_exact_variables = 0;
+    uint64_t bv_exact_microseconds = 0;
     // The same total partitioned by BVSchemaGroup, so a mixed run can be
     // attributed without parsing diagnostic text. Every schema increment
     // must increment exactly one entry here as well.

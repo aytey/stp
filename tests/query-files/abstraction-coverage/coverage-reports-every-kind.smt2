@@ -16,6 +16,7 @@
 ; CHECK: Abstraction coverage \(candidates -> abstracted\): eq=2->0 compare=2->2 ite=1->1 plus=1->1 mult=1->1 divmod=0->0
 ; CHECK: Abstraction schemas by group: base=[0-9]+ udiv15=0 udiv-extra=0 urem=[0-9]+ mul8=0 mul-ref3=[0-9]+ mul-extra=0 add=0 quotient-thresholds=0 low-prefix=0 quotient-one-rem=0 divrem-pair=0 quotient-one-quot=0 divisor-magnitude=0 divrem-full=0
 ; EARLY: Abstraction coverage \(candidates -> abstracted\): eq=2->0 compare=2->2 ite=1->1 plus=1->1 mult=1->1 divmod=0->0
-; EARLY: Abstraction refinement: rounds=0 blocking=0 schema=0 exact=0 exact-mult=0 exact-divmod=0 exact-clauses=0 exact-vars=0
+; EARLY: Abstraction refinement: rounds=0 blocking=0 schema=0 exact=0 exact-mult=0 exact-divmod=0
+; EARLY-NOT: Abstraction escalation cost:
 (check-sat)
 (exit)
