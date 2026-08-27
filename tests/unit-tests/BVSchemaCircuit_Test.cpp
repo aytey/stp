@@ -101,8 +101,9 @@ uint64_t referenceRem(uint64_t x, uint64_t s, unsigned)
 }
 uint64_t referenceMul(uint64_t x, uint64_t s, unsigned width)
 {
-  return (uint64_t)(((unsigned __int128)x * (unsigned __int128)s) &
-                    (unsigned __int128)maskOf(width));
+  // Truncating a 64-bit wraparound product to `width` bits is the same value
+  // as truncating the exact one.
+  return (x * s) & maskOf(width);
 }
 uint64_t referenceAdd(uint64_t x, uint64_t s, unsigned width)
 {
