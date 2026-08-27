@@ -538,13 +538,15 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
       break;
     case BV_TERM_ABSTRACTION_MULT:
       b->UserFlags.bv_term_abstraction_mult = param_value != 0;
-      // This published flag controlled MULT, DIV and MOD before the appended
-      // DIVMOD switch existed. Preserve that behavior; callers wanting split
-      // scopes can override DIVMOD in a subsequent call.
-      b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
+      // This flag covered MULT, DIV and MOD before the DIVMOD switch existed,
+      // and still does unless the caller has named DIV/MOD itself. Order does
+      // not matter: an explicit DIVMOD wins whether it came first or second.
+      if (!b->UserFlags.bv_term_abstraction_divmod_explicit)
+        b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
       break;
     case BV_TERM_ABSTRACTION_DIVMOD:
       b->UserFlags.bv_term_abstraction_divmod = param_value != 0;
+      b->UserFlags.bv_term_abstraction_divmod_explicit = true;
       break;
     case BV_TERM_ABSTRACTION_PROFILE:
       if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED)
@@ -561,12 +563,12 @@ void vc_setInterfaceFlags(VC vc, enum ifaceflag_t f, int param_value)
         b->UserFlags.bv_term_abstraction_rounds =
             stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
       }
-      else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR)
+      else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_NO_PAIR)
       {
         b->UserFlags.bv_term_abstraction_schema_groups =
-            stp::BV_SCHEMA_GROUP_SPEAR;
+            stp::BV_SCHEMA_GROUP_BROAD_NO_PAIR;
         b->UserFlags.bv_term_abstraction_rounds =
-            stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
+            stp::BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS;
       }
       else if (param_value == STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX)
       {
@@ -978,25 +980,6 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
     case STP_COUNTER_BV_REFINEMENT_ROUNDS: return c.bv_refinement_rounds;
     case STP_COUNTER_BV_BLOCKING_LEMMAS: return c.bv_blocking_lemmas;
     case STP_COUNTER_BV_SCHEMA_LEMMAS: return c.bv_schema_lemmas;
-    case STP_COUNTER_BV_SCHEMA_GROUP_BASE:
-    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV15:
-    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV_EXTRA:
-    case STP_COUNTER_BV_SCHEMA_GROUP_UREM:
-    case STP_COUNTER_BV_SCHEMA_GROUP_MUL8:
-    case STP_COUNTER_BV_SCHEMA_GROUP_MUL_REF3:
-    case STP_COUNTER_BV_SCHEMA_GROUP_MUL_EXTRA:
-    case STP_COUNTER_BV_SCHEMA_GROUP_ADD:
-    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS:
-    case STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX:
-    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM:
-    case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR:
-    case STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT:
-    case STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE:
-    case STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL:
-    case STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED:
-      return c.bv_schema_group_lemmas[static_cast<unsigned>(counter) -
-                                      static_cast<unsigned>(
-                                          STP_COUNTER_BV_SCHEMA_GROUP_BASE)];
     case STP_COUNTER_UF_APPLICATIONS_LOWERED:
       return c.uf_applications_lowered;
     case STP_COUNTER_UF_CONSTRAINTS_INSTALLED:
@@ -1014,6 +997,32 @@ unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter)
   }
   reportCAPIError("vc_getCounter: unrecognised counter");
   return 0;
+}
+
+// The C header spells the group count as a macro so a C caller can size an
+// array with it; this is the only thing keeping the two in step.
+static_assert(STP_BV_SCHEMA_GROUP_COUNT == stp::BV_SCHEMA_GROUP_COUNT,
+              "the C schema-group count is out of step with BVSchemaGroup");
+
+unsigned long long vc_getSchemaGroupCounter(VC vc, unsigned group)
+{
+  if (group >= stp::BV_SCHEMA_GROUP_COUNT)
+  {
+    reportCAPIError("vc_getSchemaGroupCounter: schema group out of range");
+    return 0;
+  }
+  stp::STP* b = (stp::STP*)vc;
+  return b->bm->UserFlags.coverage.bv_schema_group_lemmas[group];
+}
+
+const char* vc_schemaGroupName(unsigned group)
+{
+  if (group >= stp::BV_SCHEMA_GROUP_COUNT)
+  {
+    reportCAPIError("vc_schemaGroupName: schema group out of range");
+    return NULL;
+  }
+  return stp::bvSchemaGroupName(static_cast<stp::BVSchemaGroup>(group));
 }
 
 enum reason_unknown_t vc_getReasonUnknown(VC vc)

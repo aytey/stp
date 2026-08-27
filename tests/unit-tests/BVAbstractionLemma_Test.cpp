@@ -40,19 +40,6 @@ THE SOFTWARE.
 
 using namespace stp;
 
-static_assert(DivLemma::UdivRef9 == DivLemma::QuotientNotNegatedAnd,
-              "legacy UDIV spelling changed value");
-static_assert(RemLemma::UremRef2 == RemLemma::DividendZero,
-              "legacy UREM spelling changed value");
-static_assert(MulLemma::MulRef3 == MulLemma::FactorAndProductNotOr,
-              "legacy MUL spelling changed value");
-static_assert(mulLemmaInstalledBit(0, 0) ==
-                  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0,
-              "table-driven MUL8 moved its v3 installed bit");
-static_assert(mulLemmaInstalledBit(0, 1) ==
-                  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1,
-              "table-driven MUL8 moved its v3 installed bit");
-
 namespace
 {
 
@@ -113,11 +100,11 @@ std::vector<Family> families()
   std::vector<Family> result;
   unsigned count = 0;
 
-  Family div{"BVDIV", 34, referenceDiv, {}};
-  const DivLemma* divTable = divLemmaTable(count);
+  Family div{"BVDIV", BV_DIV_LEMMA_COUNT, referenceDiv, {}};
+  const BVLemmaEntry<DivLemma>* divTable = divLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
-    const DivLemma lemma = divTable[i];
+    const DivLemma lemma = divTable[i].lemma;
     div.facts.push_back(
         {divLemmaName(lemma),
          [lemma](unsigned width) { return divLemmaApplicable(lemma, width); },
@@ -131,11 +118,11 @@ std::vector<Family> families()
   }
   result.push_back(div);
 
-  Family rem{"BVMOD", 13, referenceRem, {}};
-  const RemLemma* remTable = remLemmaTable(count);
+  Family rem{"BVMOD", BV_REM_LEMMA_COUNT, referenceRem, {}};
+  const BVLemmaEntry<RemLemma>* remTable = remLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
-    const RemLemma lemma = remTable[i];
+    const RemLemma lemma = remTable[i].lemma;
     rem.facts.push_back(
         {remLemmaName(lemma),
          [lemma](unsigned width) { return remLemmaApplicable(lemma, width); },
@@ -149,11 +136,11 @@ std::vector<Family> families()
   }
   result.push_back(rem);
 
-  Family mul{"BVMULT", 15, referenceMul, {}};
-  const MulLemma* mulTable = mulLemmaTable(count);
+  Family mul{"BVMULT", BV_MUL_LEMMA_COUNT, referenceMul, {}};
+  const BVLemmaEntry<MulLemma>* mulTable = mulLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
-    const MulLemma lemma = mulTable[i];
+    const MulLemma lemma = mulTable[i].lemma;
     mul.facts.push_back(
         {mulLemmaName(lemma),
          [lemma](unsigned width) { return mulLemmaApplicable(lemma, width); },
@@ -167,11 +154,11 @@ std::vector<Family> families()
   }
   result.push_back(mul);
 
-  Family add{"BVPLUS", 13, referenceAdd, {}};
-  const AddLemma* addTable = addLemmaTable(count);
+  Family add{"BVPLUS", BV_ADD_LEMMA_COUNT, referenceAdd, {}};
+  const BVLemmaEntry<AddLemma>* addTable = addLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
-    const AddLemma lemma = addTable[i];
+    const AddLemma lemma = addTable[i].lemma;
     add.facts.push_back(
         {addLemmaName(lemma),
          [lemma](unsigned width) { return addLemmaApplicable(lemma, width); },
@@ -264,19 +251,18 @@ TEST(BVAbstractionLemma, registries_have_complete_unique_metadata)
 TEST(BVAbstractionLemma, custom_facts_have_the_ranked_registry_positions)
 {
   unsigned count = 0;
-  const DivLemma* div = divLemmaTable(count);
-  ASSERT_EQ(34u, count);
-  EXPECT_EQ(DivLemma::QuotientIsOne, div[3]);
+  const BVLemmaEntry<DivLemma>* div = divLemmaTable(count);
+  ASSERT_EQ(BV_DIV_LEMMA_COUNT, count);
+  EXPECT_EQ(DivLemma::QuotientIsOne, div[3].lemma);
 
-  const RemLemma* rem = remLemmaTable(count);
-  ASSERT_EQ(13u, count);
-  EXPECT_EQ(RemLemma::RemainderIsDifference, rem[3]);
-  EXPECT_EQ(RemLemma::RemainderBelowDivisorDisabled, rem[count - 1]);
+  const BVLemmaEntry<RemLemma>* rem = remLemmaTable(count);
+  ASSERT_EQ(BV_REM_LEMMA_COUNT, count);
+  EXPECT_EQ(RemLemma::RemainderIsDifference, rem[3].lemma);
 
-  const MulLemma* mul = mulLemmaTable(count);
-  ASSERT_EQ(15u, count);
-  EXPECT_EQ(MulLemma::FactorUnchangedByMaskedShift, mul[0]);
-  EXPECT_EQ(MulLemma::FactorAndProductNotOr, mul[1]);
+  const BVLemmaEntry<MulLemma>* mul = mulLemmaTable(count);
+  ASSERT_EQ(BV_MUL_LEMMA_COUNT, count);
+  EXPECT_EQ(MulLemma::FactorUnchangedByMaskedShift, mul[0].lemma);
+  EXPECT_EQ(MulLemma::FactorAndProductNotOr, mul[1].lemma);
 }
 
 TEST(BVAbstractionLemma, descriptive_tail_names_keep_the_actual_source_ids)

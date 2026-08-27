@@ -34,22 +34,24 @@ namespace stp
 namespace
 {
 
+// In BVSchemaGroup order; the static_assert below is the only thing that
+// keeps the two in step.
 const char* const GROUP_NAMES[] = {"base",
                                    "udiv15",
-                                   "udiv-extra",
+                                   "udiv-observed",
+                                   "udiv-tail",
                                    "urem",
+                                   "quotient-one-quot",
+                                   "quotient-one-rem",
+                                   "quotient-thresholds",
+                                   "divisor-magnitude",
+                                   "divrem-pair",
+                                   "divrem-full",
                                    "mul8",
                                    "mul-ref3",
-                                   "mul-extra",
+                                   "mul-tail",
                                    "add",
-                                   "quotient-thresholds",
-                                   "low-prefix",
-                                   "quotient-one-rem",
-                                   "divrem-pair",
-                                   "quotient-one-quot",
-                                   "divisor-magnitude",
-                                   "divrem-full",
-                                   "udiv-observed"};
+                                   "low-prefix"};
 
 static_assert(sizeof(GROUP_NAMES) / sizeof(GROUP_NAMES[0]) ==
                   BV_SCHEMA_GROUP_COUNT,
@@ -220,12 +222,12 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
     parsedMask = BV_SCHEMA_GROUP_AGGRESSIVE;
     parsedRounds = BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS;
   }
-  else if (text == "spear" || text == "broad-no-pair")
+  else if (text == "broad-no-pair")
   {
-    parsedMask = BV_SCHEMA_GROUP_SPEAR;
-    parsedRounds = BV_TERM_ABSTRACTION_SPEAR_ROUNDS;
+    parsedMask = BV_SCHEMA_GROUP_BROAD_NO_PAIR;
+    parsedRounds = BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS;
   }
-  else if (text == "broad-prefix" || text == "klee")
+  else if (text == "broad-prefix")
   {
     parsedMask = BV_SCHEMA_GROUP_BROAD_PREFIX;
     parsedRounds = BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
@@ -233,7 +235,7 @@ bool parseBVTermAbstractionProfile(const std::string& text, uint32_t& mask,
   else
   {
     error = "unknown BV term-abstraction profile '" + text +
-            "'; expected qualified, aggressive, spear, or broad-prefix";
+            "'; expected qualified, broad-no-pair, broad-prefix, or aggressive";
     return false;
   }
 
@@ -275,8 +277,10 @@ void printAbstractionCoverage(const UserDefinedFlags& uf, std::ostream& out)
         << " variables=" << c.bv_exact_variables
         << " microseconds=" << c.bv_exact_microseconds << std::endl;
 
-  // Preserve Codex's always-present partition: a zero says that an enabled
-  // family fired nothing, and can be interpreted alongside the selected mask.
+  // Always the complete partition, zeros included: a zero says that an
+  // enabled family fired nothing, which is only readable next to the mask
+  // that was selected. Omitting the empty ones would make the two runs a
+  // comparison is between look like different reports.
   out << "Abstraction schemas by group:";
   for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
     out << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i)) << "="

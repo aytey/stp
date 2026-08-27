@@ -59,6 +59,103 @@ using namespace stp;
 namespace
 {
 
+// Two independently written oracles for the quotient-one band, kept here
+// rather than in the library because nothing in the solver calls them: the
+// live refiner installs the relationship through DivLemma::QuotientIsOne and
+// RemLemma::RemainderIsDifference. What they are for is to say the same thing
+// a second way, and that belongs in the test that compares the two.
+unsigned oracleFreshVar(SATSolver& solver)
+{
+  const unsigned v = solver.newVar();
+  solver.setFrozen(v);
+  return v;
+}
+
+struct QuotientOneBand
+{
+  std::vector<unsigned> difference;
+  unsigned divisorBelowDividend;
+  unsigned divisorBelowDifference;
+};
+
+QuotientOneBand encodeQuotientOneBand(
+    SATSolver& solver, const std::vector<unsigned>& dividendVars,
+    const std::vector<unsigned>& divisorVars, unsigned width)
+{
+  QuotientOneBand band;
+  band.difference.resize(width);
+  for (unsigned i = 0; i < width; ++i)
+    band.difference[i] = oracleFreshVar(solver);
+  encodeAddLowPrefix(solver, dividendVars, divisorVars, band.difference, width,
+                     width, false, true);
+
+  band.divisorBelowDividend = encodeLessOrEqual(
+      solver, divisorVars, dividendVars, width, false);
+  band.divisorBelowDifference = encodeLessOrEqual(
+      solver, divisorVars, band.difference, width, false);
+  return band;
+}
+
+void encodeRemQuotientOne(SATSolver& solver,
+                          const std::vector<unsigned>& dividendVars,
+                          const std::vector<unsigned>& divisorVars,
+                          const std::vector<unsigned>& remainderVars,
+                          unsigned width)
+{
+  assert(width > 0);
+  assert(dividendVars.size() >= width);
+  assert(divisorVars.size() >= width);
+  assert(remainderVars.size() >= width);
+
+  const QuotientOneBand band =
+      encodeQuotientOneBand(solver, dividendVars, divisorVars, width);
+
+  // (b <= a && !(b <= a-b)) -> r = a-b. The second comparison is the
+  // strict (a-b) < b edge, and makes the premise false when b is zero.
+  for (unsigned i = 0; i < width; ++i)
+  {
+    SATSolver::vec_literals cl;
+    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
+    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
+    cl.push(SATSolver::mkLit(remainderVars[i], true));
+    cl.push(SATSolver::mkLit(band.difference[i], false));
+    solver.addClause(cl);
+
+    cl.clear();
+    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
+    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
+    cl.push(SATSolver::mkLit(remainderVars[i], false));
+    cl.push(SATSolver::mkLit(band.difference[i], true));
+    solver.addClause(cl);
+  }
+}
+
+void encodeDivQuotientOne(SATSolver& solver,
+                          const std::vector<unsigned>& dividendVars,
+                          const std::vector<unsigned>& divisorVars,
+                          const std::vector<unsigned>& quotientVars,
+                          unsigned width)
+{
+  assert(width > 0);
+  assert(dividendVars.size() >= width);
+  assert(divisorVars.size() >= width);
+  assert(quotientVars.size() >= width);
+
+  const QuotientOneBand band =
+      encodeQuotientOneBand(solver, dividendVars, divisorVars, width);
+
+  // (b <= a && !(b <= a-b)) -> q = 1. Bit zero is true and every other
+  // quotient bit false under the shared premise.
+  for (unsigned i = 0; i < width; ++i)
+  {
+    SATSolver::vec_literals cl;
+    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
+    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
+    cl.push(SATSolver::mkLit(quotientVars[i], i == 0 ? false : true));
+    solver.addClause(cl);
+  }
+}
+
 const unsigned WIDTH = 4;
 const unsigned VALUES = 1u << WIDTH;
 
@@ -227,22 +324,21 @@ TEST(BVDivSchema, chosen_schema_is_violated_by_the_candidate)
             unsigned n = 0;
             if (opKind == BVDIV)
             {
-              const DivLemma* table = divLemmaTable(n);
+              const BVLemmaEntry<DivLemma>* table = divLemmaTable(n);
               ASSERT_LT(choice.lemmaIndex, n);
-              ASSERT_FALSE(divLemmaHolds(table[choice.lemmaIndex], bitsOf(a),
+              ASSERT_FALSE(divLemmaHolds(table[choice.lemmaIndex].lemma, bitsOf(a),
                                          bitsOf(b), bitsOf(t)))
-                  << "lemma " << divLemmaName(table[choice.lemmaIndex])
+                  << "lemma " << divLemmaName(table[choice.lemmaIndex].lemma)
                   << " at a=" << a << " b=" << b << " t=" << t
                   << " is already satisfied by the candidate";
             }
             else
             {
-              const RemLemma* table = remLemmaTable(n);
+              const BVLemmaEntry<RemLemma>* table = remLemmaTable(n);
               ASSERT_LT(choice.lemmaIndex, n);
-              ASSERT_TRUE(remLemmaEnabled(table[choice.lemmaIndex]));
-              ASSERT_FALSE(remLemmaHolds(table[choice.lemmaIndex], bitsOf(a),
+              ASSERT_FALSE(remLemmaHolds(table[choice.lemmaIndex].lemma, bitsOf(a),
                                          bitsOf(b), bitsOf(t)))
-                  << "lemma " << remLemmaName(table[choice.lemmaIndex])
+                  << "lemma " << remLemmaName(table[choice.lemmaIndex].lemma)
                   << " at a=" << a << " b=" << b << " t=" << t
                   << " is already satisfied by the candidate";
             }
@@ -318,7 +414,7 @@ TEST(BVDivSchema, schema_groups_gate_division_before_selection)
   const GroupCase cases[] = {{BVSchemaGroup::BASE, BVDIV},
                              {BVSchemaGroup::UDIV15, BVDIV},
                              {BVSchemaGroup::UDIV_OBSERVED, BVDIV},
-                             {BVSchemaGroup::UDIV_EXTRA, BVDIV},
+                             {BVSchemaGroup::UDIV_TAIL, BVDIV},
                              {BVSchemaGroup::UREM, BVMOD},
                              {BVSchemaGroup::QUOTIENT_THRESHOLDS, BVDIV},
                              {BVSchemaGroup::QUOTIENT_ONE_REM, BVMOD},
@@ -437,11 +533,11 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
             }
 
             unsigned n = 0;
-            const DivLemma* table = divLemmaTable(n);
+            const BVLemmaEntry<DivLemma>* table = divLemmaTable(n);
             for (unsigned i = 0; i < n; ++i)
               ASSERT_TRUE(
-                  divLemmaHolds(table[i], bitsOf(a), bitsOf(b), bitsOf(t)))
-                  << "lemma " << divLemmaName(table[i])
+                  divLemmaHolds(table[i].lemma, bitsOf(a), bitsOf(b), bitsOf(t)))
+                  << "lemma " << divLemmaName(table[i].lemma)
                   << " was available at a=" << a << " b=" << b << " t=" << t
                   << " and was not offered";
           }
@@ -452,14 +548,13 @@ TEST(BVDivSchema, wrong_candidates_are_only_declined_on_other_divisors)
                 << " b=" << b << " r=" << t << " and was not offered";
 
             unsigned n = 0;
-            const RemLemma* table = remLemmaTable(n);
+            const BVLemmaEntry<RemLemma>* table = remLemmaTable(n);
             for (unsigned i = 0; i < n; ++i)
-              if (remLemmaEnabled(table[i]) &&
-                  remLemmaApplicable(table[i], WIDTH))
+              if (remLemmaApplicable(table[i].lemma, WIDTH))
               {
                 ASSERT_TRUE(
-                    remLemmaHolds(table[i], bitsOf(a), bitsOf(b), bitsOf(t)))
-                    << "lemma " << remLemmaName(table[i])
+                    remLemmaHolds(table[i].lemma, bitsOf(a), bitsOf(b), bitsOf(t)))
+                    << "lemma " << remLemmaName(table[i].lemma)
                     << " was available at a=" << a << " b=" << b
                     << " t=" << t << " and was not offered";
               }
@@ -649,13 +744,15 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
   divLemmaTable(lemmaCount);
   uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
                  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
-                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND |
-                 DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE |
-                 DIV_SCHEMA_INSTALLED_QUOTIENT_ONE;
+                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
   for (unsigned i = 0; i < lemmaCount; ++i)
     all |= divLemmaInstalledBit(i);
-  for (unsigned i = 0; i < DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE; ++i)
-    all |= divMagnitudeBoundBit(i);
+  for (unsigned i = 0;
+       i < bvSchemaFamilyAllowance(BVSchemaFamily::DivisorMagnitude); ++i)
+    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::DivisorMagnitude);
+  for (unsigned i = 0;
+       i < bvSchemaFamilyAllowance(BVSchemaFamily::QuotientThreshold); ++i)
+    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::QuotientThreshold);
 
   for (Kind opKind : KINDS)
     for (unsigned a = 0; a < VALUES; a++)
@@ -879,10 +976,22 @@ TEST(BVDivSchemaMagnitude,
 
 TEST(BVDivSchemaMagnitude, allowance_is_exactly_two_instances)
 {
-  EXPECT_TRUE(divMagnitudeBoundsLeft(0));
-  EXPECT_TRUE(divMagnitudeBoundsLeft(divMagnitudeBoundBit(0)));
-  EXPECT_FALSE(divMagnitudeBoundsLeft(divMagnitudeBoundBit(0) |
-                                      divMagnitudeBoundBit(1)));
+  EXPECT_TRUE(
+      bvSchemaFamilyHasInstance(0, BVSchemaFamily::DivisorMagnitude));
+  const uint64_t one = bvSchemaFamilyRecordInstance(
+      0, BVSchemaFamily::DivisorMagnitude);
+  EXPECT_TRUE(
+      bvSchemaFamilyHasInstance(one, BVSchemaFamily::DivisorMagnitude));
+  const uint64_t two =
+      bvSchemaFamilyRecordInstance(one, BVSchemaFamily::DivisorMagnitude);
+  EXPECT_FALSE(
+      bvSchemaFamilyHasInstance(two, BVSchemaFamily::DivisorMagnitude));
+  // Each family counts on its own: spending the magnitude budget must not
+  // spend anyone else's.
+  EXPECT_TRUE(
+      bvSchemaFamilyHasInstance(two, BVSchemaFamily::QuotientThreshold));
+  EXPECT_EQ(0u, bvSchemaFamilyInstances(two, BVSchemaFamily::QuotientThreshold));
+  EXPECT_EQ(2u, bvSchemaFamilyInstances(two, BVSchemaFamily::DivisorMagnitude));
 }
 
 TEST_F(BVDivBoundEncodingTest,

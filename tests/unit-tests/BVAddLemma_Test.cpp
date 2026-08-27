@@ -114,14 +114,14 @@ TEST(BVAddLemma, registry_is_complete)
 TEST(BVAddLemma, every_lemma_is_true_of_addition)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
     for (unsigned x = 0; x < VALUES; ++x)
       for (unsigned s = 0; s < VALUES; ++s)
       {
         const unsigned t = referenceAdd(x, s);
-        ASSERT_TRUE(addLemmaHolds(lemmas[i], bitsOf(x), bitsOf(s), bitsOf(t)))
-            << addLemmaName(lemmas[i]) << " is false of x=" << x << " s=" << s
+        ASSERT_TRUE(addLemmaHolds(lemmas[i].lemma, bitsOf(x), bitsOf(s), bitsOf(t)))
+            << addLemmaName(lemmas[i].lemma) << " is false of x=" << x << " s=" << s
             << " (sum " << t << ")";
       }
 }
@@ -129,22 +129,22 @@ TEST(BVAddLemma, every_lemma_is_true_of_addition)
 TEST(BVAddLemma, every_lemma_is_true_at_each_small_width)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned width = 1; width <= 6; ++width)
   {
     const unsigned values = 1u << width;
     const unsigned mask = values - 1;
     for (unsigned i = 0; i < count; ++i)
     {
-      if (!addLemmaApplicable(lemmas[i], width))
+      if (!addLemmaApplicable(lemmas[i].lemma, width))
         continue;
       for (unsigned x = 0; x < values; ++x)
         for (unsigned s = 0; s < values; ++s)
         {
           const unsigned t = (x + s) & mask;
-          ASSERT_TRUE(addLemmaHolds(lemmas[i], bitsOf(x, width),
+          ASSERT_TRUE(addLemmaHolds(lemmas[i].lemma, bitsOf(x, width),
                                     bitsOf(s, width), bitsOf(t, width)))
-              << addLemmaName(lemmas[i]) << " is false at width " << width
+              << addLemmaName(lemmas[i].lemma) << " is false at width " << width
               << " for x=" << x << " s=" << s << " (sum " << t << ")";
         }
     }
@@ -154,26 +154,26 @@ TEST(BVAddLemma, every_lemma_is_true_at_each_small_width)
 TEST(BVAddLemma, every_lemma_rules_something_out)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
     unsigned refuted = 0;
     for (unsigned x = 0; x < VALUES; ++x)
       for (unsigned s = 0; s < VALUES; ++s)
         for (unsigned t = 0; t < VALUES; ++t)
-          if (!addLemmaHolds(lemmas[i], bitsOf(x), bitsOf(s), bitsOf(t)))
+          if (!addLemmaHolds(lemmas[i].lemma, bitsOf(x), bitsOf(s), bitsOf(t)))
             ++refuted;
-    EXPECT_GT(refuted, 0u) << addLemmaName(lemmas[i]) << " excludes no triple";
+    EXPECT_GT(refuted, 0u) << addLemmaName(lemmas[i].lemma) << " excludes no triple";
   }
 }
 
 TEST_F(BVAddLemmaTest, the_circuit_agrees_with_the_predicate)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned i = 0; i < count; ++i)
   {
-    const AddLemma lemma = lemmas[i];
+    const AddLemma lemma = lemmas[i].lemma;
     buildCircuit(lemma);
     for (unsigned x = 0; x < VALUES; ++x)
       for (unsigned s = 0; s < VALUES; ++s)
@@ -190,13 +190,13 @@ TEST_F(BVAddLemmaTest, the_circuit_agrees_with_the_predicate)
 TEST_F(BVAddLemmaTest, the_circuit_agrees_at_each_smaller_applicable_width)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned width = 1; width < WIDTH; ++width)
   {
     const unsigned values = 1u << width;
     for (unsigned i = 0; i < count; ++i)
     {
-      const AddLemma lemma = lemmas[i];
+      const AddLemma lemma = lemmas[i].lemma;
       if (!addLemmaApplicable(lemma, width))
         continue;
       buildCircuit(lemma, width);
@@ -215,7 +215,7 @@ TEST_F(BVAddLemmaTest, the_circuit_agrees_at_each_smaller_applicable_width)
 TEST(BVAddLemma, chooser_only_returns_violated_facts)
 {
   unsigned count = 0;
-  const AddLemma* lemmas = addLemmaTable(count);
+  const BVLemmaEntry<AddLemma>* lemmas = addLemmaTable(count);
   for (unsigned x = 0; x < VALUES; ++x)
     for (unsigned s = 0; s < VALUES; ++s)
       for (unsigned t = 0; t < VALUES; ++t)
@@ -238,10 +238,10 @@ TEST(BVAddLemma, chooser_only_returns_violated_facts)
         }
         ASSERT_LT(choice.lemmaIndex, count);
         const unsigned ops[2] = {x, s};
-        ASSERT_FALSE(addLemmaHolds(lemmas[choice.lemmaIndex],
+        ASSERT_FALSE(addLemmaHolds(lemmas[choice.lemmaIndex].lemma,
                                    bitsOf(ops[choice.operand]),
                                    bitsOf(ops[1 - choice.operand]), bitsOf(t)))
-            << addLemmaName(lemmas[choice.lemmaIndex]) << " at x=" << x
+            << addLemmaName(lemmas[choice.lemmaIndex].lemma) << " at x=" << x
             << " s=" << s << " t=" << t;
       }
 }

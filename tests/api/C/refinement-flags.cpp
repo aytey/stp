@@ -99,55 +99,12 @@ static_assert(INCREMENTAL_PIECE_REWRITING == 28,
               "published interface-flag ordinal changed");
 static_assert(CNF_AUTO_THRESHOLD == 29,
               "published interface-flag ordinal changed");
-static_assert(BV_TERM_ABSTRACTION_SCHEMA_GROUPS == 30,
-              "published interface-flag ordinal changed");
-static_assert(BV_TERM_ABSTRACTION_DIVMOD == 31,
-              "published interface-flag ordinal changed");
-static_assert(BV_TERM_ABSTRACTION_PROFILE == 32,
-              "published interface-flag ordinal changed");
-static_assert(BV_TERM_ABSTRACTION_DIVMOD_VALUE_LIMIT == 33,
-              "new interface flags must be appended to preserve the C ABI");
-
-static_assert(STP_BV_SCHEMA_GROUP_BASE == (1 << 0),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_UDIV15 == (1 << 1),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_UDIV_EXTRA == (1 << 2),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_UREM == (1 << 3),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_MUL8 == (1 << 4),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_MUL_REF3 == (1 << 5),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_MUL_EXTRA == (1 << 6),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_ADD == (1 << 7),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS == (1 << 8),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_LOW_PREFIX == (1 << 9),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM == (1 << 10),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_DIVREM_PAIR == (1 << 11),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT == (1 << 12),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE == (1 << 13),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_DIVREM_FULL == (1 << 14),
-              "published schema-group bit changed");
-static_assert(STP_BV_SCHEMA_GROUP_UDIV_OBSERVED == (1 << 15),
-              "new schema-group bits must be appended");
-static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED == 0,
-              "published profile ordinal changed");
-static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE == 1,
-              "published profile ordinal changed");
-static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR == 2,
-              "published profile ordinal changed");
-static_assert(STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX == 3,
-              "new profiles must be appended to preserve the C ABI");
+// The published prefix ends at CNF_AUTO_THRESHOLD. Everything this feature
+// adds -- the four interface flags, the sixteen schema-group bits and the four
+// profile ordinals -- is new in this series and deliberately NOT pinned here:
+// nothing outside the tree has linked against it, so it stays free to be
+// renumbered until it ships. What is worth checking is that the C and C++
+// spellings agree with each other, and BVSchemaGroups_Test does that by name.
 
 namespace
 {
@@ -190,11 +147,11 @@ TEST(refinement_flags, DefaultsAreTheOnesTheCommandLineDocuments)
   EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
   EXPECT_EQ(stp::BV_TERM_ABSTRACTION_DEFAULT_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
-  EXPECT_EQ(16u, flags(vc).bv_term_abstraction_rounds);
+  EXPECT_EQ(32u, flags(vc).bv_term_abstraction_rounds);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_schemas);
   EXPECT_EQ(static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_DEFAULT),
             flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_PREFIX,
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_QUALIFIED,
             flags(vc).bv_term_abstraction_schema_groups);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_value_divisor);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_divmod_value_limit);
@@ -251,18 +208,14 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
 
-  // The appended flag is the explicit independent override. Call order is
-  // intentional: the legacy switch establishes all three, then DIVMOD splits.
+  // Naming DIV/MOD takes it out of the older switch's scope, and keeps it
+  // out: a later MULT call moves multiplication and leaves division where
+  // the caller put it.
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
-
-  // Conversely, a later legacy call deliberately restores the coupled
-  // behavior; C API calls are applied in call order.
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_mult);
-  EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
-  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
   EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 1);
   EXPECT_TRUE(flags(vc).bv_term_abstraction_divmod);
@@ -308,10 +261,10 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   EXPECT_EQ(stp::BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
   vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_PROFILE,
-                       STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR);
-  EXPECT_EQ(stp::BV_SCHEMA_GROUP_SPEAR,
+                       STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_NO_PAIR);
+  EXPECT_EQ(stp::BV_SCHEMA_GROUP_BROAD_NO_PAIR,
             flags(vc).bv_term_abstraction_schema_groups);
-  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_SPEAR_ROUNDS,
+  EXPECT_EQ(stp::BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS,
             flags(vc).bv_term_abstraction_rounds);
   EXPECT_EQ(0u, flags(vc).bv_term_abstraction_schema_groups &
                     (stp::bvSchemaGroupBit(stp::BVSchemaGroup::DIVREM_PAIR) |
@@ -381,6 +334,38 @@ TEST(refinement_flags, EachFlagReachesTheFieldTheCLIWrites)
   vc_Destroy(vc);
 }
 
+// The command line resolves this pair by which options were given, not by
+// where they appear; the C interface has to agree, or the same two settings
+// mean two different things depending on which door a caller came through.
+TEST(refinement_flags, TheDivModScopeResolvesTheSameWayInEitherOrder)
+{
+  for (int divModFirst = 0; divModFirst < 2; ++divModFirst)
+  {
+    VC vc = vc_createValidityChecker();
+    if (divModFirst)
+    {
+      vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
+      vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
+    }
+    else
+    {
+      vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 1);
+      vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_DIVMOD, 0);
+    }
+    EXPECT_TRUE(flags(vc).bv_term_abstraction_mult) << divModFirst;
+    EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod) << divModFirst;
+    vc_Destroy(vc);
+  }
+
+  // And with nothing explicit about DIV/MOD, the older switch still covers
+  // all three, which is what a command line written before the split meant.
+  VC vc = vc_createValidityChecker();
+  vc_setInterfaceFlags(vc, BV_TERM_ABSTRACTION_MULT, 0);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_mult);
+  EXPECT_FALSE(flags(vc).bv_term_abstraction_divmod);
+  vc_Destroy(vc);
+}
+
 TEST(refinement_flags, UnknownBVSchemaGroupBitsAreRefused)
 {
   vc_registerErrorHandler(countError);
@@ -423,17 +408,41 @@ TEST(refinement_flags, InvalidBVProfileIsAtomic)
   vc_registerErrorHandler(nullptr);
 }
 
-TEST(refinement_flags, SchemaGroupCountersFollowThePublicOrdinalBlock)
+// Each group index must read its own counter and name -- not a neighbour's.
+// Distinct values per slot are what makes an off-by-one visible; a uniform
+// value would pass whatever the indexing did.
+TEST(refinement_flags, EachSchemaGroupIndexReadsItsOwnCounterAndName)
 {
+  ASSERT_EQ(stp::BV_SCHEMA_GROUP_COUNT,
+            static_cast<unsigned>(STP_BV_SCHEMA_GROUP_COUNT));
+
   VC vc = vc_createValidityChecker();
-  for (unsigned i = 0; i < stp::BV_SCHEMA_GROUP_COUNT; ++i)
-  {
+  for (unsigned i = 0; i < STP_BV_SCHEMA_GROUP_COUNT; ++i)
     mutableFlags(vc).coverage.bv_schema_group_lemmas[i] = 100 + i;
-    const enum stp_counter_t counter =
-        static_cast<enum stp_counter_t>(STP_COUNTER_BV_SCHEMA_GROUP_BASE + i);
-    EXPECT_EQ(100u + i, vc_getCounter(vc, counter));
+
+  for (unsigned i = 0; i < STP_BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    EXPECT_EQ(100u + i, vc_getSchemaGroupCounter(vc, i));
+    EXPECT_STREQ(
+        stp::bvSchemaGroupName(static_cast<stp::BVSchemaGroup>(i)),
+        vc_schemaGroupName(i));
   }
   vc_Destroy(vc);
+}
+
+// Out of range is a diagnostic and a zero, not an out-of-bounds read.
+TEST(refinement_flags, AnOutOfRangeSchemaGroupIsRefused)
+{
+  vc_registerErrorHandler(countError);
+  errors = 0;
+
+  VC vc = vc_createValidityChecker();
+  EXPECT_EQ(0u, vc_getSchemaGroupCounter(vc, STP_BV_SCHEMA_GROUP_COUNT));
+  EXPECT_TRUE(vc_schemaGroupName(STP_BV_SCHEMA_GROUP_COUNT) == NULL);
+  EXPECT_EQ(2, errors);
+
+  vc_Destroy(vc);
+  vc_registerErrorHandler(nullptr);
 }
 
 TEST(refinement_flags, ExactCostCountersReachTheCInterface)

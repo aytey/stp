@@ -174,63 +174,64 @@ DLL_PUBLIC void vc_setFlag(VC vc, char c);
 
 //! Named bits accepted by BV_TERM_ABSTRACTION_SCHEMA_GROUPS. They mirror the
 //! command-line names in ordinal order; combine any of them with bitwise OR.
-//! The default is the KLEE-qualified broad catalogue plus the cheap DIV/REM
-//! prefix, while QUALIFIED preserves the older base/UREM/MulRef3 subset and
-//! ALL retains every experimental schema implemented by the library.
+//! The default is QUALIFIED, the base/UREM/MulRef3 subset the corpus
+//! qualification justified; the broader masks below are experiments a caller
+//! asks for, and ALL retains every schema implemented by the library.
 enum bv_schema_group_t
 {
   STP_BV_SCHEMA_GROUP_BASE = 1 << 0,
   STP_BV_SCHEMA_GROUP_UDIV15 = 1 << 1,
-  STP_BV_SCHEMA_GROUP_UDIV_EXTRA = 1 << 2,
-  STP_BV_SCHEMA_GROUP_UREM = 1 << 3,
-  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 4,
-  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 5,
-  STP_BV_SCHEMA_GROUP_MUL_EXTRA = 1 << 6,
-  STP_BV_SCHEMA_GROUP_ADD = 1 << 7,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 8,
-  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 9,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 10,
-  STP_BV_SCHEMA_GROUP_DIVREM_PAIR = 1 << 11,
-  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT = 1 << 12,
-  STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 13,
-  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 14,
-  //! Ranked UDIV facts beyond BASE and UDIV15. UDIV_EXTRA remains a
-  //! compatibility umbrella that enables both these and the unobserved tail.
-  STP_BV_SCHEMA_GROUP_UDIV_OBSERVED = 1 << 15,
+  STP_BV_SCHEMA_GROUP_UDIV_OBSERVED = 1 << 2,
+  STP_BV_SCHEMA_GROUP_UDIV_TAIL = 1 << 3,
+  STP_BV_SCHEMA_GROUP_UREM = 1 << 4,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT = 1 << 5,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM = 1 << 6,
+  STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS = 1 << 7,
+  STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE = 1 << 8,
+  STP_BV_SCHEMA_GROUP_DIVREM_PAIR = 1 << 9,
+  STP_BV_SCHEMA_GROUP_DIVREM_FULL = 1 << 10,
+  STP_BV_SCHEMA_GROUP_MUL8 = 1 << 11,
+  STP_BV_SCHEMA_GROUP_MUL_REF3 = 1 << 12,
+  STP_BV_SCHEMA_GROUP_MUL_TAIL = 1 << 13,
+  STP_BV_SCHEMA_GROUP_ADD = 1 << 14,
+  STP_BV_SCHEMA_GROUP_LOW_PREFIX = 1 << 15,
+
+  //! The mask an enabled abstraction inherits.
   STP_BV_SCHEMA_GROUP_QUALIFIED = STP_BV_SCHEMA_GROUP_BASE |
                                   STP_BV_SCHEMA_GROUP_UREM |
                                   STP_BV_SCHEMA_GROUP_MUL_REF3,
-  STP_BV_SCHEMA_GROUP_AGGRESSIVE =
-      STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
-      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
-      STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
-      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
-  //! Broad observed catalogue without either paired DIV/REM relationship.
-  STP_BV_SCHEMA_GROUP_SPEAR =
+  //! The broad observed catalogue without either paired DIV/REM relationship.
+  STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR =
       STP_BV_SCHEMA_GROUP_BASE | STP_BV_SCHEMA_GROUP_UDIV15 |
       STP_BV_SCHEMA_GROUP_UDIV_OBSERVED | STP_BV_SCHEMA_GROUP_UREM |
       STP_BV_SCHEMA_GROUP_MUL8 | STP_BV_SCHEMA_GROUP_MUL_REF3 |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM |
       STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT |
       STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-  //! SPEAR plus cheap low-three-bit paired DIV/REM recomposition.
+  //! The broad catalogue plus cheap low-three-bit paired DIV/REM
+  //! recomposition.
   STP_BV_SCHEMA_GROUP_BROAD_PREFIX =
-      STP_BV_SCHEMA_GROUP_SPEAR | STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
-  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_BROAD_PREFIX,
+      STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR | STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
+  //! The same catalogue with the full-width paired identity instead.
+  STP_BV_SCHEMA_GROUP_AGGRESSIVE =
+      STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR | STP_BV_SCHEMA_GROUP_DIVREM_FULL,
+  STP_BV_SCHEMA_GROUP_DEFAULT = STP_BV_SCHEMA_GROUP_QUALIFIED,
   STP_BV_SCHEMA_GROUP_ALL = (1 << 16) - 1
 };
 
 //! Atomic mask/round pairs accepted by BV_TERM_ABSTRACTION_PROFILE.
 enum bv_term_abstraction_profile_t
 {
+  //! The inherited mask: base schemas, the UREM registry and MulRef3, at a
+  //! thirty-two round ceiling.
   STP_BV_TERM_ABSTRACTION_PROFILE_QUALIFIED = 0,
-  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 1,
-  //! Append-only: preserves the two v3 profile ordinals above.
-  STP_BV_TERM_ABSTRACTION_PROFILE_SPEAR = 2,
-  //! Append-only: broad observed catalogue plus cheap DIV/REM prefix.
-  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX = 3
+  //! The broad observed catalogue without either paired relation, at sixteen.
+  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_NO_PAIR = 1,
+  //! The same catalogue plus the cheap low-three-bit paired recomposition.
+  STP_BV_TERM_ABSTRACTION_PROFILE_BROAD_PREFIX = 2,
+  //! The same catalogue plus the full-width paired identity, whose wide
+  //! multiplier is the reason it is not part of the profile above.
+  STP_BV_TERM_ABSTRACTION_PROFILE_AGGRESSIVE = 3
 };
 
 //! Interface-only flags.
@@ -468,20 +469,21 @@ enum ifaceflag_t
   //!
   BV_TERM_ABSTRACTION,
 
-  //! Legacy scope switch for BVMULT, BVDIV and BVMOD.
+  //! Scope switch for BVMULT, and for BVDIV and BVMOD unless those are named
+  //! separately.
   //!
-  //! `param_value` nonzero includes all three operations (the default), zero
-  //! leaves all three encoded exactly from the start, preserving the public
-  //! behavior this flag had before DIVMOD was split out. A caller that wants
-  //! independent scopes should set this legacy switch first and then override
-  //! BV_TERM_ABSTRACTION_DIVMOD. This is the C API's way to reach
-  //! --bv-term-abstraction-mult.
+  //! `param_value` nonzero includes them (the default), zero leaves them
+  //! encoded exactly from the start. This flag covered all three operations
+  //! before BV_TERM_ABSTRACTION_DIVMOD existed and still does when it is the
+  //! only one set; once DIV/MOD has been set explicitly that setting wins,
+  //! in either call order. This is the C API's way to reach
+  //! --bv-term-abstraction-mult, and it resolves the pair the same way.
   //!
   BV_TERM_ABSTRACTION_MULT,
 
   //! How many blocking lemmas one abstracted BVMULT, BVDIV or BVMOD may take
   //! before its refinement encodes the operation exactly instead of ruling
-  //! out further operand pairs (default 16).
+  //! out further operand pairs (default 32).
   //!
   //! `param_value` is that count; zero never escalates and enumerates without
   //! limit. A negative value is refused with a nonfatal diagnostic and leaves
@@ -598,26 +600,22 @@ enum ifaceflag_t
 
   //! Whether BV_TERM_ABSTRACTION covers BVDIV and BVMOD.
   //!
-  //! Division and remainder historically followed BV_TERM_ABSTRACTION_MULT.
-  //! This appended switch overrides that legacy setting when called after it:
-  //! `param_value` nonzero includes them (the default), while zero leaves them
-  //! encoded exactly from the start. This
-  //! value is appended so every previously published interface-flag ordinal
-  //! remains unchanged. This is the C API's way to reach
+  //! `param_value` nonzero includes them (the default), zero leaves them
+  //! encoded exactly from the start. Setting this at all takes division and
+  //! remainder out of BV_TERM_ABSTRACTION_MULT's scope, so the two may be
+  //! given in either order. This is the C API's way to reach
   //! --bv-term-abstraction-divmod.
   //!
   BV_TERM_ABSTRACTION_DIVMOD,
 
   //! Applies one complete BV term-abstraction schema profile. `param_value`
-  //! is a bv_term_abstraction_profile_t ordinal. QUALIFIED selects the
-  //! established base/UREM/MulRef3 mask with a 32-round ceiling; AGGRESSIVE
-  //! selects the v3 observed catalogue including full paired recomposition;
-  //! SPEAR selects the same broad single-record families without either
-  //! paired relation, at 16 rounds. BROAD_PREFIX adds the cheap low-three-bit
-  //! paired relation while leaving full recomposition opt-in. Invalid values
-  //! are refused without changing either field. Appended so every
-  //! previously published interface-flag ordinal remains stable. This is the
-  //! C API's way to reach --bv-term-abstraction-profile.
+  //! is a bv_term_abstraction_profile_t ordinal. QUALIFIED is the inherited
+  //! base/UREM/MulRef3 mask with a 32-round ceiling; BROAD_NO_PAIR selects the
+  //! broad single-record catalogue without either paired relation, at 16
+  //! rounds; BROAD_PREFIX adds the cheap low-three-bit paired relation; and
+  //! AGGRESSIVE adds the full-width paired identity instead. Invalid values
+  //! are refused without changing either field. This is the C API's way to
+  //! reach --bv-term-abstraction-profile.
   //!
   BV_TERM_ABSTRACTION_PROFILE,
 
@@ -904,29 +902,9 @@ enum stp_counter_t
   //! STP_COUNTER_BV_REFINEMENT_ROUNDS.
   STP_COUNTER_BV_SCHEMA_LEMMAS = 17,
 
-  //! The schema total above, partitioned by bv_schema_group_t. These follow
-  //! the same order as that mask so profiling can attribute a mixed run.
-  STP_COUNTER_BV_SCHEMA_GROUP_BASE,
-  STP_COUNTER_BV_SCHEMA_GROUP_UDIV15,
-  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_EXTRA,
-  STP_COUNTER_BV_SCHEMA_GROUP_UREM,
-  STP_COUNTER_BV_SCHEMA_GROUP_MUL8,
-  STP_COUNTER_BV_SCHEMA_GROUP_MUL_REF3,
-  STP_COUNTER_BV_SCHEMA_GROUP_MUL_EXTRA,
-  STP_COUNTER_BV_SCHEMA_GROUP_ADD,
-  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
-  STP_COUNTER_BV_SCHEMA_GROUP_LOW_PREFIX,
-  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
-  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR,
-  STP_COUNTER_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
-  STP_COUNTER_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-  STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL,
-  STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED,
-
   //! Value-pair refinements which spent their allowance and installed an
   //! exact circuit, in total and partitioned between multiplication and
-  //! division/remainder. Appended to preserve every published counter
-  //! ordinal.
+  //! division/remainder.
   STP_COUNTER_BV_EXACT_ESCALATIONS,
   STP_COUNTER_BV_EXACT_ESCALATIONS_MULT,
   STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD,
@@ -934,8 +912,7 @@ enum stp_counter_t
   //! What those escalations cost: clauses and variables the exact circuits
   //! added to the solver, and the wall-clock microseconds spent building
   //! them. Read from the solver's own totals across each encode, not
-  //! estimated from the circuit. Appended to preserve every published
-  //! counter ordinal.
+  //! estimated from the circuit.
   STP_COUNTER_BV_EXACT_CLAUSES,
   STP_COUNTER_BV_EXACT_VARIABLES,
   STP_COUNTER_BV_EXACT_MICROSECONDS
@@ -947,6 +924,29 @@ enum stp_counter_t
 //! caller built against a later header keeps working against an earlier
 //! library.
 DLL_PUBLIC unsigned long long vc_getCounter(VC vc, enum stp_counter_t counter);
+
+//! How many BV schema groups there are. The group index accepted by
+//! vc_getSchemaGroupCounter and vc_schemaGroupName runs from zero to one
+//! below this, in bv_schema_group_t order.
+#define STP_BV_SCHEMA_GROUP_COUNT 16
+
+//! \brief STP_COUNTER_BV_SCHEMA_LEMMAS, partitioned by schema group.
+//!
+//! The groups partition the aggregate exactly: every schema lemma the
+//! refinement installs increments the total and precisely one group. An index
+//! at or above STP_BV_SCHEMA_GROUP_COUNT reads 0 and reports a nonfatal
+//! diagnostic.
+//!
+//! This is an array rather than one published ordinal per group because the
+//! partition is a research instrument: which families exist, and how finely
+//! they are cut, is expected to change, and none of that should cost a
+//! renumbering of stp_counter_t.
+DLL_PUBLIC unsigned long long vc_getSchemaGroupCounter(VC vc, unsigned group);
+
+//! \brief The command-line spelling of one schema group, or NULL if the
+//! index is out of range. The same names --bv-term-abstraction-schema-groups
+//! accepts.
+DLL_PUBLIC const char* vc_schemaGroupName(unsigned group);
 
 //! \brief Returns why the last query had no answer.
 //!

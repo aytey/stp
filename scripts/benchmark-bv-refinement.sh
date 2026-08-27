@@ -34,7 +34,7 @@ Options:
   --split-fp             classify queries as fp or bv (the default)
   --no-split-fp          put every query in one all class
   --no-exact-control     omit the abstraction-off control
-  --no-v4-control        omit the uncapped v4 control
+  --no-uncapped-control  omit the uncapped-allowance control
   --help                 show this text
 
 Allowance mode selects the qualified profile explicitly. Profile mode runs
@@ -45,8 +45,8 @@ is mutually exclusive with allowance/profile controls; use arguments after
 -- for settings common to every custom variant.
 The result directory contains runs.tsv, records.tsv, summary.tsv,
 comparisons.tsv, comparison-summary.tsv, disagreements.tsv, metadata.txt,
-corpus.sha256, and one raw log per run. Comparisons use v4 as their reference
-in allowance mode when that control is enabled, or the first requested profile
+corpus.sha256, and one raw log per run. In allowance mode comparisons use the
+uncapped control as their reference when it is enabled, or the first profile
 in profile mode. The first named custom variant is the reference in custom
 mode.
 EOF
@@ -72,7 +72,7 @@ controls_explicit=0
 width=53
 backend=minisat
 include_exact=1
-include_v4=1
+include_uncapped=1
 split_fp=1
 custom_variant_specs=()
 extra_args=()
@@ -141,8 +141,8 @@ while (($# > 0)); do
       controls_explicit=1
       shift
       ;;
-    --no-v4-control)
-      include_v4=0
+    --no-uncapped-control)
+      include_uncapped=0
       controls_explicit=1
       shift
       ;;
@@ -326,9 +326,9 @@ elif ((${#profiles[@]} > 0)); then
   done
   reference_variant=profile-${profiles[0]}
 else
-  if ((include_v4)); then
-    variants+=(v4)
-    reference_variant=v4
+  if ((include_uncapped)); then
+    variants+=(uncapped)
+    reference_variant=uncapped
   fi
   for limit in "${limits[@]}"; do
     variants+=("cap$limit")

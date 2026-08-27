@@ -150,17 +150,12 @@ struct MulSchemaChoice
 // there are bits.
 enum : uint64_t
 {
-  MUL_SCHEMA_INSTALLED_ODD = 1ull,
-  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 2ull,
-  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 4ull,
-  // Compatibility spellings for the bits now owned by registry entry zero.
-  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 = 8ull,
-  MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 = 16ull,
-  // MUL8 is registry entry zero, so it reuses the two bits its former
-  // hand-written schema occupied. Inserting it therefore leaves every older
-  // registry entry and the low-prefix bit exactly where v3 put them.
-  MUL_LEMMA_INSTALLED_FIRST = 8ull,
-  // Fifteen lemmas in two operand readings occupy bits 3 through 32.
+  MUL_SCHEMA_INSTALLED_ODD = 1ull << 0,
+  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 = 1ull << 1,
+  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 = 1ull << 2,
+  // One bit per registry entry per operand reading: fifteen lemmas in two
+  // readings occupy bits 3 through 32.
+  MUL_LEMMA_INSTALLED_FIRST = 1ull << 3,
   MUL_SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 33
 };
 
@@ -169,7 +164,6 @@ constexpr uint64_t mulLemmaInstalledBit(unsigned index, unsigned operand)
   return MUL_LEMMA_INSTALLED_FIRST << (2 * index + operand);
 }
 
-DLL_PUBLIC const MulLemma* mulLemmaTable(unsigned& count);
 
 struct AddSchemaChoice
 {
@@ -184,12 +178,16 @@ struct AddSchemaChoice
 // Thirteen lemmas in two operand readings occupy bits 0 through 25.
 const uint64_t ADD_SCHEMA_INSTALLED_LOW_PREFIX = 1ull << 26;
 
-inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
+constexpr uint64_t addLemmaInstalledBitValue(unsigned index, unsigned operand)
 {
   return uint64_t{1} << (2 * index + operand);
 }
 
-DLL_PUBLIC const AddLemma* addLemmaTable(unsigned& count);
+inline uint64_t addLemmaInstalledBit(unsigned index, unsigned operand)
+{
+  return addLemmaInstalledBitValue(index, operand);
+}
+
 DLL_PUBLIC AddSchemaChoice
 chooseAddSchema(const std::vector<bool>& aBits, const std::vector<bool>& bBits,
                 const std::vector<bool>& tBits, uint64_t installedSchemas,
@@ -228,14 +226,6 @@ DLL_PUBLIC void encodeMulLowPrefix(
     const std::vector<unsigned>& bVars,
     const std::vector<unsigned>& resultVars, unsigned width,
     unsigned prefixBits);
-
-// Direct compact encoding of MUL8, retained as an independently expressed
-// regression oracle even though the live refiner now reaches the relationship
-// through MulLemma::FactorUnchangedByMaskedShift.
-DLL_PUBLIC void encodeMulZeroProductOddOperand(
-    SATSolver& solver, const std::vector<unsigned>& oddOperandVars,
-    const std::vector<unsigned>& otherOperandVars,
-    const std::vector<unsigned>& resultVars, unsigned width);
 
 // The algebraic facts an abstracted BVDIV or BVMOD is refined with.
 //
@@ -308,57 +298,133 @@ enum class DivSchema
 // addition flags, which is safe because an abstraction has only one kind.
 enum : uint64_t
 {
-  // Bits zero through two are deliberately reserved: v3 used zero and two
-  // for its standalone quotient-one schemas. The v4 table-driven versions
-  // use ordinary registry bits. installedSchemas is ephemeral internal state,
-  // so inserting the ranked entry has no public ABI effect.
-  DIV_SCHEMA_INSTALLED_QUOTIENT_ONE = 1ull,
-  DIV_SCHEMA_INSTALLED_REMAINDER_QUOTIENT_ONE = 4ull,
-  DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 8ull,
-  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 16ull,
-  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 32ull,
+  DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND = 1ull << 0,
+  DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR = 1ull << 1,
+  DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND = 1ull << 2,
   // ... and one apiece for the DivLemma or RemLemma facts, which are
-  // unconditional for the same reason and tracked the same way. The first
-  // of them is 64; divLemmaInstalledBit(i) is the bit for the i'th.
-  DIV_LEMMA_INSTALLED_FIRST = 64ull
+  // unconditional for the same reason and tracked the same way;
+  // divLemmaInstalledBit(i) is the bit for the i'th.
+  DIV_LEMMA_INSTALLED_FIRST = 1ull << 3
 };
 
-inline uint64_t divLemmaInstalledBit(unsigned index)
+constexpr uint64_t divLemmaInstalledBitValue(unsigned index)
 {
   return DIV_LEMMA_INSTALLED_FIRST << index;
 }
 
-// The divisor-magnitude schema deliberately gets only two attempts. Its
-// facts are guarded by a magnitude rather than a single divisor value, and
-// an uncapped search was observed stepping through dozens of magnitudes.
-// Keep these bits above the complete imported registry.
-enum : uint64_t
+inline uint64_t divLemmaInstalledBit(unsigned index)
 {
-  DIV_SCHEMA_MAGNITUDE_BOUND_FIRST = 1ull << 60,
-  DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE = 2
+  return divLemmaInstalledBitValue(index);
+}
+
+// The schema families whose guard is read off the candidate -- a divisor
+// value, a power-of-two exponent, a magnitude band -- rather than being a
+// fact about every pair of operands.
+//
+// An unconditional fact needs one `installedSchemas` bit: once it is in the
+// solver no candidate can contradict it again. These cannot be tracked that
+// way, because each fires once per distinct guard, and for several of them
+// the number of distinct guards grows with the width rather than being a
+// constant: a 256-bit divisor has 255 magnitudes to walk through and a
+// 256-bit quotient has 255 thresholds, at a comparator apiece. Both were
+// observed doing exactly that, and were patched in different ways -- one by
+// reordering the chooser, one by a hard cap of two. This is that cap,
+// generalised: every candidate-guarded family declares an instance budget,
+// and the counters live in the high bits of the same field.
+enum class BVSchemaFamily : unsigned
+{
+  // DivSchema::DivisorZero and DivSchema::Pow2Divisor.
+  DivisorValue = 0,
+  // DivSchema::QuotientPow2Threshold.
+  QuotientThreshold,
+  // DivSchema::DivisorMagnitudeBound.
+  DivisorMagnitude,
+  // MulSchema::Pow2 and MulSchema::NegPow2.
+  MulShiftValue,
+  COUNT
 };
 
-inline uint64_t divMagnitudeBoundBit(unsigned index)
+constexpr unsigned BV_SCHEMA_FAMILY_COUNT =
+    static_cast<unsigned>(BVSchemaFamily::COUNT);
+
+// Four bits apiece, above every per-lemma bit any operation uses.
+constexpr unsigned BV_SCHEMA_FAMILY_COUNTER_BITS = 4;
+constexpr unsigned BV_SCHEMA_FAMILY_COUNTER_FIRST = 48;
+constexpr uint64_t BV_SCHEMA_FAMILY_COUNTER_MASK =
+    (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_BITS) - 1;
+
+static_assert(BV_SCHEMA_FAMILY_COUNT * BV_SCHEMA_FAMILY_COUNTER_BITS <=
+                  64 - BV_SCHEMA_FAMILY_COUNTER_FIRST,
+              "the schema-family counters do not fit in installedSchemas");
+static_assert(MUL_SCHEMA_INSTALLED_LOW_PREFIX <
+                  (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_FIRST),
+              "a multiplication schema bit overlaps the family counters");
+// Growing a catalogue eventually runs its per-entry bits into the low-prefix
+// bit above, or the family counters above that. Both are compile errors.
+static_assert(mulLemmaInstalledBit(BV_MUL_LEMMA_COUNT - 1, 1) <
+                  MUL_SCHEMA_INSTALLED_LOW_PREFIX,
+              "the MUL catalogue has outgrown its installed-lemma bits");
+static_assert(addLemmaInstalledBitValue(BV_ADD_LEMMA_COUNT - 1, 1) <
+                  ADD_SCHEMA_INSTALLED_LOW_PREFIX,
+              "the ADD catalogue has outgrown its installed-lemma bits");
+static_assert(divLemmaInstalledBitValue(BV_DIV_LEMMA_COUNT - 1) <
+                  (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_FIRST),
+              "the UDIV catalogue has outgrown its installed-lemma bits");
+static_assert(divLemmaInstalledBitValue(BV_REM_LEMMA_COUNT - 1) <
+                  (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_FIRST),
+              "the UREM catalogue has outgrown its installed-lemma bits");
+static_assert(ADD_SCHEMA_INSTALLED_LOW_PREFIX <
+                  (uint64_t{1} << BV_SCHEMA_FAMILY_COUNTER_FIRST),
+              "an addition schema bit overlaps the family counters");
+
+// How many instances of a family one record may install; zero is no cap.
+//
+// Two is the number that removed the observed divisor-magnitude regression,
+// and the quotient thresholds have the same failure mode with no measurement
+// of their own, so they inherit it. The two value-guarded families are left
+// uncapped: they are what the established profile has always done, and each
+// installed instance says what the operation *is* for that operand value
+// rather than bounding it, so capping them would be a policy change with no
+// evidence behind it. The mechanism is here for when there is some.
+constexpr unsigned bvSchemaFamilyAllowance(BVSchemaFamily family)
 {
-  return DIV_SCHEMA_MAGNITUDE_BOUND_FIRST << index;
+  return family == BVSchemaFamily::QuotientThreshold ? 2u
+         : family == BVSchemaFamily::DivisorMagnitude ? 2u
+                                                      : 0u;
 }
 
-inline bool divMagnitudeBoundsLeft(uint64_t installedSchemas)
+constexpr unsigned bvSchemaFamilyInstances(uint64_t installedSchemas,
+                                           BVSchemaFamily family)
 {
-  for (unsigned i = 0; i < DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE; ++i)
-    if ((installedSchemas & divMagnitudeBoundBit(i)) == 0)
-      return true;
-  return false;
+  return (unsigned)((installedSchemas >>
+                     (BV_SCHEMA_FAMILY_COUNTER_FIRST +
+                      BV_SCHEMA_FAMILY_COUNTER_BITS *
+                          static_cast<unsigned>(family))) &
+                    BV_SCHEMA_FAMILY_COUNTER_MASK);
 }
 
-// The DivLemma facts the chooser offers, in the order it offers them, and
-// how many there are. Exposed so a test can walk the same table the refiner
-// does rather than keeping a second copy of it in step with this one.
-DLL_PUBLIC const DivLemma* divLemmaTable(unsigned& count);
+// Whether this record may still install one of this family.
+constexpr bool bvSchemaFamilyHasInstance(uint64_t installedSchemas,
+                                         BVSchemaFamily family)
+{
+  return bvSchemaFamilyAllowance(family) == 0 ||
+         bvSchemaFamilyInstances(installedSchemas, family) <
+             bvSchemaFamilyAllowance(family);
+}
 
-// All remainder facts STP transcribes, including the one upstream keeps
-// disabled. chooseDivSchema consults remLemmaEnabled() before offering one.
-DLL_PUBLIC const RemLemma* remLemmaTable(unsigned& count);
+// `installedSchemas` with one more instance of this family recorded. An
+// uncapped family is not counted, so its nibble cannot wrap.
+constexpr uint64_t bvSchemaFamilyRecordInstance(uint64_t installedSchemas,
+                                                BVSchemaFamily family)
+{
+  return bvSchemaFamilyAllowance(family) == 0
+             ? installedSchemas
+             : installedSchemas +
+                   (uint64_t{1} << (BV_SCHEMA_FAMILY_COUNTER_FIRST +
+                                    BV_SCHEMA_FAMILY_COUNTER_BITS *
+                                        static_cast<unsigned>(family)));
+}
+
 
 struct DivSchemaChoice
 {
@@ -424,17 +490,6 @@ DLL_PUBLIC void encodeDivPow2Threshold(
     const std::vector<unsigned>& quotientVars, unsigned width,
     unsigned shift);
 
-// Direct encodings retained as independent regression oracles. The live
-// refiner installs these facts through the ranked DivLemma/RemLemma tables.
-DLL_PUBLIC void encodeRemQuotientOne(
-    SATSolver& solver, const std::vector<unsigned>& dividendVars,
-    const std::vector<unsigned>& divisorVars,
-    const std::vector<unsigned>& remainderVars, unsigned width);
-DLL_PUBLIC void encodeDivQuotientOne(
-    SATSolver& solver, const std::vector<unsigned>& dividendVars,
-    const std::vector<unsigned>& divisorVars,
-    const std::vector<unsigned>& quotientVars, unsigned width);
-
 // b >=u 2^shift -> q <=u (a >> shift).
 DLL_PUBLIC void encodeDivisorMagnitudeBound(
     SATSolver& solver, const std::vector<unsigned>& dividendVars,
@@ -474,17 +529,35 @@ DLL_PUBLIC void encodeDivUnderDivisorValue(
 //
 // A blocking lemma rules out one pair of operand values out of 2^(2W), so
 // what one is worth falls away as the operands widen and a flat allowance
-// means something quite different at either end of the range. The allowance
-// may be a rate -- `width / bv_term_abstraction_value_divisor` -- held under
-// the flat ceiling `bv_term_abstraction_rounds`. An operation-specific policy
-// may hold that result lower still. Keeping those layers separate lets a
-// benchmark vary value blocks without also changing the number of schema
-// rounds. Zero rounds still never escalates; zero for the divisor leaves
-// width scaling disabled.
+// means something quite different at either end of the range. Three flags
+// therefore compose into this one number, and because they compose it is
+// written out here rather than left to be reassembled from three separate
+// pieces of documentation:
+//
+//   allowance(W, op) =
+//       rounds == 0            -> 0, meaning never escalate
+//       otherwise              -> min(rounds,
+//                                     divisor != 0 ? max(1, W / divisor) : rounds,
+//                                     op is DIV/MOD && divmodLimit != 0
+//                                         ? divmodLimit : rounds)
+//
+// where `rounds` is bv_term_abstraction_rounds, `divisor` is
+// bv_term_abstraction_value_divisor and `divmodLimit` is
+// bv_term_abstraction_divmod_value_limit.
+//
+// The zeros do not all mean the same thing, which is the part worth saying
+// out loud. Zero rounds means "never escalate, enumerate without limit" --
+// and, separately, that algebraic schemas are not capped either, since they
+// are bounded by the same flag. Zero for the other two means "this layer is
+// absent", leaving whatever the layers above it decided.
+//
+// Keeping the layers separate is what lets a benchmark vary value blocks
+// without also changing the number of schema rounds.
 DLL_PUBLIC unsigned valueLemmaAllowance(const UserDefinedFlags& uf,
                                         unsigned width);
 
-// The operation-specific allowance. DIV/MOD may opt into the independent
+// The operation-specific allowance -- the third line of the composition
+// above. DIV/MOD may opt into the independent
 // `bv_term_abstraction_divmod_value_limit`; multiplication deliberately does
 // not, so a divider experiment cannot silently change a corpus's multipliers.
 DLL_PUBLIC unsigned valueLemmaAllowance(const UserDefinedFlags& uf,
@@ -552,6 +625,12 @@ class DLL_PUBLIC BVAbstractionRefiner
 {
   STPMgr* bm;
 
+  // One encoder for the session. Every schema lemma and every exact
+  // escalation goes through it, and it owns the scratch simplifier state
+  // those blasts need, so a refinement round does not rebuild that per
+  // lemma.
+  BVExactEncoder exact_;
+
   std::vector<BVEQAbstraction> eqs_;
   std::vector<BVTermAbstraction> terms_;
 
@@ -566,7 +645,7 @@ class DLL_PUBLIC BVAbstractionRefiner
                        const ToSATBase::ASTNodeToSATVar& nodeToSATVar);
 
 public:
-  explicit BVAbstractionRefiner(STPMgr* bm_) : bm(bm_) {}
+  explicit BVAbstractionRefiner(STPMgr* bm_) : bm(bm_), exact_(bm_) {}
 
   bool empty() const { return eqs_.empty() && terms_.empty(); }
   bool hasEqualities() const { return !eqs_.empty(); }
@@ -585,6 +664,17 @@ public:
   }
 
   uint64_t refinements() const { return refinements_; }
+
+  // A BVDIV and a BVMOD over the same operands at the same width. Both the
+  // refinement that installs their shared relation and the diagnostic that
+  // reports it ask this question, so neither gets to answer it privately.
+  struct DivRemPair
+  {
+    size_t divIdx;
+    size_t remIdx;
+  };
+  static std::vector<DivRemPair>
+  divRemPairs(const std::vector<BVTermAbstraction>& terms);
 
   // A stable, one-line snapshot for every term record. Quick-statistics
   // consumers use this instead of reconstructing records from free-form

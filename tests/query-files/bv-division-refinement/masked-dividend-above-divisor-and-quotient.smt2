@@ -1,5 +1,5 @@
 ; (x & -q) >=u (s & q), for q = x udiv s.
-; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv-extra %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv-observed %s 2>&1 | %OutputCheck %s
 ; CHECK: BV abstraction: BVDIV masked-dividend-above-divisor-and-quotient lemma
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$

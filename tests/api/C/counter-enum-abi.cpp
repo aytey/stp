@@ -34,37 +34,14 @@ static_assert(STP_COUNTER_UF_CONSTRAINTS_INSTALLED == 16,
               "the published UF constraint counter ordinal changed");
 static_assert(STP_COUNTER_BV_SCHEMA_LEMMAS == 17,
               "new counters must follow the published counter prefix");
-static_assert(STP_COUNTER_BV_SCHEMA_GROUP_BASE == 18,
-              "schema-group counters must follow the aggregate");
-static_assert(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR == 29,
-              "schema-group counter block must remain contiguous");
-static_assert(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL == 32,
-              "new schema-group counters must be appended");
-static_assert(STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED == 33,
-              "published schema-group counter ordinal changed");
-static_assert(STP_COUNTER_BV_EXACT_ESCALATIONS == 34,
-              "new counters must be appended");
-static_assert(STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD == 36,
-              "new counter block must remain contiguous");
-static_assert(STP_COUNTER_BV_EXACT_CLAUSES == 37,
-              "exact-cost counters must be appended");
-static_assert(STP_COUNTER_BV_EXACT_VARIABLES == 38,
-              "exact-cost counter block must remain contiguous");
-static_assert(STP_COUNTER_BV_EXACT_MICROSECONDS == 39,
-              "exact-cost timing must be appended");
+// The counters this feature adds are new in this series and not pinned: the
+// per-group totals are read through vc_getSchemaGroupCounter() rather than a
+// published ordinal apiece, and the six escalation-cost counters follow the
+// published prefix without being frozen to it yet.
 
 TEST(c_counter_enum_abi, PublishedCounterOrdinalsRemainStable)
 {
   EXPECT_EQ(15, static_cast<int>(STP_COUNTER_UF_APPLICATIONS_LOWERED));
   EXPECT_EQ(16, static_cast<int>(STP_COUNTER_UF_CONSTRAINTS_INSTALLED));
   EXPECT_EQ(17, static_cast<int>(STP_COUNTER_BV_SCHEMA_LEMMAS));
-  EXPECT_EQ(18, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_BASE));
-  EXPECT_EQ(29, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_PAIR));
-  EXPECT_EQ(32, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_DIVREM_FULL));
-  EXPECT_EQ(33, static_cast<int>(STP_COUNTER_BV_SCHEMA_GROUP_UDIV_OBSERVED));
-  EXPECT_EQ(34, static_cast<int>(STP_COUNTER_BV_EXACT_ESCALATIONS));
-  EXPECT_EQ(36, static_cast<int>(STP_COUNTER_BV_EXACT_ESCALATIONS_DIVMOD));
-  EXPECT_EQ(37, static_cast<int>(STP_COUNTER_BV_EXACT_CLAUSES));
-  EXPECT_EQ(38, static_cast<int>(STP_COUNTER_BV_EXACT_VARIABLES));
-  EXPECT_EQ(39, static_cast<int>(STP_COUNTER_BV_EXACT_MICROSECONDS));
 }

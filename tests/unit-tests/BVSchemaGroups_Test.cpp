@@ -73,7 +73,7 @@ TEST(BVSchemaGroups, every_group_has_a_unique_round_tripping_name)
                             BV_SCHEMA_GROUP_ALL,
                             BV_SCHEMA_GROUP_DEFAULT,
                             BV_SCHEMA_GROUP_AGGRESSIVE,
-                            BV_SCHEMA_GROUP_SPEAR,
+                            BV_SCHEMA_GROUP_BROAD_NO_PAIR,
                             BV_SCHEMA_GROUP_BROAD_PREFIX};
   for (uint32_t mask : masks)
   {
@@ -101,23 +101,26 @@ TEST(BVSchemaGroups, rejected_lists_are_atomic)
 
 TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
 {
+  // In BVSchemaGroup order. The C bits carry no meaning of their own -- they
+  // are the C++ enum, published -- so what has to hold is that the i'th of
+  // each is the same group, name for name.
   const uint32_t cBits[] = {
       STP_BV_SCHEMA_GROUP_BASE,
       STP_BV_SCHEMA_GROUP_UDIV15,
-      STP_BV_SCHEMA_GROUP_UDIV_EXTRA,
+      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED,
+      STP_BV_SCHEMA_GROUP_UDIV_TAIL,
       STP_BV_SCHEMA_GROUP_UREM,
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
+      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
+      STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
+      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
+      STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
+      STP_BV_SCHEMA_GROUP_DIVREM_FULL,
       STP_BV_SCHEMA_GROUP_MUL8,
       STP_BV_SCHEMA_GROUP_MUL_REF3,
-      STP_BV_SCHEMA_GROUP_MUL_EXTRA,
+      STP_BV_SCHEMA_GROUP_MUL_TAIL,
       STP_BV_SCHEMA_GROUP_ADD,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_THRESHOLDS,
-      STP_BV_SCHEMA_GROUP_LOW_PREFIX,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_REM,
-      STP_BV_SCHEMA_GROUP_DIVREM_PAIR,
-      STP_BV_SCHEMA_GROUP_QUOTIENT_ONE_QUOT,
-      STP_BV_SCHEMA_GROUP_DIVISOR_MAGNITUDE,
-      STP_BV_SCHEMA_GROUP_DIVREM_FULL,
-      STP_BV_SCHEMA_GROUP_UDIV_OBSERVED};
+      STP_BV_SCHEMA_GROUP_LOW_PREFIX};
 
   ASSERT_EQ(BV_SCHEMA_GROUP_COUNT, sizeof(cBits) / sizeof(cBits[0]));
   for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
@@ -127,8 +130,8 @@ TEST(BVSchemaGroups, c_api_bits_and_profiles_match_cpp)
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_QUALIFIED));
   EXPECT_EQ(BV_SCHEMA_GROUP_AGGRESSIVE,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_AGGRESSIVE));
-  EXPECT_EQ(BV_SCHEMA_GROUP_SPEAR,
-            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_SPEAR));
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
+            static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD_NO_PAIR));
   EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_PREFIX,
             static_cast<uint32_t>(STP_BV_SCHEMA_GROUP_BROAD_PREFIX));
   EXPECT_EQ(BV_SCHEMA_GROUP_DEFAULT,
@@ -202,30 +205,48 @@ TEST(BVSchemaGroups, disabled_families_are_never_chosen)
   }
 }
 
-TEST(BVSchemaGroups, spear_profile_excludes_both_paired_relations)
+TEST(BVSchemaGroups, broad_no_pair_profile_excludes_both_paired_relations)
 {
-  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_SPEAR_ROUNDS);
+  EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS);
   EXPECT_FALSE(
-      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_SPEAR, BVSchemaGroup::DIVREM_PAIR));
+      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR, BVSchemaGroup::DIVREM_PAIR));
   EXPECT_FALSE(
-      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_SPEAR, BVSchemaGroup::DIVREM_FULL));
-  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_SPEAR,
+      bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR, BVSchemaGroup::DIVREM_FULL));
+  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
                                    BVSchemaGroup::QUOTIENT_ONE_REM));
-  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_SPEAR,
+  EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_NO_PAIR,
                                    BVSchemaGroup::QUOTIENT_ONE_QUOT));
 }
 
 TEST(BVSchemaGroups, broad_prefix_profile_adds_only_the_cheap_paired_relation)
 {
   EXPECT_EQ(16u, BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS);
-  EXPECT_EQ(BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS,
-            BV_TERM_ABSTRACTION_DEFAULT_ROUNDS);
-  EXPECT_EQ(BV_SCHEMA_GROUP_SPEAR |
+  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_NO_PAIR |
                 bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR),
             BV_SCHEMA_GROUP_BROAD_PREFIX);
-  EXPECT_EQ(BV_SCHEMA_GROUP_BROAD_PREFIX, BV_SCHEMA_GROUP_DEFAULT);
   EXPECT_TRUE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
                                    BVSchemaGroup::DIVREM_PAIR));
   EXPECT_FALSE(bvSchemaGroupEnabled(BV_SCHEMA_GROUP_BROAD_PREFIX,
                                     BVSchemaGroup::DIVREM_FULL));
+}
+
+// Nothing an enabled abstraction inherits may come from a broad profile: the
+// corpus sweep put several of those families at or below break-even, and the
+// two that decided queries on their own are the two below.
+TEST(BVSchemaGroups, the_inherited_profile_is_the_qualified_one)
+{
+  EXPECT_EQ(BV_SCHEMA_GROUP_QUALIFIED, BV_SCHEMA_GROUP_DEFAULT);
+  EXPECT_EQ(BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS,
+            BV_TERM_ABSTRACTION_DEFAULT_ROUNDS);
+  EXPECT_EQ(32u, BV_TERM_ABSTRACTION_DEFAULT_ROUNDS);
+
+  for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
+  {
+    const BVSchemaGroup group = static_cast<BVSchemaGroup>(i);
+    const bool expected = group == BVSchemaGroup::BASE ||
+                          group == BVSchemaGroup::UREM ||
+                          group == BVSchemaGroup::MUL_REF3;
+    EXPECT_EQ(expected, bvSchemaGroupEnabled(BV_SCHEMA_GROUP_DEFAULT, group))
+        << bvSchemaGroupName(group);
+  }
 }

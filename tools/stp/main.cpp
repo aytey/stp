@@ -116,9 +116,12 @@ public:
   // lower-level options retain their independently parsed values.
   std::string bv_abstraction_profile;
 
-  // Presence distinguishes the legacy MULT scope behavior from an explicit
-  // DIV/MOD override. If only MULT is supplied, it retains its historical
-  // control over all three nonlinear operations.
+  // Which of the two scope options were actually given. The older MULT
+  // switch covers all three nonlinear operations while it is the only one
+  // supplied, and DIV/MOD wins once it is named -- in either argument order,
+  // which is what makes this a presence check rather than a last-writer one.
+  // vc_setInterfaceFlags resolves the same pair the same way, through
+  // bv_term_abstraction_divmod_explicit.
   CLI::Option* bv_term_abstraction_mult_option = nullptr;
   CLI::Option* bv_term_abstraction_divmod_option = nullptr;
 
@@ -379,8 +382,8 @@ void ExtraMain::create_options()
            refinement_group);
   bv_term_abstraction_mult_option = bool_arg(
       "--bv-term-abstraction-mult", bm->UserFlags.bv_term_abstraction_mult,
-      "legacy scope for BVMULT, BVDIV and BVMOD; if the separate DIV/MOD "
-      "option is also present it overrides division and remainder",
+      "scope for BVMULT, and for BVDIV and BVMOD unless the separate DIV/MOD "
+      "option is also given, which overrides them in either order",
       refinement_group);
   bv_term_abstraction_divmod_option = bool_arg(
       "--bv-term-abstraction-divmod", bm->UserFlags.bv_term_abstraction_divmod,
@@ -397,8 +400,8 @@ void ExtraMain::create_options()
       app.add_option("--bv-term-abstraction-schema-groups", bv_schema_groups,
                      "comma-separated schema families allowed by "
                      "--bv-term-abstraction-schemas: base, udiv15, "
-                     "udiv-observed, udiv-extra, urem, mul8, mul-ref3, "
-                     "mul-extra, add, quotient-thresholds, low-prefix, "
+                     "udiv-observed, udiv-tail, urem, mul8, mul-ref3, "
+                     "mul-tail, add, quotient-thresholds, low-prefix, "
                      "quotient-one-rem, divrem-pair, quotient-one-quot, "
                      "divisor-magnitude, or divrem-full; 'all' selects the "
                      "complete experimental stack and 'none' selects no "
@@ -417,14 +420,13 @@ void ExtraMain::create_options()
           ->group(refinement_group)
           ->capture_default_str();
   app.add_option("--bv-term-abstraction-profile", bv_abstraction_profile,
-                 "apply an atomic schema-mask/round pair: 'qualified' keeps "
-                 "the corpus-qualified base, UREM and MulRef3 mask at 32 "
-                 "rounds; 'spear' adds the observed UDIV and MUL8 facts, "
+                 "apply an atomic schema-mask/round pair: 'qualified' is the "
+                 "inherited base, UREM and MulRef3 mask at 32 rounds; "
+                 "'broad-no-pair' adds the observed UDIV and MUL8 facts, "
                  "divisor-magnitude and quotient-one facts at 16 rounds but "
-                 "no paired DIV/REM relation; the inherited 'broad-prefix' "
-                 "profile (alias 'klee') adds cheap low-three-bit paired "
-                 "recomposition; 'aggressive' preserves the v3 profile with "
-                 "full paired recomposition")
+                 "no paired DIV/REM relation; 'broad-prefix' adds the cheap "
+                 "low-three-bit paired recomposition; 'aggressive' adds the "
+                 "full-width paired identity instead")
       ->group(refinement_group)
       ->excludes(bv_schema_groups_option)
       ->excludes(bv_rounds_option);
@@ -978,8 +980,9 @@ int ExtraMain::parse_options(int argc, char** argv)
     exit(-1);
   }
 
-  if (bv_term_abstraction_mult_option->count() != 0 &&
-      bv_term_abstraction_divmod_option->count() == 0)
+  if (bv_term_abstraction_divmod_option->count() != 0)
+    bm->UserFlags.bv_term_abstraction_divmod_explicit = true;
+  else if (bv_term_abstraction_mult_option->count() != 0)
     bm->UserFlags.bv_term_abstraction_divmod =
         bm->UserFlags.bv_term_abstraction_mult;
 

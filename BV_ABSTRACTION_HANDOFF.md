@@ -25,6 +25,49 @@ V7 comparison source: `689a33f2` (`cegar-next-claude-v6`)
 Worktree used for this stack:
 `/home/avj/clones/stp/cegar-next-codex-v7`
 
+## Status after the 2026-08-27 review
+
+This file was written as a running record of the v1-v7 iterations. An
+algorithmic review of the finished branch revisited several of the decisions
+those sections describe, and the branch was changed accordingly. Sections from
+"V7 evaluation hardening" downwards are therefore a record of *what each
+iteration decided at the time*, not a description of the code. Where the two
+disagree, the code and its comments are right.
+
+What actually ships, after the review:
+
+```text
+term abstraction        = off, as before
+inherited schema mask   = qualified (base, urem, mul-ref3)
+inherited schema rounds = 32
+broad-prefix / broad-no-pair / aggressive = named profiles, opt-in
+full-width DIV/REM identity               = opt-in, inside `aggressive`
+```
+
+The inherited mask went back to `qualified` because it is the only one the
+corpus qualification justified: the broad profiles' own evidence, recorded
+below, puts several of their families at or below break-even on the wide
+corpus, and the floating-point gain that motivated promoting them was
+concentrated in one driver and was within noise of the same catalogue without
+its paired relation. The broad profiles remain selectable, and remain the
+right thing to reach for on a floating-point-heavy workload.
+
+Other review outcomes that contradict the sections below:
+
+- the `klee` and `spear` profile aliases are gone; the profiles are
+  `qualified`, `broad-no-pair`, `broad-prefix` and `aggressive`;
+- the schema groups are disjoint. `udiv-extra` was an umbrella over
+  `udiv-observed` plus the unranked tail; it is now `udiv-tail`, the tail
+  alone. `mul-extra` is likewise `mul-tail`;
+- the per-group coverage counters are read through
+  `vc_getSchemaGroupCounter()` rather than one published `stp_counter_t`
+  ordinal apiece;
+- the transcribed-but-disabled twelfth UREM fact is deleted, so the UREM
+  registry is 12 entries and not 13;
+- every schema family guarded by a value read off the candidate now declares
+  an instance budget, of which the divisor-magnitude cap of two was the first
+  instance rather than a special case.
+
 ## Executive summary
 
 The implementation side of this line of work is now broad enough to call
@@ -51,9 +94,9 @@ materially better on KLEE's floating-point lowering, and a much larger neutral
 or harmful tail. Every sound implementation remains available behind named
 groups:
 
-- an explicitly enabled BV term abstraction inherits the 16-round
-  `broad-prefix` profile described below;
-- `qualified` preserves the older 32-round `base,urem,mul-ref3` policy;
+- an explicitly enabled BV term abstraction inherits the 32-round
+  `qualified` profile (`base,urem,mul-ref3`);
+- `broad-prefix` and the other named profiles below are opt-in;
 - `all` reproduces the complete stack represented before the mask;
 - `none` reaches the ordinary operation-specific fallback without offering a
   schema;
@@ -110,7 +153,7 @@ artifacts:
   explicit FP split, while retaining blocked rotation, validation, statuses,
   timeouts, RSS, hashes, per-record TSVs and one raw log per run.
 
-The inherited policy remains easy to state:
+The policy v6 inherited was, at the time:
 
 ```text
 term abstraction = off globally
@@ -118,6 +161,9 @@ after explicit opt-in = broad observed catalogue + low-three-bit DIV/REM prefix
 schema allowance = 16 rounds
 full-width DIV/REM identity = individually opt-in
 ```
+
+The review reverted the middle two lines to `qualified` and 32 rounds; see the
+status section at the top.
 
 The paired choice follows the shape of SymFPU's lowering. A binary64 division
 creates a quotient and remainder over the same roughly 107-bit operands. Full

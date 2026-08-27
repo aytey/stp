@@ -510,50 +510,6 @@ static void getOperandBits(
   readModelBits(satVars, width, solver, bits);
 }
 
-static void getOperandVars(
-    const ASTNode& operand, unsigned width,
-    const ToSATBase::ASTNodeToSATVar& nodeToSATVar, SATSolver& solver,
-    std::vector<unsigned>& vars)
-{
-  // The registry first, constants included. The blaster proxies every
-  // operand it abstracts a multiplication, division or if-then-else over
-  // -- a constant gets a vector of inputs pinned to it by biconditionals
-  // -- and those variables are already in the solver and already frozen.
-  // Minting a fresh pinned vector here instead, which is what the
-  // constant short-circuit ahead of the lookup used to do, said the same
-  // thing over new variables on every round the record was refined: a
-  // multiplication enumerating blocking lemmas paid width variables and
-  // width unit clauses per round for a value the CNF already carried.
-  if (nodeToSATVar.find(operand) != nodeToSATVar.end())
-  {
-    vars = encodedBitsOf(operand, width, nodeToSATVar);
-    return;
-  }
-
-  // A constant the blaster deliberately left out of the registry: BVPLUS
-  // folds constant operands into the record rather than proxying them.
-  // Its record defines itself in a single round, so this mints once.
-  if (operand.GetKind() == BVCONST)
-  {
-    vars.resize(width);
-    CBV val = operand.GetBVConst();
-    for (unsigned i = 0; i < width; ++i)
-    {
-      vars[i] = solver.newVar();
-      solver.setFrozen(vars[i]);
-      SATSolver::vec_literals cl;
-      cl.push(SATSolver::mkLit(vars[i],
-              !CONSTANTBV::BitVector_bit_test(val, i)));
-      solver.addClause(cl);
-    }
-    return;
-  }
-
-  // Neither registered nor a constant: refused, naming which of the three
-  // registry guarantees broke.
-  vars = encodedBitsOf(operand, width, nodeToSATVar);
-}
-
 static bool isBVCompare(Kind k)
 {
   return k == BVLE || k == BVGE || k == BVGT || k == BVLT ||
@@ -840,70 +796,6 @@ bool divRemLowPrefixHolds(const std::vector<bool>& dividendBits,
   return true;
 }
 
-static const MulLemma MUL_LEMMAS[] = {
-    MulLemma::FactorUnchangedByMaskedShift, // Bitwuzla MUL8; 75 firings
-    MulLemma::FactorAndProductNotOr,        // Bitwuzla MUL ref3; 5
-    MulLemma::MulRefN3,                     // 4
-
-    // The unobserved tail in upstream registry order.
-    MulLemma::MulRef1, MulLemma::MulRefN5, MulLemma::MulRefN6,
-    MulLemma::MulRef14, MulLemma::MulRef15, MulLemma::MulRefN9,
-    MulLemma::MulRef18, MulLemma::MulRefN11, MulLemma::MulRefN12,
-    MulLemma::MulRefN13, MulLemma::MulRef13, MulLemma::MulRef12};
-
-static const unsigned MUL_LEMMA_COUNT =
-    sizeof(MUL_LEMMAS) / sizeof(MUL_LEMMAS[0]);
-
-static BVSchemaGroup mulLemmaGroup(MulLemma lemma)
-{
-  switch (lemma)
-  {
-    case MulLemma::FactorUnchangedByMaskedShift:
-      return BVSchemaGroup::MUL8;
-    case MulLemma::FactorAndProductNotOr:
-      return BVSchemaGroup::MUL_REF3;
-
-    case MulLemma::MulRef1:
-    case MulLemma::MulRefN3:
-    case MulLemma::MulRefN5:
-    case MulLemma::MulRefN6:
-    case MulLemma::MulRef14:
-    case MulLemma::MulRef15:
-    case MulLemma::MulRefN9:
-    case MulLemma::MulRef18:
-    case MulLemma::MulRefN11:
-    case MulLemma::MulRefN12:
-    case MulLemma::MulRefN13:
-    case MulLemma::MulRef13:
-    case MulLemma::MulRef12:
-      return BVSchemaGroup::MUL_EXTRA;
-  }
-  assert(false && "MulLemma has no schema-group owner");
-  return BVSchemaGroup::MUL_EXTRA;
-}
-
-const MulLemma* mulLemmaTable(unsigned& count)
-{
-  count = MUL_LEMMA_COUNT;
-  return MUL_LEMMAS;
-}
-
-static const AddLemma ADD_LEMMAS[] = {
-    AddLemma::AddZero,       AddLemma::AddSame, AddLemma::AddInv,
-    AddLemma::AddOverflow,   AddLemma::AddNoOverflow,
-    AddLemma::AddOr,         AddLemma::AddRef6, AddLemma::AddRef7,
-    AddLemma::AddRef8,       AddLemma::AddRef9, AddLemma::AddRef10,
-    AddLemma::AddRef11,      AddLemma::AddRef12};
-
-static const unsigned ADD_LEMMA_COUNT =
-    sizeof(ADD_LEMMAS) / sizeof(ADD_LEMMAS[0]);
-
-const AddLemma* addLemmaTable(unsigned& count)
-{
-  count = ADD_LEMMA_COUNT;
-  return ADD_LEMMAS;
-}
-
 AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -911,20 +803,23 @@ AddSchemaChoice chooseAddSchema(const std::vector<bool>& aBits,
                                 uint32_t enabledGroups)
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
-  if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::ADD))
-    for (unsigned lemmaIndex = 0; lemmaIndex < ADD_LEMMA_COUNT; ++lemmaIndex)
+  unsigned addCount = 0;
+  const BVLemmaEntry<AddLemma>* addTable = addLemmaTable(addCount);
+  for (unsigned lemmaIndex = 0; lemmaIndex < addCount; ++lemmaIndex)
+  {
+    const BVLemmaEntry<AddLemma>& entry = addTable[lemmaIndex];
+    if (!bvSchemaGroupEnabled(enabledGroups, entry.group))
+      continue;
+    if (!entry.applicable((unsigned)tBits.size()))
+      continue;
+    for (unsigned operand = 0; operand < 2; ++operand)
     {
-      if (!addLemmaApplicable(ADD_LEMMAS[lemmaIndex], (unsigned)tBits.size()))
+      if ((installedSchemas & addLemmaInstalledBit(lemmaIndex, operand)) != 0)
         continue;
-      for (unsigned operand = 0; operand < 2; ++operand)
-      {
-        if ((installedSchemas & addLemmaInstalledBit(lemmaIndex, operand)) != 0)
-          continue;
-        if (!addLemmaHolds(ADD_LEMMAS[lemmaIndex], *ops[operand],
-                           *ops[1 - operand], tBits))
-          return {true, operand, lemmaIndex, 0, BVSchemaGroup::ADD};
-      }
+      if (!addLemmaHolds(entry.lemma, *ops[operand], *ops[1 - operand], tBits))
+        return {true, operand, lemmaIndex, 0, entry.group};
     }
+  }
 
   const unsigned prefix = std::min(3u, (unsigned)tBits.size());
   if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::LOW_PREFIX) &&
@@ -942,6 +837,8 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
   const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
+  const bool shiftValueLeft = bvSchemaFamilyHasInstance(
+      installedSchemas, BVSchemaFamily::MulShiftValue);
 
   // a = 2^k -> t = b << k, and the same read the other way round. Where it
   // applies it says the most of the four: the shift *is* the product for
@@ -950,7 +847,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // applies -- this is only ever called over a candidate whose product is
   // already known wrong, and for a power-of-two operand "wrong" and
   // "disagrees with the shift" are the same statement.
-  if (base)
+  if (base && shiftValueLeft)
     for (unsigned i = 0; i < 2; ++i)
     {
       const int k = powerOfTwoExponent(*ops[i]);
@@ -961,7 +858,7 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
   // excluded by name: that covers the minimum signed value, which is its own
   // negation and which the schema above has already taken.
-  if (base)
+  if (base && shiftValueLeft)
     for (unsigned i = 0; i < 2; ++i)
     {
       if (powerOfTwoExponent(*ops[i]) >= 0)
@@ -999,21 +896,22 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
   // commutative operation. Offer each source fact in both readings, exactly
   // once apiece. MUL8 is entry zero, so the ranked 75-firing fact is offered
   // before the remainder of the imported catalogue.
-  for (unsigned lemmaIndex = 0; lemmaIndex < MUL_LEMMA_COUNT; ++lemmaIndex)
+  unsigned mulCount = 0;
+  const BVLemmaEntry<MulLemma>* mulTable = mulLemmaTable(mulCount);
+  for (unsigned lemmaIndex = 0; lemmaIndex < mulCount; ++lemmaIndex)
   {
-    const MulLemma lemma = MUL_LEMMAS[lemmaIndex];
-    const BVSchemaGroup group = mulLemmaGroup(lemma);
-    if (!bvSchemaGroupEnabled(enabledGroups, group))
+    const BVLemmaEntry<MulLemma>& entry = mulTable[lemmaIndex];
+    if (!bvSchemaGroupEnabled(enabledGroups, entry.group))
       continue;
-    if (!mulLemmaApplicable(lemma, (unsigned)tBits.size()))
+    if (!entry.applicable((unsigned)tBits.size()))
       continue;
     for (unsigned operand = 0; operand < 2; ++operand)
     {
       if ((installedSchemas &
            mulLemmaInstalledBit(lemmaIndex, operand)) != 0)
         continue;
-      if (!mulLemmaHolds(lemma, *ops[operand], *ops[1 - operand], tBits))
-        return {MulSchema::Lemma, operand, 0, lemmaIndex, group};
+      if (!mulLemmaHolds(entry.lemma, *ops[operand], *ops[1 - operand], tBits))
+        return {MulSchema::Lemma, operand, 0, lemmaIndex, entry.group};
     }
   }
 
@@ -1104,177 +1002,6 @@ static bool valueIsZero(const std::vector<bool>& bits)
   return true;
 }
 
-// The DivLemma facts, in the order the chooser offers them: by how often
-// they fired in the solver they come from, measured over the queries this
-// is for. A candidate usually breaks more than one, so the order decides
-// which round buys which fact, and buying the most productive first is the
-// cheapest guess available.
-static const DivLemma DIV_LEMMAS[] = {
-    DivLemma::DivisorAboveShiftedDividend,           // 280 firings
-    DivLemma::QuotientBelowNegatedDivisor,           // 200
-    DivLemma::DividendAboveNegatedAnd,               // 187
-    // STP-specific. Ranked here by the extra candidate cube it excludes at
-    // six bits (2.42%), ahead of facts below that add no unique exclusions.
-    DivLemma::QuotientIsOne,
-    DivLemma::DividendZero,                          // 171
-    DivLemma::DivisorEqualsDividend,                 // 162
-    DivLemma::DivisorLessOneAboveShiftedDividend,    // 161
-    DivLemma::DividendAboveShiftedDoubleQuotient,    // 125
-    DivLemma::QuotientNotNegatedAnd,                 // ref9; 62
-    DivLemma::DivisorAllOnes,                        // 59
-    DivLemma::DividendAboveDoubledShiftedDivisor,    // ref14; 54
-    DivLemma::DividendNotTwiceQuotientPlusOr,        // ref33; 26
-    DivLemma::QuotientAboveDoubledShiftedDividend,   // ref16; 14
-    DivLemma::DividendAboveOrAndDoubledDivisor,      // ref17; 10
-    DivLemma::MaskedDividendAboveDivisorAndQuotient, // ref12; 9
-    DivLemma::DividendAboveQuotientXorShifted,       // ref26; 3
-    DivLemma::ShiftedDividendNotOr,                  // ref19; 3
-    DivLemma::DividendAboveOrAndDoubledQuotient,     // ref18; 2
-    DivLemma::DividendAboveDivisorXorShifted,        // ref27; 2
-
-    // The remainder of Bitwuzla's enabled UDIV registry did not fire in the
-    // profile used to rank the entries above. Keep source order for this
-    // unranked tail so reconciliation against that registry stays mechanical.
-    DivLemma::UdivRef10, DivLemma::UdivRef11, DivLemma::UdivRef20,
-    DivLemma::UdivRef21, DivLemma::UdivRef23, DivLemma::UdivRef24,
-    DivLemma::UdivRef25, DivLemma::UdivRef28, DivLemma::UdivRef29,
-    DivLemma::UdivRef30, DivLemma::UdivRef31, DivLemma::UdivRef32,
-    DivLemma::UdivRef34, DivLemma::UdivRef36, DivLemma::UdivRef38};
-
-static const unsigned DIV_LEMMA_COUNT =
-    sizeof(DIV_LEMMAS) / sizeof(DIV_LEMMAS[0]);
-
-static_assert(DIV_LEMMA_COUNT <= 54,
-              "the UDIV registry overlaps reserved magnitude-bound bits");
-
-static BVSchemaGroup divLemmaGroup(DivLemma lemma)
-{
-  switch (lemma)
-  {
-    case DivLemma::DividendAboveShiftedDoubleQuotient:
-      return BVSchemaGroup::UDIV15;
-
-    case DivLemma::QuotientIsOne:
-      return BVSchemaGroup::QUOTIENT_ONE_QUOT;
-
-    case DivLemma::DividendZero:
-    case DivLemma::DivisorEqualsDividend:
-    case DivLemma::DivisorAllOnes:
-    case DivLemma::QuotientBelowNegatedDivisor:
-    case DivLemma::DividendAboveNegatedAnd:
-    case DivLemma::DivisorAboveShiftedDividend:
-    case DivLemma::DivisorLessOneAboveShiftedDividend:
-      return BVSchemaGroup::BASE;
-
-    case DivLemma::QuotientNotNegatedAnd:
-    case DivLemma::MaskedDividendAboveDivisorAndQuotient:
-    case DivLemma::DividendAboveDoubledShiftedDivisor:
-    case DivLemma::QuotientAboveDoubledShiftedDividend:
-    case DivLemma::DividendAboveOrAndDoubledDivisor:
-    case DivLemma::DividendAboveOrAndDoubledQuotient:
-    case DivLemma::ShiftedDividendNotOr:
-    case DivLemma::DividendAboveQuotientXorShifted:
-    case DivLemma::DividendAboveDivisorXorShifted:
-    case DivLemma::DividendNotTwiceQuotientPlusOr:
-      return BVSchemaGroup::UDIV_OBSERVED;
-
-    case DivLemma::UdivRef10:
-    case DivLemma::UdivRef11:
-    case DivLemma::UdivRef20:
-    case DivLemma::UdivRef21:
-    case DivLemma::UdivRef23:
-    case DivLemma::UdivRef24:
-    case DivLemma::UdivRef25:
-    case DivLemma::UdivRef28:
-    case DivLemma::UdivRef29:
-    case DivLemma::UdivRef30:
-    case DivLemma::UdivRef31:
-    case DivLemma::UdivRef32:
-    case DivLemma::UdivRef34:
-    case DivLemma::UdivRef36:
-    case DivLemma::UdivRef38:
-      return BVSchemaGroup::UDIV_EXTRA;
-  }
-  assert(false && "DivLemma has no schema-group owner");
-  return BVSchemaGroup::UDIV_EXTRA;
-}
-
-// UDIV_EXTRA was published by v2 as an umbrella for the complete non-base
-// registry. Keep that spelling source-compatible while allowing v3's new
-// UDIV_OBSERVED bit to select and account for only the ranked entries.
-static bool divLemmaGroupEnabled(uint32_t mask, BVSchemaGroup group)
-{
-  return bvSchemaGroupEnabled(mask, group) ||
-         (group == BVSchemaGroup::UDIV_OBSERVED &&
-          bvSchemaGroupEnabled(mask, BVSchemaGroup::UDIV_EXTRA));
-}
-
-static BVSchemaGroup divLemmaAccountingGroup(uint32_t mask, BVSchemaGroup group)
-{
-  if (group == BVSchemaGroup::UDIV_OBSERVED &&
-      !bvSchemaGroupEnabled(mask, BVSchemaGroup::UDIV_OBSERVED))
-    return BVSchemaGroup::UDIV_EXTRA;
-  return group;
-}
-
-static const RemLemma REM_LEMMAS[] = {
-    RemLemma::DividendZero,
-    RemLemma::DivisorEqualsDividend,
-    RemLemma::DividendBelowDivisor,
-    // STP-specific, and ranked with the three facts above because it likewise
-    // determines the result throughout its premise rather than only bounding it.
-    RemLemma::RemainderIsDifference,
-    RemLemma::DividendWithinDivisorOrRemainder,
-    RemLemma::DividendAboveRemainderOrAnd,
-    RemLemma::RemainderOutsideOperandsNotOne,
-    RemLemma::RemainderNotOrOfComplements,
-    RemLemma::RemainderInOperandsAboveLowBit,
-    RemLemma::DividendNotOrOfNegations,
-    RemLemma::DifferenceAboveRemainder,
-    RemLemma::XorAboveRemainder,
-    // Transcribed and tested, but deliberately never offered.
-    RemLemma::RemainderBelowDivisorDisabled};
-
-static const unsigned REM_LEMMA_COUNT =
-    sizeof(REM_LEMMAS) / sizeof(REM_LEMMAS[0]);
-
-static BVSchemaGroup remLemmaGroup(RemLemma lemma)
-{
-  switch (lemma)
-  {
-    case RemLemma::RemainderIsDifference:
-      return BVSchemaGroup::QUOTIENT_ONE_REM;
-
-    case RemLemma::DividendZero:
-    case RemLemma::DivisorEqualsDividend:
-    case RemLemma::DividendBelowDivisor:
-    case RemLemma::RemainderBelowDivisorDisabled:
-    case RemLemma::DividendWithinDivisorOrRemainder:
-    case RemLemma::DividendAboveRemainderOrAnd:
-    case RemLemma::RemainderOutsideOperandsNotOne:
-    case RemLemma::RemainderNotOrOfComplements:
-    case RemLemma::RemainderInOperandsAboveLowBit:
-    case RemLemma::DividendNotOrOfNegations:
-    case RemLemma::DifferenceAboveRemainder:
-    case RemLemma::XorAboveRemainder:
-      return BVSchemaGroup::UREM;
-  }
-  assert(false && "RemLemma has no schema-group owner");
-  return BVSchemaGroup::UREM;
-}
-
-const DivLemma* divLemmaTable(unsigned& count)
-{
-  count = DIV_LEMMA_COUNT;
-  return DIV_LEMMAS;
-}
-
-const RemLemma* remLemmaTable(unsigned& count)
-{
-  count = REM_LEMMA_COUNT;
-  return REM_LEMMAS;
-}
-
 DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
                                 const std::vector<bool>& bBits,
                                 const std::vector<bool>& tBits,
@@ -1289,14 +1016,16 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   // operation *is* for that divisor, which is more than any bound can say.
   // Zero is not a power of two, so the two never contend and the order
   // between them is a formality.
-  if (base && divisorZero)
+  const bool divisorValueLeft =
+      bvSchemaFamilyHasInstance(installedSchemas, BVSchemaFamily::DivisorValue);
+  if (base && divisorValueLeft && divisorZero)
   {
     const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
     if (!resultMatchesSources(divSchemaSources(opKind, width, choice), aBits,
                               tBits))
       return choice;
   }
-  else if (base)
+  else if (base && divisorValueLeft)
   {
     const int k = powerOfTwoExponent(bBits);
     if (k >= 0)
@@ -1330,18 +1059,19 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         !divisorZero && valueLessOrEqual(bBits, tBits))
       return {DivSchema::RemainderBelowDivisor, 0};
 
-    for (unsigned i = 0; i < REM_LEMMA_COUNT; ++i)
+    unsigned remCount = 0;
+    const BVLemmaEntry<RemLemma>* remTable = remLemmaTable(remCount);
+    for (unsigned i = 0; i < remCount; ++i)
     {
-      const RemLemma lemma = REM_LEMMAS[i];
-      const BVSchemaGroup group = remLemmaGroup(lemma);
-      if (!bvSchemaGroupEnabled(enabledGroups, group))
+      const BVLemmaEntry<RemLemma>& entry = remTable[i];
+      if (!bvSchemaGroupEnabled(enabledGroups, entry.group))
         continue;
-      if (!remLemmaEnabled(lemma) || !remLemmaApplicable(lemma, width))
+      if (!entry.applicable(width))
         continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
-      if (!remLemmaHolds(lemma, aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i, group};
+      if (!remLemmaHolds(entry.lemma, aBits, bBits, tBits))
+        return {DivSchema::Lemma, 0, i, entry.group};
     }
   }
   else if (opKind == BVDIV)
@@ -1358,18 +1088,19 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // open-ended family first can consume the complete schema-round budget
     // and starve a single stronger fact that would decide the query.
     // Quotients only: every one is about `t = a udiv b`.
-    for (unsigned i = 0; i < DIV_LEMMA_COUNT; ++i)
+    unsigned divCount = 0;
+    const BVLemmaEntry<DivLemma>* divTable = divLemmaTable(divCount);
+    for (unsigned i = 0; i < divCount; ++i)
     {
-      const BVSchemaGroup group = divLemmaGroup(DIV_LEMMAS[i]);
-      if (!divLemmaGroupEnabled(enabledGroups, group))
+      const BVLemmaEntry<DivLemma>& entry = divTable[i];
+      if (!bvSchemaGroupEnabled(enabledGroups, entry.group))
         continue;
       if ((installedSchemas & divLemmaInstalledBit(i)) != 0)
         continue;
-      if (!divLemmaApplicable(DIV_LEMMAS[i], width))
+      if (!entry.applicable(width))
         continue;
-      if (!divLemmaHolds(DIV_LEMMAS[i], aBits, bBits, tBits))
-        return {DivSchema::Lemma, 0, i,
-                divLemmaAccountingGroup(enabledGroups, group)};
+      if (!divLemmaHolds(entry.lemma, aBits, bBits, tBits))
+        return {DivSchema::Lemma, 0, i, entry.group};
     }
 
     // Use the candidate divisor's highest set bit as a broad guard:
@@ -1381,7 +1112,8 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
     // this stronger candidate-specific bound gets a turn.
     if (bvSchemaGroupEnabled(enabledGroups,
                              BVSchemaGroup::DIVISOR_MAGNITUDE) &&
-        divMagnitudeBoundsLeft(installedSchemas))
+        bvSchemaFamilyHasInstance(installedSchemas,
+                                  BVSchemaFamily::DivisorMagnitude))
     {
       int divisorTop = -1;
       for (int i = (int)width - 1; i >= 0; --i)
@@ -1435,7 +1167,10 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
         quotientTop = i;
         break;
       }
-    if (bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::QUOTIENT_THRESHOLDS))
+    if (bvSchemaGroupEnabled(enabledGroups,
+                             BVSchemaGroup::QUOTIENT_THRESHOLDS) &&
+        bvSchemaFamilyHasInstance(installedSchemas,
+                                  BVSchemaFamily::QuotientThreshold))
     {
       if (quotientTop > 0 && thresholdMismatch((unsigned)quotientTop))
         return {DivSchema::QuotientPow2Threshold, (unsigned)quotientTop, 0,
@@ -1546,27 +1281,92 @@ unsigned valueLemmaAllowance(const UserDefinedFlags& uf, unsigned width,
   return valueLimit == 0 ? allowance : std::min(allowance, valueLimit);
 }
 
+// A BVDIV and a BVMOD over the same operands at the same width carry a
+// relation neither record can state alone. Finding them is the same question
+// for the refinement that installs the relation and the diagnostic that
+// reports it, so it is asked once, here.
+//
+// Node numbers are unique within the manager and the width is part of the
+// key, so only genuinely identical operations meet. Records are keyed by
+// insertion, and the map is walked in that order below, so the pairing a run
+// produces does not depend on the hash.
+namespace
+{
+struct DivRemPairKey
+{
+  uint64_t dividend;
+  uint64_t divisor;
+  unsigned width;
+
+  bool operator==(const DivRemPairKey& other) const
+  {
+    return dividend == other.dividend && divisor == other.divisor &&
+           width == other.width;
+  }
+};
+
+struct DivRemPairKeyHash
+{
+  size_t operator()(const DivRemPairKey& key) const
+  {
+    size_t h = std::hash<uint64_t>{}(key.dividend);
+    h ^= std::hash<uint64_t>{}(key.divisor) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    h ^= std::hash<unsigned>{}(key.width) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+} // namespace
+
+std::vector<BVAbstractionRefiner::DivRemPair>
+BVAbstractionRefiner::divRemPairs(const std::vector<BVTermAbstraction>& terms)
+{
+  const size_t missing = std::numeric_limits<size_t>::max();
+  std::unordered_map<DivRemPairKey, DivRemPair, DivRemPairKeyHash> found;
+  std::vector<DivRemPairKey> order;
+
+  for (size_t idx = 0; idx < terms.size(); ++idx)
+  {
+    const BVTermAbstraction& abs = terms[idx];
+    if (abs.opKind != BVDIV && abs.opKind != BVMOD)
+      continue;
+    assert(abs.numOperands == 2);
+    const DivRemPairKey key{abs.operands[0].GetNodeNum(),
+                            abs.operands[1].GetNodeNum(), abs.width};
+    auto it = found.find(key);
+    if (it == found.end())
+    {
+      it = found.insert({key, DivRemPair{missing, missing}}).first;
+      order.push_back(key);
+    }
+    if (abs.opKind == BVDIV)
+      it->second.divIdx = idx;
+    else
+      it->second.remIdx = idx;
+  }
+
+  std::vector<DivRemPair> pairs;
+  for (const DivRemPairKey& key : order)
+  {
+    const DivRemPair& pair = found[key];
+    if (pair.divIdx != missing && pair.remIdx != missing)
+      pairs.push_back(pair);
+  }
+  return pairs;
+}
+
 void BVAbstractionRefiner::reportRecords(std::ostream& out) const
 {
+  std::vector<bool> isPaired(terms_.size(), false);
+  for (const DivRemPair& pair : divRemPairs(terms_))
+  {
+    isPaired[pair.divIdx] = true;
+    isPaired[pair.remIdx] = true;
+  }
+
   for (size_t i = 0; i < terms_.size(); ++i)
   {
     const BVTermAbstraction& abs = terms_[i];
-    bool paired = false;
-    if (abs.opKind == BVDIV || abs.opKind == BVMOD)
-      for (size_t j = 0; j < terms_.size(); ++j)
-      {
-        const BVTermAbstraction& other = terms_[j];
-        if (i == j || other.width != abs.width ||
-            other.opKind == abs.opKind ||
-            (other.opKind != BVDIV && other.opKind != BVMOD))
-          continue;
-        if (other.operands[0].GetNodeNum() == abs.operands[0].GetNodeNum() &&
-            other.operands[1].GetNodeNum() == abs.operands[1].GetNodeNum())
-        {
-          paired = true;
-          break;
-        }
-      }
+    const bool paired = isPaired[i];
     const char* state = "open";
     if (abs.defined)
       state = abs.exactEscalations == 0 ? "defined" : "exact";
@@ -1715,37 +1515,6 @@ void encodeMulLowPrefix(SATSolver& solver,
   const unsigned x0 = mkXor(solver, p20, p11);
   const unsigned x1 = mkXor(solver, p02, carry1);
   addEquivalence(solver, resultVars[2], mkXor(solver, x0, x1));
-}
-
-// oddOperand[0] = 1 and otherOperand != 0 -> result != 0.
-//
-// `resultNonzero` shares the OR of the result bits across the width clauses.
-// Writing the implication out without it would put all W result literals in
-// each of W clauses. With it, each bit of the other operand needs only the
-// ternary clause below.
-void encodeMulZeroProductOddOperand(SATSolver& solver,
-                                    const std::vector<unsigned>& oddOperand,
-                                    const std::vector<unsigned>& otherOperand,
-                                    const std::vector<unsigned>& result,
-                                    unsigned width)
-{
-  assert(width > 0);
-  assert(oddOperand.size() == width);
-  assert(otherOperand.size() == width);
-  assert(result.size() == width);
-
-  unsigned resultNonzero = result[0];
-  for (unsigned i = 1; i < width; ++i)
-    resultNonzero = mkOr(solver, resultNonzero, result[i]);
-
-  for (unsigned i = 0; i < width; ++i)
-  {
-    SATSolver::vec_literals cl;
-    cl.push(SATSolver::mkLit(oddOperand[0], true));
-    cl.push(SATSolver::mkLit(otherOperand[i], true));
-    cl.push(SATSolver::mkLit(resultNonzero, false));
-    solver.addClause(cl);
-  }
 }
 
 // result[i] -> some bit of `op` at or below i, one clause per bit. The
@@ -2010,94 +1779,6 @@ void encodeDivisorMagnitudeBound(
   }
 }
 
-namespace
-{
-struct QuotientOneBand
-{
-  std::vector<unsigned> difference;
-  unsigned divisorBelowDividend;
-  unsigned divisorBelowDifference;
-};
-
-QuotientOneBand encodeQuotientOneBand(
-    SATSolver& solver, const std::vector<unsigned>& dividendVars,
-    const std::vector<unsigned>& divisorVars, unsigned width)
-{
-  QuotientOneBand band;
-  band.difference.resize(width);
-  for (unsigned i = 0; i < width; ++i)
-    band.difference[i] = freshVar(solver);
-  encodeAddLowPrefix(solver, dividendVars, divisorVars, band.difference, width,
-                     width, false, true);
-
-  band.divisorBelowDividend = encodeLessOrEqual(
-      solver, divisorVars, dividendVars, width, false);
-  band.divisorBelowDifference = encodeLessOrEqual(
-      solver, divisorVars, band.difference, width, false);
-  return band;
-}
-} // namespace
-
-void encodeRemQuotientOne(SATSolver& solver,
-                          const std::vector<unsigned>& dividendVars,
-                          const std::vector<unsigned>& divisorVars,
-                          const std::vector<unsigned>& remainderVars,
-                          unsigned width)
-{
-  assert(width > 0);
-  assert(dividendVars.size() >= width);
-  assert(divisorVars.size() >= width);
-  assert(remainderVars.size() >= width);
-
-  const QuotientOneBand band =
-      encodeQuotientOneBand(solver, dividendVars, divisorVars, width);
-
-  // (b <= a && !(b <= a-b)) -> r = a-b. The second comparison is the
-  // strict (a-b) < b edge, and makes the premise false when b is zero.
-  for (unsigned i = 0; i < width; ++i)
-  {
-    SATSolver::vec_literals cl;
-    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
-    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
-    cl.push(SATSolver::mkLit(remainderVars[i], true));
-    cl.push(SATSolver::mkLit(band.difference[i], false));
-    solver.addClause(cl);
-
-    cl.clear();
-    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
-    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
-    cl.push(SATSolver::mkLit(remainderVars[i], false));
-    cl.push(SATSolver::mkLit(band.difference[i], true));
-    solver.addClause(cl);
-  }
-}
-
-void encodeDivQuotientOne(SATSolver& solver,
-                          const std::vector<unsigned>& dividendVars,
-                          const std::vector<unsigned>& divisorVars,
-                          const std::vector<unsigned>& quotientVars,
-                          unsigned width)
-{
-  assert(width > 0);
-  assert(dividendVars.size() >= width);
-  assert(divisorVars.size() >= width);
-  assert(quotientVars.size() >= width);
-
-  const QuotientOneBand band =
-      encodeQuotientOneBand(solver, dividendVars, divisorVars, width);
-
-  // (b <= a && !(b <= a-b)) -> q = 1. Bit zero is true and every other
-  // quotient bit false under the shared premise.
-  for (unsigned i = 0; i < width; ++i)
-  {
-    SATSolver::vec_literals cl;
-    cl.push(SATSolver::mkLit(band.divisorBelowDividend, true));
-    cl.push(SATSolver::mkLit(band.divisorBelowDifference, false));
-    cl.push(SATSolver::mkLit(quotientVars[i], i == 0 ? false : true));
-    solver.addClause(cl);
-  }
-}
-
 void encodeDivRemLowPrefix(SATSolver& solver,
                            const std::vector<unsigned>& dividendVars,
                            const std::vector<unsigned>& divisorVars,
@@ -2220,57 +1901,14 @@ unsigned BVAbstractionRefiner::refineTerms(
   if (bm->UserFlags.bv_term_abstraction_schemas &&
       (lowPairEnabled || fullPairEnabled))
   {
-    struct DivRemKey {
-      uint64_t dividend;
-      uint64_t divisor;
-      unsigned width;
-
-      bool operator==(const DivRemKey& other) const
-      {
-        return dividend == other.dividend && divisor == other.divisor &&
-               width == other.width;
-      }
-    };
-    struct DivRemKeyHash {
-      size_t operator()(const DivRemKey& key) const
-      {
-        size_t h = std::hash<uint64_t>{}(key.dividend);
-        h ^= std::hash<uint64_t>{}(key.divisor) + 0x9e3779b9u + (h << 6) +
-             (h >> 2);
-        h ^= std::hash<unsigned>{}(key.width) + 0x9e3779b9u + (h << 6) +
-             (h >> 2);
-        return h;
-      }
-    };
-    struct DivRemPair {
-      size_t divIdx = std::numeric_limits<size_t>::max();
-      size_t remIdx = std::numeric_limits<size_t>::max();
-    };
-
-    std::unordered_map<DivRemKey, DivRemPair, DivRemKeyHash> pairs;
-    for (size_t idx = 0; idx < terms_.size(); ++idx)
+    for (const DivRemPair& pair : divRemPairs(terms_))
     {
-      const BVTermAbstraction& abs = terms_[idx];
-      if (abs.opKind != BVDIV && abs.opKind != BVMOD)
-        continue;
-      assert(abs.numOperands == 2);
-      const DivRemKey key{abs.operands[0].GetNodeNum(),
-                          abs.operands[1].GetNodeNum(), abs.width};
-      DivRemPair& pair = pairs[key];
-      if (abs.opKind == BVDIV)
-        pair.divIdx = idx;
-      else
-        pair.remIdx = idx;
-    }
-
-    const size_t missing = std::numeric_limits<size_t>::max();
-    for (const auto& entry : pairs)
-    {
-      const DivRemPair& pair = entry.second;
-      if (pair.divIdx == missing || pair.remIdx == missing)
-        continue;
       const BVTermAbstraction& div = terms_[pair.divIdx];
       const BVTermAbstraction& rem = terms_[pair.remIdx];
+      // Two exact records cannot disagree with the relation between them, so
+      // there is nothing here to read a model for.
+      if (div.defined && rem.defined)
+        continue;
       const bool fullInstalled =
           div.divRemFullInstalled || rem.divRemFullInstalled;
       const bool lowAvailable =
@@ -2578,11 +2216,10 @@ unsigned BVAbstractionRefiner::refineTerms(
   {
     BVTermAbstraction& div = terms_[inc.divIdx];
     BVTermAbstraction& rem = terms_[inc.remIdx];
-    std::vector<unsigned> dividendVars, divisorVars;
-    getOperandVars(div.operands[0], div.width, nodeToSATVar, solver,
-                   dividendVars);
-    getOperandVars(div.operands[1], div.width, nodeToSATVar, solver,
-                   divisorVars);
+    const std::vector<unsigned>& dividendVars =
+        encodedBitsOf(div.operands[0], div.width, nodeToSATVar);
+    const std::vector<unsigned>& divisorVars =
+        encodedBitsOf(div.operands[1], div.width, nodeToSATVar);
     const std::vector<unsigned>& quotientVars =
         encodedResultBitsOf(div, nodeToSATVar);
     const std::vector<unsigned>& remainderVars =
@@ -2598,7 +2235,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     else
     {
       assert(inc.group == BVSchemaGroup::DIVREM_FULL);
-      BVExactEncoder(bm).encodeDivRemIdentity(
+      exact_.encodeDivRemIdentity(
           solver, inc.product, div.width, dividendVars, divisorVars,
           quotientVars, remainderVars);
       div.divRemFullInstalled = true;
@@ -2618,9 +2255,10 @@ unsigned BVAbstractionRefiner::refineTerms(
   for (auto& inc : incCmps)
   {
     auto& abs = terms_[inc.absIdx];
-    std::vector<unsigned> leftVars, rightVars;
-    getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, leftVars);
-    getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, rightVars);
+    const std::vector<unsigned>& leftVars =
+        encodedBitsOf(abs.operands[0], abs.width, nodeToSATVar);
+    const std::vector<unsigned>& rightVars =
+        encodedBitsOf(abs.operands[1], abs.width, nodeToSATVar);
     const std::vector<unsigned>& lv = inc.swapOps ? rightVars : leftVars;
     const std::vector<unsigned>& rv = inc.swapOps ? leftVars : rightVars;
 
@@ -2640,9 +2278,10 @@ unsigned BVAbstractionRefiner::refineTerms(
   for (auto& inc : incPlus)
   {
     auto& abs = terms_[inc.absIdx];
-    std::vector<unsigned> leftVars, rightVars;
-    getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, leftVars);
-    getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, rightVars);
+    const std::vector<unsigned>& leftVars =
+        encodedBitsOf(abs.operands[0], abs.width, nodeToSATVar);
+    const std::vector<unsigned>& rightVars =
+        encodedBitsOf(abs.operands[1], abs.width, nodeToSATVar);
     const std::vector<unsigned>& resultVars =
         encodedResultBitsOf(abs, nodeToSATVar);
     const bool lNeg = abs.operandNegated[0];
@@ -2678,8 +2317,8 @@ unsigned BVAbstractionRefiner::refineTerms(
         }
 
       const unsigned chosen = inc.schema.operand;
-      BVExactEncoder(bm).encodeAddLemma(
-          solver, ADD_LEMMAS[inc.schema.lemmaIndex], abs.width,
+      exact_.encodeAddLemma(
+          solver, addLemmaAt(inc.schema.lemmaIndex).lemma, abs.width,
           *effectiveVars[chosen], *effectiveVars[1 - chosen], resultVars);
       abs.installedSchemas |=
           addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
@@ -2687,7 +2326,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       countSchemaLemma(bm->UserFlags, inc.schema.group);
       if (bm->UserFlags.stats_flag)
         std::cerr << "BV abstraction: BVPLUS "
-                  << addLemmaName(ADD_LEMMAS[inc.schema.lemmaIndex])
+                  << addLemmaAt(inc.schema.lemmaIndex).name
                   << " lemma over operand " << chosen << std::endl;
       refined++;
       continue;
@@ -2709,9 +2348,10 @@ unsigned BVAbstractionRefiner::refineTerms(
     // Both branches, where the scan above only read the one the candidate's
     // condition selected: a pinned if-then-else has to say what it is under
     // either.
-    std::vector<unsigned> thenVars, elseVars;
-    getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, thenVars);
-    getOperandVars(abs.operands[2], abs.width, nodeToSATVar, solver, elseVars);
+    const std::vector<unsigned>& thenVars =
+        encodedBitsOf(abs.operands[1], abs.width, nodeToSATVar);
+    const std::vector<unsigned>& elseVars =
+        encodedBitsOf(abs.operands[2], abs.width, nodeToSATVar);
     const std::vector<unsigned>& resultVars =
         encodedResultBitsOf(abs, nodeToSATVar);
     unsigned c = abs.condSATVar;
@@ -2737,9 +2377,10 @@ unsigned BVAbstractionRefiner::refineTerms(
   for (auto& inc : incDivMul)
   {
     auto& abs = terms_[inc.absIdx];
-    std::vector<unsigned> aVars, bVars;
-    getOperandVars(abs.operands[0], abs.width, nodeToSATVar, solver, aVars);
-    getOperandVars(abs.operands[1], abs.width, nodeToSATVar, solver, bVars);
+    const std::vector<unsigned>& aVars =
+        encodedBitsOf(abs.operands[0], abs.width, nodeToSATVar);
+    const std::vector<unsigned>& bVars =
+        encodedBitsOf(abs.operands[1], abs.width, nodeToSATVar);
     const std::vector<unsigned>& resultVars =
         encodedResultBitsOf(abs, nodeToSATVar);
     unsigned W = abs.width;
@@ -2759,6 +2400,8 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodeDivUnderDivisorValue(
               solver, bVars, inc.bBits, aVars, resultVars, W,
               divSchemaSources(abs.opKind, W, inc.divSchema));
+          abs.installedSchemas = bvSchemaFamilyRecordInstance(
+              abs.installedSchemas, BVSchemaFamily::DivisorValue);
           break;
 
         case DivSchema::RemainderAtMostDividend:
@@ -2785,30 +2428,28 @@ unsigned BVAbstractionRefiner::refineTerms(
           assert(abs.opKind == BVDIV);
           encodeDivPow2Threshold(solver, aVars, bVars, resultVars, W,
                                  inc.divSchema.shift);
+          abs.installedSchemas = bvSchemaFamilyRecordInstance(
+              abs.installedSchemas, BVSchemaFamily::QuotientThreshold);
           break;
 
         case DivSchema::DivisorMagnitudeBound:
           assert(abs.opKind == BVDIV);
           encodeDivisorMagnitudeBound(solver, aVars, bVars, resultVars, W,
                                       inc.divSchema.shift);
-          for (unsigned i = 0; i < DIV_SCHEMA_MAGNITUDE_BOUND_ALLOWANCE; ++i)
-            if ((abs.installedSchemas & divMagnitudeBoundBit(i)) == 0)
-            {
-              abs.installedSchemas |= divMagnitudeBoundBit(i);
-              break;
-            }
+          abs.installedSchemas = bvSchemaFamilyRecordInstance(
+              abs.installedSchemas, BVSchemaFamily::DivisorMagnitude);
           break;
 
         case DivSchema::Lemma:
           if (abs.opKind == BVDIV)
-            BVExactEncoder(bm).encodeDivLemma(
-                solver, DIV_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+            exact_.encodeDivLemma(
+                solver, divLemmaAt(inc.divSchema.lemmaIndex).lemma, W, aVars, bVars,
                 resultVars);
           else
           {
             assert(abs.opKind == BVMOD);
-            BVExactEncoder(bm).encodeRemLemma(
-                solver, REM_LEMMAS[inc.divSchema.lemmaIndex], W, aVars, bVars,
+            exact_.encodeRemLemma(
+                solver, remLemmaAt(inc.divSchema.lemmaIndex).lemma, W, aVars, bVars,
                 resultVars);
           }
           abs.installedSchemas |=
@@ -2825,10 +2466,8 @@ unsigned BVAbstractionRefiner::refineTerms(
         std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
                   << (inc.divSchema.schema == DivSchema::Lemma
                           ? (abs.opKind == BVDIV
-                                 ? divLemmaName(
-                                       DIV_LEMMAS[inc.divSchema.lemmaIndex])
-                                 : remLemmaName(
-                                       REM_LEMMAS[inc.divSchema.lemmaIndex]))
+                                 ? divLemmaAt(inc.divSchema.lemmaIndex).name
+                                 : remLemmaAt(inc.divSchema.lemmaIndex).name)
                           : divSchemaName(inc.divSchema.schema))
                   << " lemma" << std::endl;
       refined++;
@@ -2859,6 +2498,8 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodeMulShiftUnderValue(solver, *opVars[chosen], *opBits[chosen],
                                    *opVars[1 - chosen], resultVars, W,
                                    inc.schema.shift);
+          abs.installedSchemas = bvSchemaFamilyRecordInstance(
+              abs.installedSchemas, BVSchemaFamily::MulShiftValue);
           break;
 
         case MulSchema::NegPow2:
@@ -2866,7 +2507,7 @@ unsigned BVAbstractionRefiner::refineTerms(
           // The negation circuit is minted once and kept: this schema can
           // fire once per power of two, and the operand proxies it is
           // written over are the same variables every round -- the blaster
-          // registers them, so getOperandVars hands back the registry's
+          // registers them, so encodedBitsOf hands back the registry's
           // entry rather than fresh bits.
           const unsigned other = 1 - chosen;
           if (abs.negatedOperand[other].empty())
@@ -2875,6 +2516,8 @@ unsigned BVAbstractionRefiner::refineTerms(
           encodeMulShiftUnderValue(solver, *opVars[chosen], *opBits[chosen],
                                    abs.negatedOperand[other], resultVars, W,
                                    inc.schema.shift);
+          abs.installedSchemas = bvSchemaFamilyRecordInstance(
+              abs.installedSchemas, BVSchemaFamily::MulShiftValue);
           break;
         }
 
@@ -2887,8 +2530,8 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
 
         case MulSchema::Lemma:
-          BVExactEncoder(bm).encodeMulLemma(
-              solver, MUL_LEMMAS[inc.schema.lemmaIndex], W, *opVars[chosen],
+          exact_.encodeMulLemma(
+              solver, mulLemmaAt(inc.schema.lemmaIndex).lemma, W, *opVars[chosen],
               *opVars[1 - chosen], resultVars);
           abs.installedSchemas |=
               mulLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
@@ -2904,7 +2547,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       {
         std::cerr << "BV abstraction: BVMULT "
                   << (inc.schema.schema == MulSchema::Lemma
-                          ? mulLemmaName(MUL_LEMMAS[inc.schema.lemmaIndex])
+                          ? mulLemmaAt(inc.schema.lemmaIndex).name
                           : mulSchemaName(inc.schema.schema))
                   << " lemma";
         if (inc.schema.schema == MulSchema::LowPrefix)
@@ -2968,7 +2611,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       const uint32_t exactVariablesBefore = solver.nVars();
       const std::chrono::steady_clock::time_point exactStarted =
           std::chrono::steady_clock::now();
-      BVExactEncoder(bm).encode(solver, encodeAs, upto, aVars, bVars,
+      exact_.encode(solver, encodeAs, upto, aVars, bVars,
                                 resultVars);
       const uint64_t exactMicros = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::microseconds>(

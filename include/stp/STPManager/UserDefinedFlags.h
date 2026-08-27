@@ -34,31 +34,47 @@ namespace stp
 {
 
 // Independently selectable families of algebraic facts used by BV term
-// abstraction.  The ordinal is also the coverage-counter index; the mask
+// abstraction. The ordinal is also the coverage-counter index; the mask
 // spelling keeps the command-line and C interfaces compact without turning
 // every individual lemma into a permanent public option.
+//
+// The groups are disjoint: every fact the refiner can offer has exactly one
+// owner here, so a mask with one bit set selects precisely that family and
+// the per-group counters partition the schema total. In operation order,
+// with each operation's mechanisms after its registries.
 enum class BVSchemaGroup : unsigned
 {
+  // The schemas an enabled abstraction inherits: the seven division facts
+  // that were already qualified, the divisor-value and bound schemas, and
+  // multiplication's parity, trailing-zero and power-of-two schemas.
   BASE = 0,
-  UDIV15,
-  UDIV_EXTRA,
+
+  // Unsigned division.
+  UDIV15,         // the highest-firing single fact outside BASE
+  UDIV_OBSERVED,  // the ranked facts that fired on the qualification corpus
+  UDIV_TAIL,      // the rest of the registry, which did not
+
+  // Unsigned remainder.
   UREM,
+
+  // Division and remainder mechanisms, rather than registry entries.
+  QUOTIENT_ONE_QUOT,
+  QUOTIENT_ONE_REM,
+  QUOTIENT_THRESHOLDS,
+  DIVISOR_MAGNITUDE,
+  DIVREM_PAIR,
+  DIVREM_FULL,
+
+  // Multiplication.
   MUL8,
   MUL_REF3,
-  MUL_EXTRA,
+  MUL_TAIL,
+
+  // Addition, and the exact low-prefix mechanism both it and multiplication
+  // share.
   ADD,
-  QUOTIENT_THRESHOLDS,
   LOW_PREFIX,
-  QUOTIENT_ONE_REM,
-  DIVREM_PAIR,
-  QUOTIENT_ONE_QUOT,
-  DIVISOR_MAGNITUDE,
-  DIVREM_FULL,
-  // The ranked Bitwuzla UDIV facts that fired on the qualification corpus.
-  // Appended so every existing public mask bit and coverage-counter ordinal
-  // remains stable. UDIV_EXTRA remains the compatibility umbrella that also
-  // enables these facts as well as the unobserved registry tail.
-  UDIV_OBSERVED,
+
   COUNT
 };
 
@@ -73,39 +89,23 @@ constexpr uint32_t bvSchemaGroupBit(BVSchemaGroup group)
 constexpr uint32_t BV_SCHEMA_GROUP_ALL =
     (uint32_t{1} << BV_SCHEMA_GROUP_COUNT) - 1;
 
-// The conservative profile justified by the original catalogue
-// qualification: retain the established schemas, the UREM registry that
-// decides the wide ecrw cases, and MulRef3. It remains named for regression
-// comparisons after the KLEE qualification below superseded it as the mask
-// inherited by an explicitly enabled abstraction.
+// The mask an explicitly enabled abstraction inherits, and the only one the
+// corpus qualification actually justified: the established schemas, plus the
+// two families that were measured to decide queries on their own -- the UREM
+// registry, which turns the wide remainder cases from a two-gigabyte external
+// timeout into fractions of a second, and MulRef3, which takes one 512-bit
+// rewrite candidate from 3.66s/766MB to 0.12s/65MB. Every broader profile
+// below is an experiment that has to be asked for.
 constexpr uint32_t BV_SCHEMA_GROUP_QUALIFIED =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UREM) |
     bvSchemaGroupBit(BVSchemaGroup::MUL_REF3);
 
-// A deliberately opt-in profile that combines the productive families from
-// the two CEGAR catalogues. The complete imported tails, open-ended quotient
-// thresholds, low-prefix experiments and ADD registry remain available as
-// individual groups, but are not smuggled into this profile without corpus
-// evidence.
-constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
-    bvSchemaGroupBit(BVSchemaGroup::BASE) |
-    bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
-    bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED) |
-    bvSchemaGroupBit(BVSchemaGroup::UREM) |
-    bvSchemaGroupBit(BVSchemaGroup::MUL8) |
-    bvSchemaGroupBit(BVSchemaGroup::MUL_REF3) |
-    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_REM) |
-    bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
-    bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE) |
-    bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
-
-// The broad 16-round experiment that performed best on the SPEAR slice in
-// the v3 comparison, without either paired DIV/REM relation. The paired
-// relations remain separately selectable groups; in particular, the
-// low-three-bit relation is cheap and belongs to the profile below, while the
-// full-width identity constructs a multiplier and stays opt-in.
-constexpr uint32_t BV_SCHEMA_GROUP_SPEAR =
+// The complete observed single-record catalogue, without either paired
+// DIV/REM relation. The paired relations stay separately selectable: the
+// low-three-bit one is cheap and belongs to the profile below, while the
+// full-width identity constructs a multiplier and remains opt-in.
+constexpr uint32_t BV_SCHEMA_GROUP_BROAD_NO_PAIR =
     bvSchemaGroupBit(BVSchemaGroup::BASE) |
     bvSchemaGroupBit(BVSchemaGroup::UDIV15) |
     bvSchemaGroupBit(BVSchemaGroup::UDIV_OBSERVED) |
@@ -116,33 +116,39 @@ constexpr uint32_t BV_SCHEMA_GROUP_SPEAR =
     bvSchemaGroupBit(BVSchemaGroup::QUOTIENT_ONE_QUOT) |
     bvSchemaGroupBit(BVSchemaGroup::DIVISOR_MAGNITUDE);
 
-// The KLEE/SymFPU-qualified broad profile. SymFPU lowers each floating-point
-// division to a quotient and remainder over the same roughly double-width
-// operands. Their low-three-bit recomposition is therefore widely applicable
-// and costs only a few gates, unlike the full identity's wide multiplier.
-// Keep the historical granular group bits and counters, and expose this as an
-// atomic mask instead of renumbering them into a coarser public partition.
+// The same broad catalogue plus the cheap low-three-bit paired DIV/REM
+// recomposition. A lowering that produces a quotient and a remainder over one
+// pair of operands -- which is what a floating-point division becomes -- gets
+// a relation neither record can state alone, for a few gates rather than the
+// full identity's wide multiplier.
 //
-// Three query-blocked repetitions over 298 floating-point and 119 pure-BV
-// KLEE queries put this profile at 45.83/42.49/42.80 seconds for the FP slice,
-// against 74.87/67.66/67.78 for QUALIFIED. The pure-BV control stayed within
-// 0.18 seconds. The same broad profile without the paired prefix was within
-// 2.4%, so the large gain is the broad 16-round policy rather than batching
-// or a different implementation. Full recomposition took
-// 69.83/63.89/65.85 seconds and remains opt-in.
+// On a 417-query floating-point-heavy population this profile's median was
+// 37% below QUALIFIED's, but the same catalogue without the paired prefix was
+// within 2.4% of it, the pure-BV control did not move, and the gain was
+// concentrated in one driver. Set against that, the broad corpus sweep put
+// several of these families at or below break-even. That is enough to keep
+// the profile selectable and not enough to inherit it: QUALIFIED is still
+// what an enabled abstraction gets.
 constexpr uint32_t BV_SCHEMA_GROUP_BROAD_PREFIX =
-    BV_SCHEMA_GROUP_SPEAR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+    BV_SCHEMA_GROUP_BROAD_NO_PAIR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_PAIR);
+
+// The same catalogue with the full-width modular identity instead of the
+// prefix. It reduces blocking and exact escalation the most aggressively of
+// any profile and is still the slowest of them, because the identity builds a
+// full-width multiplier; it exists to make that trade reproducible.
+constexpr uint32_t BV_SCHEMA_GROUP_AGGRESSIVE =
+    BV_SCHEMA_GROUP_BROAD_NO_PAIR | bvSchemaGroupBit(BVSchemaGroup::DIVREM_FULL);
 
 constexpr unsigned BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS = 32;
-constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
-constexpr unsigned BV_TERM_ABSTRACTION_SPEAR_ROUNDS = 16;
+constexpr unsigned BV_TERM_ABSTRACTION_BROAD_NO_PAIR_ROUNDS = 16;
 constexpr unsigned BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS = 16;
+constexpr unsigned BV_TERM_ABSTRACTION_AGGRESSIVE_ROUNDS = 16;
 
 // These defaults matter only after a caller explicitly turns BV term
 // abstraction on. The global feature switch remains off.
-constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT = BV_SCHEMA_GROUP_BROAD_PREFIX;
+constexpr uint32_t BV_SCHEMA_GROUP_DEFAULT = BV_SCHEMA_GROUP_QUALIFIED;
 constexpr unsigned BV_TERM_ABSTRACTION_DEFAULT_ROUNDS =
-    BV_TERM_ABSTRACTION_BROAD_PREFIX_ROUNDS;
+    BV_TERM_ABSTRACTION_QUALIFIED_ROUNDS;
 
 constexpr bool bvSchemaGroupEnabled(uint32_t mask, BVSchemaGroup group)
 {
@@ -539,6 +545,18 @@ public:
   // expensive dividers abstract while encoding multiplication exactly, or
   // vice versa. Both switches default on, preserving the historical scope.
   bool bv_term_abstraction_divmod = true;
+  // Interface bookkeeping rather than a solver knob: whether a caller named
+  // the DIV/MOD scope itself.
+  //
+  // The older switch above it covered all three nonlinear operations, and
+  // still does when it is the only one given. Once DIV/MOD has been set
+  // explicitly it wins, whichever order the two arrive in -- which is what
+  // the command line does through CLI11's occurrence count, and what the C
+  // interface does through this flag. Without it the C interface would be
+  // last-writer-wins while the command line was not, and the same pair of
+  // settings would mean two different things depending on which one a caller
+  // reached for.
+  bool bv_term_abstraction_divmod_explicit = false;
 
   // Which of the other abstractable kinds --bv-term-abstraction takes.
   //
@@ -585,14 +603,15 @@ public:
   // answers in five hundredths of one. Zero never escalates, which is what
   // this was before.
   //
-  // Under the qualified mask, sixteen and thirty-two tied over 287 natural
-  // division/remainder consumers. The decision changed only when mask and
-  // ceiling were measured as one policy on the KLEE/SymFPU workload: the
-  // broad 16-round profile was 37% faster at the median of three blocked
-  // repetitions than qualified at 32 rounds, without moving the pure-BV
-  // control. Named profiles retain both policies for reproducibility.
+  // Thirty-two, because that is what the inherited mask was measured at:
+  // sixteen and thirty-two tied over 287 natural division/remainder
+  // consumers, and sixteen additionally failed to terminate within the
+  // external guard on one 512-bit case that thirty-two answered. The broad
+  // experimental profiles pair their catalogue with sixteen, and select both
+  // as one atomic decision.
   //
-  // A ceiling and no longer the allowance itself: see the divisor below.
+  // A ceiling and no longer the allowance itself: see the divisor below, and
+  // valueLemmaAllowance() for how the two compose.
   unsigned bv_term_abstraction_rounds = BV_TERM_ABSTRACTION_DEFAULT_ROUNDS;
   // Optionally make that a rate instead: `width / this`, floored at one and
   // capped by the ceiling above. The argument for it is that a blocking
@@ -629,11 +648,11 @@ public:
   // refinement. Zero means no additional cap, preserving every established
   // profile and the default allowance exactly.
   //
-  // This is a measurement control, not a recommended policy. On the broad
-  // 417-query KLEE corpus, 4 and 8 were clear regressions and 16 was slower in
-  // three interleaved runs. Records frequently settled after 16 bad
-  // candidates but before the old allowance, so repetition count by itself
-  // could not identify when paying for an exact divider would help.
+  // This is a measurement control, not a recommended policy. On a broad
+  // 417-query floating-point-heavy population, 4 and 8 were clear regressions
+  // and 16 was slower in three interleaved runs. Records frequently settled
+  // after 16 bad candidates but before the old allowance, so repetition count
+  // by itself could not identify when paying for an exact divider would help.
   unsigned bv_term_abstraction_divmod_value_limit = 0;
   // Escalate an abstracted BVMULT a piece at a time rather than all at once:
   // encode only the bits up to and a little past the lowest one the
@@ -740,10 +759,10 @@ public:
   bool bv_term_abstraction_schemas = true;
 
   // Which schema families the master switch above may offer. The default is
-  // the KLEE-qualified broad-prefix subset; `qualified` preserves the older
-  // conservative policy, `all` reproduces the complete experimental stack,
-  // and an empty mask leaves the operation-specific fallback exactly as the
-  // master switch being off does.
+  // `qualified`, the only mask the corpus qualification justified; the broad
+  // profiles are experiments a caller asks for, `all` reproduces the complete
+  // experimental stack, and an empty mask leaves the operation-specific
+  // fallback exactly as the master switch being off does.
   uint32_t bv_term_abstraction_schema_groups = BV_SCHEMA_GROUP_DEFAULT;
 
   // You can select these with any combination you want of true & false.

@@ -1,6 +1,10 @@
 ; q != -(s & ~x), for q = x udiv s.
-; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv-extra %s 2>&1 | %OutputCheck %s
+;
+; The groups are disjoint: this fact belongs to udiv-observed, so selecting
+; the unranked tail on its own must not reach it.
 ; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv-observed %s 2>&1 | %OutputCheck %s
+; RUN: %solver --incremental=off -s --bv-term-abstraction=1 --bv-term-abstraction-plus=0 --bv-term-abstraction-compare=0 --bv-term-abstraction-schema-groups=udiv-tail %s 2>&1 | %OutputCheck %s --check-prefix=TAILONLY
+; TAILONLY-NOT: quotient-not-negated-and
 ; CHECK: BV abstraction: BVDIV quotient-not-negated-and lemma
 ; CHECK-NEXT: BV abstraction: refined 1 operations
 ; CHECK: ^unsat$

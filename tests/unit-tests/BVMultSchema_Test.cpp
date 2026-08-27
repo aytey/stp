@@ -47,6 +47,7 @@ THE SOFTWARE.
 
 #include <gtest/gtest.h>
 
+#include <cassert>
 #include <memory>
 #include <vector>
 
@@ -54,6 +55,78 @@ using namespace stp;
 
 namespace
 {
+
+// Two independently written oracles for the MUL8 relationship, kept here
+// rather than in the library because nothing in the solver calls them: the
+// live refiner reaches the fact through MulLemma::FactorUnchangedByMaskedShift
+// and the compact implication its bit-blaster emits. Checking that against a
+// second expression of the same relationship is a test's job, and a test is
+// where the second expression belongs.
+//
+// mul8PublishedHolds is the catalogue's original shift spelling;
+// encodeMulZeroProductOddOperand is the compact implication written directly
+// as clauses. Neither shares code with what the refiner installs.
+bool mul8PublishedHolds(const std::vector<bool>& x,
+                        const std::vector<bool>& s,
+                        const std::vector<bool>& t)
+{
+  const unsigned width = (unsigned)x.size();
+  assert(width > 0);
+  assert(s.size() == width);
+  assert(t.size() == width);
+
+  // 1 >> t is one exactly when t is zero, so the shift amount is x & 1 there
+  // and zero everywhere else; s = s << 1 has only the all-zero solution.
+  bool tZero = true;
+  for (bool bit : t)
+    if (bit)
+      tZero = false;
+  if (!tZero || !x[0])
+    return true;
+  for (bool bit : s)
+    if (bit)
+      return false;
+  return true;
+}
+
+unsigned oracleFreshVar(SATSolver& solver)
+{
+  const unsigned v = solver.newVar();
+  solver.setFrozen(v);
+  return v;
+}
+
+// z <-> x | y
+unsigned oracleOr(SATSolver& solver, unsigned x, unsigned y)
+{
+  const unsigned z = oracleFreshVar(solver);
+  SATSolver::vec_literals cl;
+  cl.clear(); cl.push(SATSolver::mkLit(x, true));  cl.push(SATSolver::mkLit(z, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(y, true));  cl.push(SATSolver::mkLit(z, false)); solver.addClause(cl);
+  cl.clear(); cl.push(SATSolver::mkLit(x, false)); cl.push(SATSolver::mkLit(y, false)); cl.push(SATSolver::mkLit(z, true)); solver.addClause(cl);
+  return z;
+}
+
+// oddOperand[0] = 1 and otherOperand != 0 -> result != 0.
+void encodeMulZeroProductOddOperand(SATSolver& solver,
+                                    const std::vector<unsigned>& oddOperand,
+                                    const std::vector<unsigned>& otherOperand,
+                                    const std::vector<unsigned>& result,
+                                    unsigned width)
+{
+  unsigned resultNonzero = result[0];
+  for (unsigned i = 1; i < width; ++i)
+    resultNonzero = oracleOr(solver, resultNonzero, result[i]);
+
+  for (unsigned i = 0; i < width; ++i)
+  {
+    SATSolver::vec_literals cl;
+    cl.push(SATSolver::mkLit(oddOperand[0], true));
+    cl.push(SATSolver::mkLit(otherOperand[i], true));
+    cl.push(SATSolver::mkLit(resultNonzero, false));
+    solver.addClause(cl);
+  }
+}
 
 const unsigned WIDTH = 4;
 const unsigned VALUES = 1u << WIDTH;
@@ -151,10 +224,10 @@ bool chosenSchemaHolds(const MulSchemaChoice& choice, unsigned a, unsigned b,
     case MulSchema::Lemma:
     {
       unsigned count = 0;
-      const MulLemma* lemmas = mulLemmaTable(count);
+      const BVLemmaEntry<MulLemma>* lemmas = mulLemmaTable(count);
       EXPECT_LT(choice.lemmaIndex, count);
       return choice.lemmaIndex < count &&
-             mulLemmaHolds(lemmas[choice.lemmaIndex],
+             mulLemmaHolds(lemmas[choice.lemmaIndex].lemma,
                            bitsOf(ops[choice.operand]), bitsOf(other),
                            bitsOf(t));
     }
@@ -276,7 +349,7 @@ TEST(bv_mult_schema, schema_groups_gate_multiplication_before_selection)
 {
   const BVSchemaGroup groups[] = {
       BVSchemaGroup::BASE, BVSchemaGroup::MUL8, BVSchemaGroup::MUL_REF3,
-      BVSchemaGroup::MUL_EXTRA, BVSchemaGroup::LOW_PREFIX};
+      BVSchemaGroup::MUL_TAIL, BVSchemaGroup::LOW_PREFIX};
 
   for (const BVSchemaGroup group : groups)
   {
@@ -430,8 +503,6 @@ TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
   uint64_t all = MUL_SCHEMA_INSTALLED_ODD |
                  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
                  MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
-                 MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 |
-                 MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1 |
                  MUL_SCHEMA_INSTALLED_LOW_PREFIX;
   unsigned lemmaCount = 0;
   mulLemmaTable(lemmaCount);
@@ -462,9 +533,7 @@ TEST(bv_mult_schema, AResidualLowBitErrorTakesTheExactPrefix)
 {
   uint64_t installed = MUL_SCHEMA_INSTALLED_ODD |
                        MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
-                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
-                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0 |
-                       MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_1;
+                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1;
   unsigned lemmaCount = 0;
   mulLemmaTable(lemmaCount);
   for (unsigned i = 0; i < lemmaCount; ++i)
@@ -514,7 +583,7 @@ TEST(bv_mult_schema, AnOddOperandRefusesAWrongZeroProduct)
   EXPECT_FALSE(chosenSchemaHolds(second, 6, 3, 0));
 
   const MulSchemaChoice firstInstalled =
-      choose(3, 6, 0, MUL_SCHEMA_INSTALLED_ZERO_PRODUCT_ODD_0);
+      choose(3, 6, 0, mulLemmaInstalledBit(0, 0));
   EXPECT_FALSE(firstInstalled.schema == MulSchema::Lemma &&
                firstInstalled.lemmaIndex == 0 &&
                firstInstalled.operand == 0);

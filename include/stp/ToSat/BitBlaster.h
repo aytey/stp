@@ -431,6 +431,7 @@ class BitBlaster
   size_t fpNativeKnownPositiveMulPaths = 0;
   size_t fpNativeKnownNegativeMulPaths = 0;
   UserDefinedFlags* uf;
+  const bool allowAbstraction_ = true;
   NodeFactory* ASTNF;
   Simplifier* simp;
   BBNodeManagerAIG* nf;
@@ -551,10 +552,18 @@ public:
   std::unordered_map<ASTNode, BBNodeVec, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>::iterator
   simplify_during_bb(ASTNode& term, BBNodeSet& support);
 
+  // `allowAbstraction` is false for a blast whose circuit is itself the
+  // answer to an abstraction -- an exact escalation, or a lemma spliced onto
+  // an abstraction's own variables. Such a blast must not abstract anything:
+  // the record it minted would be against an AIG thrown away at the end of
+  // the call, so nothing could ever refine it. This used to be done by
+  // clearing the flags on the shared UserDefinedFlags for the duration, which
+  // meant one blast could see another's policy.
   BitBlaster(BBNodeManagerAIG* bnm, Simplifier* _simp, NodeFactory* astNodeF,
              UserDefinedFlags* _uf,
-             simplifier::constantBitP::ConstantBitPropagation* cb_ = NULL)
-      : uf(_uf)
+             simplifier::constantBitP::ConstantBitPropagation* cb_ = NULL,
+             bool allowAbstraction = true)
+      : uf(_uf), allowAbstraction_(allowAbstraction)
   {
     nf = bnm;
     cb = cb_;
@@ -562,6 +571,16 @@ public:
     BBFalse = nf->getFalse();
     simp = _simp;
     ASTNF = astNodeF;
+  }
+
+  // Whether this blast may replace a term or an equality with free inputs.
+  bool termAbstractionAllowed() const
+  {
+    return allowAbstraction_ && uf->bv_term_abstraction;
+  }
+  bool eqAbstractionAllowed() const
+  {
+    return allowAbstraction_ && uf->bv_eq_abstraction;
   }
 
   void ClearAllTables()

@@ -3,13 +3,22 @@
 # End-to-end contract tests for scripts/benchmark-bv-refinement.sh. These use
 # a fake solver so failures identify harness parsing and identity bugs rather
 # than SAT-search drift.
+#
+# Deliberately not a CTest: it needs bash, timeout, sha256sum and
+# /usr/bin/time, and a check that quietly vanishes where one of those is
+# missing is worse than one someone runs on purpose. Run it by hand after
+# changing the benchmark script:
+#
+#   scripts/check-benchmark-bv-refinement.sh \
+#     scripts/benchmark-bv-refinement.sh \
+#     scripts/benchmark-bv-refinement-fake-solver.sh
 
 set -eu
 set -o pipefail
 export LC_ALL=C
 
-harness=${1:?benchmark harness required}
-solver=${2:?fake solver required}
+harness=${1:-$(dirname "$0")/benchmark-bv-refinement.sh}
+solver=${2:-$(dirname "$0")/benchmark-bv-refinement-fake-solver.sh}
 harness=$(cd "$(dirname "$harness")" && pwd -P)/$(basename "$harness")
 solver=$(cd "$(dirname "$solver")" && pwd -P)/$(basename "$solver")
 [[ -x $harness ]] || { printf 'not executable: %s\n' "$harness" >&2; exit 1; }
@@ -117,8 +126,8 @@ expect_rejected width '--variant does not imply --width' --width 53
 expect_rejected exact-control \
   '--variant cannot be combined with built-in control switches' \
   --no-exact-control
-expect_rejected v4-control \
+expect_rejected uncapped-control \
   '--variant cannot be combined with built-in control switches' \
-  --no-v4-control
+  --no-uncapped-control
 
 printf '%s\n' 'benchmark harness regression passed'
