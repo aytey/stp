@@ -491,6 +491,24 @@ public:
 
 private:
   std::vector<RawBVTermAbstraction> abstractedTerms_;
+  // The Boolean each abstracted equality and comparison was replaced by, so
+  // that a second occurrence of the same predicate reuses it.
+  //
+  // The term families get this from symbolToBBNode, which the node manager
+  // owns and which outlives a piece; a predicate is one Boolean rather than a
+  // vector and has no place there, so it has its own map. It is kept for the
+  // same reason and the reason is the incremental driver: BBForm clears its
+  // memo on every new root, so two conjuncts sharing a predicate ask for it
+  // independently, and minting a second Boolean for the second ask leaves two
+  // records over two inputs that are free to disagree. A predicate has one
+  // truth value wherever it occurs.
+  //
+  // Not cleared by ClearAllTables, which is deliberate and is what the raw
+  // record vectors beside it do: the abstraction state outlives the memos and
+  // is dropped only when the blaster is.
+  std::unordered_map<ASTNode, BBNode, ASTNode::ASTNodeHasher,
+                     ASTNode::ASTNodeEqual>
+      abstractedFormulas_;
   std::vector<BBNode> sideConstraints_;
 
 public:

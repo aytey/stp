@@ -1995,12 +1995,22 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
       if (eqAbstractionAllowed() &&
           left.size() >= uf->bv_abstraction_width)
       {
+        // One Boolean per predicate, not per occurrence: see
+        // abstractedFormulas_ for why the term families' registry does not
+        // serve here and what two independent Booleans for one equality cost.
+        const auto reused = abstractedFormulas_.find(form);
+        if (reused != abstractedFormulas_.end())
+        {
+          result = reused->second;
+          break;
+        }
         uf->coverage.bv_abstracted[UserDefinedFlags::ABSTRACT_EQ]++;
         ensureProxyCIs(nf, form[0], left, sideConstraints_);
         ensureProxyCIs(nf, form[1], right, sideConstraints_);
         BBNodeAIG abstractCI(Aig_ObjCreateCi(nf->aigMgr));
         abstractCI.symbol_index = nf->aigMgr->vCis->nSize - 1;
         abstractedEQs_.push_back({form, abstractCI, form[0], form[1]});
+        abstractedFormulas_[form] = abstractCI;
         result = abstractCI;
       }
       else
@@ -2028,6 +2038,14 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
         const BBNodeVec& right = BBTerm(form[1], support);
         if (left.size() >= uf->bv_abstraction_width)
         {
+          // One Boolean per predicate, as the equality above; the comparison
+          // families were the other half of the same gap.
+          const auto reused = abstractedFormulas_.find(form);
+          if (reused != abstractedFormulas_.end())
+          {
+            result = reused->second;
+            break;
+          }
           uf->coverage.bv_abstracted[UserDefinedFlags::ABSTRACT_COMPARE]++;
           ensureProxyCIs(nf, form[0], left, sideConstraints_);
           ensureProxyCIs(nf, form[1], right, sideConstraints_);
@@ -2043,6 +2061,7 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
           raw.width = left.size();
           raw.condCISymbolIndex = abstractCI.symbol_index;
           abstractedTerms_.push_back(raw);
+          abstractedFormulas_[form] = abstractCI;
           result = abstractCI;
           break;
         }
