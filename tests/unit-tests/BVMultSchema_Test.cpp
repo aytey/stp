@@ -243,6 +243,25 @@ MulSchemaChoice choose(unsigned a, unsigned b, unsigned t,
   return chooseMulSchema(bitsOf(a), bitsOf(b), bitsOf(t), installed);
 }
 
+// Every fact a record may receive a bounded number of times, already in the
+// solver: the parity and trailing-zero schemas, the exact prefix, and both
+// readings of every catalogue row. What is left after this is the two
+// operand-value-guarded shifts, which have one instance per power of two and
+// are therefore offered last.
+uint64_t allBoundedFactsInstalled()
+{
+  uint64_t installed = MUL_SCHEMA_INSTALLED_ODD |
+                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
+                       MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
+                       MUL_SCHEMA_INSTALLED_LOW_PREFIX;
+  unsigned lemmaCount = 0;
+  mulLemmaTable(lemmaCount);
+  for (unsigned i = 0; i < lemmaCount; ++i)
+    for (unsigned operand = 0; operand < 2; ++operand)
+      installed |= mulLemmaInstalledBit(i, operand);
+  return installed;
+}
+
 class BVMultSchemaTest : public ::testing::Test
 {
 protected:
@@ -412,10 +431,20 @@ TEST(bv_mult_schema, WhateverIsChosenTheCandidateContradictsIt)
 
 // A power-of-two operand is the case worth having: the shift is the whole
 // product, so one lemma settles every value of the other operand where a
-// blocking lemma settles one pair. It is therefore always taken when it
-// applies, and the exponent handed back is the one the shift needs.
-TEST(bv_mult_schema, APowerOfTwoOperandIsAlwaysTakenAsTheShift)
+// blocking lemma settles one pair. It is therefore always taken once the
+// facts above it are in, and the exponent handed back is the one the shift
+// needs.
+//
+// "Once the facts above it are in" is the whole of the ordering rule. This
+// family has one instance per power of two an operand can hold, while every
+// fact above it has a fixed number per record, and all of them are spent
+// from one purse -- so offering this one first lets it empty the purse
+// before a once-only fact is ever evaluated. Deferring it costs at most one
+// round per bounded fact and cannot lose it.
+TEST(bv_mult_schema, APowerOfTwoOperandIsTakenAsTheShiftOnceTheBoundedFactsAreIn)
 {
+  const uint64_t bounded = allBoundedFactsInstalled();
+
   for (unsigned k = 0; k < WIDTH; ++k)
   {
     const unsigned pow2 = 1u << k;
@@ -425,14 +454,14 @@ TEST(bv_mult_schema, APowerOfTwoOperandIsAlwaysTakenAsTheShift)
         if (t == truncatedProduct(pow2, other))
           continue;
 
-        const MulSchemaChoice first = choose(pow2, other, t);
+        const MulSchemaChoice first = choose(pow2, other, t, bounded);
         EXPECT_EQ(MulSchema::Pow2, first.schema);
         EXPECT_EQ(0u, first.operand);
         EXPECT_EQ(k, first.shift);
 
         // ... and read over the second operand just the same, unless the
         // first one is a power of two too and gets there first.
-        const MulSchemaChoice second = choose(other, pow2, t);
+        const MulSchemaChoice second = choose(other, pow2, t, bounded);
         EXPECT_EQ(MulSchema::Pow2, second.schema);
         if (second.operand == 1u)
         {
@@ -442,11 +471,44 @@ TEST(bv_mult_schema, APowerOfTwoOperandIsAlwaysTakenAsTheShift)
   }
 }
 
+// The ordering rule itself, on the one triple that shows all three arms.
+//
+// a = 2 is a power of two with one trailing zero, b = 3 is odd, and the
+// candidate product 7 is odd: it contradicts the trailing-zero fact over a,
+// the parity fact, and the shift. The two once-only facts are spent first
+// and the width-scaled one last.
+TEST(bv_mult_schema, ABoundedFactOutranksAWidthScaledShift)
+{
+  // The established schemas alone, so what is pinned is the order between
+  // these families rather than the catalogue's place among them.
+  const uint32_t base = bvSchemaGroupBit(BVSchemaGroup::BASE);
+
+  const MulSchemaChoice first =
+      chooseMulSchema(bitsOf(2), bitsOf(3), bitsOf(7), 0, base);
+  EXPECT_EQ(MulSchema::TrailingZeros, first.schema);
+  EXPECT_EQ(0u, first.operand);
+
+  const MulSchemaChoice second =
+      chooseMulSchema(bitsOf(2), bitsOf(3), bitsOf(7),
+                      MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0, base);
+  EXPECT_EQ(MulSchema::Odd, second.schema);
+
+  const MulSchemaChoice third = chooseMulSchema(
+      bitsOf(2), bitsOf(3), bitsOf(7),
+      MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 | MUL_SCHEMA_INSTALLED_ODD, base);
+  EXPECT_EQ(MulSchema::Pow2, third.schema);
+  EXPECT_EQ(0u, third.operand);
+  EXPECT_EQ(1u, third.shift);
+}
+
 // The negated form, which is the one that needs a negation circuit under it.
 // -2^k excludes the powers of two themselves, so the minimum signed value --
 // which is its own negation -- goes to the schema above rather than this one.
+// Read, like the schema above, with the bounded facts already installed.
 TEST(bv_mult_schema, ANegatedPowerOfTwoOperandBecomesAShiftOfTheNegatedOther)
 {
+  const uint64_t bounded = allBoundedFactsInstalled();
+
   for (unsigned a = 0; a < VALUES; ++a)
   {
     const unsigned neg = negated(a);
@@ -466,7 +528,7 @@ TEST(bv_mult_schema, ANegatedPowerOfTwoOperandBecomesAShiftOfTheNegatedOther)
       {
         if (t == truncatedProduct(a, b))
           continue;
-        const MulSchemaChoice choice = choose(a, b, t);
+        const MulSchemaChoice choice = choose(a, b, t, bounded);
         // A power of two on the other side outranks it; nothing else can.
         if (choice.schema == MulSchema::Pow2)
           continue;
@@ -500,15 +562,7 @@ TEST(bv_mult_schema, TooFewTrailingZerosIsRefusedOverTheOperandThatHasThem)
 // to, and re-emitting them would be paying a round for nothing.
 TEST(bv_mult_schema, AnInstalledFactIsNeverChosenAgain)
 {
-  uint64_t all = MUL_SCHEMA_INSTALLED_ODD |
-                 MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_0 |
-                 MUL_SCHEMA_INSTALLED_TRAILING_ZEROS_1 |
-                 MUL_SCHEMA_INSTALLED_LOW_PREFIX;
-  unsigned lemmaCount = 0;
-  mulLemmaTable(lemmaCount);
-  for (unsigned i = 0; i < lemmaCount; ++i)
-    for (unsigned operand = 0; operand < 2; ++operand)
-      all |= mulLemmaInstalledBit(i, operand);
+  const uint64_t all = allBoundedFactsInstalled();
 
   for (unsigned a = 0; a < VALUES; ++a)
     for (unsigned b = 0; b < VALUES; ++b)

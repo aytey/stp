@@ -894,38 +894,15 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
 {
   const std::vector<bool>* ops[2] = {&aBits, &bBits};
   const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
-  const bool shiftValueLeft = bvSchemaFamilyHasInstance(
-      installedSchemas, BVSchemaFamily::MulShiftValue);
 
-  // a = 2^k -> t = b << k, and the same read the other way round. Where it
-  // applies it says the most of the four: the shift *is* the product for
-  // that operand value, so one lemma settles every b at once where a
-  // blocking lemma settles one pair. It therefore also always fires when it
-  // applies -- this is only ever called over a candidate whose product is
-  // already known wrong, and for a power-of-two operand "wrong" and
-  // "disagrees with the shift" are the same statement.
-  if (base && shiftValueLeft)
-    for (unsigned i = 0; i < 2; ++i)
-    {
-      const int k = powerOfTwoExponent(*ops[i]);
-      if (k >= 0 &&
-          !mulSchemaHolds(MulSchema::Pow2, i, (unsigned)k, aBits, bBits, tBits))
-        return {MulSchema::Pow2, i, (unsigned)k};
-    }
-
-  // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
-  // excluded by name: that covers the minimum signed value, which is its own
-  // negation and which the schema above has already taken.
-  if (base && shiftValueLeft)
-    for (unsigned i = 0; i < 2; ++i)
-    {
-      if (powerOfTwoExponent(*ops[i]) >= 0)
-        continue;
-      const int k = powerOfTwoExponent(negatedValue(*ops[i]));
-      if (k >= 0 && !mulSchemaHolds(MulSchema::NegPow2, i, (unsigned)k, aBits,
-                                    bBits, tBits))
-        return {MulSchema::NegPow2, i, (unsigned)k};
-    }
+  // Bounded families first; the operand-value-guarded shifts last, for the
+  // reason chooseDivSchema sets out at length: everything below except the
+  // final block is offered a number of times that does not depend on the
+  // width, while the two shift schemas have one instance per power of two an
+  // operand can hold, and both draw on the one schemaRounds purse. A
+  // width-scaled family placed first can spend the whole purse before a
+  // once-only fact is ever evaluated, and the chooser is not called again
+  // afterwards.
 
   // The product carries at least as many trailing zeros as either operand.
   // Check operand 1 before operand 0 so schema selection remains
@@ -976,6 +953,39 @@ MulSchemaChoice chooseMulSchema(const std::vector<bool>& aBits,
       (installedSchemas & MUL_SCHEMA_INSTALLED_LOW_PREFIX) == 0 &&
       !mulSchemaHolds(MulSchema::LowPrefix, 0, prefix, aBits, bBits, tBits))
     return {MulSchema::LowPrefix, 0, prefix, 0, BVSchemaGroup::LOW_PREFIX};
+
+  const bool shiftValueLeft = bvSchemaFamilyHasInstance(
+      installedSchemas, BVSchemaFamily::MulShiftValue);
+
+  // a = 2^k -> t = b << k, and the same read the other way round. Where it
+  // applies it says the most of the four: the shift *is* the product for
+  // that operand value, so one lemma settles every b at once where a
+  // blocking lemma settles one pair. It therefore also always fires when it
+  // applies -- this is only ever called over a candidate whose product is
+  // already known wrong, and for a power-of-two operand "wrong" and
+  // "disagrees with the shift" are the same statement.
+  if (base && shiftValueLeft)
+    for (unsigned i = 0; i < 2; ++i)
+    {
+      const int k = powerOfTwoExponent(*ops[i]);
+      if (k >= 0 &&
+          !mulSchemaHolds(MulSchema::Pow2, i, (unsigned)k, aBits, bBits, tBits))
+        return {MulSchema::Pow2, i, (unsigned)k};
+    }
+
+  // a = -2^k -> t = (-b) << k. A power of two is skipped rather than
+  // excluded by name: that covers the minimum signed value, which is its own
+  // negation and which the schema above has already taken.
+  if (base && shiftValueLeft)
+    for (unsigned i = 0; i < 2; ++i)
+    {
+      if (powerOfTwoExponent(*ops[i]) >= 0)
+        continue;
+      const int k = powerOfTwoExponent(negatedValue(*ops[i]));
+      if (k >= 0 && !mulSchemaHolds(MulSchema::NegPow2, i, (unsigned)k, aBits,
+                                    bBits, tBits))
+        return {MulSchema::NegPow2, i, (unsigned)k};
+    }
 
   return MulSchemaChoice();
 }
@@ -1176,36 +1186,38 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
   const bool divisorZero = valueIsZero(bBits);
   const bool base = bvSchemaGroupEnabled(enabledGroups, BVSchemaGroup::BASE);
 
-  // The divisor-guarded facts first, where they apply: each says what the
-  // operation *is* for that divisor, which is more than any bound can say.
-  // Zero is not a power of two, so the two never contend and the order
-  // between them is a formality.
-  const bool divisorValueLeft =
-      bvSchemaFamilyHasInstance(installedSchemas, BVSchemaFamily::DivisorValue);
-  if (base && divisorValueLeft && divisorZero)
-  {
-    const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
-    if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
-                        tBits))
-      return choice;
-  }
-  else if (base && divisorValueLeft)
-  {
-    const int k = powerOfTwoExponent(bBits);
-    if (k >= 0)
-    {
-      const DivSchemaChoice choice{DivSchema::Pow2Divisor, (unsigned)k};
-      if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
-                          tBits))
-        return choice;
-    }
-  }
-
-  // Then the bounds, which name no divisor and so are the ones a candidate
-  // over a wide random divisor actually runs into. Each is offered only
-  // once: they are unconditional, so once installed no candidate can
-  // contradict them again and re-emitting one would spend a round on a
-  // clause the solver already has.
+  // Bounded families first; the divisor-guarded ones last.
+  //
+  // Every fact offered below except the final block is offered a number of
+  // times that does not depend on the width: the bounds and the registry
+  // entries carry an installedSchemas bit apiece, and the two magnitude
+  // families are capped at two instances. The divisor-guarded facts are not
+  // bounded that way -- there is one of them per divisor value a candidate
+  // can hold, so a W-bit divisor has W+1 -- and all of them draw on one
+  // purse, the bv_term_abstraction_rounds ceiling on schemaRounds.
+  //
+  // A width-scaled family offered first can therefore spend the whole purse
+  // before a once-only fact that would have decided the query is ever
+  // evaluated; and once the purse is gone the chooser is not called again,
+  // so that fact is skipped permanently rather than merely deferred.
+  // Measured on a query whose divisor is pinned to a power of two, where the
+  // single clause `b != 0 -> q <=u a` refutes the query outright: with
+  // Pow2Divisor going first it was never offered, and the record spent
+  // thirty-two schema rounds and thirty-two blocking lemmas and then built a
+  // 256-bit divider -- 1,617,712 clauses and 11.75s, against 0.01s for the
+  // same query with a divisor shaped so the family cannot fire.
+  //
+  // Ordering it the other way costs at most one round per once-only fact,
+  // after which the divisor-guarded family has the whole remaining purse and
+  // behaves exactly as it did before. This is the rule DIVISOR_MAGNITUDE and
+  // QUOTIENT_THRESHOLDS were already ordered by below; it simply had not been
+  // applied to the family that sat above them.
+  //
+  // The bounds go first within that: they name no divisor, so they are the
+  // ones a candidate over a wide random divisor actually runs into. Each is
+  // offered only once -- they are unconditional, so once installed no
+  // candidate can contradict them again and re-emitting one would spend a
+  // round on a clause the solver already has.
   if (opKind == BVMOD)
   {
     // r <=u a, with no premise at all -- it holds over a zero divisor too,
@@ -1332,6 +1344,33 @@ DivSchemaChoice chooseDivSchema(Kind opKind, const std::vector<bool>& aBits,
       if (above < width && thresholdMismatch(above))
         return {DivSchema::QuotientPow2Threshold, above, 0,
                 BVSchemaGroup::QUOTIENT_THRESHOLDS};
+    }
+  }
+
+  // ... and the divisor-guarded facts last, where they apply. Each says what
+  // the operation *is* for one divisor value, which is more than any bound
+  // can say -- but there is one of them per value, which is why they are
+  // offered after everything that is offered a bounded number of times. Zero
+  // is not a power of two, so the two never contend and the order between
+  // them is a formality.
+  const bool divisorValueLeft =
+      bvSchemaFamilyHasInstance(installedSchemas, BVSchemaFamily::DivisorValue);
+  if (base && divisorValueLeft && divisorZero)
+  {
+    const DivSchemaChoice choice{DivSchema::DivisorZero, 0};
+    if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
+                        tBits))
+      return choice;
+  }
+  else if (base && divisorValueLeft)
+  {
+    const int k = powerOfTwoExponent(bBits);
+    if (k >= 0)
+    {
+      const DivSchemaChoice choice{DivSchema::Pow2Divisor, (unsigned)k};
+      if (!divSchemaHolds(opKind, choice.schema, choice.shift, aBits, bBits,
+                          tBits))
+        return choice;
     }
   }
 

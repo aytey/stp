@@ -51,6 +51,7 @@ THE SOFTWARE.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -224,6 +225,32 @@ const DivSchema BOUNDS[3] = {DivSchema::RemainderAtMostDividend,
 bool namesADivisor(DivSchema schema)
 {
   return schema == DivSchema::DivisorZero || schema == DivSchema::Pow2Divisor;
+}
+
+// Every fact a record may receive a bounded number of times, already in the
+// solver: the three bounds, both registries, and the two capped magnitude
+// families at their allowance. What is left after this is the pair that
+// names a divisor, which has one instance per divisor value and is therefore
+// offered last.
+uint64_t allBoundedDivFactsInstalled()
+{
+  unsigned divCount = 0;
+  divLemmaTable(divCount);
+  unsigned remCount = 0;
+  remLemmaTable(remCount);
+
+  uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
+                 DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
+                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
+  for (unsigned i = 0; i < std::max(divCount, remCount); ++i)
+    all |= divLemmaInstalledBit(i);
+  for (unsigned i = 0;
+       i < bvSchemaFamilyAllowance(BVSchemaFamily::DivisorMagnitude); ++i)
+    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::DivisorMagnitude);
+  for (unsigned i = 0;
+       i < bvSchemaFamilyAllowance(BVSchemaFamily::QuotientThreshold); ++i)
+    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::QuotientThreshold);
+  return all;
 }
 
 bool boundApplies(Kind opKind, DivSchema schema)
@@ -740,19 +767,7 @@ TEST(BVDivSchemaBounds, every_bound_is_true_of_the_operation)
 // one thing a refinement round is not allowed to do.
 TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
 {
-  unsigned lemmaCount = 0;
-  divLemmaTable(lemmaCount);
-  uint64_t all = DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND |
-                 DIV_SCHEMA_INSTALLED_REMAINDER_BELOW_DIVISOR |
-                 DIV_SCHEMA_INSTALLED_QUOTIENT_AT_MOST_DIVIDEND;
-  for (unsigned i = 0; i < lemmaCount; ++i)
-    all |= divLemmaInstalledBit(i);
-  for (unsigned i = 0;
-       i < bvSchemaFamilyAllowance(BVSchemaFamily::DivisorMagnitude); ++i)
-    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::DivisorMagnitude);
-  for (unsigned i = 0;
-       i < bvSchemaFamilyAllowance(BVSchemaFamily::QuotientThreshold); ++i)
-    all = bvSchemaFamilyRecordInstance(all, BVSchemaFamily::QuotientThreshold);
+  const uint64_t all = allBoundedDivFactsInstalled();
 
   for (Kind opKind : KINDS)
     for (unsigned a = 0; a < VALUES; a++)
@@ -770,15 +785,54 @@ TEST(BVDivSchemaBounds, an_installed_bound_is_not_offered_again)
 }
 
 // A divisor the schemas can name settles the result outright, which is more
-// than any bound can say, so it is preferred where both are available.
-TEST(BVDivSchemaBounds, a_named_divisor_outranks_a_bound)
+// than any bound can say -- but there is one such fact per divisor value the
+// candidate can hold, so the family has W+1 instances where a bound has one,
+// and both are spent from the one schemaRounds purse. Offering the
+// width-scaled family first lets it empty the purse before a once-only fact
+// that would decide the query is ever evaluated, and the chooser is not
+// called again afterwards, so that fact is skipped for good rather than
+// deferred. On a 256-bit query whose divisor is pinned to a power of two,
+// that cost thirty-two schema rounds, thirty-two blocking lemmas and a full
+// divider -- 1.6M clauses -- where `b != 0 -> q <=u a` alone refutes it.
+//
+// So the bounded facts go first and the named divisor last, and the cost of
+// that is one round per bound.
+TEST(BVDivSchemaBounds, bounded_facts_outrank_a_named_divisor)
 {
+  // Only the established schemas, so what is being pinned is the order
+  // between these families and not the catalogue's place in it.
+  const uint32_t base = bvSchemaGroupBit(BVSchemaGroup::BASE);
+
   // BVMOD, dividend 3, divisor 2 = 2^1: the remainder is 1, and a candidate
-  // holding 7 breaks both the power-of-two schema and both bounds.
-  const DivSchemaChoice choice =
-      chooseDivSchema(BVMOD, bitsOf(3), bitsOf(2), bitsOf(7), 0);
-  EXPECT_EQ(choice.schema, DivSchema::Pow2Divisor);
-  EXPECT_EQ(choice.shift, 1u);
+  // holding 7 breaks both bounds and the power-of-two schema.
+  const DivSchemaChoice first =
+      chooseDivSchema(BVMOD, bitsOf(3), bitsOf(2), bitsOf(7), 0, base);
+  EXPECT_EQ(DivSchema::RemainderAtMostDividend, first.schema);
+
+  const DivSchemaChoice second = chooseDivSchema(
+      BVMOD, bitsOf(3), bitsOf(2), bitsOf(7),
+      DIV_SCHEMA_INSTALLED_REMAINDER_AT_MOST_DIVIDEND, base);
+  EXPECT_EQ(DivSchema::RemainderBelowDivisor, second.schema);
+
+  // ... and once every bounded fact is installed the named divisor is still
+  // there, with the exponent it always had. The family is deferred, not lost.
+  const uint64_t bounded = allBoundedDivFactsInstalled();
+  const DivSchemaChoice third = chooseDivSchema(
+      BVMOD, bitsOf(3), bitsOf(2), bitsOf(7), bounded, base);
+  EXPECT_EQ(DivSchema::Pow2Divisor, third.schema);
+  EXPECT_EQ(1u, third.shift);
+
+  // The quotient side is the one that was measured: the same dividend and
+  // divisor with a candidate quotient of 7 breaks `b != 0 -> q <=u a`, and
+  // that is what a round buys now.
+  const DivSchemaChoice quotient =
+      chooseDivSchema(BVDIV, bitsOf(3), bitsOf(2), bitsOf(7), 0, base);
+  EXPECT_EQ(DivSchema::QuotientAtMostDividend, quotient.schema);
+
+  const DivSchemaChoice quotientThen = chooseDivSchema(
+      BVDIV, bitsOf(3), bitsOf(2), bitsOf(7), bounded, base);
+  EXPECT_EQ(DivSchema::Pow2Divisor, quotientThen.schema);
+  EXPECT_EQ(1u, quotientThen.shift);
 }
 
 namespace
