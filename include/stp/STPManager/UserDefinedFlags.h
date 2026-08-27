@@ -27,6 +27,7 @@ THE SOFTWARE.
 #include "stp/Sat/SearchBias.h"
 #include "stp/Util/Attributes.h"
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 
 namespace stp
@@ -156,6 +157,16 @@ DLL_PUBLIC const char* bvSchemaGroupName(BVSchemaGroup group);
 DLL_PUBLIC bool parseBVSchemaGroups(const std::string& text, uint32_t& mask,
                                     std::string& error);
 DLL_PUBLIC std::string formatBVSchemaGroups(uint32_t mask);
+
+struct UserDefinedFlags;
+
+// The abstraction coverage, refinement, escalation and schema-group lines,
+// as `-t` prints them. Shared rather than written inline at the one call
+// site because the numbers are facts about the bit-blasting, and there is
+// more than one point at which a run can stop with the bit-blasting done --
+// see the early exit in ToSATAIG.
+DLL_PUBLIC void printAbstractionCoverage(const UserDefinedFlags& uf,
+                                         std::ostream& out);
 
 // Parse one of the named mask/round pairs. Both outputs are left
 // unchanged on error, so callers cannot accidentally apply half a profile.

@@ -161,7 +161,14 @@ void ToSATAIG::handle_cnf_options(Cnf_Dat_t* cnfData, bool needAbsRef)
   if (bm->UserFlags.exit_after_CNF)
   {
     if (bm->UserFlags.quick_statistics_flag)
+    {
       bm->GetRunTimes()->print();
+      // The coverage numbers are facts about the bit-blasting, which has
+      // finished. Printing them here is what makes "does this query hold
+      // arithmetic wide enough to abstract" answerable without solving --
+      // over a corpus that is the whole cost of the question.
+      printAbstractionCoverage(bm->UserFlags, cerr);
+    }
 
     if (needAbsRef)
     {

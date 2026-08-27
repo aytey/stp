@@ -1136,50 +1136,7 @@ void Cpp_interface::checkSat(const ASTVec& assertionsSMT2,
   if (bm.UserFlags.quick_statistics_flag)
   {
     bm.GetRunTimes()->print();
-    {
-      // What the bit-blaster was handed and what the abstraction took, per
-      // kind, and what the refinement then spent.
-      //
-      // The counters have always been kept; they had no route out but the C
-      // API, so the numbers that say how much wide arithmetic actually
-      // reached the blaster, and how many rounds were spent on it, could not
-      // be read off a run. That made them the numbers a comparison against
-      // another solver most wanted and least had: reading them off the query
-      // text instead over-counts, because it counts occurrences the
-      // simplifier has already retired.
-      const UserDefinedFlags::EncodingCoverage& c = bm.UserFlags.coverage;
-      // In AbstractionKind order; a kind added there needs a name here.
-      static const char* kindNames[] = {"eq",   "compare", "ite",
-                                        "plus", "mult",    "divmod"};
-      static_assert(sizeof(kindNames) / sizeof(kindNames[0]) ==
-                        UserDefinedFlags::EncodingCoverage::KINDS,
-                    "abstraction kind names are out of step with the counters");
-      std::cerr << "Abstraction coverage (candidates -> abstracted):";
-      for (unsigned i = 0; i < UserDefinedFlags::EncodingCoverage::KINDS; i++)
-        std::cerr << " " << kindNames[i] << "=" << c.bv_candidates[i] << "->"
-                  << c.bv_abstracted[i];
-      std::cerr << std::endl
-                << "Abstraction refinement: rounds=" << c.bv_refinement_rounds
-                << " blocking=" << c.bv_blocking_lemmas
-                << " schema=" << c.bv_schema_lemmas
-                << " exact=" << c.bv_exact_escalations
-                << " exact-mult=" << c.bv_exact_escalations_mult
-                << " exact-divmod=" << c.bv_exact_escalations_divmod
-                << std::endl;
-      // Printed whenever anything escalated. Zero escalations means the
-      // three figures are zero too, and a line of zeroes says nothing the
-      // line above has not already said.
-      if (c.bv_exact_escalations != 0)
-        std::cerr << "Abstraction escalation cost: clauses="
-                  << c.bv_exact_clauses << " variables="
-                  << c.bv_exact_variables << " microseconds="
-                  << c.bv_exact_microseconds << std::endl;
-      std::cerr << "Abstraction schemas by group:";
-      for (unsigned i = 0; i < BV_SCHEMA_GROUP_COUNT; ++i)
-        std::cerr << " " << bvSchemaGroupName(static_cast<BVSchemaGroup>(i))
-                  << "=" << c.bv_schema_group_lemmas[i];
-      std::cerr << std::endl;
-    }
+    printAbstractionCoverage(bm.UserFlags, std::cerr);
   }
 
   ToSATBase::PrintOutput(&bm, last_run.result);
