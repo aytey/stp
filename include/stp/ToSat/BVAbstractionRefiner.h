@@ -730,9 +730,19 @@ struct BVTermAbstraction
   // installedSchemas because that field describes one operation, while this
   // fact belongs to two.
   bool divRemFullInstalled = false;
-  // How far up the exact encoding has been pushed, for an escalation that
-  // goes a piece at a time; see bv_term_abstraction_inc_bitblast. Zero
-  // until the first piece, and equal to the width once `defined` is set.
+  // How many of this operation's low bits are encoded exactly. Zero for an
+  // abstraction nothing has pinned exactly yet, the width once `defined` is
+  // set, and something in between for the two ways a record gets there
+  // gradually: an exact low prefix, and a piece-at-a-time escalation (see
+  // bv_term_abstraction_inc_bitblast).
+  //
+  // It used to say it was only the escalation's, and only ever zero or the
+  // width -- which the low-prefix schemas broke by writing three, and which
+  // the comparison, if-then-else and whole-addition definitions broke by
+  // setting `defined` and leaving this at zero. reportRecords publishes it,
+  // so a record could be `defined` and report `exact-bits=0`, or report
+  // `partial` on a three-bit prefix with no piece ever blasted. Every path
+  // that pins bits exactly writes it now, and the field says what it counts.
   unsigned blastedBits = 0;
   // Times value-pair refinement reached its allowance and installed an exact
   // circuit. Normally zero or one; incremental multiplication bit-blasting

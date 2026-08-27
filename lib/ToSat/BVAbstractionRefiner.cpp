@@ -2548,6 +2548,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     }
 
     abs.defined = true;
+    abs.blastedBits = abs.width;
     refined++;
   }
 
@@ -2630,6 +2631,7 @@ unsigned BVAbstractionRefiner::refineTerms(
                        abs.width, lNeg, rNeg);
 
     abs.defined = true;
+    abs.blastedBits = abs.width;
     refined++;
   }
 
@@ -2662,6 +2664,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     }
 
     abs.defined = true;
+    abs.blastedBits = abs.width;
     refined++;
   }
 

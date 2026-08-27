@@ -174,6 +174,88 @@ TEST_F(BVExactBudgetTest, ARefusedEscalationFallsBackOnBlockingForGood)
   EXPECT_FALSE(mgr.soft_timeout_expired);
 }
 
+// Every record that reports `defined` reports the width it was defined at.
+//
+// blastedBits is published by reportRecords as `exact-bits`, and its own
+// comment says it is the width once `defined` is set. Three of the paths that
+// set `defined` -- a comparison, an if-then-else and a whole addition -- left
+// it at zero, so a fully defined record reported `exact-bits=0`; the two exact
+// low-prefix schemas write it without any piece being blasted, so a record
+// with no escalation at all reported `partial`. Both readings are the field
+// doing what it says now.
+//
+// Driven through the refiner rather than by setting the field, because what is
+// under test is that the paths write it, not that a struct can hold a number.
+TEST_F(BVExactBudgetTest, EveryDefinedRecordReportsTheWidthItWasDefinedAt)
+{
+  mgr.UserFlags.aig_node_budget = -1;
+  mgr.UserFlags.bv_term_abstraction_rounds = 1;
+  mgr.UserFlags.bv_term_abstraction_schemas = false;
+
+  NodeFactory* factory = mgr.defaultNodeFactory;
+  const ASTNode a = mgr.CreateSymbol("defw_a", 0, WIDTH);
+  const ASTNode b = mgr.CreateSymbol("defw_b", 0, WIDTH);
+  const ASTNode compare = factory->CreateNode(BVLT, a, b);
+  const ASTNode sum = factory->CreateTerm(BVPLUS, WIDTH, a, b);
+
+  BVAbstractionRefiner refiner(&mgr);
+
+  BVTermAbstraction compareRecord;
+  compareRecord.termNode = compare;
+  compareRecord.opKind = BVLT;
+  compareRecord.operands[0] = a;
+  compareRecord.operands[1] = b;
+  compareRecord.numOperands = 2;
+  compareRecord.width = WIDTH;
+  refiner.terms().push_back(compareRecord);
+
+  BVTermAbstraction sumRecord;
+  sumRecord.termNode = sum;
+  sumRecord.opKind = BVPLUS;
+  sumRecord.operands[0] = a;
+  sumRecord.operands[1] = b;
+  sumRecord.numOperands = 2;
+  sumRecord.width = WIDTH;
+  refiner.terms().push_back(sumRecord);
+
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  const std::vector<unsigned> aVars = makeVars(*solver);
+  const std::vector<unsigned> bVars = makeVars(*solver);
+  const std::vector<unsigned> sumVars = makeVars(*solver);
+  const unsigned condVar = solver->newVar();
+  solver->setFrozen(condVar);
+  refiner.terms()[0].condSATVar = condVar;
+
+  ToSATBase::ASTNodeToSATVar nodeToVars;
+  nodeToVars[a] = aVars;
+  nodeToVars[b] = bVars;
+  nodeToVars[sum] = sumVars;
+
+  // a = 3 and b = 5, so the comparison is true and the sum is 8. The
+  // abstraction is told neither: the condition and the sum bits are pinned to
+  // the wrong answers, so both records are refined on the first round and
+  // both are defined by it.
+  pin(*solver, aVars, 3);
+  pin(*solver, bVars, 5);
+  pin(*solver, sumVars, 0);
+  SATSolver::vec_literals unit;
+  unit.push(SATSolver::mkLit(condVar, true));
+  solver->addClause(unit);
+
+  bool timedOut = false;
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+
+  EXPECT_EQ(2u, refiner.refine(*solver, nodeToVars));
+  for (const BVTermAbstraction& record : refiner.terms())
+  {
+    EXPECT_TRUE(record.defined) << "kind=" << _kind_names[record.opKind];
+    EXPECT_EQ(WIDTH, record.blastedBits)
+        << "kind=" << _kind_names[record.opKind];
+  }
+}
+
 // The same session with the budget lifted: the record escalates exactly as it
 // always has. Without this the test above would pass just as well against a
 // setup where the escalation is never reached at all, or where the operands
