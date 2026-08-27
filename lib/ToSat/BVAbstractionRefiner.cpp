@@ -49,6 +49,40 @@ static void countSchemaLemma(UserDefinedFlags& flags, BVSchemaGroup group)
 // without reading a single bit. A round that refined an equality stops
 // there rather than going on to the terms -- the term scan reads the same
 // model, and what it would find in it has already been ruled out.
+// Run a splice that builds a circuit, and say whether the AIG node budget let
+// it through.
+//
+// The budget is a memory guard, and the graceful answer to it refusing a
+// circuit is to spend a cheaper kind of round instead: a value-blocking lemma
+// needs no circuit at all, and the enumeration it belongs to is bounded by the
+// operand pairs the search can propose. What must not happen is the refusal
+// being forgotten -- the same circuit was attempted again on the next round
+// and on every round after it, and the exhausted budget travelled out as
+// `unknown`, so one refused escalation pinned every remaining query in the
+// session. So a caller records that this fact, or this record's exact
+// encoding, is not to be offered again.
+//
+// Nothing partial reaches the solver: the budget is checked as AIG nodes are
+// created, which is before any CNF is derived and before a single clause is
+// submitted.
+template <typename Splice>
+static bool spliceWithinBudget(STPMgr* bm, const char* what, Splice splice)
+{
+  try
+  {
+    splice();
+    return true;
+  }
+  catch (const AIGBudgetExhausted& e)
+  {
+    if (bm->UserFlags.stats_flag)
+      std::cerr << "BV abstraction: the AIG node budget refused " << what
+                << " at " << e.nodeCount << " nodes; refining without it"
+                << std::endl;
+    return false;
+  }
+}
+
 // Whether a record the caller has said nothing about, or has said is
 // reachable, must be checked. An index past the end of the list is in scope:
 // a caller with nothing to say leaves the list empty, and a record nothing
@@ -75,6 +109,13 @@ unsigned BVAbstractionRefiner::refine(
     }
     catch (const AIGBudgetExhausted& e)
     {
+      // The backstop. Each circuit-building splice below handles its own
+      // refusal, records that the thing refused is not to be offered again,
+      // and carries on with something cheaper -- so what reaches here is the
+      // one that has nothing cheaper to fall back on inside the round, the
+      // paired DIV/REM identity, which has already marked itself before
+      // trying. Answering `unknown` for this query is right; being asked the
+      // same question again on the next one is what was wrong.
       if (bm->UserFlags.stats_flag)
         std::cerr << "AIG node budget exhausted during exact BV refinement at "
                   << e.nodeCount << " nodes" << std::endl;
@@ -2425,6 +2466,15 @@ unsigned BVAbstractionRefiner::refineTerms(
     const uint32_t pairVariablesBefore = solver.nVars();
     const std::chrono::steady_clock::time_point pairStarted =
         std::chrono::steady_clock::now();
+    // Marked before the splice, not after. If the AIG budget refuses the
+    // full-width multiplier this builds, the round has nothing cheaper to
+    // spend on these two records -- the scan skipped them both -- so the
+    // refusal leaves through refine()'s handler and the query answers
+    // unknown, as it always has. What must not survive is the *retry*: with
+    // the flag already set the pair is not offered again, so the next query
+    // in the session is not pinned to the same refusal.
+    div.divRemFullInstalled = true;
+    rem.divRemFullInstalled = true;
     exact_.encodeDivRemIdentity(solver, inc.product, div.width, dividendVars,
                                 divisorVars, quotientVars, remainderVars);
     UserDefinedFlags::EncodingCoverage& pairCoverage = bm->UserFlags.coverage;
@@ -2436,8 +2486,6 @@ unsigned BVAbstractionRefiner::refineTerms(
             std::chrono::steady_clock::now() - pairStarted)
             .count());
 
-    div.divRemFullInstalled = true;
-    rem.divRemFullInstalled = true;
     div.schemaRounds++;
     rem.schemaRounds++;
     div.schemasThisQuery++;
@@ -2515,20 +2563,31 @@ unsigned BVAbstractionRefiner::refineTerms(
         }
 
       const unsigned chosen = inc.schema.operand;
-      exact_.encodeAddLemma(
-          solver, addLemmaAt(inc.schema.lemmaIndex).lemma, abs.width,
-          *effectiveVars[chosen], *effectiveVars[1 - chosen], resultVars);
+      const bool spliced =
+          spliceWithinBudget(bm, "an addition fact", [&] {
+            exact_.encodeAddLemma(solver,
+                                  addLemmaAt(inc.schema.lemmaIndex).lemma,
+                                  abs.width, *effectiveVars[chosen],
+                                  *effectiveVars[1 - chosen], resultVars);
+          });
+      // The bit goes on either way: it means "do not offer this again", and
+      // a fact the AIG budget refused is one there is no point offering
+      // again. Refused, the addition falls through to being defined outright
+      // below, which is written a clause at a time and needs no circuit.
       abs.installedSchemas |=
           addLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
-      abs.schemaRounds++;
-      abs.schemasThisQuery++;
-      countSchemaLemma(bm->UserFlags, inc.schema.group);
-      if (bm->UserFlags.stats_flag)
-        std::cerr << "BV abstraction: BVPLUS "
-                  << addLemmaAt(inc.schema.lemmaIndex).name
-                  << " lemma over operand " << chosen << std::endl;
-      refined++;
-      continue;
+      if (spliced)
+      {
+        abs.schemaRounds++;
+        abs.schemasThisQuery++;
+        countSchemaLemma(bm->UserFlags, inc.schema.group);
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "BV abstraction: BVPLUS "
+                    << addLemmaAt(inc.schema.lemmaIndex).name
+                    << " lemma over operand " << chosen << std::endl;
+        refined++;
+        continue;
+      }
     }
 
     // No schema remained: define the whole addition. The same encoder is
@@ -2590,6 +2649,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     // abstraction's own result bits -- so none of it is retractable and
     // none of it needs to be. What the candidate chose is only *which*
     // theorem to spend a round on.
+    bool schemaSpliced = true;
     if (inc.divSchema.schema != DivSchema::None)
     {
       switch (inc.divSchema.schema)
@@ -2640,17 +2700,24 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
 
         case DivSchema::Lemma:
-          if (abs.opKind == BVDIV)
-            exact_.encodeDivLemma(
-                solver, divLemmaAt(inc.divSchema.lemmaIndex).lemma, W, aVars, bVars,
-                resultVars);
-          else
-          {
-            assert(abs.opKind == BVMOD);
-            exact_.encodeRemLemma(
-                solver, remLemmaAt(inc.divSchema.lemmaIndex).lemma, W, aVars, bVars,
-                resultVars);
-          }
+          // The bit goes on whether or not the circuit fitted: it means
+          // "do not offer this again", and a fact the AIG budget refused is
+          // one there is no point offering again. Refused, this record falls
+          // through to the value-blocking lemma below.
+          schemaSpliced = spliceWithinBudget(
+              bm, "a division fact", [&] {
+                if (abs.opKind == BVDIV)
+                  exact_.encodeDivLemma(
+                      solver, divLemmaAt(inc.divSchema.lemmaIndex).lemma, W,
+                      aVars, bVars, resultVars);
+                else
+                {
+                  assert(abs.opKind == BVMOD);
+                  exact_.encodeRemLemma(
+                      solver, remLemmaAt(inc.divSchema.lemmaIndex).lemma, W,
+                      aVars, bVars, resultVars);
+                }
+              });
           abs.installedSchemas |=
               divLemmaInstalledBit(inc.divSchema.lemmaIndex);
           break;
@@ -2659,19 +2726,24 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
       }
 
-      abs.schemaRounds++;
-      abs.schemasThisQuery++;
-      countSchemaLemma(bm->UserFlags, inc.divSchema.group);
-      if (bm->UserFlags.stats_flag)
-        std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
-                  << (inc.divSchema.schema == DivSchema::Lemma
-                          ? (abs.opKind == BVDIV
-                                 ? divLemmaAt(inc.divSchema.lemmaIndex).name
-                                 : remLemmaAt(inc.divSchema.lemmaIndex).name)
-                          : divSchemaName(inc.divSchema.schema))
-                  << " lemma" << std::endl;
-      refined++;
-      continue;
+      // A fact the budget refused bought nothing, so no round is spent on
+      // it and the record falls through to the value-blocking lemma below.
+      if (schemaSpliced)
+      {
+        abs.schemaRounds++;
+        abs.schemasThisQuery++;
+        countSchemaLemma(bm->UserFlags, inc.divSchema.group);
+        if (bm->UserFlags.stats_flag)
+          std::cerr << "BV abstraction: " << _kind_names[abs.opKind] << " "
+                    << (inc.divSchema.schema == DivSchema::Lemma
+                            ? (abs.opKind == BVDIV
+                                   ? divLemmaAt(inc.divSchema.lemmaIndex).name
+                                   : remLemmaAt(inc.divSchema.lemmaIndex).name)
+                            : divSchemaName(inc.divSchema.schema))
+                    << " lemma" << std::endl;
+        refined++;
+        continue;
+      }
     }
 
     if (inc.schema.schema != MulSchema::None)
@@ -2730,9 +2802,13 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
 
         case MulSchema::Lemma:
-          exact_.encodeMulLemma(
-              solver, mulLemmaAt(inc.schema.lemmaIndex).lemma, W, *opVars[chosen],
-              *opVars[1 - chosen], resultVars);
+          schemaSpliced = spliceWithinBudget(
+              bm, "a multiplication fact", [&] {
+                exact_.encodeMulLemma(solver,
+                                      mulLemmaAt(inc.schema.lemmaIndex).lemma,
+                                      W, *opVars[chosen], *opVars[1 - chosen],
+                                      resultVars);
+              });
           abs.installedSchemas |=
               mulLemmaInstalledBit(inc.schema.lemmaIndex, chosen);
           break;
@@ -2741,24 +2817,30 @@ unsigned BVAbstractionRefiner::refineTerms(
           break;
       }
 
-      abs.schemaRounds++;
-      abs.schemasThisQuery++;
-      countSchemaLemma(bm->UserFlags, inc.schema.group);
-      if (bm->UserFlags.stats_flag)
+      // As above: a fact the budget refused bought nothing, so the record
+      // falls through to the value-blocking lemma rather than spending a
+      // round on it.
+      if (schemaSpliced)
       {
-        std::cerr << "BV abstraction: BVMULT "
-                  << (inc.schema.schema == MulSchema::Lemma
-                          ? mulLemmaAt(inc.schema.lemmaIndex).name
-                          : mulSchemaName(inc.schema.schema))
-                  << " lemma";
-        if (inc.schema.schema == MulSchema::LowPrefix)
-          std::cerr << " over " << inc.schema.shift << " bits";
-        else
-          std::cerr << " over operand " << chosen;
-        std::cerr << std::endl;
+        abs.schemaRounds++;
+        abs.schemasThisQuery++;
+        countSchemaLemma(bm->UserFlags, inc.schema.group);
+        if (bm->UserFlags.stats_flag)
+        {
+          std::cerr << "BV abstraction: BVMULT "
+                    << (inc.schema.schema == MulSchema::Lemma
+                            ? mulLemmaAt(inc.schema.lemmaIndex).name
+                            : mulSchemaName(inc.schema.schema))
+                    << " lemma";
+          if (inc.schema.schema == MulSchema::LowPrefix)
+            std::cerr << " over " << inc.schema.shift << " bits";
+          else
+            std::cerr << " over operand " << chosen;
+          std::cerr << std::endl;
+        }
+        refined++;
+        continue;
       }
-      refined++;
-      continue;
     }
 
     // Once this abstraction has been blocked its allowance of times, stop
@@ -2777,7 +2859,7 @@ unsigned BVAbstractionRefiner::refineTerms(
     // today are two that can stop agreeing, and these two already had: the
     // written-out one and BBDivMod disagreed about a zero divisor.
     const unsigned limit = valueLemmaAllowance(bm->UserFlags, W, abs.opKind);
-    if (limit != 0 && abs.blockedThisQuery >= limit)
+    if (limit != 0 && abs.blockedThisQuery >= limit && !abs.exactRefused)
     {
       // All of it, unless the piece-at-a-time escalation is on and this is
       // a multiplication. A piece reaches past the lowest bit the candidate
@@ -2817,8 +2899,21 @@ unsigned BVAbstractionRefiner::refineTerms(
       // fully symbolic one. A narrowed piece reads the same vectors: it is
       // the low `upto` bits of the same operands, and the encoder only looks
       // that far.
-      exact_.encode(solver, encodeAs, upto, aVars, bVars, resultVars,
-                    abs.operandKnownBits[0], abs.operandKnownBits[1]);
+      const bool encoded = spliceWithinBudget(
+          bm, "this operation's exact encoding", [&] {
+            exact_.encode(solver, encodeAs, upto, aVars, bVars, resultVars,
+                          abs.operandKnownBits[0], abs.operandKnownBits[1]);
+          });
+      // A budget that will not build this circuit now will not build it on a
+      // later round either, so the record stops asking and goes back to
+      // ruling out operand pairs one at a time -- which needs no circuit and
+      // is bounded by the pairs the search can propose.
+      if (!encoded)
+      {
+        abs.exactRefused = true;
+      }
+      else
+      {
       const uint64_t exactMicros = static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - exactStarted)
@@ -2857,6 +2952,7 @@ unsigned BVAbstractionRefiner::refineTerms(
       }
       refined++;
       continue;
+      }
     }
     abs.blockedRounds++;
     abs.blockedThisQuery++;

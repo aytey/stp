@@ -1,0 +1,228 @@
+/***********
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+**********************/
+
+// What the refinement does when the AIG node budget will not build the
+// circuit it wants.
+//
+// --aig-node-budget is a memory guard, and the exact encoding an abstraction
+// escalates to is the largest circuit the refinement ever builds, so it is the
+// one the guard refuses first. Refusing it is fine. Forgetting the refusal is
+// not: the record went on choosing the same escalation on the next round, and
+// the next, and the exhausted budget travelled out of the refinement as an
+// unknown verdict -- so one refused circuit pinned every remaining query in
+// the session to `unknown`, on a query the value-pair enumeration underneath
+// could have decided on its own.
+//
+// So the record records the refusal and goes back to ruling out operand pairs
+// one at a time, which needs no circuit at all.
+#include "stp/ToSat/BVAbstractionRefiner.h"
+
+#include "stp/AST/AST.h"
+#include "stp/STPManager/STPManager.h"
+#include "stp/Sat/SATSolverFactory.h"
+
+#include <gtest/gtest.h>
+
+#include <memory>
+#include <vector>
+
+using namespace stp;
+
+namespace
+{
+
+const unsigned WIDTH = 32;
+
+// Small enough that a 32-bit multiplier does not fit, large enough that
+// nothing else here needs one. The refusal is what is being tested, so the
+// number only has to be on the refusing side of that circuit.
+const int64_t REFUSING_BUDGET = 200;
+
+class BVExactBudgetTest : public ::testing::Test
+{
+protected:
+  STPMgr mgr;
+
+  std::unique_ptr<SATSolver> makeSolver()
+  {
+    return std::unique_ptr<SATSolver>(createSATSolver(mgr.UserFlags));
+  }
+
+  std::vector<unsigned> makeVars(SATSolver& solver)
+  {
+    std::vector<unsigned> vars(WIDTH);
+    for (unsigned i = 0; i < WIDTH; ++i)
+    {
+      vars[i] = solver.newVar();
+      solver.setFrozen(vars[i]);
+    }
+    return vars;
+  }
+
+  void pin(SATSolver& solver, const std::vector<unsigned>& vars,
+           uint64_t value)
+  {
+    SATSolver::vec_literals unit;
+    for (unsigned i = 0; i < WIDTH; ++i)
+    {
+      unit.clear();
+      unit.push(SATSolver::mkLit(vars[i], ((value >> i) & 1u) == 0));
+      solver.addClause(unit);
+    }
+  }
+};
+
+} // namespace
+
+// One record, one allowance, and a budget that will not build its circuit.
+//
+// The first round spends the allowance on a blocking lemma. The second wants
+// to escalate, is refused, and must not leave the refinement empty-handed:
+// it marks the record and rules out the candidate pair instead. Every round
+// after it goes straight to a blocking lemma without asking again, and the
+// exhausted-budget flag -- which is what carries an unknown verdict out of a
+// solve -- is never raised.
+TEST_F(BVExactBudgetTest, ARefusedEscalationFallsBackOnBlockingForGood)
+{
+  mgr.UserFlags.aig_node_budget = REFUSING_BUDGET;
+  mgr.UserFlags.bv_term_abstraction_rounds = 1;
+  mgr.UserFlags.bv_term_abstraction_schemas = false;
+
+  NodeFactory* factory = mgr.defaultNodeFactory;
+  const ASTNode a = mgr.CreateSymbol("budget_a", 0, WIDTH);
+  const ASTNode b = mgr.CreateSymbol("budget_b", 0, WIDTH);
+  const ASTNode product = factory->CreateTerm(BVMULT, WIDTH, a, b);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction record;
+  record.termNode = product;
+  record.opKind = BVMULT;
+  record.operands[0] = a;
+  record.operands[1] = b;
+  record.numOperands = 2;
+  record.width = WIDTH;
+  refiner.terms().push_back(record);
+
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  const std::vector<unsigned> aVars = makeVars(*solver);
+  const std::vector<unsigned> bVars = makeVars(*solver);
+  const std::vector<unsigned> resultVars = makeVars(*solver);
+
+  ToSATBase::ASTNodeToSATVar nodeToVars;
+  nodeToVars[a] = aVars;
+  nodeToVars[b] = bVars;
+  nodeToVars[product] = resultVars;
+
+  // One operand pinned to 3 and the product pinned to 251, which is not a
+  // multiple of 3: no value of the free operand makes the abstraction
+  // faithful, so every round has a candidate to reject and each blocking
+  // lemma rules out one more of them. That is what keeps the loop going for
+  // as many rounds as the test asks for.
+  pin(*solver, aVars, 3);
+  pin(*solver, resultVars, 251);
+
+  bool timedOut = false;
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+
+  // Round one: the allowance is untouched, so a blocking lemma.
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+  EXPECT_EQ(1u, refiner.terms()[0].blockedRounds);
+  EXPECT_FALSE(refiner.terms()[0].exactRefused);
+  EXPECT_EQ(0u, refiner.terms()[0].exactEscalations);
+
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+
+  // Round two: the allowance is spent, so the escalation is chosen and
+  // refused. The round still rules the candidate out.
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+  EXPECT_TRUE(refiner.terms()[0].exactRefused);
+  EXPECT_EQ(0u, refiner.terms()[0].exactEscalations);
+  EXPECT_FALSE(refiner.terms()[0].defined);
+  EXPECT_EQ(2u, refiner.terms()[0].blockedRounds);
+
+  // ... and it is not asked again. Two more rounds, two more blocking
+  // lemmas, and nothing anywhere raised the flag that turns a solve's
+  // verdict into `unknown`.
+  for (unsigned round = 0; round < 2; ++round)
+  {
+    ASSERT_TRUE(solver->solve(timedOut));
+    ASSERT_FALSE(timedOut);
+    EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+  }
+  EXPECT_EQ(4u, refiner.terms()[0].blockedRounds);
+  EXPECT_EQ(0u, refiner.terms()[0].exactEscalations);
+  EXPECT_FALSE(mgr.soft_timeout_expired);
+}
+
+// The same session with the budget lifted: the record escalates exactly as it
+// always has. Without this the test above would pass just as well against a
+// setup where the escalation is never reached at all, or where the operands
+// are such that the second round finds nothing to refine.
+TEST_F(BVExactBudgetTest, AnAffordableEscalationStillHappens)
+{
+  mgr.UserFlags.aig_node_budget = -1;
+  mgr.UserFlags.bv_term_abstraction_rounds = 1;
+  mgr.UserFlags.bv_term_abstraction_schemas = false;
+
+  NodeFactory* factory = mgr.defaultNodeFactory;
+  const ASTNode a = mgr.CreateSymbol("afford_a", 0, WIDTH);
+  const ASTNode b = mgr.CreateSymbol("afford_b", 0, WIDTH);
+  const ASTNode product = factory->CreateTerm(BVMULT, WIDTH, a, b);
+
+  BVAbstractionRefiner refiner(&mgr);
+  BVTermAbstraction record;
+  record.termNode = product;
+  record.opKind = BVMULT;
+  record.operands[0] = a;
+  record.operands[1] = b;
+  record.numOperands = 2;
+  record.width = WIDTH;
+  refiner.terms().push_back(record);
+
+  std::unique_ptr<SATSolver> solver = makeSolver();
+  ASSERT_TRUE(solver != NULL) << "no SAT backend was compiled in";
+  const std::vector<unsigned> aVars = makeVars(*solver);
+  const std::vector<unsigned> bVars = makeVars(*solver);
+  const std::vector<unsigned> resultVars = makeVars(*solver);
+
+  ToSATBase::ASTNodeToSATVar nodeToVars;
+  nodeToVars[a] = aVars;
+  nodeToVars[b] = bVars;
+  nodeToVars[product] = resultVars;
+
+  pin(*solver, aVars, 3);
+  pin(*solver, resultVars, 251);
+
+  bool timedOut = false;
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+
+  ASSERT_TRUE(solver->solve(timedOut));
+  ASSERT_FALSE(timedOut);
+  EXPECT_EQ(1u, refiner.refine(*solver, nodeToVars));
+
+  EXPECT_FALSE(refiner.terms()[0].exactRefused);
+  EXPECT_EQ(1u, refiner.terms()[0].exactEscalations);
+  EXPECT_TRUE(refiner.terms()[0].defined);
+}

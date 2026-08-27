@@ -695,8 +695,20 @@ struct BVTermAbstraction
   // bounds that is its installed bit and not the purse.
   unsigned blockedThisQuery = 0;
   unsigned schemasThisQuery = 0;
-  // Which of the unconditional schemas are already in the solver.
+  // Which of the unconditional schemas will not be offered again: the ones
+  // already in the solver, and the ones the AIG node budget refused to build,
+  // which there is no point offering a second time either.
   uint64_t installedSchemas = 0;
+  // Set once the AIG node budget has refused this record's exact encoding.
+  //
+  // The budget is a memory guard, and a circuit it will not build this round
+  // is one it will not build on any later round either -- so without this the
+  // refinement offered the same escalation every round for the rest of the
+  // session, and every query after the first pinned itself to `unknown` on it.
+  // Refused, the record falls back on value-pair blocking, which needs no
+  // circuit at all; that is bounded by the operand pairs the search can
+  // propose, so the loop still terminates.
+  bool exactRefused = false;
   // Set on both records once this BVDIV/BVMOD pair has received its shared
   // full-width modular recomposition identity. It cannot use
   // installedSchemas because that field describes one operation, while this
