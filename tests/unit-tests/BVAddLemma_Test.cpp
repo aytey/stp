@@ -19,8 +19,10 @@ THE SOFTWARE.
 **********************/
 
 // Exhaustive checks for the complete addition abstraction registry. Addition
-// abstraction is opt-in, just as in Bitwuzla; these tests establish soundness
-// independently of whether the experiment improves a workload.
+// abstraction is opt-in, and these tests establish soundness independently of
+// whether the experiment improves a workload -- an unsound fact would be
+// wrong wherever it fired, and a fact nobody enables is still one somebody
+// can enable.
 #include "stp/ToSat/BVAbstractionRefiner.h"
 #include "stp/ToSat/BVExactEncoder.h"
 

@@ -53,17 +53,19 @@ namespace stp
 // is an inequality or an implication over the dividend, the divisor and the
 // quotient, rather than a value for the quotient.
 //
-// They are Bitwuzla's, taken from its abstraction module and reimplemented
-// here over the bit-blaster rather than copied. Both projects are MIT.
+// They are not STP's. They come from:
 //
 //   Aina Niemetz, Mathias Preiner, Yoni Zohar.
 //   Scalable Bit-Blasting with Abstractions.
 //   CAV 2024, LNCS 14681, pp. 178-200. doi:10.1007/978-3-031-65627-9_9
 //
+// and are reimplemented here against STP's own bit-blaster rather than
+// copied from anywhere.
+//
 // The four with no premise are not facts anyone would derive by thinking
 // about division -- `x >=u -((-s) & (-t))` is the output of the syntax-guided
-// synthesis that paper describes -- which is the argument for porting them
-// rather than inventing a set.
+// synthesis that paper describes -- which is the argument for taking a
+// published set rather than inventing one.
 //
 // The table in the refiner keeps the measured entries in firing order and the
 // unranked tail after them. Completeness is useful for controlled ablations,
