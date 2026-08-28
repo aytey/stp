@@ -1033,11 +1033,62 @@ TEST_F(BVEQAbstractionTest, OnePassCanInstallBothKindsOfMultiplicationLemma)
   EXPECT_TRUE(solver.someClauseBlocksModel());
 }
 
-// maxPrecision's auxiliary SAT queries must not themselves be abstracted:
-// a refinement round answers SOLVER_UNDECIDED, which its result handling
-// reads as "error from solver" and aborts on. The entry points clear the
-// two flags for their own scope and restore them on the way out, so a
-// query narrow enough to abstract at this floor still runs exact inside.
+// A lowering told not to abstract does not, whatever the session's flags say.
+//
+// This is what maxPrecision needs and what it used to get by clearing the
+// manager's two feature flags and putting them back: a manager-wide write for
+// a decision belonging to one encoding. BitBlaster has taken the answer as a
+// constructor argument all along; ToSATAIG did not, which is why the only
+// in-tree caller that needs it had to reach around it.
+TEST_F(BVEQAbstractionTest, ALoweringToldNotToAbstractDoesNot)
+{
+  mgr.UserFlags.bv_eq_abstraction = true;
+  mgr.UserFlags.bv_term_abstraction = true;
+  mgr.UserFlags.bv_abstraction_width = 64;
+
+  ASTNode a = makeSymbol("na_a", 128);
+  ASTNode b = makeSymbol("na_b", 128);
+  ASTNode product = factory->CreateTerm(BVMULT, 128, a, b);
+  ASTNode query = factory->CreateNode(EQ, product, a);
+
+  {
+    stp::SubstitutionMap sm(&mgr);
+    Simplifier simp(&mgr, &sm);
+    ArrayTransformer at(&mgr, &simp);
+    ToSATAIG tosat(&mgr, &at, /*allowAbstraction=*/false);
+
+    RecordingSolver solver;
+    EXPECT_TRUE(tosat.CallSAT(solver, query, true));
+    EXPECT_FALSE(tosat.hasBVTermAbstractions());
+    EXPECT_FALSE(tosat.hasBVEQAbstractions());
+  }
+
+  // The flags are still what the session set, because nothing wrote them --
+  // which is the half the old mechanism could only promise on the paths that
+  // reached its restore.
+  EXPECT_TRUE(mgr.UserFlags.bv_eq_abstraction);
+  EXPECT_TRUE(mgr.UserFlags.bv_term_abstraction);
+
+  // ... and the same query through a lowering that was not told anything
+  // abstracts, so the first half is the argument doing it and not the query
+  // being ineligible.
+  {
+    stp::SubstitutionMap sm(&mgr);
+    Simplifier simp(&mgr, &sm);
+    ArrayTransformer at(&mgr, &simp);
+    ToSATAIG tosat(&mgr, &at);
+
+    RecordingSolver solver;
+    EXPECT_TRUE(tosat.CallSAT(solver, query, true));
+    EXPECT_TRUE(tosat.hasBVTermAbstractions());
+  }
+}
+
+// maxPrecision's auxiliary SAT queries must not themselves be abstracted: a
+// refinement round answers SOLVER_UNDECIDED, which its result handling reads
+// as "error from solver" and aborts on. It gets that from the constructor
+// argument above now, so a query narrow enough to abstract at this floor
+// still runs exact inside and the session's flags are never written.
 TEST_F(BVEQAbstractionTest, MaxPrecisionRunsExactUnderAbstractionFlags)
 {
   mgr.UserFlags.bv_eq_abstraction = true;

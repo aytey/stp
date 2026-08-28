@@ -85,6 +85,8 @@ private:
   // refines them. Both live here for the batch pipeline's lifetime of one
   // query; the incremental driver keeps its own across a session.
   BVAbstractionRefiner abstraction_;
+  // Whether this lowering may abstract at all; see the constructors.
+  bool allowAbstraction_ = true;
 
   void init()
   {
@@ -106,8 +108,22 @@ public:
 
   bool cbIsDestructed() { return cb == NULL; }
 
-  ToSATAIG(STPMgr* bm, ArrayTransformer* at)
-      : ToSATBase(bm), toCNF(bm->UserFlags), abstraction_(bm)
+  // `allowAbstraction` is false for a lowering whose query must be encoded
+  // exactly whatever the session's flags say -- the same argument BitBlaster
+  // takes, reaching it from here so that a caller does not have to clear the
+  // manager's flags and put them back.
+  //
+  // maxPrecision is the one such caller: it drives this class over auxiliary
+  // queries a few bits wide, which gain nothing from abstracting, and its
+  // result handling reads the SOLVER_UNDECIDED a refinement round returns as
+  // an error from the backend. It used to save the two feature flags, clear
+  // them and restore them around its loop, which is a manager-wide write for
+  // a decision belonging to one encoding, invisible to anything else sharing
+  // the manager, and undone only on the paths that reach the bottom of the
+  // function.
+  ToSATAIG(STPMgr* bm, ArrayTransformer* at, bool allowAbstraction = true)
+      : ToSATBase(bm), toCNF(bm->UserFlags), abstraction_(bm),
+        allowAbstraction_(allowAbstraction)
   {
     cb = NULL;
     init();
@@ -115,8 +131,9 @@ public:
   }
 
   ToSATAIG(STPMgr* bm, simplifier::constantBitP::ConstantBitPropagation* cb_,
-           ArrayTransformer* at)
-      : ToSATBase(bm), cb(cb_), toCNF(bm->UserFlags), abstraction_(bm)
+           ArrayTransformer* at, bool allowAbstraction = true)
+      : ToSATBase(bm), cb(cb_), toCNF(bm->UserFlags), abstraction_(bm),
+        allowAbstraction_(allowAbstraction)
   {
     cb = cb_;
     init();
