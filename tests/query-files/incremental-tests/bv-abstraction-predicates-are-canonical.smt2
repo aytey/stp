@@ -13,9 +13,11 @@
 ; both, once per occurrence, for the whole session.
 ;
 ; Here each predicate is written into two conjuncts, so the driver blasts each
-; one twice. The coverage line counts bit-blaster visits on the left and
-; records on the right, so what this checks is exactly the gap: two visits, one
-; record, for both families.
+; one twice. The coverage line counts operations on the left and records on the
+; right, so one predicate abstracted once reads 1->1 -- and a second record for
+; it reads 1->2, which is the shape of the defect: more records than there are
+; operations to have them. Without the guard the equality leg reports exactly
+; that.
 ;
 ; -d re-derives the answer under the published model, which is the check that
 ; matters if the reuse were wrong: a Boolean shared between two predicates that
@@ -24,7 +26,7 @@
 ; RUN: %solver --incremental=on -d -t --bv-eq-abstraction=1 --bv-term-abstraction=1 %s 2>&1 | %OutputCheck --check-prefix=SHARED %s
 ; RUN: %solver --incremental=on -d %s 2>&1 | %OutputCheck --check-prefix=PLAIN %s
 ;
-; SHARED: Abstraction coverage \(candidates -> abstracted\): eq=2->1 compare=2->1
+; SHARED: Abstraction coverage \(candidates -> abstracted\): eq=1->1 compare=1->1
 ; SHARED: ^sat$
 ;
 ; PLAIN: ^sat$

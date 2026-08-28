@@ -1115,7 +1115,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       const BBNodeVec& thn = BBTerm(term[1], support);
       const BBNodeVec& els = BBTerm(term[2], support);
 
-      if (num_bits >= uf->bv_abstraction_width)
+      if (num_bits >= uf->bv_abstraction_width &&
+          firstCandidateSighting(term))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_ITE]++;
 
       if (termAbstractionAllowed() && uf->bv_term_abstraction_ite &&
@@ -1272,7 +1273,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
         break;
       }
 
-      if (term.Degree() == 2 && num_bits >= uf->bv_abstraction_width)
+      if (term.Degree() == 2 && num_bits >= uf->bv_abstraction_width &&
+          firstCandidateSighting(term))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_PLUS]++;
 
       // A wide n-ary addition that was not decomposed above -- because the
@@ -1287,7 +1289,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       // terms they did: this one omitted bv_term_abstraction_plus, so turning
       // that off alone gave the unreadable zero the count exists to prevent.
       if (term.Degree() > 2 && num_bits >= uf->bv_abstraction_width &&
-          !(termAbstractionAllowed() && uf->bv_term_abstraction_plus))
+          !(termAbstractionAllowed() && uf->bv_term_abstraction_plus) &&
+          firstCandidateSighting(term))
       {
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_PLUS] +=
             term.Degree() - 1;
@@ -1453,7 +1456,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       updateTerm(term[0], mpcd1, support);
       assert(mpcd1.size() == mpcd2.size());
 
-      if (num_bits >= uf->bv_abstraction_width)
+      if (num_bits >= uf->bv_abstraction_width &&
+          firstCandidateSighting(term))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_MULT]++;
 
       if (termAbstractionAllowed() && uf->bv_term_abstraction_mult &&
@@ -1516,7 +1520,8 @@ const BBNodeVec BitBlaster::BBTerm(const ASTNode& _term, BBNodeSet& support,
       assert(dvdd.size() == num_bits);
       assert(dvsr.size() == num_bits);
 
-      if (num_bits >= uf->bv_abstraction_width)
+      if (num_bits >= uf->bv_abstraction_width &&
+          firstCandidateSighting(term))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_DIVMOD]++;
 
       if (termAbstractionAllowed() && uf->bv_term_abstraction_divmod &&
@@ -2027,7 +2032,8 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
       const BBNodeVec right = BBTerm(form[1], support);
       assert(left.size() == right.size());
 
-      if (left.size() >= uf->bv_abstraction_width)
+      if (left.size() >= uf->bv_abstraction_width &&
+          firstCandidateSighting(form))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_EQ]++;
 
       if (eqAbstractionAllowed() &&
@@ -2067,7 +2073,8 @@ const BBNode BitBlaster::BBForm(const ASTNode& form, BBNodeSet& support,
     case BVSGT:
     case BVSLT:
     {
-      if (form[0].GetValueWidth() >= uf->bv_abstraction_width)
+      if (form[0].GetValueWidth() >= uf->bv_abstraction_width &&
+          firstCandidateSighting(form))
         uf->coverage.bv_candidates[UserDefinedFlags::ABSTRACT_COMPARE]++;
 
       if (termAbstractionAllowed() && uf->bv_term_abstraction_compare)

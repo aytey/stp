@@ -523,6 +523,22 @@ private:
   // propagation either way.
   std::unordered_set<ASTNode, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>
       abstractedResults_;
+  // Operations already counted as abstraction candidates.
+  //
+  // bv_candidates says it counts operations reaching the bit-blaster at or
+  // above the width floor, and exists so that a flag which reached nothing
+  // eligible can be told from a flag that is broken. It was counted at the top
+  // of each abstraction arm, which is a bit-blaster VISIT: the incremental
+  // driver clears its term memo on every new root, so one operation is
+  // re-entered once per check-sat while bv_abstracted -- correctly -- counts
+  // the one record. Ten solves over one multiplication read mult=10->1, which
+  // says the abstraction took a tenth of what it could have.
+  //
+  // Counted once per node, so the ratio means what it is documented to mean
+  // and abstracted can never exceed candidates. In the batch pipeline the
+  // blaster lives for one query with one root, so nothing there moves.
+  std::unordered_set<ASTNode, ASTNode::ASTNodeHasher, ASTNode::ASTNodeEqual>
+      countedCandidates_;
   std::vector<BBNode> sideConstraints_;
 
 public:
@@ -631,6 +647,13 @@ public:
   }
 
   // Whether this blast may replace a term or an equality with free inputs.
+  // Whether this operation has not been counted as a candidate before; see
+  // countedCandidates_.
+  bool firstCandidateSighting(const ASTNode& n)
+  {
+    return countedCandidates_.insert(n).second;
+  }
+
   bool termAbstractionAllowed() const
   {
     return allowAbstraction_ && uf->bv_term_abstraction;
