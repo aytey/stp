@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; RUN: %solver --SMTLIB2 --cadical -s --lra-presolve-monotone=0 %s 2>&1 | %OutputCheck %s
 ; RUN: %solver --SMTLIB2 --cadical -s --lra-presolve-monotone=0 --cnf-generation-effort medium %s 2>&1 | %OutputCheck --check-prefix=FORCED %s
 ; RUN: %solver --SMTLIB2 --cadical -s --lra-presolve-monotone=0 --lra-adaptive-cnf=1 %s 2>&1 | %OutputCheck --check-prefix=ADAPTIVE %s
