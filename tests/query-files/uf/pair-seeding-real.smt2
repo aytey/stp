@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; A selected Real pair goes through the ordinary LRA registration path. Other
 ; Real application pairs remain governed by exact-model UF refinement.
 ;

@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; A large-enough declaration is declined by the whole-function budget. The
 ; pair selected through the asserted argument equality must still make the
 ; query unsatisfiable, and the old model checker must cover the other pairs.

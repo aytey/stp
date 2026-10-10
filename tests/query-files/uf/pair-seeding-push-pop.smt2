@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; A fact used to seed congruence in one incremental block must not survive
 ; after that block is popped.
 ;
