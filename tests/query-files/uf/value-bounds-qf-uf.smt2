@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; QF_UF value bounds preserve a model needing three distinct sort elements,
 ; and an incremental contradiction must disappear again after pop.
 ;

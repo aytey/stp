@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; A late, asserted distinct basis may take the first value-bound ranks even
 ; though an earlier symbol also appears in applications. The four basis
 ; elements exhaust the two-bit carrier, and q must equal one of them.

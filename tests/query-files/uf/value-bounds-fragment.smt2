@@ -1,3 +1,4 @@
+; REQUIRES: cadical
 ; AUTO selects the value bounds only for pure QF_UF. An explicit ON is also
 ; available for a QF_UFBV script with a declared sort.
 ;
