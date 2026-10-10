@@ -1101,6 +1101,7 @@ bool custom_enable_array_equality(EngineTarget& t, const OptionSpec&, const Opti
 bool custom_logic(EngineTarget& t, const OptionSpec&, const OptionValue& v)
 {
   const std::string& logic = as_str(v);
+  t.flags.uf_qf_uf_logic = logic == "QF_UF";
   if (t.solver == nullptr)
   {
     if (logic_selects_uf(logic))

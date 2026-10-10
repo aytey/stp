@@ -1969,6 +1969,17 @@ category = "refinement.uf"
 help = "how many congruence constraints --uf-ackermann=auto may install up front"
 
 [[option]]
+name = "uf-search-conflicts"
+type = "bool"
+default = false
+tier = "experimental"
+settable = "anytime"
+scope = "solver"
+engine = { field = "uf_search_conflicts" }
+category = "refinement.uf"
+help = "for batch QF_UF with CaDiCaL, report violated function congruence during SAT search; the ordinary UF model checker remains the final certifier"
+
+[[option]]
 name = "uf-lazy-in-place"
 type = "bool"
 default = true
