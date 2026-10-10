@@ -940,6 +940,17 @@ category = "lra"
 help = "let the LRA theory take part in the SAT search, on a backend that hosts a propagator (CaDiCaL, CryptoMiniSat, MiniSat)"
 
 [[option]]
+name = "lra-bound-propagation"
+type = "bool"
+default = false
+tier = "experimental"
+settable = "anytime"
+scope = "solver"
+engine = { field = "lra_bound_propagation" }
+category = "lra"
+help = "send same-row bound implications to the SAT backend with binary reasons instead of emitting static ordering clauses, when LRA theory propagation is available"
+
+[[option]]
 name = "lra-float-driver"
 type = "bool"
 default = true

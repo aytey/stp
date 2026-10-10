@@ -118,9 +118,10 @@ are CaDiCaL, and a CryptoMiniSat or a MiniSat (``--minisat``) built with
 the interface, as the pinned forks of both are. As atoms are
 assigned the theory checks the partial assignment, and it returns a
 conflict as a clause where it arises, rather than after a complete
-assignment has been built on top of it. It reports conflicts only. It
-does not push implied atoms back to the solver: the ordering clauses
-above carry the implications within one row. Measured on the SMT-LIB
+assignment has been built on top of it. By default it reports conflicts
+only; ordering clauses carry implications within one row. The experimental
+``--lra-bound-propagation`` path sends those same implications as online
+propagations with binary reasons instead. Measured on the SMT-LIB
 QF_LRA and QF_UFLRA sets at twenty seconds, taking part lifted QF_LRA
 from 938 to 1018 files solved and QF_UFLRA from 1234 to 1240, with no
 answer changed.
@@ -294,6 +295,12 @@ Search and the float tier
 ``--lra-theory-propagation`` (on)
   Take part in the SAT search on a backend that hosts a propagator, as
   described above. Off, every backend runs the full-lazy loop.
+
+``--lra-bound-propagation`` (off)
+  Experimental. Deliver same-row bound implications as online SAT
+  propagations with binary reasons instead of static ordering clauses.
+  Backends without an active theory propagator keep the static clauses.
+  The logical implications are the same in either mode.
 
 ``--lra-decision-polarity`` (on where supported)
   Pick the polarity of arithmetic decisions. It needs
