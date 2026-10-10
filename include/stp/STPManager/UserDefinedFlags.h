@@ -469,6 +469,12 @@ public:
   // the old behaviour for a query known to be that shape.
   unsigned uf_eager_budget = 256;
 
+  // Spend unused AUTO eager budget on a bounded set of individual application
+  // pairs from declarations that do not fit the all-or-nothing policy. The
+  // ordinary model checker still supplies every omitted congruence axiom.
+  // Kept selectable while the pair ranking is measured on UF and UFLRA.
+  bool uf_pair_seeding = false;
+
   // How many rounds a lazily-decided declaration may keep breaking congruence
   // before the rest of its relation is stated in one go. Each lazy round is
   // a whole re-solve, so a declaration that breaks again and again is paying
