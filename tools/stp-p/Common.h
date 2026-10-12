@@ -81,6 +81,7 @@ struct Options
   // so its search is ordinary STP's on CaDiCaL.
   std::uint32_t import_budget = 1;
   bool root0_import = false;
+  bool import_at_restarts = false;
   // The transport settings stp-p runs with; only the test driver changes
   // them.
   bool sharing = true;

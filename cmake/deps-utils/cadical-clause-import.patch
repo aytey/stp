@@ -1,5 +1,5 @@
 diff --git a/src/cadical.hpp b/src/cadical.hpp
-index 1eed2882..0521803c 100644
+index 1eed2882..921c134c 100644
 --- a/src/cadical.hpp
 +++ b/src/cadical.hpp
 @@ -229,6 +229,7 @@ class ClauseIterator;
@@ -10,7 +10,7 @@ index 1eed2882..0521803c 100644
  class Tracer;
  struct InternalTracer;
  class FileTracer;
-@@ -388,6 +389,48 @@ public:
+@@ -388,6 +389,57 @@ public:
    void connect_learner (Learner *learner);
    void disconnect_learner ();
  
@@ -33,6 +33,15 @@ index 1eed2882..0521803c 100644
 +    int64_t polls, clauses, units, dropped, satisfied, backtracks;
 +  };
 +  ImportStatistics import_statistics () const;
++
++  // Defer eligible import polls until a restart or level zero, but at most
++  // this many additional conflicts. Zero restores periodic import. All
++  // clauses, including units, follow this schedule; it is not a wall bound.
++  void set_import_max_delay (int conflicts);
++  struct ImportScheduleStatistics {
++    int64_t restarts, root, forced;
++  };
++  ImportScheduleStatistics import_schedule_statistics () const;
 +
 +  // Search diversification for a solver that already holds clauses (an STP
 +  // extension: 'set' accepts options only before the first clause). Only
@@ -59,7 +68,7 @@ index 1eed2882..0521803c 100644
    // ====== END IPASIR =====================================================
  
    // Add call-back which allows to observe when a variable is fixed.
-@@ -1256,6 +1299,25 @@ public:
+@@ -1256,6 +1308,25 @@ public:
  // with an external clause as a reason or to learn new clauses during the
  // CDCL loop (without restart).
  
@@ -102,10 +111,10 @@ index 1798f14e..f57035cd 100644
    vector<bool> is_observed; // Quick flag for each external variable
 diff --git a/src/import.cpp b/src/import.cpp
 new file mode 100644
-index 00000000..3bacbafa
+index 00000000..6324327a
 --- /dev/null
 +++ b/src/import.cpp
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,261 @@
 +#include "internal.hpp"
 +
 +namespace CaDiCaL {
@@ -136,12 +145,27 @@ index 00000000..3bacbafa
 +// backtracks at most once, to the lowest level any of its clauses needs.
 +
 +bool Internal::importing () {
-+  return external->clause_importer && stats.conflicts >= import_limit;
++  if (!external->clause_importer || stats.conflicts < import_limit)
++    return false;
++  // Preserve the old cadence unless restart alignment is explicitly set.
++  // A restart may reuse part of the trail. The ordinary attachment code
++  // below still backtracks as far as the accepted clauses require.
++  return !import_max_delay || !level ||
++         stats.conflicts == import_restart_conflicts ||
++         stats.conflicts - import_limit >= import_max_delay;
 +}
 +
 +void Internal::import_clauses () {
 +  ClauseImporter *importer = external->clause_importer;
 +  assert (importer);
++  if (import_max_delay) {
++    if (stats.conflicts == import_restart_conflicts)
++      import_schedule_stats.restarts++;
++    else if (!level)
++      import_schedule_stats.root++;
++    else
++      import_schedule_stats.forced++;
++  }
 +  const int interval = importer->import_interval ();
 +  import_limit = stats.conflicts + (interval > 0 ? interval : 1);
 +  import_stats.polls++;
@@ -366,16 +390,19 @@ index 485c33ad..7df5ccd6 100644
        restart (); // restart by backtracking
      else if (rephasing ())
 diff --git a/src/internal.hpp b/src/internal.hpp
-index dd53d4b3..e4643be2 100644
+index dd53d4b3..875e7d6a 100644
 --- a/src/internal.hpp
 +++ b/src/internal.hpp
-@@ -868,6 +868,15 @@ struct Internal {
+@@ -868,6 +868,18 @@ struct Internal {
    int reuse_trail ();
    void restart ();
  
 +  // Clause import and diversification (STP extensions) in 'import.cpp'.
 +  //
 +  int64_t import_limit = 0;
++  int import_max_delay = 0;
++  int64_t import_restart_conflicts = -1;
++  Solver::ImportScheduleStatistics import_schedule_stats = {0, 0, 0};
 +  Solver::ImportStatistics import_stats = {0, 0, 0, 0, 0, 0};
 +  vector<int> import_external;
 +  bool importing ();
@@ -385,11 +412,20 @@ index dd53d4b3..e4643be2 100644
    // Functions to set and reset certain 'phases'.
    //
    void clear_phases (vector<signed char> &); // reset argument to zero
+diff --git a/src/restart.cpp b/src/restart.cpp
+index 4c991de7..f246064c 100644
+--- a/src/restart.cpp
++++ b/src/restart.cpp
+@@ -169,0 +170,4 @@ void Internal::restart () {
++  // The next safe import point may use this restart, but a conflict before
++  // that point invalidates it. Do not call 'restarting' twice: it also
++  // advances stabilization and restart scheduling.
++  import_restart_conflicts = stats.conflicts;
 diff --git a/src/solver.cpp b/src/solver.cpp
-index 0530c508..f225ee80 100644
+index 0530c508..159e4047 100644
 --- a/src/solver.cpp
 +++ b/src/solver.cpp
-@@ -1029,6 +1029,57 @@ void Solver::connect_learner (Learner *learner) {
+@@ -1029,6 +1029,70 @@ void Solver::connect_learner (Learner *learner) {
    LOG_API_CALL_END ("connect_learner");
  }
  
@@ -399,7 +435,20 @@ index 0530c508..f225ee80 100644
 +  REQUIRE (importer, "can not connect zero clause importer");
 +  external->clause_importer = importer;
 +  internal->import_limit = internal->stats.conflicts;
++  internal->import_restart_conflicts = -1;
 +  LOG_API_CALL_END ("connect_clause_importer");
++}
++
++void Solver::set_import_max_delay (int conflicts) {
++  REQUIRE_VALID_STATE ();
++  REQUIRE (conflicts >= 0, "negative import delay");
++  internal->import_max_delay = conflicts;
++}
++
++Solver::ImportScheduleStatistics
++Solver::import_schedule_statistics () const {
++  REQUIRE_VALID_STATE ();
++  return internal->import_schedule_stats;
 +}
 +
 +void Solver::disconnect_clause_importer () {

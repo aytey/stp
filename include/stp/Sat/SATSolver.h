@@ -405,7 +405,7 @@ public:
     bool connected = false;
     uint64_t variables = 0, exported = 0, filtered = 0, polls = 0,
              imported = 0, units = 0, dropped = 0, satisfied = 0,
-             backtracks = 0;
+             backtracks = 0, restartPolls = 0, rootPolls = 0, forcedPolls = 0;
   };
   class ClauseExchange
   {
@@ -427,6 +427,7 @@ public:
     int importInterval = 256;   // conflicts between import polls
     int importBudget = 0;       // longer-than-unit clauses per poll; 0 none
     bool import = true;         // false: export only
+    int importMaxDelay = 0;     // extra conflicts while awaiting a restart
   };
   // false: this backend cannot exchange clauses. nullptr disconnects.
   virtual bool connectClauseExchange(ClauseExchange* /*exchange*/,

@@ -1535,7 +1535,8 @@ struct ExchangeBridge final : ::stp::SATSolver::ClauseExchange
 };
 
 bool connect_exchange(SolverImpl* s, ::stp::SATSolver* backend,
-                      ClauseExchange* exchange, const ClauseExchangeSettings& settings)
+                      ClauseExchange* exchange, const ClauseExchangeSettings& settings,
+                      std::uint32_t import_max_delay)
 {
   if (!exchange)
   {
@@ -1551,6 +1552,8 @@ bool connect_exchange(SolverImpl* s, ::stp::SATSolver* backend,
   native.importBudget =
       static_cast<int>(std::min<std::uint32_t>(settings.import_budget, 1u << 30));
   native.import = settings.import;
+  native.importMaxDelay =
+      static_cast<int>(std::min<std::uint32_t>(import_max_delay, 1u << 30));
   if (!backend->connectClauseExchange(bridge.get(), native))
     return false;
   s->exchange_bridge = std::move(bridge);
@@ -1591,7 +1594,15 @@ std::uint64_t SearchPoint::variables() const
 bool SearchPoint::connect_clause_exchange(ClauseExchange* exchange,
                                           const ClauseExchangeSettings& settings)
 {
-  return connect_exchange(state_->solver, state_->backend, exchange, settings);
+  return connect_clause_exchange(exchange, settings, 0);
+}
+
+bool SearchPoint::connect_clause_exchange(ClauseExchange* exchange,
+                                          const ClauseExchangeSettings& settings,
+                                          std::uint32_t import_max_delay)
+{
+  return connect_exchange(state_->solver, state_->backend, exchange, settings,
+                          import_max_delay);
 }
 
 bool SearchPoint::diversify(const SearchDiversification& d)
@@ -3070,6 +3081,9 @@ Statistics Solver::statistics() const
     e["sat.exchange.import-dropped"] = x.dropped;
     e["sat.exchange.import-satisfied"] = x.satisfied;
     e["sat.exchange.import-backtracks"] = x.backtracks;
+    e["sat.exchange.import-at-restart"] = x.restartPolls;
+    e["sat.exchange.import-at-root"] = x.rootPolls;
+    e["sat.exchange.import-forced"] = x.forcedPolls;
   }
   e["before-search.outcome"] = s->search_point_outcome;
   e["before-search.refusal"] = s->search_point_refusal;

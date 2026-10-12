@@ -883,6 +883,10 @@ void Cadical::disconnectTheoryPropagator()
 bool Cadical::connectClauseExchange(ClauseExchange* target,
                                     const ExchangeSettings& settings)
 {
+#if !defined(STP_CADICAL_HAS_RESTART_IMPORT)
+  if (target && settings.importMaxDelay)
+    return false;
+#endif
 #if defined(STP_CADICAL_HAS_CLAUSE_IMPORT)
   if (exchange)
   {
@@ -897,6 +901,9 @@ bool Cadical::connectClauseExchange(ClauseExchange* target,
   if (factor_enabled && ext_of_stp.size() <= next_variable)
     declareNewVariables();
   exchange.reset(new Exchange(*target, settings, s->vars()));
+#if defined(STP_CADICAL_HAS_RESTART_IMPORT)
+  s->set_import_max_delay(settings.importMaxDelay);
+#endif
   s->connect_learner(exchange.get());
   if (settings.import)
     s->connect_clause_importer(exchange.get());
@@ -925,6 +932,12 @@ SATSolver::ExchangeCounters Cadical::exchangeCounters() const
   out.dropped = (uint64_t)in.dropped + exchange->skipped;
   out.satisfied = (uint64_t)in.satisfied;
   out.backtracks = (uint64_t)in.backtracks;
+#if defined(STP_CADICAL_HAS_RESTART_IMPORT)
+  const auto schedule = s->import_schedule_statistics();
+  out.restartPolls = (uint64_t)schedule.restarts;
+  out.rootPolls = (uint64_t)schedule.root;
+  out.forcedPolls = (uint64_t)schedule.forced;
+#endif
 #endif
   return out;
 }

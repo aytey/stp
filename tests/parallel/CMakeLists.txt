@@ -70,14 +70,15 @@ if(SANITIZE OR CMAKE_CXX_FLAGS MATCHES "-fsanitize=([a-z,=-]*,)?(address|thread|
   set(STPP_SANITIZED 1)
 endif()
 
-foreach(name cli lifecycle portfolio hedge batch)
+foreach(name cli lifecycle portfolio hedge batch restart_imports)
   add_test(NAME stpp-${name} COMMAND ${PYTHON_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/${name}.py $<TARGET_FILE:stp-p> $<TARGET_FILE:stpp-drive>)
 endforeach()
 add_test(NAME stpp-group COMMAND ${PYTHON_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/group.py $<TARGET_FILE:stp-p> $<TARGET_FILE:stpp-drive> 60)
-set_tests_properties(stpp-cli stpp-lifecycle stpp-portfolio stpp-hedge stpp-batch
+set_tests_properties(stpp-cli stpp-lifecycle stpp-portfolio stpp-hedge stpp-batch stpp-restart_imports
   stpp-group PROPERTIES LABELS "parallel" ENVIRONMENT "STPP_SANITIZED=${STPP_SANITIZED}")
 set_tests_properties(stpp-cli stpp-lifecycle stpp-portfolio stpp-hedge
+  stpp-restart_imports
   PROPERTIES TIMEOUT 300)
 set_tests_properties(stpp-batch stpp-group PROPERTIES TIMEOUT 600)

@@ -113,6 +113,11 @@ std::map<std::string, std::string> capabilities()
 #else
   c["sat.clause-exchange"] = "false";
 #endif
+#ifdef STP_CADICAL_HAS_RESTART_IMPORT
+  c["sat.restart-clause-import"] = "true";
+#else
+  c["sat.restart-clause-import"] = "false";
+#endif
   c["fp.rem.limit"] = "2^eb+sb-4<=2304";
   c["kind.FP_TO_REAL"] = "true";
   c["kind.FP_TO_FP_FROM_REAL"] = "values-only";

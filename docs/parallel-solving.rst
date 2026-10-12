@@ -148,6 +148,38 @@ supervisor samples the summed resident size every 50 ms and, when that is
 over the limit, the summed PSS, which counts each copy-on-write page once,
 at most every 0.5 s; over the limit in PSS the answer is ``unknown``.
 
+Optional restart-aligned importing
+----------------------------------
+
+``--import-at-restarts`` changes the import schedule of the batch roots that
+receive shared clauses. It is off by default. Root 0 remains export-only,
+and the clause selection, budget, soundness checks and attachment rules stay
+the same.
+
+.. code-block:: bash
+
+    stp-p -j24 --import-at-restarts --stats-json report.json problem.smt2
+
+Once a poll is eligible (normally after 256 own conflicts), it waits for a
+restart or decision level zero. If neither occurs, it becomes eligible at any
+safe search point after 2048 additional conflicts. The test driver's changed
+exchange interval scales that delay to eight intervals. This bounds deferral
+in conflicts, not wall time, and applies to units as well as longer clauses.
+It does not force restarts or disable CaDiCaL's reuse of part of the trail:
+imported clauses can still require another backtrack after a restart.
+
+The backend must provide the ``sat.restart-clause-import`` capability; older
+external CaDiCaL installations refuse the option. API users can pass a third
+``import_max_delay`` argument to ``SearchPoint::connect_clause_exchange`` for
+another conflict bound, or zero for the original periodic schedule. The exchange statistics
+add ``import-at-restart``, ``import-at-root`` and ``import-forced`` poll counts,
+alongside ``import-backtracks``, to distinguish when aligned polls occurred.
+These three counts are zero when alignment is off.
+
+This is an experimental schedule, with no performance claim. Compare it on
+and off using the same binary and worker count, and retain the ordinary
+eight-worker configuration as a separate baseline.
+
 What ``-jN`` runs, and why
 --------------------------
 

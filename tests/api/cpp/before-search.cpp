@@ -784,8 +784,11 @@ std::vector<std::vector<int>> parse_clauses(const std::string& text)
 }
 } // namespace
 
-TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
+static void replay_imports(std::uint32_t delay, int mode)
 {
+  SCOPED_TRACE("delay=" + std::to_string(delay) + ", mode=" + std::to_string(mode));
+  if (delay && capabilities()["sat.restart-clause-import"] != "true")
+    GTEST_SKIP() << "no restart-aligned import extension";
   if (!exchange_available)
     GTEST_SKIP() << "no clause-import extension in this build's CaDiCaL";
   // Both copies are forked at the same point, so they share the backend's
@@ -839,7 +842,11 @@ TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
             ClauseExchangeSettings settings;
             settings.import_interval = 8;
             settings.import_budget = 2;
-            return point.connect_clause_exchange(&replayer, settings);
+            SearchDiversification diversity;
+            diversity.mode = mode;
+            if (!point.diversify(diversity))
+              _exit(3);
+            return point.connect_clause_exchange(&replayer, settings, delay);
           }
           close(fds[1]);
           imported = drain(fds[0], pid);
@@ -853,7 +860,9 @@ TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
       std::string out = answer(r);
       for (const char* key :
            {"sat.exchange.connected", "sat.exchange.polls", "sat.exchange.exported",
-            "sat.exchange.imported", "sat.exchange.import-backtracks"})
+            "sat.exchange.imported", "sat.exchange.import-backtracks",
+            "sat.exchange.import-at-restart", "sat.exchange.import-at-root",
+            "sat.exchange.import-forced"})
         out += " " + std::to_string(st.uint64(key));
       out += " " + std::to_string(replayer.begun);
       // A model, checked against the query itself: x * y = n, 1 < x, y < 2^16.
@@ -885,9 +894,9 @@ TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
     std::istringstream a(exported.substr(0, exported.find('\n')));
     std::string verdict, model;
     std::uint64_t connected = 0, polls = 0, out_clauses = 0, in_clauses = 0, backtracks = 0,
-                  begun = 0;
-    a >> verdict >> connected >> polls >> out_clauses >> in_clauses >> backtracks >> begun >>
-        model;
+                  begun = 0, restarts = 0, roots = 0, forced = 0;
+    a >> verdict >> connected >> polls >> out_clauses >> in_clauses >> backtracks >>
+        restarts >> roots >> forced >> begun >> model;
     EXPECT_EQ(verdict, expected) << exported.substr(0, 200);
     EXPECT_EQ(model, expected_model);
     EXPECT_EQ(connected, 1u);
@@ -897,16 +906,51 @@ TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
     // The importer: the same answer, after taking those clauses over many
     // polls, some of them away from the root.
     std::istringstream b(imported);
-    b >> verdict >> connected >> polls >> out_clauses >> in_clauses >> backtracks >> begun >>
-        model;
+    b >> verdict >> connected >> polls >> out_clauses >> in_clauses >> backtracks >>
+        restarts >> roots >> forced >> begun >> model;
     EXPECT_EQ(verdict, expected) << imported;
     EXPECT_EQ(model, expected_model);
     EXPECT_EQ(connected, 1u);
-    EXPECT_GT(polls, 8u);
+    EXPECT_GT(polls, delay ? 1u : 8u);
     EXPECT_GT(in_clauses, 8u);
     EXPECT_LE(in_clauses, replayer.pending.size());
-    EXPECT_GT(backtracks, 0u);
-    EXPECT_GT(begun, 8u);
+    if (!delay)
+    {
+      EXPECT_GT(backtracks, 0u);
+    }
+    EXPECT_EQ(begun, polls);
+    if (delay)
+    {
+      EXPECT_EQ(restarts + roots + forced, polls);
+      if (delay == 1)
+      {
+        EXPECT_GT(forced, 0u) << "a rare restart cannot defer imports indefinitely";
+      }
+      else
+      {
+        EXPECT_GT(restarts, 0u) << "imports must actually use restart boundaries";
+      }
+    }
+    else
+    {
+      EXPECT_EQ(restarts + roots + forced, 0u);
+    }
   }
+}
+
+TEST(BeforeSearch, ClausesOneCopyLearnsImportIntoAnother)
+{
+  replay_imports(0, 0);
+}
+
+TEST(BeforeSearch, RestartAlignedImportsPreserveAnswersAndModels)
+{
+  replay_imports(2048, 1); // focused search
+  replay_imports(2048, 2); // stable search
+}
+
+TEST(BeforeSearch, RestartAlignedImportsHaveABoundedConflictDelay)
+{
+  replay_imports(1, 2);
 }
 #endif
