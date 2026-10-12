@@ -283,6 +283,25 @@ else()
 endif()
 message(STATUS "CaDiCaL clause import: ${CADICAL_HAS_CLAUSE_IMPORT}")
 
+# Restart-aligned imports are a separate extension. Probe both new symbols
+# so an older external archive cannot silently ignore the requested policy.
+if(CaDiCaL_FOUND_SYSTEM AND CADICAL_HAS_CLAUSE_IMPORT)
+    set(_restart_import_src "${PROJECT_BINARY_DIR}/CaDiCaL_restart_import.cpp")
+    file(WRITE "${_restart_import_src}"
+         "#include <cadical/cadical.hpp>\n"
+         "int main() { CaDiCaL::Solver s; s.set_import_max_delay(1); "
+         "return (int)s.import_schedule_statistics().forced; }\n")
+    try_compile(CADICAL_HAS_RESTART_IMPORT
+                "${PROJECT_BINARY_DIR}/CaDiCaL_restart_import_probe" "${_restart_import_src}"
+                CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${CADICAL_INCLUDE_DIR}"
+                LINK_LIBRARIES ${_polarity_libraries})
+elseif(NOT CaDiCaL_FOUND_SYSTEM AND CADICAL_HAS_CLAUSE_IMPORT)
+    set(CADICAL_HAS_RESTART_IMPORT ON)
+else()
+    set(CADICAL_HAS_RESTART_IMPORT OFF)
+endif()
+message(STATUS "CaDiCaL restart-aligned import: ${CADICAL_HAS_RESTART_IMPORT}")
+
 # Bounded variable addition (--cadical-factor) needs the declare_more_variables
 # API. That appeared in CaDiCaL 2.2.0, but the 2.2 line shipped it with
 # different contract-checking defaults and was never tested here, so support is

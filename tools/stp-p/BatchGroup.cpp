@@ -26,6 +26,7 @@ THE SOFTWARE.
 #include "Exchange.h"
 #include "Source.h"
 #include "Portfolio.h"
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <dirent.h>
@@ -631,7 +632,11 @@ Json batch_group(Source& input, const Options& o, ParsedQuery* prepared)
                 endpoint = std::make_unique<Endpoint>(*rings, slot,
                                                       endpoint_settings(o));
                 joined["exchange"] = point.connect_clause_exchange(
-                    endpoint.get(), exchange_settings(o, import));
+                    endpoint.get(), exchange_settings(o, import),
+                    o.import_at_restarts
+                        ? std::uint32_t(std::min<std::uint64_t>(
+                              8ull * o.exchange_interval, 1u << 30))
+                        : 0);
                 joined["imports"] = import;
               }
               if (injected_hold(o, slot))
@@ -697,7 +702,8 @@ Json batch_group(Source& input, const Options& o, ParsedQuery* prepared)
         auto x = endpoint->counters();
         for (const char* key : {"exported", "filtered", "polls", "imported",
                                 "import-units", "import-dropped",
-                                "import-satisfied", "import-backtracks"})
+                                "import-satisfied", "import-backtracks",
+                                "import-at-restart", "import-at-root", "import-forced"})
           x[std::string("backend_") + key] =
               stats.uint64(std::string("sat.exchange.") + key);
         data["exchange"] = x;
@@ -868,6 +874,7 @@ Json batch_group(Source& input, const Options& o, ParsedQuery* prepared)
                  {"forked", handed},
                  {"fork_errors", fork_errors},
                  {"sharing", bool(rings)},
+                 {"import_at_restarts", o.import_at_restarts},
                  {"hedge", hedge_row},
                  {"variables", variables},
                  {"parse_s", prepared ? 0.0 : parsed - started},

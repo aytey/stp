@@ -205,6 +205,9 @@ int run(int argc, char** argv, bool testing)
   app.add_flag("--encoding-groups", o.encoding_groups,
                "Opt in to independent default/GIA-high encodings for QF_BV; "
                "requires the default configuration and at least 4 jobs");
+  app.add_flag("--import-at-restarts", o.import_at_restarts,
+               "Defer imports to restarts or level zero, bounded by 2048 extra "
+               "conflicts with the default exchange interval; requires -j > 1");
   app.add_option("input", o.input, "The query, a file or - for stdin")
       ->option_text("[input.smt2|-]");
 
@@ -348,6 +351,11 @@ int run(int argc, char** argv, bool testing)
                               !o.portfolio.empty() || !o.control.empty()))
       throw std::runtime_error("--encoding-groups needs at least 4 jobs, "
                                "--config default and no test portfolio/control");
+    if (o.import_at_restarts &&
+        (!o.roots || !o.portfolio.empty() ||
+         stp::capabilities()["sat.restart-clause-import"] != "true"))
+      throw std::runtime_error("--import-at-restarts needs a batch group and "
+                               "CaDiCaL with restart-aligned clause import");
     if (o.jobs > allowed_cpus().size())
       throw std::runtime_error("requested jobs exceed allowed CPU slots");
     o.deadline = o.timeout ? started + o.timeout : 0;

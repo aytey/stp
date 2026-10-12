@@ -1208,6 +1208,15 @@ public:
   /// statistics.
   bool connect_clause_exchange(ClauseExchange* exchange,
                                const ClauseExchangeSettings& settings = {});
+  /// With a positive import_max_delay, an eligible poll waits for a restart
+  /// or level zero, becoming eligible at any safe search point after this
+  /// many additional conflicts. Units follow the same schedule. Zero keeps
+  /// periodic polling. A positive delay requires sat.restart-clause-import;
+  /// otherwise connection fails. This overload preserves the layout of
+  /// ClauseExchangeSettings and the original entry point.
+  bool connect_clause_exchange(ClauseExchange* exchange,
+                               const ClauseExchangeSettings& settings,
+                               std::uint32_t import_max_delay);
   /// Diversify this check's search (SearchDiversification). false when the
   /// backend does not support it; nothing then changed.
   bool diversify(const SearchDiversification& diversification);
