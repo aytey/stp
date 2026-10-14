@@ -23,6 +23,7 @@ THE SOFTWARE.
 ********************************************************************/
 
 #include "KissatAllocations.h"
+#include "stp/Sat/Kissat.h"
 
 #include <gtest/gtest.h>
 
@@ -48,6 +49,42 @@ std::size_t liveBlocks(const Owner& owner)
   }
   return count;
 }
+
+struct FailingAllocator
+{
+  Owner owner;
+  unsigned calls = 0;
+  unsigned fail_at = 0;
+
+  void beforeAllocation()
+  {
+    if (++calls == fail_at)
+    {
+      owner.failed = true;
+      throw std::bad_alloc();
+    }
+  }
+
+  static void* allocate(void* state, std::size_t bytes)
+  {
+    auto& self = *static_cast<FailingAllocator*>(state);
+    self.beforeAllocation();
+    return Owner::allocate(&self.owner, bytes);
+  }
+
+  static void* resize(void* state, void* ptr, std::size_t bytes)
+  {
+    auto& self = *static_cast<FailingAllocator*>(state);
+    self.beforeAllocation();
+    return Owner::resize(&self.owner, ptr, bytes);
+  }
+
+  static void deallocate(void* state, void* ptr)
+  {
+    auto& self = *static_cast<FailingAllocator*>(state);
+    Owner::deallocate(&self.owner, ptr);
+  }
+};
 } // namespace
 
 TEST(KissatAllocations, PayloadsAreAlignedAndUnlinkedInAnyOrder)
@@ -118,4 +155,51 @@ TEST(KissatAllocations, FailedResizeKeepsTheOriginalOwnedBlock)
   EXPECT_THROW(Owner::allocate(&owner, std::numeric_limits<std::size_t>::max()),
                std::bad_alloc);
   EXPECT_EQ(liveBlocks(owner), 1u);
+}
+
+TEST(KissatAllocations, InterruptedCInitializationAndGrowthLeaveOwnedBlocks)
+{
+  for (unsigned failure = 0; failure != 17; ++failure)
+  {
+    SCOPED_TRACE(failure);
+    FailingAllocator state;
+    state.fail_at = failure;
+    const kissat_allocator allocator = {&state, FailingAllocator::allocate,
+                                        FailingAllocator::resize,
+                                        FailingAllocator::deallocate};
+    bool interrupted = false;
+    try
+    {
+      kissat* solver = kissat_init_with_allocator(&allocator);
+      kissat_set_option(solver, "quiet", 1);
+      kissat_set_option(solver, "incremental", 1);
+      kissat_set_option(solver, "factor", 0);
+      kissat_set_option(solver, "probe", 0);
+      kissat_reserve(solver, 4096);
+      for (int variable = 1; variable <= 512; ++variable)
+      {
+        kissat_add(solver, variable);
+        kissat_add(solver, variable % 512 + 1);
+        kissat_add(solver, 0);
+      }
+      EXPECT_EQ(kissat_solve(solver), 10);
+      kissat_release(solver);
+    }
+    catch (const std::bad_alloc&)
+    {
+      interrupted = true;
+      EXPECT_TRUE(state.owner.failed);
+      EXPECT_EQ(state.calls, failure);
+      // The adapter discards a failed C solver through its owner. Do not
+      // ask the C destructor to walk the interrupted structures.
+      EXPECT_EQ(liveBlocks(state.owner) == 0, failure == 1);
+    }
+    EXPECT_EQ(interrupted, failure != 0);
+    if (!interrupted)
+    {
+      EXPECT_FALSE(state.owner.failed);
+      EXPECT_EQ(state.owner.blocks, nullptr);
+    }
+    // Scope exit frees every tracked block, including the partial C solver.
+  }
 }
