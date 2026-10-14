@@ -25,6 +25,8 @@ THE SOFTWARE.
 #ifndef STP_SAT_KISSATALLOCATIONS_H
 #define STP_SAT_KISSATALLOCATIONS_H
 
+#include <ankerl/unordered_dense.h>
+
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
@@ -34,19 +36,12 @@ namespace stp
 {
 namespace detail
 {
-// A failed C allocation must reach STP's RESOURCE handler. Own every block,
-// including temporary inprocessing allocations, so an interrupted allocation
-// can discard the partial C solver without walking its unfinished structures.
+// Track payloads without an individual ownership-node allocation or a prefix
+// that changes the payload's allocation size. Failed C operations still leave
+// their live blocks owned so the adapter can discard the unfinished solver.
 struct KissatAllocations
 {
-  // Keep ownership beside the payload, without another allocation or a hash
-  // lookup. The payload retains malloc's alignment for fundamental types.
-  struct alignas(std::max_align_t) Block
-  {
-    Block* previous;
-    Block* next;
-  };
-  Block* blocks = nullptr;
+  ankerl::unordered_dense::set<void*> blocks;
   bool failed = false;
 
   KissatAllocations() = default;
@@ -55,38 +50,42 @@ struct KissatAllocations
 
   ~KissatAllocations()
   {
-    while (blocks)
-    {
-      Block* block = blocks;
-      blocks = block->next;
+    for (void* block : blocks)
       std::free(block);
-    }
   }
 
-  static std::size_t storageSize(KissatAllocations& self, std::size_t bytes)
+  static void checkSize(KissatAllocations& self, std::size_t bytes)
   {
-    if (bytes > std::numeric_limits<std::size_t>::max() - sizeof(Block))
+    if (bytes == std::numeric_limits<std::size_t>::max())
     {
       self.failed = true;
       throw std::bad_alloc();
     }
-    return sizeof(Block) + bytes;
   }
 
   static void* allocate(void* state, std::size_t bytes)
   {
     auto& self = *static_cast<KissatAllocations*>(state);
-    void* storage = std::malloc(storageSize(self, bytes));
-    if (!storage)
+    checkSize(self, bytes);
+    void* block = std::malloc(bytes);
+    if (!block)
     {
+      if (!bytes)
+        return nullptr;
       self.failed = true;
       throw std::bad_alloc();
     }
-    Block* block = new (storage) Block{nullptr, self.blocks};
-    if (block->next)
-      block->next->previous = block;
-    self.blocks = block;
-    return block + 1;
+    try
+    {
+      self.blocks.insert(block);
+    }
+    catch (...)
+    {
+      std::free(block);
+      self.failed = true;
+      throw;
+    }
+    return block;
   }
 
   static void* resize(void* state, void* ptr, std::size_t bytes)
@@ -94,24 +93,51 @@ struct KissatAllocations
     if (!ptr)
       return allocate(state, bytes);
     auto& self = *static_cast<KissatAllocations*>(state);
-    Block* old = static_cast<Block*>(ptr) - 1;
-    Block* previous = old->previous;
-    Block* next = old->next;
-    void* storage = std::realloc(old, storageSize(self, bytes));
-    if (!storage)
+    checkSize(self, bytes);
+    if (!bytes)
     {
-      // A failed resize leaves the old block and its ownership links intact.
+      deallocate(state, ptr);
+      return nullptr;
+    }
+    try
+    {
+      // Keep a spare metadata slot before moving the payload. Reinsertion
+      // after an unsuccessful realloc then needs no additional allocation.
+      self.blocks.reserve(self.blocks.size() + 1);
+    }
+    catch (...)
+    {
       self.failed = true;
+      throw;
+    }
+    self.blocks.erase(ptr);
+    void* next = std::realloc(ptr, bytes);
+    if (!next)
+    {
+      self.failed = true;
+      try
+      {
+        self.blocks.insert(ptr);
+      }
+      catch (...)
+      {
+        // Even an unexpected metadata failure must leave no unowned block.
+        std::free(ptr);
+        throw;
+      }
       throw std::bad_alloc();
     }
-    Block* block = new (storage) Block{previous, next};
-    if (previous)
-      previous->next = block;
-    else
-      self.blocks = block;
-    if (next)
-      next->previous = block;
-    return block + 1;
+    try
+    {
+      self.blocks.insert(next);
+    }
+    catch (...)
+    {
+      std::free(next);
+      self.failed = true;
+      throw;
+    }
+    return next;
   }
 
   static void deallocate(void* state, void* ptr)
@@ -119,14 +145,8 @@ struct KissatAllocations
     if (!ptr)
       return;
     auto& self = *static_cast<KissatAllocations*>(state);
-    Block* block = static_cast<Block*>(ptr) - 1;
-    if (block->previous)
-      block->previous->next = block->next;
-    else
-      self.blocks = block->next;
-    if (block->next)
-      block->next->previous = block->previous;
-    std::free(block);
+    self.blocks.erase(ptr);
+    std::free(ptr);
   }
 };
 

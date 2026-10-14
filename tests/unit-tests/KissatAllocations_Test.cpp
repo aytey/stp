@@ -39,15 +39,7 @@ namespace
 {
 std::size_t liveBlocks(const Owner& owner)
 {
-  std::size_t count = 0;
-  const Owner::Block* previous = nullptr;
-  for (const Owner::Block* block = owner.blocks; block; block = block->next)
-  {
-    EXPECT_EQ(block->previous, previous);
-    previous = block;
-    ++count;
-  }
-  return count;
+  return owner.blocks.size();
 }
 
 struct FailingAllocator
@@ -94,13 +86,19 @@ TEST(KissatAllocations, PayloadsAreAlignedAndUnlinkedInAnyOrder)
   for (std::size_t bytes = 0; bytes != 129; ++bytes)
   {
     void* ptr = Owner::allocate(&owner, bytes);
-    ASSERT_NE(ptr, nullptr);
+    if (bytes)
+    {
+      ASSERT_NE(ptr, nullptr);
+    }
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(ptr) % alignof(std::max_align_t),
               0u);
-    std::memset(ptr, 0x5a, bytes);
+    if (bytes)
+      std::memset(ptr, 0x5a, bytes);
     pointers.push_back(ptr);
   }
-  EXPECT_EQ(liveBlocks(owner), pointers.size());
+  EXPECT_EQ(liveBlocks(owner), static_cast<std::size_t>(std::count_if(
+                                   pointers.begin(), pointers.end(),
+                                   [](void* ptr) { return ptr != nullptr; })));
   // Remove the head, tail and interior entries while their neighbours live.
   for (std::size_t i : {128u, 0u, 64u})
   {
@@ -110,7 +108,7 @@ TEST(KissatAllocations, PayloadsAreAlignedAndUnlinkedInAnyOrder)
   EXPECT_EQ(liveBlocks(owner), 126u);
   for (void* ptr : pointers)
     Owner::deallocate(&owner, ptr);
-  EXPECT_EQ(owner.blocks, nullptr);
+  EXPECT_TRUE(owner.blocks.empty());
   EXPECT_FALSE(owner.failed);
 }
 
@@ -120,6 +118,7 @@ TEST(KissatAllocations, ResizePreservesPayloadAndOwnership)
   void* tail = Owner::allocate(&owner, 17);
   void* middle = Owner::resize(&owner, nullptr, 19);
   void* head = Owner::allocate(&owner, 23);
+  std::size_t live = 3;
   for (void** pointer : {&head, &middle, &tail})
   {
     auto* ptr = static_cast<unsigned char*>(*pointer);
@@ -127,7 +126,9 @@ TEST(KissatAllocations, ResizePreservesPayloadAndOwnership)
     for (std::size_t bytes : {1048576u, 16u, 4194304u, 0u})
     {
       ptr = static_cast<unsigned char*>(Owner::resize(&owner, ptr, bytes));
-      EXPECT_EQ(liveBlocks(owner), 3u);
+      if (!bytes)
+        --live;
+      EXPECT_EQ(liveBlocks(owner), live);
       EXPECT_EQ(reinterpret_cast<std::uintptr_t>(ptr) %
                     alignof(std::max_align_t),
                 0u);
@@ -137,6 +138,8 @@ TEST(KissatAllocations, ResizePreservesPayloadAndOwnership)
     *pointer = ptr;
   }
   // The owner also cleans up blocks a partial solver did not release.
+  Owner::allocate(&owner, 17);
+  EXPECT_EQ(liveBlocks(owner), 1u);
   EXPECT_FALSE(owner.failed);
 }
 
@@ -198,7 +201,7 @@ TEST(KissatAllocations, InterruptedCInitializationAndGrowthLeaveOwnedBlocks)
     if (!interrupted)
     {
       EXPECT_FALSE(state.owner.failed);
-      EXPECT_EQ(state.owner.blocks, nullptr);
+      EXPECT_TRUE(state.owner.blocks.empty());
     }
     // Scope exit frees every tracked block, including the partial C solver.
   }
