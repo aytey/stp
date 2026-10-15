@@ -79,7 +79,7 @@ struct FailingAllocator
 };
 } // namespace
 
-TEST(KissatAllocations, PayloadsAreAlignedAndUnlinkedInAnyOrder)
+TEST(KissatAllocations, PayloadsMatchCallbackAlignmentAndUnlinkInAnyOrder)
 {
   Owner owner;
   std::vector<void*> pointers;
@@ -90,8 +90,13 @@ TEST(KissatAllocations, PayloadsAreAlignedAndUnlinkedInAnyOrder)
     {
       ASSERT_NE(ptr, nullptr);
     }
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(ptr) % alignof(std::max_align_t),
-              0u);
+    const std::size_t scalar_alignment =
+        std::max({alignof(void*), alignof(double), alignof(std::uint64_t)});
+    std::size_t required_alignment = 1;
+    while (required_alignment < scalar_alignment &&
+           2 * required_alignment <= bytes)
+      required_alignment *= 2;
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(ptr) % required_alignment, 0u);
     if (bytes)
       std::memset(ptr, 0x5a, bytes);
     pointers.push_back(ptr);
