@@ -26,6 +26,7 @@ THE SOFTWARE.
 #define STP_SAT_KISSATALLOCATIONS_H
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <new>
@@ -40,8 +41,8 @@ namespace detail
 struct KissatAllocations
 {
   // Keep ownership beside the payload, without another allocation or a hash
-  // lookup. The payload retains malloc's alignment for fundamental types.
-  struct alignas(std::max_align_t) Block
+  // lookup. Keep the header and payload aligned for the callback's scalars.
+  struct alignas(void*) alignas(double) alignas(std::uint64_t) Block
   {
     Block* previous;
     Block* next;
