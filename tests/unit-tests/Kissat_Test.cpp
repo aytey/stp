@@ -292,7 +292,9 @@ TEST(Kissat, GrowingProtectedFormulaRetainsModelsAndFailedAssumptions)
     SCOPED_TRACE(reuse);
     stp::Kissat solver(reuse);
     if (reuse)
+    {
       ASSERT_TRUE(solver.enableTrailReuse(SATSolver::TrailReuse::ALL));
+    }
     const auto first = solver.newVar();
     solver.setFrozen(first);
     auto last = first;
